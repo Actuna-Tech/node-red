@@ -15,26 +15,26 @@ kod `invalid_node_type` w katalogu.
 
 | ID | Temat | Źródło | Rekomendacja | Decyzja |
 |---|---|---|---|---|
-| R-01 | Z-14: zachowanie przy `editorTheme.flowLayout.enabled: false` | etap-4 p.9 | flow z zapisanym układem rysują się wg danych; ukryte tylko kontrolki | |
-| R-02 | Z-14: części runtime (API flow, `diffNodes`) działają niezależnie od ustawienia | etap-4 p.10 | tak (brak skutku dla flow bez tych pól) | |
-| R-03 | Z-14: zakres błędów FL-B-004…009 | etap-4 p.11 | 004, 005, 006, 009 wymagane (eksport/import); 007, 008 – jakość wyglądu | |
+| R-01 | Z-14: zachowanie przy `editorTheme.flowLayout.enabled: false` | etap-4 p.9 | flow z zapisanym układem rysują się wg danych; ukryte tylko kontrolki || **rysuj wg danych** – ukryte tylko kontrolki (2026-10-03) |
+| R-02 | Z-14: części runtime (API flow, `diffNodes`) działają niezależnie od ustawienia | etap-4 p.10 | tak (brak skutku dla flow bez tych pól) || **zawsze** – niezależnie od ustawienia (2026-10-03) |
+| R-03 | Z-14: zakres błędów FL-B-004…009 | etap-4 p.11 | 004, 005, 006, 009 wymagane (eksport/import); 007, 008 – jakość wyglądu || **wszystkie: FL-B-004, 005, 006, 007, 008** (+ 009 z B-01) (2026-10-03) |
 
 ## Priorytet 2 – bezpieczeństwo
 
 | ID | Temat | Źródło | Rekomendacja | Decyzja |
 |---|---|---|---|---|
-| R-04 | P-04: zgłoszenie luki zespołowi Node-RED (prywatnie, `SECURITY.md`) mimo blokady upstream (D-04) | etap-1 p.8 | do decyzji | |
-| R-05 | P-04: odpowiedź `/comms` na pakiet `auth` przy wyłączonym `adminAuth` | ZAŁ-A p.5 | do decyzji | |
-| R-06 | D-07: kontrola nagłówka `Origin` dla `/comms` | etap-1 p.9 | tak, ustawienie z bezpieczną listą domyślną | |
-| R-07 | Z-02: użytkownik anonimowy (`adminAuth.default`) i wartość domyślna | etap-1 p.11–12 | anonimowy jak `needsPermission("")`; domyślnie `"open"` | |
-| R-08 | XSS: nazwa użytkownika jako HTML w menu (`user.js:265`) | Z-12 P-10 | osobna poprawka bezpieczeństwa | |
-| R-09 | P-03: `NODE_RED_DISABLE_TELEMETRY` ⇒ `locked`? `locked` + `enabled: true`? | etap-1 p.7 | bez implikacji; `locked` działa w obie strony | |
+| R-04 | P-04: zgłoszenie luki zespołowi Node-RED (prywatnie, `SECURITY.md`) mimo blokady upstream (D-04) | etap-1 p.8 | do decyzji || **nie teraz** – poprawka tylko w forku; zgłoszenie po zniesieniu blokady D-04 (ryzyko dla innych użytkowników przyjęte) (2026-10-03) |
+| R-05 | P-04: odpowiedź `/comms` na pakiet `auth` przy wyłączonym `adminAuth` | ZAŁ-A p.5 | do decyzji || **`auth ok`** – połączenie działa dalej (zmiana względem łatki 0002) (2026-10-03) |
+| R-06 | D-07: kontrola nagłówka `Origin` dla `/comms` | etap-1 p.9 | tak, ustawienie z bezpieczną listą domyślną || **tak, opcjonalnie** – ustawienie z listą dozwolonych źródeł, domyślnie wyłączone; w naszych instalacjach włączone (2026-10-03) |
+| R-07 | Z-02: użytkownik anonimowy (`adminAuth.default`) i wartość domyślna | etap-1 p.11–12 | anonimowy jak `needsPermission("")`; domyślnie `"open"` || **jak `needsPermission("")`** – użytkownik domyślny ma dostęp jak do wbudowanych tras (2026-10-03) |
+| R-08 | XSS: nazwa użytkownika jako HTML w menu (`user.js:265`) | Z-12 P-10 | osobna poprawka bezpieczeństwa || **osobna poprawka teraz** (priorytet 2, poprawka błędu z testem) (2026-10-03) |
+| R-09 | P-03: `NODE_RED_DISABLE_TELEMETRY` ⇒ `locked`? `locked` + `enabled: true`? | etap-1 p.7 | bez implikacji; `locked` działa w obie strony || **bez implikacji, obie strony** – `NODE_RED_DISABLE_TELEMETRY` działa jak dotąd; `telemetry.locked` blokuje zmianę `enabled` przy dowolnej wartości (2026-10-03) |
 
 ## Priorytet 2 – API
 
 | ID | Temat | Źródło | Rekomendacja | Decyzja |
 |---|---|---|---|---|
-| R-10 | P-01: kod błędu startu (500 `deploy_start_failed`), zakres „błędu startu”, limit czasu, błędy zatrzymania (D-05), obsługa odrzucenia `start()` w trybie domyślnym | etap-1 p.2–5; ZAŁ-A p.3 | 500 + `rev`; typy/moduły + wyjątki flow; limit w Z-08; D-05 jak w ZASADY; log w trybie domyślnym | |
+| R-10 | P-01: kod błędu startu (500 `deploy_start_failed`), zakres „błędu startu”, limit czasu, błędy zatrzymania (D-05), obsługa odrzucenia `start()` w trybie domyślnym | etap-1 p.2–5; ZAŁ-A p.3 | 500 + `rev`; typy/moduły + wyjątki flow; limit w Z-08; D-05 jak w ZASADY; log w trybie domyślnym || **500 `deploy_start_failed` + `rev` + `errors[]`**; zakres błędu startu: brakujące typy, moduły, tryb bezpieczny, wyjątki startu flow (bez błędów konstruktorów pojedynczych węzłów); w trybie domyślnym odrzucenie `start()` logowane (poprawka błędu); limit czasu → Z-08; błędy zatrzymania wg D-05/ZASADY (2026-10-03) |
 | R-11 | E-01: `POST /flows/state` i przełączenie projektu pod wspólną blokadą; odczyt przy jawnym `reload` przed `preDeploy` | etap-1 p.14–15; etap-3 p.2 | tak / tak | |
 | R-12 | P-02: egzekwowanie po stronie serwera, „Overwrite” (D-12), etykieta, okno przy operacjach Projektów | etap-1 p.6; etap-2 p.10; ZAŁ-A p.4 | `reload-only` bez implikacji wymogu `rev`; D-12 | |
 | R-13 | Z-04: `globalConfigs[]` (D-08), `rev` tylko w v2 (D-09) / `ETag`, 200 vs 201 i format id, `globalRev` | etap-2 p.5–8 | D-08, D-09; 201; `globalRev` tak | |
