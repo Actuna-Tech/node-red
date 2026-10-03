@@ -531,7 +531,7 @@ Wynik: **POTWIERDZONE.**
 - Payload przekazywany przez referencję (handler może go zmieniać).
 - Wzorzec wywołania z obsługą błędu: `registry/lib/installer.js:222-275`.
 - `setFlows` liczy `diff` (`flows/index.js:154`, `flows/util.js:686-691`: `added, changed, removed, rewired, linked, flowChanged`) – źródło listy zmienionych flow.
-- `addFlow/updateFlow/removeFlow` budują konfigurację wewnątrz `flows/index.js` i wołają `setFlows` – wynikowa konfiguracja nie jest dziś dostępna w warstwie API (potrzebne wydzielenie z Z-04/E-01).
+- `addFlow/updateFlow/removeFlow` budują konfigurację wewnątrz `flows/index.js` i wołają `setFlows` – wynikowa konfiguracja nie jest dziś dostępna w warstwie API (wydzielenie `build*FlowConfig` – w E-01).
 
 #### Specyfikacja
 - **Cel:** jedno miejsce w runtime do walidacji wdrożeń (np. zakazane węzły, wymagane pola) i reakcji po wdrożeniu (np. publikacja wydania), wspólne dla edytora, MCP i CI/CD.
@@ -745,18 +745,18 @@ Wynik: **POTWIERDZONE + błąd.**
 ```gherkin
 Funkcja: Trasy HTTP w kontekście węzła
 
-  Scenariusz: Trasa po wdrożeniu istnieje raz
+  Scenariusz: [odbiór] Trasa po wdrożeniu istnieje raz
     Zakładając flow z węzłem http in GET "/test" i http response
     Gdy wdrażam flow
     Wtedy GET /test zwraca odpowiedź flow
     I trasa jest zarejestrowana dokładnie raz
 
-  Scenariusz: Ponowne wdrożenie nie dubluje trasy
+  Scenariusz: [odbiór] Ponowne wdrożenie nie dubluje trasy
     Gdy wdrażam ten sam flow ponownie (full) 3 razy
     Wtedy trasa GET /test jest zarejestrowana dokładnie raz
     I żądanie wywołuje przepływ dokładnie raz
 
-  Scenariusz: Usunięcie węzła zdejmuje trasę
+  Scenariusz: [odbiór] Usunięcie węzła zdejmuje trasę
     Gdy usuwam węzeł http in i wdrażam
     Wtedy GET /test zwraca 404
 
@@ -778,16 +778,25 @@ Funkcja: Trasy HTTP w kontekście węzła
     Gdy węzeł wywołuje node.registerHttpRoute("fetch", "/x", handler)
     Wtedy zgłaszany jest TypeError
 
-  Scenariusz: Zachowanie http in bez zmian (regresja)
+  Scenariusz: [odbiór] Zachowanie http in bez zmian (regresja)
     Zakładając zestaw testów regresji http in napisany i zielony na wersji bazowej
     Gdy uruchamiam go po zmianie
     Wtedy wszystkie przypadki przechodzą bez modyfikacji testów
     # GET z query, POST JSON/urlencoded/multipart/raw, skipBodyParsing, cookies, CORS, httpNodeMiddleware, parametry ścieżki, kod 500 z errorHandler
+
+  Scenariusz: Kolejność middleware i tras zachowana
+    Zakładając ustawione httpNodeMiddleware i httpNodeCors oraz węzeł http in POST "/raw" z skipBodyParsing
+    I moduł rejestrujący przy ładowaniu trasę RED.httpNode.get("/early", handler)
+    Gdy wdrażam flow z węzłem http in
+    Wtedy rawBodyCapture działa przed trasami węzłów (POST /raw otrzymuje surowe ciało)
+    I httpNodeMiddleware oraz obsługa CORS są wywoływane przed handlerem trasy węzła
+    I trasa "/early" zarejestrowana przed pierwszym wdrożeniem jest obsługiwana przed trasami z registerHttpRoute
+    I nowa trasa węzła nie wyprzedza middleware zarejestrowanych wcześniej
 ```
 
 #### Testy
 - **Regresja najpierw (na kodzie 5.0.7):** nowy `test/nodes/core/network/21-httpin_spec.js` – `GET passes query as payload`, `POST json body`, `POST urlencoded`, `POST multipart upload`, `POST raw text/binary`, `skipBodyParsing keeps raw buffer`, `path parameters in req.params`, `cookies parsed`, `httpNodeMiddleware invoked`, `httpNodeCors handles OPTIONS`, `missing url warns`, `http response sets status and headers`. (Dostęp do `nodeApp` przez obiekt `RED` modułu / helper – **do potwierdzenia**.)
-- Nowe w tym samym pliku: `redeploy keeps single route`, `removing node removes route`, `closing one node keeps same-path route of another node` (czerwony na 5.0.7), `splice skip regression – three consecutive matching routes removed` (czerwony na 5.0.7).
+- Nowe w tym samym pliku: `redeploy keeps single route`, `removing node removes route`, `closing one node keeps same-path route of another node` (czerwony na 5.0.7), `splice skip regression – three consecutive matching routes removed` (czerwony na 5.0.7), `rawBodyCapture runs before node routes`, `httpNodeMiddleware and CORS run before node route handler`, `module-level routes registered before first deploy keep precedence`.
 - `test/unit/@node-red/runtime/lib/nodes/httpRoutes_spec.js` (nowy): `registers route on first use`, `dispatches in registration order`, `remove() is idempotent`, `removeAll removes only node routes`, `removal during in-flight request is safe`, `error handlers receive errors`, `rejects invalid method/handler`.
 - `test/unit/@node-red/runtime/lib/nodes/Node_spec.js`: `registerHttpRoute returns handle`, `close removes node routes before close callbacks`, `close continues when route removal throws`.
 
