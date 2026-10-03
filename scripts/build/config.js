@@ -59,6 +59,7 @@ const concatEditor = {
         "ui/env-var.js",
         "ui/workspaces.js",
         "ui/statusBar.js",
+        "ui/view-layout.js",
         "ui/view.js",
         "ui/view-zoom-constants.js",
         "ui/view-zoom-animator.js",
