@@ -28,7 +28,9 @@ Security
    choice is ignored but kept, a `telemetryEnabled` value sent to `POST /settings/user` is ignored
    (the other user settings are saved, the audit event has `telemetry: "locked"`), and
    `GET /settings` reports `telemetryLocked: true`. `NODE_RED_DISABLE_TELEMETRY` and
-   `--no-telemetry` keep their behaviour and do not imply the lock
+   `--no-telemetry` keep their behaviour and do not imply the lock. In the editor the switch in
+   the user settings is disabled, shows the effective value with a note that it was set by the
+   administrator, and the consent prompt is not shown
 
 Fixes
 

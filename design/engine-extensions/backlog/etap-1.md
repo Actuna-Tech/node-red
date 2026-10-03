@@ -510,6 +510,8 @@ Funkcja: Ochrona przed nadpisaniem flow przez nieaktualny edytor
 ### P-03 – Telemetria wyłączalna trwale przez administratora
 
 > **Zrealizowane (F2, 2026-10-03): `945b615`** – `telemetry/index.js`: `isLocked()`, przy `telemetry.locked: true` stan = `telemetry.enabled === true` (w obie strony – R-09), zapisane `telemetryEnabled` ignorowane, ale zachowane; `enable()/disable()` bez skutku (`log.debug`); `locked` nie-boolean → ignorowane + ostrzeżenie (`telemetry.locked-invalid`); `api/settings.js`: `telemetryLocked: true` w `GET /settings` tylko przy blokadzie, `POST /settings/user` z `telemetryEnabled` przy blokadzie – wartość pominięta, reszta zapisana, audyt `settings.update` z `telemetry: "locked"`; `NODE_RED_DISABLE_TELEMETRY` bez zmian (test charakteryzujący w `telemetry/index_spec.js`); `settings.js` – opis `locked`. Okno zgody nie jest pokazywane przy blokadzie już teraz (`telemetryEnabled` jest wtedy wartością logiczną, `red.js:694`). **Niezrealizowane (poza zakresem toru – `editor-client`):** przełącznik w ustawieniach użytkownika nieaktywny z opisem i tekst en-US `telemetry.lockedByAdmin` – przełącznik działa jak dotąd, ale zmiana jest ignorowana przez runtime (po odświeżeniu pokazuje stan efektywny).
+>
+> **Uzupełnione (przegląd F2, W5, 2026-10-03):** `userSettings.js` – opcja `locked()` (gdy `RED.settings.telemetryLocked === true`): przełącznik `disabled`, stan = wartość efektywna z runtime (`RED.settings.telemetryEnabled`, nie zapisana wartość użytkownika), pod opisem tekst `telemetry.lockedByAdmin` (en-US: „This setting has been set by the administrator and cannot be changed.”); zamknięcie okna ustawień nie wysyła `telemetryEnabled`. `red.js` `checkTelemetry` – jawne pominięcie okna zgody przy `telemetryLocked` (zabezpieczenie; runtime i tak wysyła wtedy wartość logiczną). Testy: `test/unit/@node-red/editor-client/ui/userSettings_spec.js` (3 czerwone → zielone, 1 charakteryzujący tryb domyślny), E2E „editor with the telemetry setting locked by the administrator” (`{enabled:false, locked:true}`: brak okna zgody, przełącznik nieaktywny, brak `telemetryEnabled` w `POST /settings/user` – czerwony → zielony).
 
 | Pole | Wartość |
 |---|---|
@@ -609,7 +611,7 @@ Funkcja: Telemetria blokowana przez administratora
 #### DoD specyficzne
 - [ ] Testy z kryteriów odbioru czerwone przed zmianą.
 - [ ] `settings.js` opisuje `locked` i wpływ na powiadomienia o aktualizacji.
-- [ ] Tekst en-US `telemetry.lockedByAdmin`.
+- [x] Tekst en-US `telemetry.lockedByAdmin`.
 - [ ] Decyzja R-09 (`NODE_RED_DISABLE_TELEMETRY` bez implikacji `locked`; `locked` w obie strony) udokumentowana w `settings.js` i CHANGELOG.
 
 #### Ryzyka i alternatywy
@@ -621,7 +623,7 @@ Funkcja: Telemetria blokowana przez administratora
 #### Podzadania
 - [ ] `isTelemetryLocked`, `isTelemetryEnabled`, `enable/disable` + testy (S)
 - [ ] API ustawień: ignorowanie, `telemetryLocked` + testy (S)
-- [ ] Edytor: przełącznik nieaktywny, pominięcie okna zgody, tekst en-US (M)
+- [x] Edytor: przełącznik nieaktywny, pominięcie okna zgody, tekst en-US (M)
 - [ ] Test charakteryzujący `NODE_RED_DISABLE_TELEMETRY` bez implikacji `locked` (R-09) (S)
 - [ ] `settings.js`, CHANGELOG (S)
 

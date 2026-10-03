@@ -20,6 +20,7 @@
  *   FL-B-007: test of the position of port label tooltips
  *   FL-B-008: test of the labels of links to other flows
  *   FL-B-012: test of the editor start without errors in the console
+ *   P-03: test of the user settings with the telemetry setting locked by the administrator
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -169,15 +170,16 @@ function sendJSON(method, url, body) {
 /**
  * Start Node-RED in a child process with the test flows
  * @param {object} editorTheme the editorTheme settings
+ * @param {object} [extraSettings] other settings to add to the settings file
  * @returns {Promise<{server, url: string, userDir: string}>}
  */
-async function startNodeRED(editorTheme) {
+async function startNodeRED(editorTheme, extraSettings) {
     if (!fs.existsSync(path.resolve(__dirname, "../../../packages/node_modules/@node-red/editor-client/public/red/red.min.js"))) {
         throw new Error("Editor not built - run 'npm run build' first");
     }
     const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "nr-layout-e2e-"));
     fs.writeFileSync(path.join(userDir, "flows.json"), JSON.stringify(testFlows()));
-    const settings = { flowFile: "flows.json", editorTheme: editorTheme, logging: { console: { level: "warn" } } };
+    const settings = Object.assign({ flowFile: "flows.json", editorTheme: editorTheme, logging: { console: { level: "warn" } } }, extraSettings || {});
     fs.writeFileSync(path.join(userDir, "settings.js"), "module.exports = " + JSON.stringify(settings));
     const port = await getFreePort();
     const url = "http://127.0.0.1:" + port;
@@ -1369,5 +1371,63 @@ function contextMenuLabels(page, nodeId) {
         flows.find(n => n.id === "m3").o.should.equal("TB");
         flows.find(n => n.id === "tLR").should.not.have.property("layout");
         flows.find(n => n.id === "tLR").should.not.have.property("wireStyle");
+    });
+});
+
+(playwright ? describe : describe.skip)("editor with the telemetry setting locked by the administrator (e2e, P-03)", function() {
+    this.timeout(60000);
+
+    let userDir;
+    let server;
+    let url;
+    let browser;
+
+    before(async function() {
+        ({ server, url, userDir } = await startNodeRED({ tours: false }, { telemetry: { enabled: false, locked: true } }));
+        browser = await playwright.chromium.launch();
+    });
+
+    after(async function() {
+        if (browser) {
+            await browser.close();
+        }
+        if (server) {
+            server.kill();
+        }
+        if (userDir) {
+            fs.rmSync(userDir, { recursive: true, force: true });
+        }
+    });
+
+    it("does not show the consent prompt and shows the toggle disabled with the effective value", async function() {
+        const page = await browser.newPage({ viewport: { width: 1500, height: 900 } });
+        const pageErrors = [];
+        page.on("pageerror", err => pageErrors.push(err.message));
+        try {
+            await page.goto(url);
+            await page.waitForSelector(".red-ui-flow-node-group", { timeout: 30000 });
+            await page.waitForTimeout(500);
+            (await page.evaluate(() => RED.settings.telemetryLocked)).should.be.true();
+            should.not.exist(await page.$("text=No, do not enable notifications"));
+            await page.evaluate(() => RED.actions.invoke("core:show-user-settings"));
+            await page.waitForSelector("#user-settings-telemetryEnabled", { state: "attached" });
+            (await page.$eval("#user-settings-telemetryEnabled", el => el.disabled)).should.be.true();
+            (await page.$eval("#user-settings-telemetryEnabled", el => el.checked)).should.be.false();
+            const label = await page.$eval("label[for='user-settings-telemetryEnabled']", el => el.textContent);
+            label.should.containEql("This setting has been set by the administrator and cannot be changed.");
+            // Closing the dialog does not send the locked value
+            const requests = [];
+            page.on("request", req => {
+                if (/\/settings\/user$/.test(req.url()) && req.method() === "POST") {
+                    requests.push(JSON.parse(req.postData() || "{}"));
+                }
+            });
+            await page.evaluate(() => RED.tray.close());
+            await page.waitForTimeout(500);
+            requests.forEach(body => body.should.not.have.property("telemetryEnabled"));
+        } finally {
+            await page.close();
+        }
+        pageErrors.should.eql([]);
     });
 });
