@@ -46,6 +46,10 @@ Features
  - The file storage provides `watchFlows`: `flowFile` and its credentials file are watched (file
    system events and polling - also on a shared volume, with `readOnly` and `readOnlyUserDir`);
    own writes and rewrites with the same content are not reported. Not available with projects
+ - A reload reads storage strictly (`getFlows({strict: true})`, also passed to storage plugins): a
+   read error or an incomplete configuration - a missing, empty or invalid flow file of the file
+   storage, a plugin result without an array of flows - is a failed read (retries, then `failed`)
+   and never reloads an empty configuration. The read at start is unchanged
  - New setting `editorOnly` (default `false`): an editor-only instance loads the flows and saves
    deployments but never starts the flows. The instance state is `loaded` (`/health/ready` 200),
    `runtimeFlowState` is neither read nor saved and safe mode is not ended by a deployment. With
@@ -104,6 +108,9 @@ Runtime
  - The CLI no longer fails with an exception when the default settings file cannot be copied to the
    user directory: it warns and uses the default settings file
  - The existing `readOnly` setting is described in the settings template
+ - With `readOnly` or `readOnlyUserDir` the file storage reads the backup of an empty flow or
+   credentials file without copying it over the file (before, the backup was copied also with
+   `readOnly`)
 
 #### Unreleased: Security and fixes
 

@@ -241,6 +241,13 @@ watchFlows(callback)
 - Odrzucenie rejestracji przy `deploy.reload.watch: true` → **błąd startu** runtime (R-36). Magazyn bez `watchFlows`
   → ustawienie bez efektu, ostrzeżenie w logu.
 - Przeładowanie nigdy nie zapisuje do magazynu (`saveFlows` nie jest wołane).
+- **Odczyt ścisły:** do przeładowania runtime woła `getFlows({strict: true})` i `getCredentials({strict: true})`.
+  Wtyczka przy tym argumencie musi **odrzucić** obietnicę przy błędzie odczytu lub niepełnej konfiguracji (np. zapis
+  w toku), zamiast zwracać pustą konfigurację; brak poświadczeń to `{}`. Wynik bez tablicy flow runtime odrzuca sam
+  (`invalid_flows`). Odrzucenie = nieudany odczyt: ponowienia `retry`, po wyczerpaniu `failed`, flow działają dalej
+  (D-18, R-36). Wtyczki ignorujące argument działają jak dotąd (odczyt przy starcie – bez argumentu, bez zmian).
+  Magazyn plikowy: brak, pusty lub niepoprawny plik flow → odrzucenie (kody `ENOENT`/kod `fs`, `empty_file`,
+  `invalid_json`), bez odtwarzania `.backup`.
 - Wbudowany magazyn plikowy implementuje `watchFlows` (zdarzenia systemu plików + odpytywanie co 1 s, debounce
   200 ms; własne zapisy pomijane po treści); nie działa z Projektami.
 

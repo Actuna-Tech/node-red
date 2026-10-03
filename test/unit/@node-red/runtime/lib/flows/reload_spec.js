@@ -17,6 +17,9 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-09: tests of the reload of the flows after a change in storage (watchFlows,
  *   preReload, coalescing, retries, reload slots)
+ *   Z-09: regression tests of the review - a strict read of the file storage
+ *   (an invalid flow file during the reload), lost reloads after a superseded
+ *   cycle, the way out of "failed", timers
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -71,6 +74,7 @@ function createEnv(opts) {
         logs: { warn: [], error: [], info: [], debug: [], trace: [] },
         audits: [],
         getFlowsCalls: 0,
+        getFlowsArgs: [],
         failReads: 0,
         failAlways: false,
         idle: false,
@@ -93,7 +97,8 @@ function createEnv(opts) {
             env.notify = cb;
             return env.unwatch;
         }),
-        getFlows: async function() {
+        getFlows: async function(readOpts) {
+            env.getFlowsArgs.push(readOpts);
             env.getFlowsCalls++;
             if (env.failAlways || env.failReads > 0) {
                 env.failReads--;
@@ -624,6 +629,94 @@ describe("flows/reload (Z-09)", function() {
             env.notify();
             await waitFor(() => env.applied.length === 1);
             states.slice(0, 3).should.eql(["reloadPending", "reloadPending:draining", "ready"]);
+        });
+        it("storage is read strictly (getFlows({strict: true})) in both reads of the cycle", async function() {
+            env = createEnv();
+            await env.start();
+            env.change("B");
+            env.notify();
+            await waitFor(() => env.applied.length === 1);
+            env.getFlowsArgs.should.have.length(2);
+            env.getFlowsArgs.forEach(a => a.should.eql({ strict: true }));
+        });
+        describe("with the file storage (review regression)", function() {
+            const fsx = require("fs-extra");
+            const osx = require("os");
+            const pathx = require("path");
+            const cryptox = require("crypto");
+            const STORAGE_DIR = pathx.dirname(NR_TEST_UTILS.resolve("@node-red/runtime/lib/storage/localfilesystem/index.js"));
+            let savedCache;
+            let lfs;
+            let dir;
+            before(function() {
+                // a fresh copy: the Projects tests keep a module state
+                savedCache = {};
+                Object.keys(require.cache).forEach(function(k) {
+                    if (k.startsWith(STORAGE_DIR + pathx.sep)) {
+                        savedCache[k] = require.cache[k];
+                        delete require.cache[k];
+                    }
+                });
+                lfs = require(pathx.join(STORAGE_DIR, "index.js"));
+            });
+            after(function() {
+                Object.keys(require.cache).forEach(function(k) {
+                    if (k.startsWith(STORAGE_DIR + pathx.sep)) {
+                        delete require.cache[k];
+                    }
+                });
+                Object.assign(require.cache, savedCache);
+            });
+            afterEach(function() {
+                if (dir) {
+                    fsx.removeSync(dir);
+                    dir = null;
+                }
+            });
+            async function fileEnv(reload) {
+                dir = fsx.mkdtempSync(pathx.join(osx.tmpdir(), "nr-reload-file-"));
+                const flowFile = pathx.join(dir, "flows.json");
+                fsx.writeFileSync(flowFile, JSON.stringify(flowsOf("A")));
+                const rlog = { _: () => "x", info() {}, warn() {}, trace() {}, debug() {}, error() {} };
+                await lfs.init({ userDir: dir, flowFile: "flows.json", readOnlyUserDir: true, getUserSettings: () => ({}) }, { log: rlog });
+                const e = createEnv({ reload: reload });
+                e.storage.getFlows = async function(readOpts) {
+                    e.getFlowsCalls++;
+                    const flows = await lfs.getFlows(readOpts);
+                    const creds = await lfs.getCredentials(readOpts);
+                    return { flows: flows, rev: cryptox.createHash("sha256").update(JSON.stringify(flows)).digest("hex"), credentials: creds };
+                };
+                e.active = await e.storage.getFlows();
+                e.flowFile = flowFile;
+                return e;
+            }
+            [["invalid JSON", "[{\"id\":\"t1\",\"type\":\"ta"], ["an empty file", ""], ["a missing file", null]].forEach(function(entry) {
+                it(entry[0] + " during the reload - flows unchanged, retries, then failed", async function() {
+                    env = await fileEnv({ retry: { min: 2, max: 60000, attempts: 3 } });
+                    const before = env.active;
+                    const d = deferred();
+                    let payload;
+                    hooks.add("preReload", p => { payload = p; return d.promise });
+                    await env.start();
+                    fsx.writeFileSync(env.flowFile, JSON.stringify(flowsOf("B")));
+                    env.notify({});
+                    await waitFor(() => !!payload);
+                    // a non-atomic write by another writer is in progress during the reread
+                    if (entry[1] === null) {
+                        fsx.removeSync(env.flowFile);
+                    } else {
+                        fsx.writeFileSync(env.flowFile, entry[1]);
+                    }
+                    d.resolve();
+                    await waitFor(() => state.get().state === "failed", 2000);
+                    env.applied.should.have.length(0);
+                    env.active.should.equal(before);
+                    env.getFlowsCalls.should.be.aboveOrEqual(4);
+                    states.should.containEql("ready");
+                    // nothing written next to the flow file (readOnlyUserDir)
+                    fsx.readdirSync(dir).filter(n => n.indexOf("flows") !== -1).length.should.be.belowOrEqual(1);
+                });
+            });
         });
     });
 

@@ -980,6 +980,12 @@ Funkcja: Przeładowanie flow po zmianie w magazynie
   - gdy trwa inna operacja pod blokadą (wdrożenie, `setState`), cykl czeka na zwolnienie blokady i powtarza się;
   - magazyn plikowy: `fs.watch` katalogów + `fs.watchFile` (1 s), debounce 200 ms – stałe, bez nowych ustawień;
     z Projektami `watchFlows` odrzuca rejestrację (przy `watch: true` → błąd startu).
+- Poprawki po przeglądzie priorytetu 3:
+  - odczyt do przeładowania ścisły – `storage.getFlows({strict: true})` (oba odczyty cyklu); magazyn plikowy przy
+    błędzie odczytu, braku, pustym lub niepoprawnym pliku flow odrzuca obietnicę (wcześniej `[]` → przeładowanie
+    pustej konfiguracji w stanie `ready`); wtyczka bez tablicy flow → `invalid_flows`; odczyt przy starcie bez zmian.
+    Przy `readOnly`/`readOnlyUserDir` kopia `.backup` pustego pliku jest tylko czytana, nie kopiowana na plik
+    (`strict_read_spec.js`, regresja z plikiem w `reload_spec.js`).
 
 ---
 
