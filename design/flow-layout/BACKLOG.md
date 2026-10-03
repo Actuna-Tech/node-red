@@ -150,10 +150,12 @@ W commitach i opisach PR podajemy identyfikator, np. `Fix diff rows for added pr
 |---|---|---|---|---|---|---|
 | [FL-B-004](#fl-b-004--okno-różnic-nie-pokazuje-dodanych-właściwości-układu) | Okno różnic nie pokazuje dodanych właściwości układu | błąd | Do weryfikacji (zrobione: `925b091`) | P3 | Średnia | edytor – okna |
 | [FL-B-005](#fl-b-005--nieprawidłowe-wartości-układu-z-importu) | Nieprawidłowe wartości układu z importu | błąd | Do weryfikacji (zrobione: `1116d4f`) | P4 | Mała | eksport-import |
-| [FL-B-006](#fl-b-006--dopasowanie-subflow-zależne-od-kolejności-kluczy) | Dopasowanie subflow zależne od kolejności kluczy | błąd (istniejący w Node-RED) | Do analizy | P4 | Mała | eksport-import |
-| [FL-B-007](#fl-b-007--podpowiedzi-etykiet-portów-w-układzie-tb) | Podpowiedzi etykiet portów w układzie TB | błąd | Gotowe | P4 | Mała | edytor – widok |
-| [FL-B-008](#fl-b-008--obrócone-etykiety-linków-do-innych-zakładek-w-tb) | Obrócone etykiety linków do innych zakładek w TB | błąd | Gotowe | P4 | Mała | edytor – widok |
+| [FL-B-006](#fl-b-006--dopasowanie-subflow-zależne-od-kolejności-kluczy) | Dopasowanie subflow zależne od kolejności kluczy | błąd (istniejący w Node-RED) | Do weryfikacji (zrobione: `6feb771`) | P4 | Mała | eksport-import |
+| [FL-B-007](#fl-b-007--podpowiedzi-etykiet-portów-w-układzie-tb) | Podpowiedzi etykiet portów w układzie TB | błąd | Do weryfikacji (zrobione: `d28848d`) | P4 | Mała | edytor – widok |
+| [FL-B-008](#fl-b-008--obrócone-etykiety-linków-do-innych-zakładek-w-tb) | Obrócone etykiety linków do innych zakładek w TB | błąd | Do weryfikacji (zrobione: `122cfdc`) | P4 | Mała | edytor – widok |
 | [FL-B-009](#fl-b-009--flow-z-ustawieniem-domyślnym-edytora-nie-przenosi-wyglądu) | Flow z ustawieniem domyślnym edytora nie przenosi wyglądu | błąd | Do weryfikacji (zrobione: `cf95b28`) | **P2 (biznes: priorytet 1)** | Średnia | eksport-import |
+| [FL-B-011](#fl-b-011--dopasowanie-subflow-zależne-od-kolejności-węzłów) | Dopasowanie subflow zależne od kolejności węzłów | błąd (istniejący w Node-RED) | Nowe | P4 | Mała | eksport-import |
+| [FL-B-012](#fl-b-012--błąd-w-konsoli-przy-starcie-edytora-z-włączonym-układem) | Błąd w konsoli przy starcie edytora z włączonym układem | błąd | Nowe | P4 | Mała | edytor – ustawienia |
 | [FL-B-010](#fl-b-010--import-flow-o-tym-samym-identyfikatorze-tylko-jako-kopia) | Import flow o tym samym identyfikatorze – tylko jako kopia (brak „zastąp”) | funkcja | Do weryfikacji (zrobione: `bcf672a`) | P2 (biznes: priorytet 1) | Średnia | eksport-import |
 | [FL-T-001](#fl-t-001--automatyczne-rozmieszczanie-węzłów) | Automatyczne rozmieszczanie węzłów | funkcja | Nowe | P3 | – | edytor – widok |
 | [FL-T-002](#fl-t-002--routing-omijający-wszystkie-węzły) | Routing omijający wszystkie węzły | funkcja | Nowe | P3 | – | edytor – widok |
@@ -244,7 +246,7 @@ wartość → układ domyślny); eksport zachowuje wartość. Testy: `ui/editors
 
 | Pole | Wartość |
 |---|---|
-| Status / Priorytet / Waga | Do analizy / P4 / Mała |
+| Status / Priorytet / Waga | Do weryfikacji (zrobione 2026-10-03, commit `6feb771`) / P4 / Mała |
 | Obszar | eksport-import |
 | Zakres | **w zakresie Z-14** (R-03, 2026-10-03) – analiza i poprawka w forku |
 | Wykryto | 2026-10-03, przegląd kodu ([PROBLEMY.md](PROBLEMY.md) P4) |
@@ -254,13 +256,29 @@ wartość → układ domyślny); eksport zachowuje wartość. Testy: `ui/editors
 **Opis:** przy imporcie edytor szuka istniejącego, identycznego subflow, porównując tekst JSON. Ten sam subflow z kluczami w innej kolejności (np. `layout` przed `color` – edycja ręczna, inne narzędzia) nie zostanie rozpoznany i powstanie duplikat / konflikt.
 **Do ustalenia w analizie:** odtworzenie i skala problemu dla użytkowników (pliki generowane przez narzędzia). **Po R-03:** błąd w zakresie – poprawka w forku; zgłoszenie do node-red/node-red niemożliwe do czasu zniesienia blokady D-04.
 **Proponowane rozwiązanie:** porównanie po znormalizowanych obiektach (`RED.utils.compareObjects` lub JSON z posortowanymi kluczami).
-**DoD specyficzne:** - [ ] Wynik analizy w karcie; - [ ] poprawka (R-03) z testem jednostkowym/E2E z odwróconą kolejnością kluczy.
+**DoD specyficzne:** - [x] Wynik analizy w karcie; - [x] poprawka (R-03) z testem jednostkowym/E2E z odwróconą kolejnością kluczy.
+
+**Wynik analizy (2026-10-03):** potwierdzone w kodzie i testem jednostkowym. `checkForMatchingSubflow` (`nodes.js`)
+jest wywoływane przy imporcie subflow, którego identyfikator **nie** koliduje z istniejącym (inna instancja, wklejenie
+z nowymi id, biblioteka, MCP/CI) – przy kolizji decyduje okno konfliktu (`importMap`). Funkcja porównuje
+`JSON.stringify` importowanego subflow z eksportem istniejącego, więc ta sama treść z kluczami w innej kolejności
+(np. `layout` przed `color`, plik edytowany ręcznie lub generowany przez narzędzie) nie jest rozpoznana i powstaje
+duplikat subflow. Skala: eksporty z edytora mają stałą kolejność (`convertSubflow`), więc problem dotyczy plików
+spoza edytora – w priorytecie 1 (import z MCP/CI) realny. Błąd wersji bazowej 5.0.7; ryzyko regresji poprawki niskie
+(porównanie staje się niezależne tylko od kolejności kluczy obiektów – kolejność elementów tablic, wartości i
+zestaw właściwości nadal muszą się zgadzać).
+**Wynik (2026-10-03, `6feb771`):** poprawka minimalna – obie strony porównania przez `stringifySorted` (JSON z
+posortowanymi kluczami obiektów, tablice bez zmian); podmiana identyfikatorów węzłów bez zmian. Testy
+`nodes_spec.js` „matching an imported subflow with properties in another order (FL-B-006)”: 2 padały bez poprawki
+(odwrócona kolejność kluczy, także w `in`/`out`; `layout` przed pozostałymi), 2 strażnicze (brak modyfikacji
+importowanego obiektu, brak dopasowania przy innej wartości). Pokrewny przypadek – kolejność **węzłów** wewnątrz
+subflow (podmiana id po pozycji) – osobna pozycja FL-B-011. E2E – nie dodano (logika w całości w teście jednostkowym).
 
 ### FL-B-007 – Podpowiedzi etykiet portów w układzie TB
 
 | Pole | Wartość |
 |---|---|
-| Status / Priorytet / Waga | Gotowe / P4 / Mała |
+| Status / Priorytet / Waga | Do weryfikacji (zrobione 2026-10-03, commit `d28848d`) / P4 / Mała |
 | Obszar | edytor – widok |
 | Wykryto | 2026-10-03, przegląd kodu przy implementacji |
 | Pliki | `ui/view.js` – `portMouseOver` (pozycja i kierunek `showTooltip`) |
@@ -269,14 +287,21 @@ wartość → układ domyślny); eksport zachowuje wartość. Testy: `ui/editors
 **Kroki odtworzenia:** 1. Flow w układzie *Top to bottom*. 2. Węzeł z etykietami portów (Appearance → Port labels). 3. Najedź na port.
 **Oczekiwane:** podpowiedź nad wejściem (u góry) i pod wyjściem (u dołu), nie zasłania węzła.
 **Rzeczywiste (wg kodu):** podpowiedź pojawia się z lewej (wejście) / prawej (wyjście) strony portu – jak w układzie poziomym.
-**DoD specyficzne:** - [ ] Odtworzyć i dołączyć zrzut; - [ ] pozycja zależna od kierunku portu (`dir`) z `getPortPosition`; - [ ] LR bez zmian.
+**DoD specyficzne:** - [x] Odtworzyć (test E2E – zrzut nie dołączony); - [x] pozycja zależna od orientacji węzła (`getNodeOrientation`, równoważne kierunkowi `dir` z `getPortPosition`); - [x] LR bez zmian.
 **Testy:** E2E – pozycja elementu `.red-ui-flow-port-tooltip` względem portu w TB i LR.
+
+**Wynik (2026-10-03, `d28848d`):** odtworzone testem E2E (podpowiedź wyjścia w TB nad dolną krawędzią portu –
+padał bez poprawki). Przyczyna: `portMouseOver` zawsze wywoływał `showTooltip` z kierunkiem `left`/`right`.
+Poprawka: `RED.viewLayout.getPortTooltipPosition(pos, portType, orientation)` – LR jak dotąd (`-2/+12`, `left`/`right`),
+TB: wejście `top` (nad portem), wyjście `bottom` (pod portem); `showTooltip` dostał kierunek `bottom` (lustrzane
+odbicie `top`). Dotyczy też portów subflow (orientacja z `getNodeOrientation`). Testy: `view-layout_spec.js` (4,
+padały bez poprawki), E2E „port label tooltips (FL-B-007)” – TB (pozycja, wyśrodkowanie, etykieta wewnątrz) i LR.
 
 ### FL-B-008 – Obrócone etykiety linków do innych zakładek w TB
 
 | Pole | Wartość |
 |---|---|
-| Status / Priorytet / Waga | Gotowe / P4 / Mała |
+| Status / Priorytet / Waga | Do weryfikacji (zrobione 2026-10-03, commit `122cfdc`) / P4 / Mała |
 | Obszar | edytor – widok |
 | Wykryto | 2026-10-03, przy implementacji (świadome uproszczenie) |
 | Pliki | `ui/view.js` – rysowanie `.red-ui-flow-link-off-flow` (transformacja `rotate(90)`) |
@@ -286,7 +311,17 @@ wartość → układ domyślny); eksport zachowuje wartość. Testy: `ui/editors
 **Oczekiwane:** odgałęzienie wychodzi z dołu, nazwy zakładek docelowych czytelne poziomo.
 **Rzeczywiste:** całe odgałęzienie jest obrócone o 90°, razem z tekstem nazw zakładek (tekst pionowy).
 **Proponowane rozwiązanie:** obracać tylko geometrię linii, a etykiety pozycjonować poziomo (osobna transformacja tekstu).
-**DoD specyficzne:** - [ ] Tekst poziomy w TB; - [ ] klikanie w etykietę dalej przenosi do zakładki; - [ ] LR bez zmian.
+**DoD specyficzne:** - [x] Tekst poziomy w TB; - [x] klikanie w etykietę dalej przenosi do zakładki; - [x] LR bez zmian.
+
+**Wynik (2026-10-03, `122cfdc`):** odtworzone w przeglądarce (zrzut: tekst „Horizontal” pionowo pod węzłem
+`link out`) i testem E2E (padał bez poprawki). **Odstępstwo od proponowanego rozwiązania:** samo obrócenie tekstu
+z powrotem dawałoby poziome etykiety rozstawione w poziomie co 30 px (nakładające się przy kilku zakładkach)
+w obróconych ramkach – zamiast tego w TB nic nie jest obracane: odgałęzienie wychodzi z dołu (`link out`) / od góry
+(`link in`) węzła i skręca do etykiet narysowanych jak w LR, ułożonych jedna pod drugą (od węzła na zewnątrz).
+Geometria w `RED.viewLayout.getOffFlowLinkGeometry(s, count, orientation)`; dla LR identyczna z wersją bazową
+(test porównuje ścieżki z oryginalnym wzorem). Klucz danych grupy zawiera orientację węzła – po zmianie orientacji
+odgałęzienie jest rysowane od nowa. Testy: `view-layout_spec.js` (6, padały bez poprawki), E2E „links to other flows
+(FL-B-008)” – TB (brak obrotu, tekst poziomy pod węzłem, kliknięcie przenosi do zakładki) i LR.
 
 ---
 
@@ -322,6 +357,37 @@ testy `nodes_spec.js` „…with flow layout disabled (Z-14, R-01)”.
 **Poprawka po przeglądzie (2026-10-03, `3a95e1d`):** eksport z domyślnym układem edytora psuł rozpoznanie identycznego
 subflow przy imporcie (powstawał duplikat). `checkForMatchingSubflow` porównuje teraz z eksportem z i bez wartości
 domyślnych; test `nodes_spec.js` „matching an imported subflow (FL-B-009)” padał bez poprawki.
+
+### FL-B-011 – Dopasowanie subflow zależne od kolejności węzłów
+
+| Pole | Wartość |
+|---|---|
+| Status / Priorytet / Waga | Nowe / P4 / Mała |
+| Obszar | eksport-import |
+| Wykryto | 2026-10-03, analiza FL-B-006 (przegląd kodu – nie odtworzone testem) |
+| Pliki | `editor-client/src/js/nodes.js` – `checkForMatchingSubflow` |
+| Powiązania | FL-B-006; błąd istniejący w wersji bazowej 5.0.7 |
+
+**Opis:** po FL-B-006 kolejność kluczy nie ma znaczenia, ale identyfikatory węzłów importowanego subflow są
+podmieniane na identyfikatory istniejącego **po pozycji** (`subflowNodes[i]` → `sfNodes[i]`), a tablice są porównywane
+z kolejnością elementów. Ten sam subflow z węzłami w innej kolejności w pliku nie zostanie rozpoznany – powstanie duplikat.
+**Proponowane rozwiązanie:** dopasowanie węzłów po treści (np. typ + właściwości bez `id`/`z`/`wires`) przed podmianą
+identyfikatorów; poprawka bardziej inwazyjna niż FL-B-006 – do decyzji, czy w zakresie Z-14.
+
+### FL-B-012 – Błąd w konsoli przy starcie edytora z włączonym układem
+
+| Pole | Wartość |
+|---|---|
+| Status / Priorytet / Waga | Nowe / P4 / Mała |
+| Obszar | edytor – ustawienia |
+| Wykryto | 2026-10-03, przy testach FL-B-008 (konsola przeglądarki) |
+| Pliki | `editor-client/src/js/ui/userSettings.js` – `init()` |
+
+**Opis:** przy `editorTheme.flowLayout.enabled: true` `RED.userSettings.init()` wywołuje `onchange` ustawień
+„Layout”/„Wires” (`RED.view.redraw(true)`) zanim panel informacji jest gotowy; zdarzenie `view:selection-changed`
+kończy się w konsoli błędem `Cannot read properties of undefined (reading 'treeList')` (przechwyconym przez
+`RED.events.emit` – edytor działa). Przy wyłączonym ustawieniu (domyślnie) błąd nie występuje (sekcja nie istnieje).
+**Proponowane rozwiązanie:** nie wywoływać przerysowania przy inicjalizacji (widok i tak czyta ustawienia przy rysowaniu).
 
 ### FL-B-010 – Import flow o tym samym identyfikatorze tylko jako kopia
 

@@ -121,7 +121,8 @@ Wszystkie zmiany można cofnąć (*Undo*).
 - **Szybkie dodawanie** (przeciągnięcie linii w puste miejsce + wybór typu) w
   układzie góra → dół dodaje kolejne węzły poniżej.
 - **Linki do innych zakładek** (`link out`/`link in`) w układzie góra → dół
-  wychodzą z dołu / wchodzą od góry.
+  wychodzą z dołu / wchodzą od góry; nazwy zakładek są poziome, jedna pod drugą (FL-B-008).
+- **Podpowiedzi etykiet portów** w układzie góra → dół – nad wejściem i pod wyjściami (FL-B-007).
 - **Deploy** – zmiana układu jest wyłącznie wizualna: deploy „Modified nodes”
   nie restartuje węzłów z jej powodu.
 - **Zgodność** – flow bez ustawionych właściwości eksportują się bez zmian.
@@ -200,6 +201,8 @@ Czysta geometria bez zależności od DOM (testowana jednostkowo):
 | `isEnabled()` | `true` tylko przy `editorTheme.flowLayout.enabled === true` (Z-14) |
 | `getUserViewSettings()` | ustawienia użytkownika dotyczące układu; `{}` przy wyłączonym ustawieniu (R-01) |
 | `getFlowOptions(flow, viewSettings)` | `{layout, wireStyle}` – wartości flow, potem ustawienia użytkownika, potem `LR`/`curved`; nieznane wartości jak brak |
+| `getPortTooltipPosition(pos, portType, orientation)` | `{x, y, direction}` – miejsce podpowiedzi etykiety portu (FL-B-007) |
+| `getOffFlowLinkGeometry(s, count, orientation)` | `{stem, branches[]}` – ścieżki odgałęzienia do innych zakładek i pozycje etykiet (FL-B-008) |
 | `getPersistedFlowOptions(flow, viewSettings)` | `{layout?, wireStyle?}` zapisywane z flow przy eksporcie i deployu (własne wartości flow albo niedomyślne ustawienia użytkownika) |
 
 `RED.nodes.createExportableNodeSet(set, {flowLayoutDefaults})` i

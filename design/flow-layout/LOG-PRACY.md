@@ -30,16 +30,27 @@ Godziny kroków przed pierwszym commitem są orientacyjne; godziny commitów poc
 | 10:15 | Backlog błędów i zadań z Definition of Done/Ready i szablonami zgłoszeń | [BACKLOG.md](BACKLOG.md): 5 otwartych błędów, 7 zadań, 4 pozycje zamknięte; sekcja na tematy do analizy |
 | 10:40 | Analiza przeniesienia stanu do PostgreSQL pod Kubernetes (na podstawie kodu runtime, registry, editor-api) | [../k8s-postgres/ANALIZA.md](../k8s-postgres/ANALIZA.md); karta FL-A-001 w backlogu |
 | 11:10 | Architektura docelowa K8s v2 (edytor + workery, PostgreSQL baza na tenanta, Redis, pliki węzłów uniwersalnych, wydania niezmienne) + backlog K8S | [../k8s-postgres/ARCHITEKTURA.md](../k8s-postgres/ARCHITEKTURA.md), [../k8s-postgres/BACKLOG.md](../k8s-postgres/BACKLOG.md) |
+| F2 | Z-14: ustawienie `editorTheme.flowLayout.enabled` (test-first: 2 + 22 testy czerwone) | commit `405e844`; E2E obu stanów ustawienia |
+| F2 | E-04: `MODIFICATIONS.md` (pliki bez nagłówka, szablon) | commit `2e961c9` |
+| F2 | FL-B-006: analiza i poprawka dopasowania subflow (2 testy czerwone) | commit `6feb771`; pokrewne FL-B-011 |
+| F2 | FL-B-007: podpowiedzi portów w TB (4 jednostkowe + 1 E2E czerwone) | commit `d28848d` |
+| F2 | FL-B-008: etykiety linków do innych zakładek w TB (6 jednostkowych + 1 E2E czerwone) | commit `122cfdc`; znaleziony FL-B-012 |
 
 ## Wyniki testów (ostatnie uruchomienie)
+
+Faza F2 (2026-10-03, po `122cfdc`):
 
 | Zestaw | Wynik |
 |---|---|
 | `npm run lint` | bez błędów |
-| jednostkowe edytora (`test/unit/@node-red/editor-client`) | 54 ✔ (w tym 46 nowych) |
-| jednostkowe runtime + editor-api + editor-client | 953 ✔, 8 pending; 5 ✘ tylko testy SSH projektów – brak `ssh-keygen` w środowisku, niezwiązane ze zmianą |
-| E2E (`npm run test:e2e`) | 22 ✔ |
+| jednostkowe edytora (`test/unit/@node-red/editor-client`) | 161 ✔ |
+| jednostkowe editor-client + editor-api | 412 ✔, 1 pending |
+| E2E (`npm run test:e2e`, Playwright spoza repozytorium) | 38 ✔ (33 z `flowLayout.enabled: true`, 5 bez ustawienia) |
 | build (`npm run build`) | OK |
+| runtime | nie uruchamiane w F2 (brak zmian w runtime) |
+
+Wcześniejsze uruchomienie (implementacja): lint bez błędów; editor-client 54 ✔; runtime + editor-api + editor-client
+953 ✔, 8 pending, 5 ✘ (testy SSH projektów – brak `ssh-keygen`); E2E 22 ✔.
 
 ## Otwarte tematy
 
