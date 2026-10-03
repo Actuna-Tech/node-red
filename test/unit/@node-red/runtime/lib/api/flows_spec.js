@@ -18,6 +18,8 @@
  *   E-01: tests of the deploy pipeline and the shared deploy lock
  *   E-01: setState and deployments wait for the start of a deployment (R-43)
  *   E-02: setState moves the instance state between idle and ready
+ *   Z-15: editorOnly - setState start 409 editor_only, stop without effect, the
+ *   deployment response {rev, started: false} with deploy.response "started"
  *   P-01: tests of deploy.response "started" (waitForStart, deploy errors with status 500)
  *   Z-04: tests of the single-flow api (rev, globalRev, globalConfigs, putCreatesFlow)
  *   Z-05: tests of deploy.requireRevision in both states
@@ -545,6 +547,30 @@ describe("runtime-api/flows", function() {
             should(err).have.property("code", "not_allowed")
             should(err).have.property("status", 405)
         });
+        it("editorOnly: setState start returns 409 editor_only without saving runtimeFlowState", async function() {
+            runtime.settings.editorOnly = true;
+            runtime.settings.set = sinon.spy();
+            flows.init(runtime);
+            let err;
+            try {
+                await flows.setState({state:"start"});
+            } catch (error) {
+                err = error;
+            }
+            should(err).have.property("code", "editor_only");
+            should(err).have.property("status", 409);
+            startFlows.called.should.be.false();
+            runtime.settings.set.called.should.be.false();
+        });
+        it("editorOnly: setState stop is no-op", async function() {
+            runtime.settings.editorOnly = true;
+            runtime.settings.set = sinon.spy();
+            flows.init(runtime);
+            const state = await flows.setState({state:"stop"});
+            state.should.have.property("state");
+            stopFlows.called.should.be.false();
+            runtime.settings.set.called.should.be.false();
+        });
         it("rejects setting invalid flows run state", async function() {
             let err;
             flows.init(runtime);
@@ -793,6 +819,28 @@ describe("runtime-api/flows", function() {
             initRuntime({response:"started"});
             await flows.setFlows({flows:{flows:[1]}});
             runtime.flows.setFlows.firstCall.args[6].should.eql({waitForStart:true});
+        });
+        it("editorOnly: response {rev, started: false} with deploy.response started (R-39)", async function() {
+            initRuntime({response:"started"});
+            runtime.settings.editorOnly = true;
+            const result = await flows.setFlows({flows:{flows:[1]}});
+            result.should.eql({rev:"newRev", started:false});
+            const reload = await flows.setFlows({deploymentType:"reload"});
+            reload.should.eql({rev:"loadRev", started:false});
+        });
+        it("editorOnly: response {rev} with the default deploy.response", async function() {
+            initRuntime(undefined);
+            runtime.settings.editorOnly = true;
+            const result = await flows.setFlows({flows:{flows:[1]}});
+            result.should.eql({rev:"newRev"});
+        });
+        it("editorOnly: single-flow v2 responses carry started: false with deploy.response started", async function() {
+            initRuntime({response:"started"});
+            runtime.settings.editorOnly = true;
+            const added = await flows.addFlow({flow:{label:"x"}, apiVersion:"v2"});
+            added.should.have.property("started", false);
+            const updated = await flows.updateFlow({id:"f1", flow:{label:"x"}, apiVersion:"v2"});
+            updated.should.have.property("started", false);
         });
         it("reload passes waitForStart when deploy.response is started", async function() {
             initRuntime({response:"started"});

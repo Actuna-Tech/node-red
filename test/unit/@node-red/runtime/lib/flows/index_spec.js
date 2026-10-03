@@ -23,6 +23,7 @@
  *   deploy.startTimeoutReleasesLock is set
  *   Z-04: tests of getFlowRevision and the single-flow configuration (create, globalConfigs)
  *   Z-09: tests of reloadFromStorage (full, diff) and getChangedFlows
+ *   Z-15: tests of the editor-only instance (editorOnly)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1561,6 +1562,112 @@ describe('flows/index', function() {
             await flows.reloadFromStorage({flows: next, rev:"B", credentials:{}}, {type:"diff"});
             await new Promise(r => setTimeout(r, 10));
             flowCreate.flows["t2"].should.not.equal(before["t2"]);
+        });
+    });
+    describe('editor-only instance (Z-15)', function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const okConfig = [
+            {id:"t1-1",x:10,y:10,z:"t1",type:"test",wires:[]},
+            {id:"t1",type:"tab"}
+        ];
+        let runtimeEvents;
+        let settingsGet;
+        let settingsSet;
+        function editorSettings(extra) {
+            settingsGet = sinon.spy(function() { return "start" });
+            settingsSet = sinon.spy();
+            return Object.assign({editorOnly: true, get: settingsGet, set: settingsSet}, extra || {});
+        }
+        function loadWith(settings) {
+            storage.getFlows = function() {
+                return Promise.resolve({flows:clone(okConfig), rev:"loadedRev"});
+            };
+            flows.init({log:mockLog, settings:settings, storage:storage});
+            return flows.load().then(function() {
+                return flows.startFlows();
+            });
+        }
+        function onRuntimeEvent(event) { runtimeEvents.push(event) }
+        beforeEach(function() {
+            runtimeEvents = [];
+            events.on("runtime-event", onRuntimeEvent);
+            instanceState.reset();
+            instanceState.markStarting();
+        });
+        afterEach(function() {
+            events.removeListener("runtime-event", onRuntimeEvent);
+            instanceState.reset();
+        });
+
+        it('default: unchanged start behaviour', async function() {
+            const result = await loadWith({});
+            result.should.eql({errors:[]});
+            flowCreate.called.should.be.true();
+            instanceState.get().state.should.equal("ready");
+        });
+        it('editorOnly: start does not start flows', async function() {
+            const result = await loadWith(editorSettings());
+            result.should.eql({errors:[], flowsRunning:false, reason:"editor-only"});
+            flowCreate.called.should.be.false();
+            flows.state().should.equal("stop");
+        });
+        it('editorOnly: emits runtime-state editor-only', async function() {
+            await loadWith(editorSettings());
+            runtimeEvents.some(e => e.id === "runtime-state" && e.payload && e.payload.error === "editor-only" && e.payload.state === "stop" && e.payload.type === "info" && e.payload.text === "notification.info.editor-only").should.be.true();
+        });
+        it('editorOnly: does not read or write runtimeFlowState', async function() {
+            await loadWith(editorSettings());
+            settingsGet.calledWith("runtimeFlowState").should.be.false();
+            settingsSet.called.should.be.false();
+        });
+        it('editorOnly: start ends in loaded (ready probe 200, D-13)', async function() {
+            await loadWith(editorSettings());
+            instanceState.get().state.should.equal("loaded");
+            instanceState.isReady().should.be.true();
+        });
+        it('editorOnly: setFlows saves without starting (full/nodes/flows)', async function() {
+            await loadWith(editorSettings());
+            runtimeEvents = [];
+            for (const type of ["full", "nodes", "flows"]) {
+                delete storage.conf;
+                const next = clone(okConfig).concat([{id:"t1-"+type,z:"t1",type:"test",wires:[]}]);
+                await flows.setFlows(next, null, type);
+                storage.conf.flows.should.eql(next);
+            }
+            flowCreate.called.should.be.false();
+            runtimeEvents.filter(e => e.id === "runtime-deploy").length.should.equal(3);
+        });
+        it('editorOnly: setFlows with forceStart does not start', async function() {
+            await loadWith(editorSettings());
+            await flows.setFlows(clone(okConfig), null, "full", false, true);
+            flowCreate.called.should.be.false();
+        });
+        it('editorOnly: load(true) does not start', async function() {
+            await loadWith(editorSettings());
+            await flows.load(true);
+            flowCreate.called.should.be.false();
+        });
+        it('editorOnly: safeMode is not cleared by deploy', async function() {
+            const settings = editorSettings({safeMode: true});
+            await loadWith(settings);
+            await flows.setFlows(clone(okConfig), null, "full");
+            await flows.load(true);
+            settings.safeMode.should.be.true();
+            flowCreate.called.should.be.false();
+        });
+        it('editorOnly: waitForStart resolves with the revision without starting (R-39)', async function() {
+            await loadWith(editorSettings());
+            storage.saveFlows = function(conf) { storage.conf = conf; return Promise.resolve("savedRev") };
+            const rev = await flows.setFlows(clone(okConfig).concat([{id:"t1-9",z:"t1",type:"test",wires:[]}]), null, "full", false, false, null, {waitForStart:true});
+            rev.should.equal("savedRev");
+            flowCreate.called.should.be.false();
+        });
+        it('editorOnly: a non-boolean value is ignored with a warning', async function() {
+            mockLog.warn.resetHistory();
+            const result = await loadWith({editorOnly: "yes"});
+            mockLog.warn.called.should.be.true();
+            result.should.eql({errors:[]});
+            flowCreate.called.should.be.true();
         });
     });
     describe('#updateFlow', function() {

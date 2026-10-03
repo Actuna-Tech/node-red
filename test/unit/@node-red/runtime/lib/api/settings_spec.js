@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   P-03: tests of telemetryLocked and of ignoring telemetryEnabled while locked
  *   Z-05: test of the deploy.requireRevision flag in the runtime settings
+ *   Z-15: test of the editorOnly flag in the runtime settings
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -530,6 +531,38 @@ describe("runtime-api/settings", function() {
                 initWith(deploy);
                 const result = await settings.getRuntimeSettings({});
                 result.should.not.have.property("deploy");
+            }
+        });
+    });
+    describe("editorOnly in the runtime settings (Z-15)", function() {
+        function initWith(editorOnly) {
+            const runtimeSettings = { httpNodeRoot: "/", version: "v", exportNodeSettings: () => {} };
+            if (editorOnly !== undefined) {
+                runtimeSettings.editorOnly = editorOnly;
+            }
+            settings.init({
+                settings: runtimeSettings,
+                plugins: { exportPluginSettings: () => {} },
+                nodes: {
+                    listContextStores: () => { return {stores:["memory"], default: "memory"} },
+                    installerEnabled: () => false,
+                    getCredentialKeyType: () => "test-key-type"
+                },
+                library: {getLibraries: () => [] },
+                storage: {},
+                telemetry: { isEnabled: () => false }
+            });
+        }
+        it("exposes editorOnly to the editor", async function() {
+            initWith(true);
+            const result = await settings.getRuntimeSettings({});
+            result.should.have.property("editorOnly", true);
+        });
+        it("omits editorOnly when not set or not true", async function() {
+            for (const value of [undefined, false, "true"]) {
+                initWith(value);
+                const result = await settings.getRuntimeSettings({});
+                result.should.not.have.property("editorOnly");
             }
         });
     });

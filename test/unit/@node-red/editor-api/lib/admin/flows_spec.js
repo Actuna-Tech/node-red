@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   P-01: contract test of the deploy_start_failed response (status 500, rev, errors)
  *   Z-05: contract tests of version_required for v1 and v2 deployments
+ *   Z-15: contract test of POST /flows/state 409 editor_only
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -243,6 +244,20 @@ describe("api/admin/flows", function() {
                     return done(e);
                 }
             });
+    });
+    it('POST /flows/state start on an editor-only instance - 409 editor_only (Z-15)', async function () {
+        flows.init({
+            flows: {
+                setState: function () {
+                    const err = new Error("Flows are not run on an editor-only instance");
+                    err.code = "editor_only";
+                    err.status = 409;
+                    return Promise.reject(err);
+                }
+            }
+        });
+        const res = await request(app).post('/flows/state').send({state: "start"}).expect(409);
+        res.body.should.have.property("code", "editor_only");
     });
     it('sets flows run state - stopped', function (done) {
         var setFlows = sinon.spy(function () { return Promise.resolve(); });
