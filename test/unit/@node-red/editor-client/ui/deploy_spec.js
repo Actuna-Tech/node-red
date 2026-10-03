@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   P-02: tests of the stale flows handling (editorTheme.deploy.staleFlows) and of restart on 409
+ *   W-4: 409 version_required does not loop the conflict dialog
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -217,6 +218,51 @@ describe("editor-client/ui/deploy", function() {
             overwrite.click();
             $.requests.should.have.length(2);
             JSON.parse($.requests[1].opts.data).should.not.have.property("rev");
+        });
+
+        describe("409 version_required (W-4)", function() {
+            function versionRequired(viaText) {
+                const body = { code: "version_required", message: "A revision (rev) is required to deploy" };
+                return viaText ? { status: 409, responseText: JSON.stringify(body) } : { status: 409, responseJSON: body, responseText: JSON.stringify(body) };
+            }
+            function buttonIds() {
+                return lastNotification().options.buttons.map(b => b.id);
+            }
+            [false, true].forEach(function(viaText) {
+                it("after Ignore & deploy shows the conflict options without Ignore & deploy" + (viaText ? " (responseText)" : ""), function() {
+                    const spy = sinon.spy(mockRED, "_");
+                    actions["core:deploy-flows"](true);
+                    $.requests[0]._fail({ status: 409 });
+                    const overwrite = lastNotification().options.buttons.find(b => b.id === "red-ui-deploy-dialog-confirm-deploy-overwrite");
+                    deployButton().removeClass("disabled");
+                    overwrite.click();
+                    JSON.parse($.requests[1].opts.data).should.not.have.property("rev");
+                    const count = notifications.length;
+                    $.requests[1]._fail(versionRequired(viaText));
+                    notifications.length.should.equal(count + 1);
+                    spy.calledWith("deploy.errors.revisionRequired").should.be.true();
+                    const ids = buttonIds();
+                    ids.should.not.containEql("red-ui-deploy-dialog-confirm-deploy-overwrite");
+                    ids.should.containEql("red-ui-deploy-dialog-confirm-deploy-review");
+                    ids.should.containEql("red-ui-deploy-dialog-confirm-deploy-merge");
+                    ids.should.containEql("red-ui-deploy-dialog-confirm-deploy-reload");
+                    mockRED.diff.getRemoteDiff.calledTwice.should.be.true();
+                });
+            });
+            it("the reload option reloads the editor", function() {
+                actions["core:deploy-flows"](true, true);
+                $.requests[0]._fail(versionRequired());
+                lastNotification().options.buttons.find(b => b.id === "red-ui-deploy-dialog-confirm-deploy-reload").click();
+                window.location.reload.calledOnce.should.be.true();
+                // no further deploy request
+                $.requests.should.have.length(1);
+            });
+            it("a 409 version_mismatch keeps Ignore & deploy", function() {
+                actions["core:deploy-flows"](true);
+                $.requests[0]._fail({ status: 409, responseJSON: { code: "version_mismatch" } });
+                buttonIds().should.containEql("red-ui-deploy-dialog-confirm-deploy-overwrite");
+                buttonIds().should.not.containEql("red-ui-deploy-dialog-confirm-deploy-reload");
+            });
         });
 
         it("runtime-deploy notification shows the non-blocking notice", function() {

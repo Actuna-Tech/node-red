@@ -22,6 +22,7 @@
  *   Z-05: tests of deploy.requireRevision in both states
  *   R-45: warnings for deploy.startTimeoutReleasesLock
  *   W-3: revisions of the flow and of the whole configuration in deploy errors of /flow
+ *   P-02: warning for editorTheme.deploy.staleFlows "reload-only" without deploy.requireRevision
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -830,6 +831,32 @@ describe("runtime-api/flows", function() {
             runtime.flows.addFlow = sinon.spy(function() { return Promise.reject(new Error("duplicate id")) });
             const err = await flows.addFlow({flow:{}}).should.be.rejected();
             err.should.have.property("status",400);
+        });
+    });
+
+    describe("editorTheme.deploy.staleFlows without deploy.requireRevision (P-02)", function() {
+        function init(settings) {
+            const runtime = { log: mockLog(), settings: settings, flows: {} };
+            runtime.log._ = function(key) { return key };
+            flows.init(runtime);
+            return runtime;
+        }
+        it("logs a warning at init for reload-only without requireRevision", function() {
+            for (const deploy of [undefined, {}, {requireRevision:false}]) {
+                const runtime = init({editorTheme: {deploy: {staleFlows: "reload-only"}}, deploy: deploy});
+                runtime.log.warn.calledOnce.should.be.true();
+                runtime.log.warn.firstCall.args[0].should.equal("deploy.stale-flows-without-require-revision");
+            }
+        });
+        it("does not warn with requireRevision, with prompt or without the setting", function() {
+            for (const settings of [
+                {editorTheme: {deploy: {staleFlows: "reload-only"}}, deploy: {requireRevision: true}},
+                {editorTheme: {deploy: {staleFlows: "prompt"}}},
+                {editorTheme: {}},
+                {}
+            ]) {
+                init(settings).log.warn.called.should.be.false();
+            }
         });
     });
 

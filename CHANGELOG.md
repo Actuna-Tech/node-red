@@ -46,8 +46,13 @@ Editor
    whose only action reloads the flows - no review, merge or "Ignore & deploy"; the deploy button
    stays disabled until then and a deploy always carries the flow revision. Changes not deployed
    from that editor are lost. The protection covers the editor only: a client of the Admin API
-   can still deploy without the revision. An unknown value is treated as `"prompt"` with a
+   can still deploy without the revision unless `deploy.requireRevision` is set - `"reload-only"`
+   without it is logged as a warning at startup. An unknown value is treated as `"prompt"` with a
    warning in the browser console
+ - When the server rejects a deploy without the flow revision (409 `version_required`, with
+   `deploy.requireRevision`), for example after "Ignore & deploy", the editor shows a message
+   and the conflict options without "Ignore & deploy" (review, merge, reload the flows) instead
+   of opening the conflict dialog again
 
 Fixes
 
