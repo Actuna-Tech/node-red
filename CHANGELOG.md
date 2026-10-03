@@ -106,7 +106,9 @@ Runtime
    Projects are disabled (settings set to `true` are overridden with a warning); one log block at
    start lists the disabled features. With the file storage a deployment and saving a library entry
    are rejected with 400 `read_only_user_dir` (also for an absolute `flowFile` outside the user
-   directory), settings and sessions are kept in memory only; a `localfilesystem` context store in
+   directory), and so is removing a palette module (`DELETE /nodes/:module`, before: `npm remove`
+   was run); the installers reject install, update, upload and remove and the modules of the
+   function node with `read_only_user_dir` whatever the other settings say; settings and sessions are kept in memory only; a `localfilesystem` context store in
    the user directory fails the start. With the environment variable the CLI does not copy the
    default settings file to `~/.node-red`
  - The CLI no longer fails with an exception when the default settings file cannot be copied to the

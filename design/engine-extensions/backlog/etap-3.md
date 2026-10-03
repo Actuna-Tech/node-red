@@ -1415,7 +1415,7 @@ Funkcja: Katalog użytkownika tylko do odczytu
 #### Podzadania
 - [x] Moduł katalogów chronionych + testy – S
 - [x] Efektywne flagi i komunikat startu – S
-- [ ] Instalatory i moduły zewnętrzne (obrona w głąb) – M – **poza zakresem tej gałęzi** (zakaz zmian `registry/**`); działają efektywne flagi `externalModules.*`
+- [x] Instalatory i moduły zewnętrzne (obrona w głąb) – M – po przeglądzie priorytetu 3 (`registryUtil.assertUserDirWritable`)
 - [x] Magazyn plikowy (pomijanie/odrzucanie) – M
 - [x] Kontekst `localfilesystem` – S
 - [x] CLI: zmienna `NODE_RED_READ_ONLY_USER_DIR` (R-18) + fallback przy kopiowaniu `settings.js` – S
@@ -1444,9 +1444,13 @@ Funkcja: Katalog użytkownika tylko do odczytu
   (+1), proces potomny `test/unit/node-red/readonly-userdir_spec.js` (4: zmienna środowiskowa – brak kopii i zapisów,
   wdrożenie 400 i flow bez zmian; bez zmiennej – kopia jak dotąd; błąd kopiowania – ostrzeżenie; bezwzględny `flowFile`).
 - **Rozbieżności z kartą / niezweryfikowane:**
-  - obrona w głąb w `registry/lib/installer.js` i `externalModules.js` (`assertWritable`) – niezrobiona (zakaz zmian
-    `registry/**`); instalacje blokują wyłącznie istniejące flagi `externalModules.*` – kody `install_not_allowed`,
-    `update_not_allowed`, `module_not_allowed` nie były testowane w tej gałęzi; `upload_not_allowed` – zależny od Z-03;
+  - obrona w głąb – **uzupełniona po przeglądzie priorytetu 3**: `registry/lib/util.js` `assertUserDirWritable`
+    wołane w `installer.js` (`installModule`, `installTarball`, `uninstallModule`) i `externalModules.js`
+    (`installModule`, `ensureModuleDir`) – 400 `read_only_user_dir` przed zapisem i przed `npm`, niezależnie od flag
+    `externalModules.*`; `DELETE /nodes/<moduł>` (wcześniej uruchamiał `npm remove` – istniejące flagi palety nie
+    obejmują usuwania) → `runtime/lib/api/nodes.js` `removeModule` odrzuca 400 `read_only_user_dir` (z audytem)
+    zamiast kodu wyłączonej palety – dla usuwania brak istniejącego kodu; testy `registry/lib/readOnlyUserDir_spec.js`
+    (6) i kontrakt `editor-api/lib/admin/nodes_readonly_userdir_spec.js` (3); `upload_not_allowed` – zależny od Z-03;
   - zapis ustawień i sesji jest pomijany po cichu (bez `log.warn` przy pierwszej próbie) – informację daje blok
     przy starcie;
   - brak testu „każde z 16 miejsc objęte kontrolą” i testu z atrapą `fs` przy nieustawionym `userDir` (dowód: migawka
