@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   comms auth packet: regression tests for auth packets without adminAuth and failed token lookups
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require("sinon");
@@ -368,6 +373,8 @@ describe("api/editor/comms", function() {
                     return Promise.resolve({user:"fred",scope:["*"]});
                 } else if (token == "5678") {
                     return Promise.resolve({user:"barney",scope:["*"]});
+                } else if (token == "lookup-error") {
+                    return Promise.reject(new Error("token lookup failed"));
                 } else {
                     return Promise.resolve(null);
                 }
@@ -532,6 +539,29 @@ describe("api/editor/comms", function() {
             })
         });
 
+        it('rejects connection when token lookup fails',function(done) {
+            var log = NR_TEST_UTILS.require("@node-red/util").log;
+            var auditSpy = sinon.spy(log,"audit");
+            var ws = new WebSocket(url);
+            var received = [];
+            ws.on('open', function() {
+                ws.send('{"auth":"lookup-error"}');
+            });
+            ws.on('message', function(msg) {
+                received.push(msg.toString());
+            });
+            ws.on('close', function() {
+                try {
+                    auditSpy.restore();
+                    received.should.eql(['{"auth":"fail"}']);
+                    auditSpy.calledWithMatch({event:"comms.auth.fail"}).should.be.true();
+                    done();
+                } catch(err) {
+                    done(err);
+                }
+            });
+        });
+
         it("expires websocket sessions", function(done) {
             var ws = new WebSocket(url);
             var received = 0;
@@ -614,5 +644,89 @@ describe("api/editor/comms", function() {
         });
     });
 
+    describe('auth packet without adminAuth',function() {
+        // Use fresh copies of comms and tokens: the tokens module must not have
+        // had init() called (as is the case when adminAuth is not set).
+        var commsPath = require.resolve(NR_TEST_UTILS.resolve("@node-red/editor-api/lib/editor/comms"));
+        var tokensPath = require.resolve(NR_TEST_UTILS.resolve("@node-red/editor-api/lib/auth/tokens"));
+        var originalComms;
+        var originalTokens;
+        var freshComms;
+        var server;
+        var url;
+        var port;
+        before(function(done) {
+            originalComms = require.cache[commsPath];
+            originalTokens = require.cache[tokensPath];
+            delete require.cache[commsPath];
+            delete require.cache[tokensPath];
+            freshComms = require(commsPath);
+            sinon.stub(Users,"default").callsFake(function() { return Promise.resolve(null);});
+            server = stoppable(http.createServer(function(req,res){app(req,res)}));
+            freshComms.init(server, {}, {comms: mockComms});
+            server.listen(listenPort, address);
+            server.on('listening', function() {
+                port = server.address().port;
+                url = 'http://' + address + ':' + port + '/comms';
+                freshComms.start();
+                done();
+            });
+        });
+        after(function(done) {
+            Users.default.restore();
+            freshComms.stop();
+            require.cache[commsPath] = originalComms;
+            require.cache[tokensPath] = originalTokens;
+            server.stop(done);
+        });
+
+        it('does not crash on auth packet when adminAuth disabled',function(done) {
+            var ws = new WebSocket(url);
+            ws.on('open', function() {
+                ws.send('{"auth":"x"}');
+            });
+            ws.on('message', function(msg) {
+                try {
+                    msg.toString().should.equal('{"auth":"ok"}');
+                    ws.close();
+                    done();
+                } catch(err) {
+                    done(err);
+                }
+            });
+        });
+
+        it('replies auth ok and keeps delivering messages',function(done) {
+            var ws = new WebSocket(url);
+            var received = 0;
+            ws.on('open', function() {
+                ws.send('{"auth":"x"}');
+            });
+            ws.on('message', function(msg) {
+                received++;
+                try {
+                    if (received == 1) {
+                        msg.toString().should.equal('{"auth":"ok"}');
+                        ws.send('{"subscribe":"foo"}');
+                        connections.should.have.length(1);
+                        connections[0].send('foo', 'correct');
+                    } else {
+                        msg.toString().should.equal('[{"topic":"foo","data":"correct"}]');
+                        ws.close();
+                    }
+                } catch(err) {
+                    done(err);
+                }
+            });
+            ws.on('close', function() {
+                try {
+                    received.should.equal(2);
+                    done();
+                } catch(err) {
+                    done(err);
+                }
+            });
+        });
+    });
 
 });

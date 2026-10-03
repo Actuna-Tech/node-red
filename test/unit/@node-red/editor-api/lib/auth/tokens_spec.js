@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   tokens before init: regression tests for calls made before init()
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require("sinon");
@@ -287,6 +292,68 @@ describe("api/auth/tokens", function() {
                         done(err);
                     }
                 });
+            });
+        });
+    });
+
+    describe("#get before init", function() {
+        // Module state is shared between test files, so load a fresh copy
+        // of the tokens module that has never had init() called.
+        var tokensPath = require.resolve(NR_TEST_UTILS.resolve("@node-red/editor-api/lib/auth/tokens"));
+        var originalModule;
+        var FreshTokens;
+        beforeEach(function() {
+            originalModule = require.cache[tokensPath];
+            delete require.cache[tokensPath];
+            FreshTokens = require(tokensPath);
+        });
+        afterEach(function() {
+            require.cache[tokensPath] = originalModule;
+        });
+
+        it('does not throw and resolves null when called before init', function() {
+            var result;
+            (function() {
+                result = FreshTokens.get("x");
+            }).should.not.throw();
+            return result.then(function(token) {
+                should(token).be.null();
+            });
+        });
+
+        it('create before init rejects with not_initialised', function() {
+            var result;
+            (function() {
+                result = FreshTokens.create("fred","node-red-editor","*");
+            }).should.not.throw();
+            return result.then(function() {
+                throw new Error("create unexpectedly resolved");
+            }, function(err) {
+                err.should.have.property("code","not_initialised");
+            });
+        });
+
+        it('revoke before init rejects with not_initialised', function() {
+            var result;
+            (function() {
+                result = FreshTokens.revoke("x");
+            }).should.not.throw();
+            return result.then(function() {
+                throw new Error("revoke unexpectedly resolved");
+            }, function(err) {
+                err.should.have.property("code","not_initialised");
+            });
+        });
+
+        it('exchangeCodeForToken before init rejects with not_initialised', function() {
+            var result;
+            (function() {
+                result = FreshTokens.exchangeCodeForToken("x");
+            }).should.not.throw();
+            return result.then(function() {
+                throw new Error("exchangeCodeForToken unexpectedly resolved");
+            }, function(err) {
+                err.should.have.property("code","not_initialised");
             });
         });
     });
