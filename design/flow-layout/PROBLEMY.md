@@ -8,6 +8,8 @@ importu i scalania. Każdy punkt oznaczono, jak został zweryfikowany.
 
 ## 1. Problemy do poprawienia
 
+Pozycje są prowadzone w [BACKLOG.md](BACKLOG.md): P1 = FL-B-001 (zamknięte), P2 = FL-B-004, P3 = FL-B-005, P4 = FL-B-006.
+
 | # | Problem | Status | Waga | Weryfikacja |
 |---|---|---|---|---|
 | P1 | Admin API pojedynczego flow (`POST /flow`, `GET /flow/:id`, `PUT /flow/:id`) gubiło `layout`/`wireStyle` | **naprawione** (`556b053`) | wysoka | testy jednostkowe runtime (bez poprawki padały) + test E2E przez HTTP |

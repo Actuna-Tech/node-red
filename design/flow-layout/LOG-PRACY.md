@@ -27,6 +27,7 @@ Godziny kroków przed pierwszym commitem są orientacyjne; godziny commitów poc
 | 09:35 | Weryfikacja przenoszalności (eksport/import, schowek, subflow, Admin API) | eksport/import w edytorze działał; **znaleziona luka**: `POST/GET/PUT /flow` gubiły `layout`/`wireStyle` → poprawka w `runtime/lib/flows/index.js` |
 | 09:45 | Testy przenoszalności | 3 testy jednostkowe runtime (bez poprawki padają) + 5 testów E2E (okna eksportu/importu, kopiuj/wklej, subflow, Admin API) |
 | 10:00 | Audyt backupów, eksportu, importu, scalania i biblioteki | wyniki w [PROBLEMY.md](PROBLEMY.md): P1 naprawione wcześniej; **P2 otwarte** – okno Review Changes nie pokazuje dodanych `layout`/`o` (odtworzone w przeglądarce, scalanie działa); P3, P4 – drobne, otwarte |
+| 10:15 | Backlog błędów i zadań z Definition of Done/Ready i szablonami zgłoszeń | [BACKLOG.md](BACKLOG.md): 5 otwartych błędów, 7 zadań, 4 pozycje zamknięte; sekcja na tematy do analizy |
 
 ## Wyniki testów (ostatnie uruchomienie)
 
@@ -39,6 +40,8 @@ Godziny kroków przed pierwszym commitem są orientacyjne; godziny commitów poc
 | build (`npm run build`) | OK |
 
 ## Otwarte tematy
+
+Prowadzone w [BACKLOG.md](BACKLOG.md).
 
 - problemy P2–P4 z [PROBLEMY.md](PROBLEMY.md),
 

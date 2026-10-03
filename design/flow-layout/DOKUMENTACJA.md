@@ -2,6 +2,8 @@
 
 > **Autorstwo:** rozwiązanie opracowała firma **Actuna Sp. z o.o.** w osobie **Wojciecha Repińskiego** (developer), z użyciem narzędzi AI.
 
+Znane problemy i plan prac: [BACKLOG.md](BACKLOG.md).
+
 Edytor Node-RED pozwala wybrać, jak rysowane są węzły i łączące je linie:
 
 | Układ | Wejście | Wyjścia | Zastosowanie |

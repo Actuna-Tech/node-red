@@ -149,7 +149,7 @@ Zmiana `layout` zakładki niczego nie restartuje (dla zakładek porównywane jes
 - **Brak automatycznego rozmieszczania węzłów** – zmiana układu nie przesuwa węzłów.
 - **Routing** omija tylko węzły na końcach linii.
 
-Wyniki audytu backupów, eksportu i importu oraz lista otwartych problemów: [PROBLEMY.md](PROBLEMY.md).
+Wyniki audytu backupów, eksportu i importu oraz lista otwartych problemów: [PROBLEMY.md](PROBLEMY.md). Bieżące błędy i zadania z Definition of Done: [BACKLOG.md](BACKLOG.md).
 
 ## 6. Dalsze kroki (propozycje)
 
