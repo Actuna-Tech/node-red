@@ -39,15 +39,15 @@ kod `invalid_node_type` w katalogu.
 | R-12 | P-02: egzekwowanie po stronie serwera, „Overwrite” (D-12), etykieta, okno przy operacjach Projektów | etap-1 p.6; etap-2 p.10; ZAŁ-A p.4 | `reload-only` bez implikacji wymogu `rev`; D-12 || **zgodnie z rekomendacją** – `staleFlows: "reload-only"` tylko w edytorze (ukrywa „Overwrite”); wymóg `rev` wyłącznie przez `deploy.requireRevision` (Z-05); etykieta „Przeładuj flow”; Projekty bez zmian (fałszywy alarm) (2026-10-03) |
 | R-13 | Z-04: `globalConfigs[]` (D-08), `rev` tylko w v2 (D-09) / `ETag`, 200 vs 201 i format id, `globalRev` | etap-2 p.5–8 | D-08, D-09; 201; `globalRev` tak || **zgodnie z rekomendacją** – `globalConfigs[]` (D-08); `rev` tylko w v2 + `ETag`, v1 bez zmian (D-09); `POST /flow` → 201 z id 16 hex; `globalRev` tak (2026-10-03) |
 | R-14 | Z-05: v1 przy wymogu, `DELETE /flow/:id` z `?rev=`, `reload` zwolniony | etap-2 p.9 | 409 dla v1; DELETE z rev; reload zwolniony || **zgodnie z rekomendacją** – przy `requireRevision: true` klient v1 → 409 `version_required`; `DELETE /flow/:id` wymaga `?rev=`; `reload` zwolniony (2026-10-03) |
-| R-15 | Z-06: `preDeploy` tylko walidacja, limit 30 s, `postDeploy` asynchronicznie, brak hooków przy starcie/Projektach | etap-2 p.11–13 | tak | |
-| R-16 | Z-07: przełącznik awaryjny `http in`, `rawBodyCapture` osobno | etap-2 p.14 | bez przełącznika; osobno | |
-| R-17 | Z-03: zakres skorygowany, potwierdzenie przed instalacją (`dryRun`), aliasy ustawień uploadu | etap-2 p.1, 3, 4 | zakres skorygowany; bez `dryRun`; kanoniczne `allowUpload` + aliasy | |
+| R-15 | Z-06: `preDeploy` tylko walidacja, limit 30 s, `postDeploy` asynchronicznie, brak hooków przy starcie/Projektach | etap-2 p.11–13 | tak || **zgodnie z rekomendacją** – `preDeploy` tylko walidacja (400 `deploy_rejected`), limit 30 s (`deploy.hookTimeout`, 503 `deploy_hook_timeout`); `postDeploy` asynchronicznie, błąd tylko w logu; bez hooków przy starcie procesu i operacjach Projektów (2026-10-03) |
+| R-16 | Z-07: przełącznik awaryjny `http in`, `rawBodyCapture` osobno | etap-2 p.14 | bez przełącznika; osobno || **bez przełącznika awaryjnego; `rawBodyCapture` osobnym ustawieniem** (2026-10-03) |
+| R-17 | Z-03: zakres skorygowany, potwierdzenie przed instalacją (`dryRun`), aliasy ustawień uploadu | etap-2 p.1, 3, 4 | zakres skorygowany; bez `dryRun`; kanoniczne `allowUpload` + aliasy || **zgodnie z rekomendacją** – zakres skorygowany (`upload_not_allowed`, `module_downgrade_not_allowed` przy `allowDowngrade: true` domyślnie, walidacja typu); bez `dryRun`; kanoniczne `externalModules.palette.allowUpload` + aliasy z ostrzeżeniem w logu (2026-10-03) |
 
 ## Priorytet 3 – baza danych, wiele instancji
 
 | ID | Temat | Źródło | Rekomendacja | Decyzja |
 |---|---|---|---|---|
-| R-18 | Z-11: kontekst plikowy (D-15), wdrożenie przy magazynie plikowym, zmienna środowiskowa CLI | etap-3 p.15–17 | błąd startu; 400 `read_only_user_dir`; zmienna środowiskowa | |
+| R-18 | Z-11: kontekst plikowy (D-15), wdrożenie przy magazynie plikowym, zmienna środowiskowa CLI | etap-3 p.15–17 | błąd startu; 400 `read_only_user_dir`; zmienna środowiskowa || **zgodnie z rekomendacją** – kontekst plikowy przy `readOnlyUserDir` → błąd startu (D-15); wdrożenie przy magazynie plikowym → 400 `read_only_user_dir`; dodatkowo zmienna środowiskowa (2026-10-03) |
 | R-19 | Z-15: `editorOnly` vs `runtimeState.autoStart`, przycisk `inject`, `/ready` (D-13) | etap-4 p.12–13; etap-3 p.3 | `editorOnly`; przycisk nieaktywny; 200 w `loaded` | |
 | R-20 | Z-09: `concurrency`, `preReload` bez weta, błąd odczytu magazynu (D-18), `retry`, D-17 | etap-3 p.7–11 | jak w kartach | |
 | R-21 | Z-10: semantyka `inject` (D-14), jawny wybór wtyczki, `mqtt in` w pakiecie?, test dwóch runtime'ów | etap-3 p.12–14 | D-14; jawnie; `mqtt in` osobno; jeden proces | |
