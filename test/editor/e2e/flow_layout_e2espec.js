@@ -19,6 +19,7 @@
  *   Z-14: run with editorTheme.flowLayout.enabled set; tests with the setting not set
  *   FL-B-007: test of the position of port label tooltips
  *   FL-B-008: test of the labels of links to other flows
+ *   FL-B-012: test of the editor start without errors in the console
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -654,6 +655,31 @@ function contextMenuLabels(page, nodeId) {
             (await nodeGeometry("h1")).orientation.should.equal("TB");
             await setDefaultLayout("LR");
             (await nodeGeometry("h1")).orientation.should.equal("LR");
+        });
+
+        it("starts the editor without errors in the console (FL-B-012)", async function() {
+            const freshPage = await browser.newPage({ viewport: { width: 1500, height: 900 } });
+            const problems = [];
+            freshPage.on("pageerror", err => problems.push("pageerror: " + err.message));
+            freshPage.on("console", msg => {
+                const text = msg.text();
+                const location = msg.location() || {};
+                if (/^Failed to load resource/.test(text) && location.url && location.url.indexOf(url) !== 0) {
+                    // Resources from other hosts depend on the network of the test machine
+                    return;
+                }
+                if (msg.type() === "error" || /RED\.events\.emit error/.test(text) || /treeList/.test(text)) {
+                    problems.push(msg.type() + ": " + text);
+                }
+            });
+            try {
+                await freshPage.goto(url);
+                await freshPage.waitForSelector(".red-ui-flow-node-group", { timeout: 30000 });
+                await freshPage.waitForTimeout(500);
+            } finally {
+                await freshPage.close();
+            }
+            problems.should.eql([]);
         });
 
         it("shows the layout options in the settings dialog", async function() {

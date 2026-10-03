@@ -155,7 +155,7 @@ W commitach i opisach PR podajemy identyfikator, np. `Fix diff rows for added pr
 | [FL-B-008](#fl-b-008--obrócone-etykiety-linków-do-innych-zakładek-w-tb) | Obrócone etykiety linków do innych zakładek w TB | błąd | Do weryfikacji (zrobione: `122cfdc`) | P4 | Mała | edytor – widok |
 | [FL-B-009](#fl-b-009--flow-z-ustawieniem-domyślnym-edytora-nie-przenosi-wyglądu) | Flow z ustawieniem domyślnym edytora nie przenosi wyglądu | błąd | Do weryfikacji (zrobione: `cf95b28`) | **P2 (biznes: priorytet 1)** | Średnia | eksport-import |
 | [FL-B-011](#fl-b-011--dopasowanie-subflow-zależne-od-kolejności-węzłów) | Dopasowanie subflow zależne od kolejności węzłów | błąd (istniejący w Node-RED) | Nowe | P4 | Mała | eksport-import |
-| [FL-B-012](#fl-b-012--błąd-w-konsoli-przy-starcie-edytora-z-włączonym-układem) | Błąd w konsoli przy starcie edytora z włączonym układem | błąd | Nowe | P4 | Mała | edytor – ustawienia |
+| [FL-B-012](#fl-b-012--błąd-w-konsoli-przy-starcie-edytora-z-włączonym-układem) | Błąd w konsoli przy starcie edytora z włączonym układem | błąd | Do weryfikacji (zrobione 2026-10-03) | P4 | Mała | edytor – ustawienia |
 | [FL-B-010](#fl-b-010--import-flow-o-tym-samym-identyfikatorze-tylko-jako-kopia) | Import flow o tym samym identyfikatorze – tylko jako kopia (brak „zastąp”) | funkcja | Do weryfikacji (zrobione: `bcf672a`) | P2 (biznes: priorytet 1) | Średnia | eksport-import |
 | [FL-T-001](#fl-t-001--automatyczne-rozmieszczanie-węzłów) | Automatyczne rozmieszczanie węzłów | funkcja | Nowe | P3 | – | edytor – widok |
 | [FL-T-002](#fl-t-002--routing-omijający-wszystkie-węzły) | Routing omijający wszystkie węzły | funkcja | Nowe | P3 | – | edytor – widok |
@@ -378,7 +378,7 @@ identyfikatorów; poprawka bardziej inwazyjna niż FL-B-006 – do decyzji, czy 
 
 | Pole | Wartość |
 |---|---|
-| Status / Priorytet / Waga | Nowe / P4 / Mała |
+| Status / Priorytet / Waga | Do weryfikacji (zrobione 2026-10-03) / P4 / Mała |
 | Obszar | edytor – ustawienia |
 | Wykryto | 2026-10-03, przy testach FL-B-008 (konsola przeglądarki) |
 | Pliki | `editor-client/src/js/ui/userSettings.js` – `init()` |
@@ -388,6 +388,10 @@ identyfikatorów; poprawka bardziej inwazyjna niż FL-B-006 – do decyzji, czy 
 kończy się w konsoli błędem `Cannot read properties of undefined (reading 'treeList')` (przechwyconym przez
 `RED.events.emit` – edytor działa). Przy wyłączonym ustawieniu (domyślnie) błąd nie występuje (sekcja nie istnieje).
 **Proponowane rozwiązanie:** nie wywoływać przerysowania przy inicjalizacji (widok i tak czyta ustawienia przy rysowaniu).
+**Rozwiązanie (2026-10-03, przegląd F2):** opcje „Layout”/„Wires” mają `skipInitOnchange: true` – `init()` zapisuje wartości
+domyślne, ale nie wywołuje `onchange`; przerysowanie tylko przy zmianie przez użytkownika. Kolejność inicjalizacji edytora
+bez zmian. Testy: `test/unit/@node-red/editor-client/ui/userSettings_spec.js` (1 czerwony → zielony), E2E
+„starts the editor without errors in the console (FL-B-012)” (czerwony → zielony).
 
 ### FL-B-010 – Import flow o tym samym identyfikatorze tylko jako kopia
 
