@@ -134,6 +134,9 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 - Instancja tylko edycyjna (`editorOnly: true`): odpowiedź **`{rev, started: false}`** bez błędu – flow nie są
   uruchamiane (R-39).
 - Błąd zatrzymania: 500 `deploy_stop_failed` z `rev`.
+- Kolejne wdrożenia czekają na start flow poprzedniego wdrożenia (blokada wdrożeń); przy ustawionym
+  `deploy.startTimeout` – najwyżej do upływu limitu (ostrzeżenie w logu, start trwa w tle), także w trybie
+  domyślnym (P-01, bezpiecznik W2; doprecyzowanie R-43).
 
 ### 4.3 Walidacja przed wdrożeniem (Z-06)
 

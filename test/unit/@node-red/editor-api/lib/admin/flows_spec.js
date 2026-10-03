@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   P-01: contract test of the deploy_start_failed response (status 500, rev, errors)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var request = require('supertest');
@@ -304,5 +309,32 @@ describe("api/admin/flows", function() {
                 res.body.should.have.property("code","invalid_run_state");
                 done();
             });
+    });
+
+    it('set flows - deploy_start_failed returns 500 with rev and errors - v2 (P-01)', async function() {
+        flows.init({
+            flows:{
+                setFlows: function() {
+                    var err = new Error("Deployment saved, but the flows did not start");
+                    err.code = "deploy_start_failed";
+                    err.status = 500;
+                    err.rev = "newRev";
+                    err.errors = [{code:"missing_types", message:"Missing node types", types:["missing"]}];
+                    return Promise.reject(err);
+                }
+            }
+        });
+        const res = await request(app)
+            .post('/flows')
+            .set('Accept', 'application/json')
+            .set('Node-RED-API-Version','v2')
+            .send({flows:[]})
+            .expect(500);
+        res.body.should.eql({
+            code: "deploy_start_failed",
+            message: "Deployment saved, but the flows did not start",
+            rev: "newRev",
+            errors: [{code:"missing_types", message:"Missing node types", types:["missing"]}]
+        });
     });
 });

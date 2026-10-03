@@ -17,6 +17,8 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-14: flow layout: tests for layout properties in the single-flow API
  *   E-01: tests of the deploy pipeline contract; the deploy lock is held until the start completes
+ *   P-01: tests of setFlows waiting for the start (deploy.response "started"), start errors,
+ *   deploy.startTimeout and the log of a rejected start in the default mode
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1035,6 +1037,190 @@ describe('flows/index', function() {
             await flows.setFlows(clone(baseConfig), null, "full", false, false, null, {waitForStart:false});
             recorded.should.not.containEql("flows:started");
             await waitFor("runtime-deploy");
+        });
+
+        describe('#setFlows waitForStart (P-01)', function() {
+            let log;
+            let settings;
+            function initFlows(extraSettings) {
+                log = Object.assign({}, mockLog, { warn: sinon.stub(), info: sinon.stub(), error: sinon.stub() });
+                settings = Object.assign({}, extraSettings || {});
+                storage.getFlows = function() {
+                    return Promise.resolve({flows:clone(baseConfig), rev:"loadedRev"});
+                };
+                storage.saveFlows = function(conf) {
+                    storage.conf = conf;
+                    return Promise.resolve("savedRev");
+                };
+                flows.init({log:log, settings:settings, storage:storage});
+                return flows.load().then(function() {
+                    return flows.startFlows();
+                });
+            }
+            function replaceFlowCreate(start) {
+                flowCreate.restore();
+                // replaced stub - restored by the outer afterEach
+                flowCreate = sinon.stub(Flow,"create").callsFake(function(parent, global, flow) {
+                    const id = flow ? flow.id : "global";
+                    return {
+                        start: function() { return start(id) },
+                        stop: sinon.spy(async () => {}),
+                        update: sinon.spy(),
+                        getActiveNodes: () => ({})
+                    };
+                });
+            }
+            const waitForStart = {waitForStart: true};
+
+            it('resolves after flows:started when waitForStart', async function() {
+                await initFlows();
+                startRecording();
+                const rev = await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart);
+                rev.should.equal("savedRev");
+                recorded.should.containEql("flows:started");
+            });
+            it('emits runtime-deploy before resolving when waitForStart', async function() {
+                await initFlows();
+                startRecording();
+                await flows.setFlows(clone(baseConfig), null, "nodes", false, false, null, waitForStart);
+                recorded.should.eql(["flows:stopping","flows:stopped","flows:starting","flows:started","runtime-deploy"]);
+            });
+            it('rejects with deploy_start_failed and rev on missing types', async function() {
+                await initFlows();
+                const config = clone(baseConfig);
+                config.push({id:"t1-2",z:"t1",type:"missing",wires:[]});
+                const err = await flows.setFlows(config, null, "full", false, false, null, waitForStart).should.be.rejected();
+                err.should.have.property("code","deploy_start_failed");
+                err.should.have.property("status",500);
+                err.should.have.property("rev","savedRev");
+                err.errors.should.have.length(1);
+                err.errors[0].should.have.property("code","missing_types");
+                // The configuration is saved
+                storage.conf.flows.should.eql(config);
+            });
+            it('rejects with deploy_start_failed and flow_start_failed when a flow fails to start', async function() {
+                await initFlows();
+                replaceFlowCreate(async function(id) { if (id === "t2") { throw new Error("boom") } });
+                const consoleLog = sinon.stub(console, "log");
+                let err;
+                try {
+                    err = await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart).should.be.rejected();
+                } finally {
+                    consoleLog.restore();
+                }
+                err.should.have.property("code","deploy_start_failed");
+                err.errors[0].should.have.property("code","flow_start_failed");
+                err.errors[0].should.have.property("flow","t2");
+            });
+            it('rejects with deploy_stop_failed and rev when stop fails', async function() {
+                await initFlows();
+                Object.keys(flowCreate.flows).forEach(function(id) {
+                    flowCreate.flows[id].stop = function() { return Promise.reject(new Error("stop failed")) };
+                });
+                const err = await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart).should.be.rejected();
+                err.should.have.property("code","deploy_stop_failed");
+                err.should.have.property("status",500);
+                err.should.have.property("rev","savedRev");
+                err.should.have.property("message","stop failed");
+            });
+            it('default swallows stop errors (unchanged, D-05)', async function() {
+                await initFlows();
+                Object.keys(flowCreate.flows).forEach(function(id) {
+                    flowCreate.flows[id].stop = function() { return Promise.reject(new Error("stop failed")) };
+                });
+                const rev = await flows.setFlows(clone(baseConfig), "full");
+                should.not.exist(rev);
+            });
+            it('default resolves before flows:started (unchanged)', async function() {
+                await initFlows({deploy: {startTimeout: 1000}});
+                startRecording();
+                await flows.setFlows(clone(baseConfig), "full");
+                recorded.should.not.containEql("flows:started");
+                await waitFor("runtime-deploy");
+            });
+            it('load(true,{waitForStart}) waits for start', async function() {
+                await initFlows();
+                startRecording();
+                const rev = await flows.load(true, waitForStart);
+                rev.should.equal("loadedRev");
+                recorded.should.containEql("flows:started");
+                recorded.should.containEql("runtime-deploy");
+            });
+            it('rejects with deploy_start_failed and errors[].code safe_mode when safe mode prevents start', async function() {
+                await initFlows();
+                settings.safeMode = true;
+                // A load without forceStart keeps safe mode (the Admin API reload removes it)
+                const err = await flows.load(false, waitForStart).should.be.rejected();
+                err.should.have.property("code","deploy_start_failed");
+                err.should.have.property("rev","loadedRev");
+                err.errors[0].should.have.property("code","safe_mode");
+            });
+            it('resolves without error when the flows are stopped on purpose (runtimeFlowState stop)', async function() {
+                await initFlows();
+                settings.get = function(prop) { return prop === "runtimeFlowState" ? "stop" : undefined };
+                const rev = await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart);
+                rev.should.equal("savedRev");
+            });
+            it('rejects with start_timeout after deploy.startTimeout and keeps starting in background', async function() {
+                await initFlows({deploy: {startTimeout: 30}});
+                let finishStart;
+                const pendingStart = new Promise(resolve => { finishStart = resolve });
+                replaceFlowCreate(function() { return pendingStart });
+                startRecording();
+                const started = Date.now();
+                const err = await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart).should.be.rejected();
+                (Date.now() - started).should.be.below(1000);
+                err.should.have.property("code","deploy_start_failed");
+                err.should.have.property("status",500);
+                err.should.have.property("rev","savedRev");
+                err.errors[0].should.have.property("code","start_timeout");
+                recorded.should.not.containEql("flows:started");
+                // The start goes on in the background; its result is logged
+                const infoCalls = log.info.callCount;
+                finishStart();
+                await waitFor("runtime-deploy");
+                await new Promise(resolve => setTimeout(resolve, 5));
+                log.info.callCount.should.be.above(infoCalls);
+            });
+            it('no timeout when deploy.startTimeout absent', async function() {
+                await initFlows();
+                replaceFlowCreate(function() { return new Promise(resolve => setTimeout(resolve, 50)) });
+                startRecording();
+                const rev = await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart);
+                rev.should.equal("savedRev");
+                recorded.should.containEql("flows:started");
+            });
+            it('with deploy.startTimeout releases the deploy lock after the limit while the start goes on (W2)', async function() {
+                const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
+                const utilLog = NR_TEST_UTILS.require("@node-red/util").log;
+                const warn = sinon.stub(utilLog, "warn");
+                let finishStart;
+                try {
+                    await initFlows({deploy: {startTimeout: 30}});
+                    const pendingStart = new Promise(resolve => { finishStart = resolve });
+                    replaceFlowCreate(function() { return pendingStart });
+                    // default response mode: the result returns before the start
+                    await lock.runExclusive(function() {
+                        return flows.setFlows(clone(baseConfig), "full");
+                    });
+                    lock.isLocked().should.be.true();
+                    await lock.runExclusive(async () => {});
+                    lock.isLocked().should.be.false();
+                    warn.calledOnce.should.be.true();
+                } finally {
+                    warn.restore();
+                    if (finishStart) { finishStart() }
+                }
+            });
+            it('default mode logs start() rejection', async function() {
+                await initFlows();
+                flowCreate.restore();
+                // replaced stub - restored by the outer afterEach
+                flowCreate = sinon.stub(Flow,"create").callsFake(function() { throw new Error("create failed") });
+                await flows.setFlows(clone(baseConfig), "full");
+                await new Promise(resolve => setTimeout(resolve, 10));
+                log.error.called.should.be.true();
+            });
         });
     });
     describe('#updateFlow', function() {

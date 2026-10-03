@@ -697,4 +697,110 @@ describe("runtime-api/flows", function() {
             order.should.eql(["setFlows:start", "setFlows:end", "addFlow", "updateFlow", "removeFlow"]);
         });
     });
+
+    describe("deploy.response (P-01)", function() {
+        let runtime;
+        function initRuntime(deploySettings) {
+            runtime = {
+                log: mockLog(),
+                settings: { deploy: deploySettings },
+                flows: {
+                    getFlows: function() { return {rev:"currentRev",flows:[]} },
+                    setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
+                    loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
+                    readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    addFlow: sinon.spy(function() { return Promise.resolve("newId") }),
+                    updateFlow: sinon.spy(function() { return Promise.resolve() }),
+                    removeFlow: sinon.spy(function() { return Promise.resolve() })
+                }
+            };
+            if (deploySettings === undefined) {
+                delete runtime.settings.deploy;
+            }
+            flows.init(runtime);
+        }
+        function startFailed() {
+            const err = new Error("Deployment saved, but the flows did not start");
+            err.code = "deploy_start_failed";
+            err.status = 500;
+            err.rev = "newRev";
+            err.errors = [{code:"missing_types", message:"Missing node types", types:["missing"]}];
+            return err;
+        }
+        it("setFlows passes waitForStart when deploy.response is started", async function() {
+            initRuntime({response:"started"});
+            await flows.setFlows({flows:{flows:[1]}});
+            runtime.flows.setFlows.firstCall.args[6].should.eql({waitForStart:true});
+        });
+        it("reload passes waitForStart when deploy.response is started", async function() {
+            initRuntime({response:"started"});
+            await flows.setFlows({deploymentType:"reload"});
+            runtime.flows.loadFlows.firstCall.args[1].should.eql({waitForStart:true});
+        });
+        it("addFlow/updateFlow/deleteFlow pass waitForStart", async function() {
+            initRuntime({response:"started"});
+            await flows.addFlow({flow:{}});
+            await flows.updateFlow({id:"1",flow:{}});
+            await flows.deleteFlow({id:"1"});
+            runtime.flows.addFlow.firstCall.args[2].should.eql({waitForStart:true});
+            runtime.flows.updateFlow.firstCall.args[3].should.eql({waitForStart:true});
+            runtime.flows.removeFlow.firstCall.args[2].should.eql({waitForStart:true});
+        });
+        it("no deployOpts when setting absent or stopped", async function() {
+            for (const deploySettings of [undefined, {}, {response:"stopped"}]) {
+                initRuntime(deploySettings);
+                await flows.setFlows({flows:{flows:[1]}});
+                await flows.addFlow({flow:{}});
+                should.not.exist(runtime.flows.setFlows.firstCall.args[6]);
+                should.not.exist(runtime.flows.addFlow.firstCall.args[2]);
+                runtime.log.warn.called.should.be.false();
+            }
+        });
+        it("invalid deploy.response logs warning and falls back to stopped", async function() {
+            initRuntime({response:"later"});
+            runtime.log.warn.calledOnce.should.be.true();
+            await flows.setFlows({flows:{flows:[1]}});
+            should.not.exist(runtime.flows.setFlows.firstCall.args[6]);
+        });
+        it("invalid deploy.startTimeout logs warning", function() {
+            initRuntime({response:"started", startTimeout:"soon"});
+            runtime.log.warn.calledOnce.should.be.true();
+        });
+        it("maps deploy_start_failed to status 500 with rev and errors", async function() {
+            initRuntime({response:"started"});
+            runtime.flows.setFlows = sinon.spy(function() { return Promise.reject(startFailed()) });
+            const err = await flows.setFlows({flows:{flows:[1]}}).should.be.rejected();
+            err.should.have.property("code","deploy_start_failed");
+            err.should.have.property("status",500);
+            err.should.have.property("rev","newRev");
+            err.errors[0].should.have.property("code","missing_types");
+        });
+        it("keeps status 500 of deploy_start_failed and deploy_stop_failed for the single-flow api", async function() {
+            initRuntime({response:"started"});
+            runtime.flows.addFlow = sinon.spy(function() { return Promise.reject(startFailed()) });
+            runtime.flows.updateFlow = sinon.spy(function() { return Promise.reject(startFailed()) });
+            runtime.flows.removeFlow = sinon.spy(function() {
+                const err = new Error("stop failed");
+                err.code = "deploy_stop_failed";
+                err.status = 500;
+                err.rev = "newRev";
+                return Promise.reject(err);
+            });
+            let err = await flows.addFlow({flow:{}}).should.be.rejected();
+            err.should.have.property("status",500);
+            err.should.have.property("rev","newRev");
+            err = await flows.updateFlow({id:"1",flow:{}}).should.be.rejected();
+            err.should.have.property("status",500);
+            err.should.have.property("code","deploy_start_failed");
+            err = await flows.deleteFlow({id:"1"}).should.be.rejected();
+            err.should.have.property("status",500);
+            err.should.have.property("code","deploy_stop_failed");
+        });
+        it("other single-flow errors keep status 400", async function() {
+            initRuntime({response:"started"});
+            runtime.flows.addFlow = sinon.spy(function() { return Promise.reject(new Error("duplicate id")) });
+            const err = await flows.addFlow({flow:{}}).should.be.rejected();
+            err.should.have.property("status",400);
+        });
+    });
 });

@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   P-01: tests of rejectHandler passing rev and errors of a deployment error
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require("sinon");
@@ -107,4 +112,44 @@ describe("api/util", function() {
             apiUtil.determineLangFromHeaders(['fr-FR','en-GB']).should.eql("fr-FR");
         })
     })
+
+    describe("rejectHandler", function() {
+        var app;
+        before(function() {
+            app = express();
+            sinon.stub(log,'audit');
+            sinon.stub(log,'error');
+            app.get("/startFailed", function(req,res) {
+                var err = new Error("Deployment saved, but the flows did not start");
+                err.code = "deploy_start_failed";
+                err.status = 500;
+                err.rev = "abc";
+                err.errors = [{code:"missing_types", message:"Missing node types", types:["missing"]}];
+                apiUtil.rejectHandler(req,res,err);
+            });
+            app.get("/plain", function(req,res) {
+                var err = new Error("not found");
+                err.code = "not_found";
+                err.status = 404;
+                apiUtil.rejectHandler(req,res,err);
+            });
+        });
+        after(function() {
+            log.audit.restore();
+            log.error.restore();
+        });
+        it("rejectHandler includes rev and errors when present", async function() {
+            const res = await request(app).get("/startFailed").expect(500);
+            res.body.should.eql({
+                code: "deploy_start_failed",
+                message: "Deployment saved, but the flows did not start",
+                rev: "abc",
+                errors: [{code:"missing_types", message:"Missing node types", types:["missing"]}]
+            });
+        });
+        it("rejectHandler response unchanged without rev and errors", async function() {
+            const res = await request(app).get("/plain").expect(404);
+            res.body.should.eql({code:"not_found", message:"not found"});
+        });
+    });
 });

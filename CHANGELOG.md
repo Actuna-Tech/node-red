@@ -37,8 +37,31 @@ Security
    the user settings is disabled, shows the effective value with a note that it was set by the
    administrator, and the consent prompt is not shown
 
+Admin API
+
+ - New setting `deploy.response: "stopped" | "started"` (default `"stopped"`, unchanged).
+   With `"started"` the Admin API answers a deployment (`POST /flows` of every type including
+   `reload`, `POST /flow`, `PUT`/`DELETE /flow/:id`) once the new flows have started and the
+   `runtime-deploy` event was emitted, so http endpoints of the deployed flows answer straight
+   after the response. Errors (the configuration is saved): 500
+   `{code: "deploy_start_failed", message, rev, errors: [...]}` with `errors[].code`
+   `missing_types`, `missing_modules`, `safe_mode`, `flow_start_failed` or `start_timeout`
+   (errors of single node constructors are only logged, as before), and 500
+   `{code: "deploy_stop_failed", message, rev}` when stopping the old nodes fails (in the
+   default mode such errors are still ignored). Clients should take the new `rev` from
+   the error. Internal loads (runtime start, project switch) do not wait. An unknown value
+   is logged as a warning and treated as `"stopped"`
+ - New setting `deploy.startTimeout` (ms, default not set): with `"started"` a start that takes
+   longer returns 500 `deploy_start_failed` with `errors[].code: "start_timeout"`; the flows
+   keep starting in the background and the result is logged. In both modes the deploy lock is
+   released at the latest when the limit has passed (with a warning); without the setting the
+   lock is kept until the start completes and a warning is logged after 60 s
+ - Error responses of the Admin API include `rev` and `errors` when the error carries them
+
 Fixes
 
+ - A rejected start of the flows after a deployment is logged as an error instead of an
+   unhandled promise rejection (the response is unchanged)
  - `POST /flows/state` and project switches now wait for a running deployment (and the other
    way round) instead of running concurrently with it - they share the deploy lock
  - The deploy lock is held until the new flows have started (also when the start fails); the
