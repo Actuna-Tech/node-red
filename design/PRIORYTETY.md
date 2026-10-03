@@ -89,6 +89,30 @@ punkty rozszerzeń (Z-09, Z-10, Z-11, Z-15). Nasze K8S-T-* to te implementacje.
 Zależności techniczne zachowane z [ANALIZA.md](engine-extensions/ANALIZA.md) §6.2 (np. Z-04 przed Z-05, E-01 przed P-01,
 Z-06/Z-08/Z-10 przed Z-09). Uzupełnienie zlecenia (zapowiedziane) może zmienić zakres – plan zostanie zaktualizowany.
 
+## Kamień milowy F3 (2026-10-03) – do akceptacji
+
+Stan gałęzi `claude/loving-fermat-ftfo9h` przed scaleniem do `main` i startem F4 (osobna gałąź `feature/p3-database`).
+
+**Zrealizowane:**
+- Priorytet 1 – układ flow: Z-14 (LR/TB/auto, połączenia, ustawienie `editorTheme.flowLayout.enabled`), FL-B-004…010
+  (eksport/import wyglądu, okno różnic, nieznane wartości, dopasowanie subflow, „zastąp/kopia” przy imporcie, zablokowany
+  flow tylko jako kopia), FL-B-012.
+- Priorytet 2 – bezpieczeństwo: P-04, XSS nazwy użytkownika (R-08/R-41), Z-01, Z-02 (`httpAdminNodeRoutes`), P-03
+  (`telemetry.locked`, także w edytorze).
+- Priorytet 2 – API: E-01 (wspólna blokada wdrożeń, projekty), P-01 (`deploy.response`, `deploy.startTimeout`,
+  R-45), P-02 (`editorTheme.deploy.staleFlows`), Z-04 (API pojedynczego flow, rewizje v2, R-46), Z-05
+  (`deploy.requireRevision`). Z-06 odłożone.
+- Proces: nagłówki D-19 + `MODIFICATIONS.md`, rejestr decyzji R-01…R-46.
+
+**Weryfikacja (HEAD `0dc5cf5`):** build i lint czyste, `verify-deps` OK; testy jednostkowe 1790 ✔ / 30 pominiętych /
+5 ✘ (projects/ssh – brak `ssh-keygen`); testy węzłów 1569 ✔ / 4 ✘ (proxy, IPv6 – środowisko, tak samo na bazie);
+E2E 47/47. Każda faza przeszła niezależny przegląd; uwagi naprawione lub opisane w kartach.
+
+**Znane ograniczenia / otwarte:** FL-B-011 (dopasowanie subflow po kolejności węzłów); ograniczenia FL-B-010 (karta);
+Z-02 – ochrona nie jest piaskownicą (opis w `settings.js`); edytor nie testowany w przeglądarce dla 409
+`version_required` (tylko testy jednostkowe); brak `id` nowego flow w błędzie `addFlow` (P-01); Z-06, Z-03, Z-07…Z-13,
+Z-15 i K8S-* – poza tym etapem. **Aktualizacja instalacji:** ustawić `editorTheme: { flowLayout: { enabled: true } }`.
+
 ## Budżet i zakres po F3 (2026-10-03)
 
 Stan: z 250 jednostek pozostało 90 (z F3 w toku). Szacunki względne (kalibracja na F1–F2: pakiet M ≈ 7, L ≈ 13; ±30%);
