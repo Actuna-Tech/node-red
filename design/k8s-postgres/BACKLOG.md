@@ -7,6 +7,21 @@ Zasady (identyfikatory, statusy, priorytety, szablony, Definition of Ready/Done)
 `K8S-B` (błąd), `K8S-T` (zadanie), `K8S-A` (analiza).
 Kontekst: [ANALIZA.md](ANALIZA.md) (inwentaryzacja stanu), [ARCHITEKTURA.md](ARCHITEKTURA.md) (architektura docelowa).
 
+## Powiązanie ze zleceniem rozszerzeń silnika (2026-10-03)
+
+Zlecenie `design/engine-extensions/` dostarcza w rdzeniu punkty zaczepienia, które tu zakładaliśmy jako obejścia:
+
+| Pozycja K8S | Pakiet zlecenia | Zmiana |
+|---|---|---|
+| K8S-T-001 storage | Z-09 (`watchFlows`), Z-04/Z-05 (rewizje) | wtyczka **musi** implementować `watchFlows` (PostgreSQL LISTEN/NOTIFY lub Redis) |
+| K8S-T-002 rola editor | **Z-15** (instancja tylko edycyjna) | obejście przez `runtimeFlowState` zastąpione ustawieniem rdzenia |
+| K8S-T-003 debug/status | – | bez zmian (wtyczka) |
+| K8S-T-005 Helm/probes | Z-08 (sondy, drenaż SIGTERM), Z-11 (read-only), Z-02 | sondy z rdzenia; workery `httpAdminRoot: false` |
+| K8S-T-006 wydania niezmienne | Z-09 + `preReload`, Z-06 `postDeploy` | **opcja operacyjna**; podstawowy mechanizm: przeładowanie w miejscu z drenażem i limitem równoległości (ANALIZA zlecenia §4.10) |
+| K8S-T-007 strumieniowanie | Z-07 (`registerHttpRoute`) | węzły strumieniowe na nowym API tras |
+| K8S-T-013 singletony | **Z-10** (koordynacja) | **zastąpione** – po naszej stronie implementacja wtyczki koordynacji (pg advisory lock / Redis) |
+| K8S-T-014 kolejki | Z-10 | uzupełnienie, bez zmian |
+
 ## DoD – dodatkowe dla zadań K8S
 
 Oprócz DoD wspólnego i dla funkcjonalności z backlogu układu flow:
@@ -36,7 +51,7 @@ Oprócz DoD wspólnego i dla funkcjonalności z backlogu układu flow:
 | K8S-T-010 | Polecenie `inject` z edytora do workera | zadanie | Nowe | P3 | K8S-T-003 |
 | K8S-T-011 | Provisioning tenanta (baza, rola, Redis ACL, Secret) i usuwanie | zadanie | Nowe | P2 | K8S-T-005 |
 | K8S-T-012 | Kopie zapasowe i odtwarzanie per tenant | zadanie | Nowe | P2 | K8S-T-011 |
-| K8S-T-013 | Flow singletonowe (harmonogramy, MQTT) – blokada lub osobny Deployment | zadanie | Nowe | P3 | K8S-T-005 |
+| K8S-T-013 | ~~Flow singletonowe~~ → wtyczka koordynacji dla Z-10 (pg advisory lock / Redis) | zadanie | Nowe | P2 | Z-10 |
 | K8S-T-014 | `node-red-queue` – kolejka trwała (PostgreSQL SKIP LOCKED) i szybka (Redis Streams) | zadanie | Nowe | P2 | K8S-T-008 |
 | K8S-T-015 | Wznowienie rozmów (czat/voice) po wymianie poda | zadanie | Nowe | P2 | K8S-T-007 |
 
