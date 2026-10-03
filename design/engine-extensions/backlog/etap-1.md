@@ -23,6 +23,8 @@ Kolejność realizacji (ANALIZA §6.2): E-01 – etap 0 (dokument kontraktu i re
 
 ### E-01 – Kontrakt potoku wdrożenia
 
+> **Zrealizowane (F2, 2026-10-03): `30a786d`** – wspólna blokada `runtime/lib/flows/lock.js` (`runExclusive`, `isLocked`; wydzielona z `api/flows.js`) dla `POST /flows`, `/flow`, `POST /flows/state` i przełączenia projektu (`projects/index.js` `reloadActiveProject` – stop, czyszczenie kontekstu, wczytanie; druga operacja czeka – R-11); funkcja potoku `runtime/lib/flows/pipeline.js` `deploy(opts)` – wszystkie wejścia Admin API (`setFlows` wszystkich typów, `addFlow`, `updateFlow`, `deleteFlow`) wołają ją dokładnie raz; kotwice (komentarze) kroków 2a, 3, 4, 8, 11; jawny `reload` czyta magazyn pod blokadą przed kotwicą `preDeploy` (`readFlowsFromStorage()` + `load(true, deployOpts, loaded)` bez ponownego odczytu – R-11); `buildAddFlowConfig`/`buildUpdateFlowConfig`/`buildRemoveFlowConfig` + `buildTabNode` (z `copyFlowLayoutProperties`); `setFlows(..., deployOpts, loaded)` i `load(forceStart, deployOpts, loaded)` – `deployOpts` nieużywane (punkt rozszerzenia P-01); `start()` zwraca `{errors}` (`missing_types`, `missing_modules`, `flow_start_failed`) bez zmiany logów i zdarzeń. Mapa kroków: ZASADY §2.3 „Mapa kroków potoku (E-01)”. Testy: `flows/lock_spec.js`, `flows/pipeline_spec.js`, `flows/index_spec.js` (`deploy pipeline contract`), `api/flows_spec.js` (`deploy pipeline (E-01)`), `projects/index_spec.js` (`deploy lock (E-01)`). **Odstępstwa:** (1) wejścia `/flow` przekazują do potoku krok `apply` (wołający `runtime.flows.addFlow/updateFlow/removeFlow`, które budują konfigurację przez `build*FlowConfig`), a nie gotową konfigurację – zachowuje istniejące testy `api/flows_spec.js` bez zmian; przekazanie wyniku `build*` do `preDeploy` – w Z-04/Z-06; (2) w istniejącym `beforeEach` testu `setFlows` (`api/flows_spec.js`) dodana atrapa `readFlowsFromStorage` (asercje bez zmian); (3) `projects/index.js` eksportuje `_reloadActiveProject` na potrzeby testu. Poza zakresem (kolejne pakiety): treść kroków 2a (Z-12.08), 3 i 11 (Z-06), 4 i 8 (E-02/Z-08), `waitForStart` (P-01), przeładowanie z magazynu B (Z-09); akceptacja mapy przez właścicieli pakietów zależnych.
+
 | Pole | Wartość |
 |---|---|
 | Etap / typ | 1 (etap 0 wg ANALIZA §6.2) / przerobienie (bez zmiany zachowania; wyjątek: serializacja `setState` i przełączenia projektu – rozstrzygnięte R-11) |
@@ -507,6 +509,8 @@ Funkcja: Ochrona przed nadpisaniem flow przez nieaktualny edytor
 
 ### P-03 – Telemetria wyłączalna trwale przez administratora
 
+> **Zrealizowane (F2, 2026-10-03): `945b615`** – `telemetry/index.js`: `isLocked()`, przy `telemetry.locked: true` stan = `telemetry.enabled === true` (w obie strony – R-09), zapisane `telemetryEnabled` ignorowane, ale zachowane; `enable()/disable()` bez skutku (`log.debug`); `locked` nie-boolean → ignorowane + ostrzeżenie (`telemetry.locked-invalid`); `api/settings.js`: `telemetryLocked: true` w `GET /settings` tylko przy blokadzie, `POST /settings/user` z `telemetryEnabled` przy blokadzie – wartość pominięta, reszta zapisana, audyt `settings.update` z `telemetry: "locked"`; `NODE_RED_DISABLE_TELEMETRY` bez zmian (test charakteryzujący w `telemetry/index_spec.js`); `settings.js` – opis `locked`. Okno zgody nie jest pokazywane przy blokadzie już teraz (`telemetryEnabled` jest wtedy wartością logiczną, `red.js:694`). **Niezrealizowane (poza zakresem toru – `editor-client`):** przełącznik w ustawieniach użytkownika nieaktywny z opisem i tekst en-US `telemetry.lockedByAdmin` – przełącznik działa jak dotąd, ale zmiana jest ignorowana przez runtime (po odświeżeniu pokazuje stan efektywny).
+
 | Pole | Wartość |
 |---|---|
 | Etap / typ | 1 / funkcja |
@@ -811,6 +815,8 @@ Funkcja: Subskrypcje przed potwierdzeniem uwierzytelnienia
 ---
 
 ### Z-02 – Wymóg uwierzytelnienia dla tras administracyjnych bloczków
+
+> **Zrealizowane (F2, 2026-10-03): `84a6302`** – `registry/lib/util.js` `guardAdminApp`: przy `httpAdminNodeRoutes: "authenticated"` (lub nieznanej wartości – ostrzeżenie, R-41) i `adminAuth` węzły i wtyczki dostają `Object.create(runtime.adminApp)` z opakowanymi metodami HTTP (`http.METHODS`), `all`, `use` (także bez ścieżki i z podaplikacją), `route().<metoda>`; trasa bez znacznika → `needsPermission("")` na początku (użytkownik domyślny jak `needsPermission("")` – R-07); `app.get(ustawienie)` bez zmian; trasa `publicRoute()` – wpis `info` z modułem, metodą i ścieżką. Znaczniki `Symbol.for("node-red.adminRouteAuth")` w `needsPermission()` i nowym `RED.auth.publicRoute()` (`editor-api/lib/auth/index.js`, eksport w `editor-api/lib/index.js`); `publicRoute` także w atrapie `adminApi` (`runtime/lib/index.js`) i w zapasowym `red.auth` rejestru. Bez `adminAuth` – ostrzeżenie, trasy bez zmian. Widoki debug (`21-debug.js`) z `publicRoute()` (plik spoza listy zakresu toru – wymagany przez kartę). Test integracyjny: `test/unit/@node-red/editor-api/lib/admin-node-routes_spec.js`. Uwaga do BDD: zakres `read` daje każde uprawnienie `*.read` (`permissions.js`), więc w teście integracyjnym trasa z uprawnieniem używa `z02.write` zamiast `z02.read`. Weryfikacja core (`grep RED.httpAdmin` w `@node-red/nodes`): wszystkie trasy mają `needsPermission` (`20-inject.js:179`, `21-debug.js:250,270`, `32-udp.js:137`) albo `publicRoute` (`21-debug.js` widoki).
 
 | Pole | Wartość |
 |---|---|
