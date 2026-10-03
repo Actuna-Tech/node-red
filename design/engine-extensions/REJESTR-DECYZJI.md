@@ -6,6 +6,9 @@ Zebrane ze wszystkich dokumentów (ANALIZA §7.1, „Pytania” w kartach etapó
 bez duplikatów, w kolejności priorytetów biznesowych ([../PRIORYTETY.md](../PRIORYTETY.md)). Przechodzimy punkt po
 punkcie; wynik każdej decyzji trafia do kolumny „Decyzja” i do dokumentów, których dotyczy.
 
+**Stan (2026-10-03):** wszystkie punkty R-01…R-32 rozstrzygnięte. Następny krok: naniesienie decyzji na ANALIZA §7.0,
+ZASADY, MIGRACJA, PRIORYTETY i karty etapów.
+
 **Już rozstrzygnięte (nie wracamy):** D-01 baza 5.0.7 · D-02 nazwy (rewizja: utrzymane) · D-03 bez Playwright ·
 D-04 podpisy, blokada upstream · D-10 przeładowanie różnicowe · D-11 drenaż SIGTERM · D-19 nagłówki · D-20
 `version_required` · D-21 e-mail · B-01 utrwalanie wyglądu · N-01…N-04 · `allowDowngrade` domyślnie `true` ·
@@ -75,5 +78,5 @@ kod `invalid_node_type` w katalogu.
 | ID | Temat | Źródło | Rekomendacja | Decyzja |
 |---|---|---|---|---|
 | R-30 | E-04: szablon nagłówków (JSON, pliki bez licencji), komentarze „upstream”, historia łatek, CHANGELOG, nazwy narzędzi | ZAŁ-A p.7–9; etap-4 p.16–17 | || **zgodnie z rekomendacją** – szablon nagłówka z łatek + `MODIFICATIONS.md` dla plików bez komentarzy/licencji, uzupełnienie nagłówków z 0004; komentarze „upstream” → „wersja bazowa 5.0.7”; łatki zastąpione commitami pakietów (odwołanie do zał. A); CHANGELOG „Unreleased” w gałęzi pakietu; nazwy narzędzi stron trzecich dozwolone (2026-10-03) |
-| R-31 | E-05: miejsce CI, macierz wersji Node | etap-4 p.18 | | |
-| R-32 | Z-01: test klienta przez eksport CommonJS w `comms.js` (po D-03) | etap-1 p.10 | tak | |
+| R-31 | E-05: miejsce CI, macierz wersji Node | etap-4 p.18 | || **zgodnie z rekomendacją** – CI (GitHub Actions) w forku `Actuna-Tech/node-red`, gałąź integracyjna (np. `actuna/integration`); gałęzie pakietów Node 22, integracja Node 22 i 24; E2E nieblokujące (ręcznie/nocnie, wynik w raporcie) (2026-10-03) |
+| R-32 | Z-01: test klienta przez eksport CommonJS w `comms.js` (po D-03) | etap-1 p.10 | tak || **tak** – logika `comms.js` niezależna od DOM eksportowana wzorcem CommonJS, testy mocha z atrapą WebSocket w `npm test` (2026-10-03) |
