@@ -16,7 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   E-01: tests of the deploy pipeline contract
- *   E-01: the lock is held until the start completes (R-43)
+ *   E-01: the lock is held until the start completes (R-43); a failed storage read releases it
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -172,6 +172,12 @@ describe("flows/pipeline", function() {
         lock.isLocked().should.be.true();
         failStart(new Error("start failed"));
         (await pipeline.deploy({ type: "reload" })).should.eql({ rev: "loadRev" });
+        lock.isLocked().should.be.false();
+    });
+    it("releases the lock when reading storage for reload fails (D4)", async function() {
+        flows.readFlowsFromStorage = sinon.spy(async () => { throw new Error("read failed") });
+        await pipeline.deploy({ type: "reload" }).should.be.rejectedWith("read failed");
+        flows.loadFlows.called.should.be.false();
         lock.isLocked().should.be.false();
     });
     it("releases the lock when the deployment fails", async function() {

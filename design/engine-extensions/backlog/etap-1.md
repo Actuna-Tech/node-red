@@ -145,14 +145,14 @@ Funkcja: Kontrakt potoku wdrożenia
 - Jednostkowe `test/unit/@node-red/runtime/lib/flows/index_spec.js`, nowy `describe('deploy pipeline contract')`:
   `emits deploy events in order for full|nodes|flows`, `resolves setFlows before flows:started by default`, `reload saves nothing and restarts all flows`, `addFlow/updateFlow/removeFlow use the same pipeline`, `buildAddFlowConfig/buildUpdateFlowConfig/buildRemoveFlowConfig match 5.0.7 results`, `start returns missing_types error`, `start returns missing_modules error`, `start returns flow_start_failed when Flow.start throws`, `default mode swallows stop errors (unchanged, D-05)`.
 - Jednostkowe `test/unit/@node-red/runtime/lib/flows/lock_spec.js` (nowy): `runs exclusive sections sequentially`, `releases lock when section throws`.
-- Jednostkowe `test/unit/@node-red/runtime/lib/flows/pipeline_spec.js` (nowy): `all api entries call deploy once`, `reload with loaded config does not read storage again`, `reload saves nothing`, `revision check inside lock`, `api reload reads storage under lock before preDeploy anchor` (R-11).
+- Jednostkowe `test/unit/@node-red/runtime/lib/flows/pipeline_spec.js` (nowy): `all api entries call deploy once`, `reload with loaded config does not read storage again`, `reload saves nothing`, `revision check inside lock`, `api reload reads storage under lock before preDeploy anchor` (R-11), `releases the lock when reading storage for reload fails (D4)`.
 - Jednostkowe `test/unit/@node-red/runtime/lib/api/flows_spec.js`: `setFlows passes no deployOpts by default`, `reload passes no deployOpts by default`, `setState waits for running deploy` (R-11), `setState does not reject with 409 while deploy runs` (R-11).
 - Jednostkowe `test/unit/@node-red/runtime/lib/storage/localfilesystem/projects/index_spec.js` (lub test `runtime.nodes.loadFlows`): `project switch waits for running deploy` (R-11), `api reload inside lock does not deadlock with project switch`.
 - Kontraktowe `test/unit/@node-red/editor-api/lib/admin/flows_spec.js`, `flow_spec.js`: istniejące przypadki bez zmian (kody 204/200, kształt odpowiedzi).
 
 #### DoD specyficzne
 - [ ] Testy charakteryzujące dodane i zielone **przed** refaktorem; po refaktorze bez zmian.
-- [ ] Brak zmian w istniejących testach `flows/index_spec.js`, `api/flows_spec.js`, `admin/flow(s)_spec.js`.
+- [ ] Brak zmian w istniejących testach `flows/index_spec.js`, `api/flows_spec.js`, `admin/flow(s)_spec.js`. **Odstępstwo (D4, przegląd F2):** w istniejącym `beforeEach` testu `setFlows` w `api/flows_spec.js` dodana atrapa `runtime.flows.readFlowsFromStorage` (potrzebna, bo jawny `reload` czyta magazyn w potoku pod blokadą – R-11); asercje bez zmian.
 - [ ] Dokument kontraktu z mapą krok → funkcja → pakiet (w tym krok 2a – Z-12.08, R-27) zaakceptowany przez właścicieli P-01, Z-04–Z-06, Z-08, Z-09, Z-12.08.
 - [ ] JSDoc dla `deploy(opts)`, `deployOpts`, `build*FlowConfig`, `lock.runExclusive` i wyniku `start()`.
 - [ ] Kody `errors[].code` w `snake_case` zgodnie z ZASADY §2.4.
