@@ -272,13 +272,14 @@ trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od dzia
 | **D-21** | adres autora commitów i `Signed-off-by`: `wrepinski@gmail.com` | konfiguracja repozytorium zmieniona (od commita po 2026-10-03, po przekazaniu załączników) |
 | **D-02 (rewizja)** | **przyjęte zgodnie z rekomendacją** – utrzymać D-02 w całości; wymaga jasnej dokumentacji, bo zmienia inne rozwiązania → [MIGRACJA.md](MIGRACJA.md) | [NAZWY-ANALIZA.md](NAZWY-ANALIZA.md): uzupełnienia U1–U8, notatka migracyjna jako warunek odbioru P-01, pytania N-01…N-04 |
 
+| **N-01** | **wariant A**: pusty `rev` (`""` lub `null`): przy `deploy.requireRevision: false` – jak w 5.0.7 (409 `version_mismatch`); przy `true` – traktowany jak brak rewizji → 409 `version_required`; `400 invalid_revision` tylko dla rewizji w złym typie (np. liczba, obiekt) | ZASADY §2.4, karty Z-04/Z-05, [MIGRACJA.md](MIGRACJA.md) §4.1 |
 | **N-02** | użycie `waitForDeployStart()` poza runtime – **nieznane** | przyjęto: brak aliasu; sprawdzenie w liście kontrolnej [MIGRACJA.md](MIGRACJA.md) §7 |
 | **N-03** | **dostosowujemy inne rozwiązania** (bez aliasów starych nazw w silniku) | [MIGRACJA.md](MIGRACJA.md) |
 | **N-04** | czy narzędzia używają API v2 – **nieznane** | przyjęto: przewodnik wymaga v2 i obsługi obu kodów 409 |
 
 ### 7.1 Do podjęcia
 
-**N-01 – pusty `rev: ""` przy wdrożeniu (opis i wpływ)**
+**N-01 – pusty `rev: ""` przy wdrożeniu (opis i wpływ) – rozstrzygnięte: wariant A (§7.0)**
 
 Kiedy to występuje: narzędzie (automat, MCP, skrypt CI) wysyła pole `rev`, ale puste – np. zainicjowało je pustym
 napisem albo nie zdołało odczytać rewizji. Dziś (5.0.7) runtime sprawdza rewizję, gdy pole **istnieje**, więc `""`

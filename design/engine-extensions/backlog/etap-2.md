@@ -174,6 +174,8 @@ Funkcja: Wgrywanie paczki .tgz modułu już zainstalowanego
 
 ### Z-04 – Pełne API pojedynczego flow
 
+> **Decyzja N-01 (2026-10-03):** pusty `rev` (`""` lub `null`): przy `deploy.requireRevision: false` – jak w 5.0.7 (409 `version_mismatch`); przy `true` – traktowany jak brak rewizji → 409 `version_required` (decyzja N-01, wariant A); `400 invalid_revision` tylko dla rewizji w złym typie. Scenariusze BDD i testy kontraktu dostosować przy realizacji.
+
 | Pole | Wartość |
 |---|---|
 | Etap / typ | 2 / funkcja |
@@ -362,6 +364,8 @@ Funkcja: Pełne API pojedynczego flow
 ---
 
 ### Z-05 – Wymóg rewizji przy każdym wdrożeniu
+
+> **Decyzja N-01 (2026-10-03):** pusty `rev` (`""` lub `null`): przy `deploy.requireRevision: false` – jak w 5.0.7 (409 `version_mismatch`); przy `true` – traktowany jak brak rewizji → 409 `version_required` (decyzja N-01, wariant A); `400 invalid_revision` tylko dla rewizji w złym typie. Scenariusze BDD i testy kontraktu dostosować przy realizacji.
 
 | Pole | Wartość |
 |---|---|

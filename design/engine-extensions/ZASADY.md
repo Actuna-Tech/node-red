@@ -125,7 +125,7 @@ Bez ustawionego `shutdownTimeout` – zachowanie 5.0.6 (natychmiastowe zatrzyman
 |---|---|---|---|
 | `version_mismatch` | 409 | istniejący, Z-04 | rewizja w żądaniu ≠ aktualna (całość lub flow) |
 | `version_required` | 409 | Z-05 | `deploy.requireRevision: true` i brak rewizji (nazwa jak w łatce 0006 Zamawiającego – decyzja D-20) |
-| `invalid_revision` | 400 | Z-04 | rewizja w złym formacie |
+| `invalid_revision` | 400 | Z-04 | rewizja w złym typie (np. liczba, obiekt); **pusty `rev` nie jest tym błędem** – pusty `rev` (`""` lub `null`): przy `deploy.requireRevision: false` – jak w 5.0.7 (409 `version_mismatch`); przy `true` – traktowany jak brak rewizji → 409 `version_required` (decyzja N-01, wariant A) |
 | `deploy_rejected` | 400 | Z-06 | `preDeploy` odrzucił wdrożenie (komunikat z hooka) |
 | `deploy_hook_timeout` | 400 | Z-06 | `preDeploy` przekroczył `deploy.hookTimeout` |
 | `deploy_stop_failed` | 500 | P-01 | tryb `started`: błąd zatrzymania węzłów |

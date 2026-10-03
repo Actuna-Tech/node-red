@@ -87,7 +87,8 @@ nowego flow tuż po wdrożeniu (wraca zachowanie 5.0.7).
 | Sytuacja | Odpowiedź | Co ma zrobić narzędzie |
 |---|---|---|
 | Rewizja w żądaniu ≠ aktualna | 409 `version_mismatch` (bez zmian) | pobrać aktualny stan (`GET /flows` lub `GET /flow/:id`), nanieść zmiany, ponowić z nową rewizją |
-| Brak rewizji przy `deploy.requireRevision: true` | 409 `version_required` | jw. – zawsze wysyłać rewizję |
+| Brak rewizji przy `deploy.requireRevision: true` (także pusty `rev: ""` lub `null` – N-01) | 409 `version_required` | jw. – zawsze wysyłać rewizję |
+| Pusty `rev: ""` przy `deploy.requireRevision: false` | 409 `version_mismatch` (jak w 5.0.7) | jw. |
 | Wdrożenie API **v1** (sama tablica) przy `requireRevision: true` | zawsze 409 `version_required` | **przejść na v2** (`Node-RED-API-Version: v2`, treść `{flows, rev}`) |
 | `GET /flow/:id` z nagłówkiem v2 | zawiera `rev` flow (Z-04) | używać tej rewizji w `PUT /flow/:id` |
 | `PUT /flow/:id` nieistniejącego id przy `deploy.putCreatesFlow: true` | tworzy flow pod tym id; rewizja `rev: null` | – |
@@ -151,7 +152,7 @@ Nagłówki „Modified by Actuna Sp. z o.o.” – zachowane w forku (D-19).
 
 | ID | Temat | Stan |
 |---|---|---|
-| N-01 | pusty `rev: ""` przy wdrożeniu | do decyzji – opis i wpływ w [ANALIZA.md](ANALIZA.md) §7.1 |
+| N-01 | pusty `rev: ""` przy wdrożeniu | **rozstrzygnięte – wariant A** (§4.1) |
 | N-02 | użycie `waitForDeployStart()` poza runtime | nieznane – przyjęto: brak aliasu; sprawdzenie w liście kontrolnej |
 | N-04 | czy narzędzia używają API v2 | nieznane – przyjęto: przewodnik wymaga v2 |
 | – | `DELETE /flow/:id` z wymogiem rewizji | do decyzji (karta Z-05) |
