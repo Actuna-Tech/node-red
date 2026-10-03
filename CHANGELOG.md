@@ -98,7 +98,8 @@ Admin API
      400 `invalid_flow_id` if the id is used by another node); without it 404 as before
    - `PUT /flow/:id` rejects node ids used in another flow (400 `duplicate_id`; before
      they were accepted and produced duplicate ids)
-   - an invalid `Node-RED-API-Version` on `/flow` returns 400 `invalid_api_version`, as on `/flows`
+   - an invalid `Node-RED-API-Version` on `/flow` is treated as v1, as before, with a warning in
+     the log (once per value, at most 100 values); `/flows` still returns 400 `invalid_api_version`
    - `DELETE /flow/:id?rev=<rev>` checks the flow revision when given (409 `version_mismatch`)
  - New setting `deploy.requireRevision` (default `false`, unchanged): Admin API deployments
    without a revision are rejected with 409 `{code: "version_required", message}` - `POST /flows`

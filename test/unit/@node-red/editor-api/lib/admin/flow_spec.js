@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-04: contract tests of the single-flow api v2 (rev, ETag, If-Match, 201)
  *   Z-05: contract tests of DELETE /flow/:id?rev=
+ *   R-46: an invalid Node-RED-API-Version on /flow is treated as v1 with a warning
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -352,12 +353,54 @@ describe("api/admin/flow", function() {
             const res = await request(app).put("/flow/t1").send({nodes:[], rev:"stale"}).expect(409);
             res.body.should.have.property("code","version_mismatch");
         });
-        it("invalid API version returns 400 invalid_api_version", async function() {
-            for (const req of [request(app).get("/flow/t1"), request(app).post("/flow").send({}), request(app).put("/flow/t1").send({})]) {
-                const res = await req.set("Node-RED-API-Version","v3").expect(400);
-                res.body.should.have.property("code","invalid_api_version");
-            }
-            calls.should.have.length(0);
+        describe("invalid API version (R-46)", function() {
+            const log = NR_TEST_UTILS.require("@node-red/util").log;
+            let warn;
+            let translate;
+            beforeEach(function() {
+                warn = sinon.stub(log, "warn");
+                translate = sinon.stub(log, "_").callsFake((key, opts) => key + " " + JSON.stringify(opts));
+            });
+            afterEach(function() {
+                warn.restore();
+                translate.restore();
+            });
+            it("is treated as v1 - responses as in 5.0.7", async function() {
+                let res = await request(app).get("/flow/t1").set("Node-RED-API-Version","v3").expect(200);
+                res.body.should.eql({id:"t1", label:"Flow"});
+                res = await request(app).post("/flow").set("Node-RED-API-Version","v3").send({nodes:[]}).expect(200);
+                res.body.should.eql({id:"0123456789abcdef"});
+                res = await request(app).put("/flow/t1").set("Node-RED-API-Version","v3").set("If-Match",'"stale"').send({nodes:[]}).expect(200);
+                res.body.should.eql({id:"t1"});
+                calls.should.have.length(3);
+                calls.forEach(c => c.should.have.property("apiVersion","v1"));
+                // If-Match is ignored as in v1
+                calls[2].flow.should.not.have.property("rev");
+            });
+            it("logs a warning once per value", async function() {
+                const value = "v9-" + Date.now();
+                await request(app).get("/flow/t1").set("Node-RED-API-Version",value).expect(200);
+                await request(app).get("/flow/t1").set("Node-RED-API-Version",value).expect(200);
+                await request(app).put("/flow/t1").set("Node-RED-API-Version",value).send({nodes:[]}).expect(200);
+                warn.calledOnce.should.be.true();
+                warn.firstCall.args[0].should.containEql("api.flow.invalid-api-version");
+                warn.firstCall.args[0].should.containEql(value);
+                await request(app).get("/flow/t1").set("Node-RED-API-Version",value+"-other").expect(200);
+                warn.calledTwice.should.be.true();
+            });
+            it("limits the number of warned values", async function() {
+                for (let i = 0; i < 120; i++) {
+                    await request(app).get("/flow/t1").set("Node-RED-API-Version","limit-" + i + "-" + Date.now()).expect(200);
+                }
+                warn.callCount.should.be.belowOrEqual(101);
+                warn.callCount.should.be.above(0);
+            });
+            it("does not warn for v1, v2 or a missing header", async function() {
+                await request(app).get("/flow/t1").expect(200);
+                await request(app).get("/flow/t1").set("Node-RED-API-Version","v1").expect(200);
+                await request(app).get("/flow/t1").set("Node-RED-API-Version","v2").expect(200);
+                warn.called.should.be.false();
+            });
         });
     });
 

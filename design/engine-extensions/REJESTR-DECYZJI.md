@@ -6,8 +6,8 @@ Zebrane ze wszystkich dokumentów (ANALIZA §7.1, „Pytania” w kartach etapó
 bez duplikatów, w kolejności priorytetów biznesowych ([../PRIORYTETY.md](../PRIORYTETY.md)). Przechodzimy punkt po
 punkcie; wynik każdej decyzji trafia do kolumny „Decyzja” i do dokumentów, których dotyczy.
 
-**Stan (2026-10-03):** wszystkie punkty R-01…R-45 rozstrzygnięte. R-01…R-32 naniesione na ANALIZA §7.0, ZASADY,
-MIGRACJA, PRIORYTETY i karty etapów; R-33…R-43 – doprecyzowania po propagacji (sekcja niżej).
+**Stan (2026-10-03):** wszystkie punkty R-01…R-46 rozstrzygnięte. R-01…R-32 naniesione na ANALIZA §7.0, ZASADY,
+MIGRACJA, PRIORYTETY i karty etapów; R-33…R-46 – doprecyzowania po propagacji (sekcja niżej).
 
 **Już rozstrzygnięte (nie wracamy):** D-01 baza 5.0.7 · D-02 nazwy (rewizja: utrzymane) · D-03 bez Playwright ·
 D-04 podpisy, blokada upstream · D-10 przeładowanie różnicowe · D-11 drenaż SIGTERM · D-19 nagłówki · D-20
@@ -101,3 +101,4 @@ Zamawiający może je zmienić w dowolnej chwili), **Z** = decyzja Zamawiająceg
 | R-43 | Szczegóły z naniesienia R-33…R-43 | T | sprzeczne `If-Match` i `rev` → 400 `invalid_revision`; `If-Match` w v1 ignorowany (v1 bez zmian); pusta lista `[]` = jawnie „żadne źródło zewnętrzne” (`/comms` tylko własne źródło edytora, `set-theme` i nowy kanał nieaktywne) – brak ustawienia = jak 5.0.7 (R-35); ostrzeżenie o braku list – serwer, log przy starcie; po przekroczeniu `deploy.startTimeout` odpowiedź wraca, a blokada wdrożeń trwa do końca startu w tle (spójność potoku E-01); nazwy `adminAuth.strategy.codeInFragment`, `RED.header`, `RED.dialog` przyjęte jak w kartach |
 | R-44 | FL-B-010: import a zablokowany flow (`locked`) | Z | **wariant B** – przy zablokowanym flow opcja „zastąp” nieaktywna (podpowiedź „odblokuj, aby zastąpić”), możliwa tylko kopia lub pominięcie; blokada to ochrona edytora przed przypadkową zmianą, nie uprawnienie (2026-10-03) |
 | R-45 | P-01: blokada wdrożeń po przekroczeniu `deploy.startTimeout` (bezpiecznik W2 vs R-43) | Z | **A domyślnie** – blokada trwa do końca startu (R-43), po 60 s ostrzeżenie w logu; `deploy.startTimeout` nadal daje 500 `start_timeout` w trybie `"started"` bez zwalniania blokady; zwolnienie blokady po upływie limitu tylko przy jawnym `deploy.startTimeoutReleasesLock: true` (domyślnie `false`; ryzyko równoległego startu opisane w `settings.js`) (2026-10-03) |
+| R-46 | Z-04: nieprawidłowy nagłówek `Node-RED-API-Version` na `/flow` | Z | **jak v1 + ostrzeżenie** – żądanie obsługiwane jak v1 (zgodność z 5.0.7), `log.warn` raz na wartość (z ograniczeniem liczby wartości); `/flows` bez zmian (400 `invalid_api_version`) (2026-10-03) |
