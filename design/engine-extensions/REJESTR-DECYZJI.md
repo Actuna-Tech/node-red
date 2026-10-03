@@ -6,8 +6,8 @@ Zebrane ze wszystkich dokumentów (ANALIZA §7.1, „Pytania” w kartach etapó
 bez duplikatów, w kolejności priorytetów biznesowych ([../PRIORYTETY.md](../PRIORYTETY.md)). Przechodzimy punkt po
 punkcie; wynik każdej decyzji trafia do kolumny „Decyzja” i do dokumentów, których dotyczy.
 
-**Stan (2026-10-03):** wszystkie punkty R-01…R-32 rozstrzygnięte. Następny krok: naniesienie decyzji na ANALIZA §7.0,
-ZASADY, MIGRACJA, PRIORYTETY i karty etapów.
+**Stan (2026-10-03):** wszystkie punkty R-01…R-42 rozstrzygnięte. R-01…R-32 naniesione na ANALIZA §7.0, ZASADY,
+MIGRACJA, PRIORYTETY i karty etapów; R-33…R-42 – doprecyzowania po propagacji (sekcja niżej).
 
 **Już rozstrzygnięte (nie wracamy):** D-01 baza 5.0.7 · D-02 nazwy (rewizja: utrzymane) · D-03 bez Playwright ·
 D-04 podpisy, blokada upstream · D-10 przeładowanie różnicowe · D-11 drenaż SIGTERM · D-19 nagłówki · D-20
@@ -80,3 +80,22 @@ kod `invalid_node_type` w katalogu.
 | R-30 | E-04: szablon nagłówków (JSON, pliki bez licencji), komentarze „upstream”, historia łatek, CHANGELOG, nazwy narzędzi | ZAŁ-A p.7–9; etap-4 p.16–17 | || **zgodnie z rekomendacją** – szablon nagłówka z łatek + `MODIFICATIONS.md` dla plików bez komentarzy/licencji, uzupełnienie nagłówków z 0004; komentarze „upstream” → „wersja bazowa 5.0.7”; łatki zastąpione commitami pakietów (odwołanie do zał. A); CHANGELOG „Unreleased” w gałęzi pakietu; nazwy narzędzi stron trzecich dozwolone (2026-10-03) |
 | R-31 | E-05: miejsce CI, macierz wersji Node | etap-4 p.18 | || **zgodnie z rekomendacją** – CI (GitHub Actions) w forku `Actuna-Tech/node-red`, gałąź integracyjna (np. `actuna/integration`); gałęzie pakietów Node 22, integracja Node 22 i 24; E2E nieblokujące (ręcznie/nocnie, wynik w raporcie) (2026-10-03) |
 | R-32 | Z-01: test klienta przez eksport CommonJS w `comms.js` (po D-03) | etap-1 p.10 | tak || **tak** – logika `comms.js` niezależna od DOM eksportowana wzorcem CommonJS, testy mocha z atrapą WebSocket w `npm test` (2026-10-03) |
+
+## Doprecyzowania po naniesieniu decyzji (2026-10-03)
+
+Szczegóły, których decyzje R-01…R-32 nie rozstrzygały. **T** = ustalenie techniczne Wykonawcy (bez wpływu biznesowego;
+Zamawiający może je zmienić w dowolnej chwili), **Z** = decyzja Zamawiającego.
+
+| ID | Temat | Rodzaj | Ustalenie |
+|---|---|---|---|
+| R-33 | Nazwy roboczych ustawień i kodów | T | `httpAdminCommsOrigins` (R-06); `editorTheme.embedding.allowedOrigins` (R-28; zamiast `…embedding.postMessage.allowedOrigins`); `NODE_RED_READ_ONLY_USER_DIR` (R-18); `editorTheme.auth.tokenStorage: "local" \| "session"`, domyślnie `"local"` (R-26); 403 `node_type_not_permitted` z `types[]` (R-27); `errors[].code: "safe_mode"` (R-10) |
+| R-34 | Z-04: zakres statusu 201, `PUT` tworzący, `If-Match` | Z | **201 tylko dla v2**, v1 nadal 200; `PUT /flow/:id` tworzy tylko przy `deploy.putCreatesFlow: true` (201 w v2 / 200 w v1), bez ustawienia 404 jak dziś; w v2 `If-Match: <ETag>` równoważne `rev`, sprzeczne oba → 400 |
+| R-35 | Domyślne listy źródeł (`/comms`, `set-theme`) | Z | **brak ustawienia = zachowanie 5.0.7** (bez kontroli, ostrzeżenie w logu przy starcie); ustawiona lista – tylko wymienione źródła, `/comms` przyjmuje też własne źródło edytora; w naszych instalacjach lista zawsze ustawiona |
+| R-36 | Z-09: `attempts`, dodatkowy `preReload`, błąd `watchFlows` | Z | `retry.attempts` domyślnie 10 (~8 min), potem `failed`; dodatkowy `preReload` (D-17) poza blokadą, najwyżej jedna runda, potem przeładowanie z ostrzeżeniem; przy `watch: true` błąd rejestracji `watchFlows` → błąd startu |
+| R-37 | Z-08: `preShutdown` bez `shutdownTimeout`, limit `RED.stop()` | T | bez `shutdownTimeout` hook `preShutdown` nie jest wywoływany (zachowanie 5.0.x); brak osobnego limitu `RED.stop()` – ostatecznym limitem jest `terminationGracePeriodSeconds` orkiestratora |
+| R-38 | Z-08/P-01: limit czasu startu w trybie `deploy.response: "started"` | T | `deploy.startTimeout` (ms), domyślnie wyłączony; po przekroczeniu 500 `deploy_start_failed` z `errors[].code: "start_timeout"`, flow startują dalej w tle (wynik w logu) |
+| R-39 | Z-15/P-01: odpowiedź na instancji `editorOnly`, „Restart flows” | T | `deploy.response: "started"` → `{rev, started: false}` (bez błędu); akcja „Restart flows” ukryta/nieaktywna jak przycisk `inject` |
+| R-40 | Z-11: dokumentacja `readOnly`, bezwzględny `flowFile` | T | `readOnly` opisane w szablonie `settings.js`; `readOnlyUserDir` chroni także bezwzględny `flowFile` (zapis odrzucany niezależnie od ścieżki) |
+| R-41 | Z-02: nieznana wartość `httpAdminNodeRoutes`; R-08: odświeżenie użytkownika po ponownym logowaniu | T | nieznana wartość → traktowana jak `"authenticated"` (bezpieczniej) + ostrzeżenie w logu; brak odświeżenia `RED.settings.user` po ponownym logowaniu (`comms.js:96-105`) – naprawiany razem z poprawką R-08 (test, który pada bez poprawki) |
+| R-42 | Z-12.08/R-27: listy typów węzłów; kontrola przy przeładowaniu | Z (+T) | **obie listy**: wpisy odbierające `!nodes.type.<typ>` (zakazane) oraz lista dozwolonych (np. `["!nodes.type.*", "nodes.type.inject", …]` – odebranie wszystkich + jawne przyznanie wybranych; przyznanie konkretnego typu ma pierwszeństwo przed `!nodes.type.*`, odebranie konkretnego typu – przed wszystkim); **T:** przeładowanie z magazynu (`reload`, Z-09) nie jest kontrolowane per użytkownik – brak użytkownika; treść w magazynie pochodzi z kontrolowanych wdrożeń |
+
