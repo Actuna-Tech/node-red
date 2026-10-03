@@ -304,6 +304,34 @@ module.exports = ${JSON.stringify({
         await exited(child);
     });
 
+    it("a failing shutdown is logged and the process exits with 1 (no uncaught exception)", async function() {
+        const userDir = tempDir();
+        fs.writeFileSync(path.join(userDir, "flows.json"), "[]");
+        const port = await getFreePort();
+        const RED_LIB = path.resolve(__dirname, "../../../packages/node_modules/node-red/lib/red.js");
+        const settings = `
+require(${JSON.stringify(RED_LIB)}).stop = function() { return Promise.reject(new Error("stop failed on purpose")) };
+module.exports = ${JSON.stringify({
+            flowFile: "flows.json",
+            disableEditor: true,
+            logging: { console: { level: "info" } }
+        })};
+`;
+        fs.writeFileSync(path.join(userDir, "settings.js"), settings);
+        const child = spawn(process.execPath, [RED_JS, "-u", userDir, "-p", String(port)], { stdio: ["ignore", "pipe", "pipe"] });
+        children.push(child);
+        let output = "";
+        child.stdout.on("data", d => output += d);
+        child.stderr.on("data", d => output += d);
+        const base = "http://127.0.0.1:" + port;
+        await waitFor(async () => (await status(base + "/flows")) === 200, 30000, "not started");
+        child.kill("SIGTERM");
+        const code = await Promise.race([exited(child), new Promise(r => setTimeout(() => r("timeout"), 10000))]);
+        should(code).equal(1);
+        output.should.match(/Shutdown failed: stop failed on purpose/);
+        output.should.not.match(/Uncaught Exception/);
+    });
+
     it("health disabled (default): no probes, SIGTERM stops without drain even with a preShutdown hook (R-22, R-37)", async function() {
         const userDir = tempDir();
         const stepLog = path.join(userDir, "steps.log");

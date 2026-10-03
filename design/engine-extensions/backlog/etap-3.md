@@ -990,6 +990,10 @@ Funkcja: Przeładowanie flow po zmianie w magazynie
     `reloadPending`/drenażu – potok zwraca `skipped: "superseded"`; wdrożenie lokalne, które pada po
     `begin("deploy")`, np. 400 `read_only_user_dir`) ustawia kolejny cykl, który porównuje rewizję magazynu z aktywną
     i przeładowuje, gdy się różnią; po udanym wdrożeniu rewizje są równe – bez przeładowania (3 testy regresji).
+  - wyjście z `failed`: po wyczerpaniu ponowień odczyt co `retry.max` (bez ponownego błędu „retries exhausted”), po
+    udanym odczycie przeładowanie (wymuszone) i `ready`; jeden timer ponowień (nowy zastępuje poprzedni), timery
+    `unref`, `sleep` przerywany przez `stop()`; `watch.js` – stan ostatniej treści per obserwator (`noteWrite`
+    aktualizuje wszystkich aktywnych); CLI – nieudane `health.shutdown` → log `health.shutdown-failed` i kod 1.
 
 ---
 

@@ -220,3 +220,43 @@ describe("storage/localfilesystem watchFlows (Z-09)", function() {
         notifications.should.have.length(0);
     });
 });
+
+describe("storage/localfilesystem/watch - observers (Z-09 review)", function() {
+    this.timeout(10000);
+    const watch = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/watch");
+    let dir;
+    let stops;
+    beforeEach(function() {
+        stops = [];
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), "nr-watch2-"));
+        fs.writeFileSync(path.join(dir, "flows.json"), JSON.stringify([{ id: "t1", type: "tab" }]));
+    });
+    afterEach(async function() {
+        for (const stop of stops) {
+            await stop();
+        }
+        fs.removeSync(dir);
+    });
+    it("two observers of the same file in one process are both notified (state per observer)", async function() {
+        const file = path.join(dir, "flows.json");
+        const a = [];
+        const b = [];
+        stops.push(await watch.watchFiles({ flows: file }, n => a.push(n), { debounce: 20, interval: 50 }));
+        stops.push(await watch.watchFiles({ flows: file }, n => b.push(n), { debounce: 60, interval: 50 }));
+        writeAtomically(file, JSON.stringify([{ id: "t1", type: "tab", label: "changed" }]));
+        await waitFor(() => a.length > 0 && b.length > 0, 3000);
+    });
+    it("noteWrite is applied to every active observer", async function() {
+        const file = path.join(dir, "flows.json");
+        const a = [];
+        const b = [];
+        stops.push(await watch.watchFiles({ flows: file }, n => a.push(n), { debounce: 20, interval: 50 }));
+        stops.push(await watch.watchFiles({ flows: file }, n => b.push(n), { debounce: 20, interval: 50 }));
+        const content = JSON.stringify([{ id: "t1", type: "tab", label: "own" }]);
+        watch.noteWrite(file, content);
+        writeAtomically(file, content);
+        await delay(300);
+        a.should.have.length(0);
+        b.should.have.length(0);
+    });
+});

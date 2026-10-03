@@ -661,9 +661,12 @@ describe("flows/reload (Z-09)", function() {
             await env.start();
             env.failAlways = true;
             env.change("B");
+            let atFailed = null;
+            const off = state.onChange(info => { if (info.state === "failed" && atFailed === null) { atFailed = env.getFlowsCalls } });
             env.notify();
             await waitFor(() => state.get().state === "failed");
-            env.getFlowsCalls.should.equal(3);
+            off();
+            atFailed.should.equal(3);
             state.isReady().should.be.false();
             env.applied.should.have.length(0);
             env.logs.error.some(m => m.indexOf("reload.retries-exhausted") === 0).should.be.true();
@@ -677,9 +680,12 @@ describe("flows/reload (Z-09)", function() {
             env = createEnv({ reload: { retry: { min: 1, max: 1 } } });
             await env.start();
             env.failAlways = true;
+            let atFailed = null;
+            const off = state.onChange(info => { if (info.state === "failed" && atFailed === null) { atFailed = env.getFlowsCalls } });
             env.notify();
             await waitFor(() => state.get().state === "failed");
-            env.getFlowsCalls.should.equal(10);
+            off();
+            atFailed.should.equal(10);
         });
         it("read failure under the lock returns to the state before the cycle", async function() {
             env = createEnv({ reload: { retry: { min: 5, max: 5 } } });
@@ -690,6 +696,75 @@ describe("flows/reload (Z-09)", function() {
             env.notify();
             await waitFor(() => env.applied.length === 1);
             states.slice(0, 3).should.eql(["reloadPending", "reloadPending:draining", "ready"]);
+        });
+        it("after the retries were exhausted storage is read again every retry.max - back to ready without a notification", async function() {
+            env = createEnv({ reload: { retry: { min: 1, max: 15, attempts: 2 } } });
+            await env.start();
+            env.failAlways = true;
+            env.change("B");
+            env.notify();
+            await waitFor(() => state.get().state === "failed");
+            const atFailed = env.getFlowsCalls;
+            // still failing: periodic reads, no new "retries exhausted" error
+            await waitFor(() => env.getFlowsCalls >= atFailed + 2, 1000, "no periodic read");
+            env.logs.error.filter(m => m.indexOf("reload.retries-exhausted") === 0).should.have.length(1);
+            state.get().state.should.equal("failed");
+            // access restored - no notification needed
+            env.failAlways = false;
+            await waitFor(() => state.get().state === "ready", 1000, "not back to ready");
+            env.applied.should.have.length(1);
+            env.applied[0].rev.should.equal("B");
+        });
+        it("a new retry timer replaces the previous one (no extra cycle)", async function() {
+            env = createEnv({ reload: { retry: { min: 30, max: 1000, attempts: 5 } } });
+            let first = true;
+            hooks.add("preReload", p => {
+                if (first) {
+                    first = false;
+                    // the reread and the coalesced cycle fail; a notification during the cycle
+                    env.failReads = 2;
+                    env.notify();
+                }
+            });
+            await env.start();
+            env.change("B");
+            env.notify();
+            await waitFor(() => env.applied.length === 1, 2000);
+            await delay(150);
+            // step 2 + reread (failed) + coalesced step 2 (failed) + one retry (step 2 + reread)
+            env.getFlowsCalls.should.equal(5);
+        });
+        it("the timers of the reloader do not keep the process alive and stop() ends the waits", async function() {
+            const recorded = [];
+            const realSetTimeout = global.setTimeout;
+            global.setTimeout = function() {
+                const timer = realSetTimeout.apply(this, arguments);
+                if (/flows[\\/]reload\.js/.test(new Error().stack)) {
+                    recorded.push(timer);
+                }
+                return timer;
+            };
+            try {
+                env = createEnv({ reload: { retry: { min: 600000, max: 600000, attempts: 3 } } });
+                await env.start();
+                env.failReads = 1;
+                env.change("B");
+                env.notify();
+                await waitFor(() => recorded.length > 0);
+                // a cycle waiting for another operation sleeps retry.min
+                await lock.runExclusive(async function() {
+                    const token = state.begin("set-state", { supersede: true });
+                    env.notify();
+                    await delay(10);
+                    state.end(token, { errors: [] });
+                });
+                await waitFor(() => recorded.length > 1);
+            } finally {
+                global.setTimeout = realSetTimeout;
+            }
+            recorded.forEach(t => t.hasRef().should.be.false());
+            await env.reloader.stop();
+            recorded.forEach(t => t._destroyed.should.be.true());
         });
         it("storage is read strictly (getFlows({strict: true})) in both reads of the cycle", async function() {
             env = createEnv();

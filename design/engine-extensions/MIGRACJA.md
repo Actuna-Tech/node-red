@@ -183,7 +183,7 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 - **Przeładowanie z magazynu** (Z-09, R-20): `preReload` nie ma prawa weta (tylko opóźnia, limit `preReloadTimeout`);
   przy dodatkowych flow zmienionych po drenażu – ponowny `preReload` dla nich (D-17), poza blokadą, najwyżej jedna
   runda, potem przeładowanie z ostrzeżeniem w logu (R-36); błąd odczytu magazynu → ponowienia wg `deploy.reload.retry`
-  (domyślnie 10 prób, ~8 min), po wyczerpaniu `failed` i 503 (D-18, R-36); przy `deploy.reload.watch: true` błąd
+  (domyślnie 10 prób, ~8 min), po wyczerpaniu `failed` i 503 (D-18, R-36), a dalej odczyt co `retry.max` – po odzyskaniu dostępu powrót do `ready` bez nowego powiadomienia; przy `deploy.reload.watch: true` błąd
   rejestracji `watchFlows` → błąd startu instancji (R-36).
 - **Instancja tylko edycyjna** (`editorOnly: true`, R-19): przyciski węzłów (m.in. `inject`) i akcja „Restart flows”
   w edytorze nieaktywne z podpowiedzią (R-39); `POST /flows/state` start → 409 `editor_only`; wdrożenie w trybie

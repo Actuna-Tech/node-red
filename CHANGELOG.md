@@ -54,6 +54,12 @@ Features
    drain, or a deployment that fails after it started - for example 400 `read_only_user_dir`) is
    not lost: the revision in storage is compared with the active one again and the reload is
    resumed when they differ
+ - After the retries of a failed read were exhausted (`failed`) storage is read again every
+   `deploy.reload.retry.max`: the instance becomes ready again once storage can be read, without
+   a new notification. The timers of the reload do not keep the process alive and its waits end
+   when the runtime stops
+ - The file storage keeps the last known content per observer, so two observers of the same file
+   in one process are both notified
  - New setting `editorOnly` (default `false`): an editor-only instance loads the flows and saves
    deployments but never starts the flows. The instance state is `loaded` (`/health/ready` 200),
    `runtimeFlowState` is neither read nor saved and safe mode is not ended by a deployment. With
@@ -99,6 +105,8 @@ Runtime
    on a stop signal; without it the shutdown is unchanged
  - New api for embedding applications `RED.health` (`enabled`, `path`, `usesMainServer`, `handler`,
    `shutdown({reason, signal})`, `closeServer(server, limit)`)
+ - The CLI logs a failed shutdown (`Shutdown failed: ...`) and exits with 1 instead of an
+   unhandled rejection
  - The CLI passes the signal as the stop reason (`RED.stop("SIGTERM")`), logged as
    `Stopping Node-RED (SIGTERM)`
  - New setting `readOnlyUserDir` (default `false`) and the CLI environment variable
