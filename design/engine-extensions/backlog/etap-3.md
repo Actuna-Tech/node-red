@@ -584,13 +584,43 @@ Funkcja: Sondy zdrowia
 - Alternatywa: sondy w `editor-api` – odrzucona (niedostępne przy `httpAdminRoot:false`).
 
 #### Podzadania
-- [ ] `runtime/lib/health.js` + testy jednostkowe handlera (M)
-- [ ] Osobny serwer (`port`) + obsługa błędów portu (S)
-- [ ] Montaż w CLI przed uwierzytelnieniem, warunek nasłuchu, `RED.health` (S)
-- [ ] Drenaż przy SIGTERM (D-11): `stopping` od sygnału, hook `preShutdown`, `shutdownTimeout`, kolejność `RED.stop()` → zamknięcie serwera HTTP (D-05), `RED.health.shutdown` + test w procesie potomnym (M)
-- [ ] Test cyklu życia (integracyjny) (M)
-- [ ] Szablon `settings.js`, CHANGELOG, teksty logów (S)
-- [ ] `deploy.startTimeout` – limit czasu startu w trybie `"started"`, kod `start_timeout`, start w tle (R-10, R-38) (S)
+- [x] `runtime/lib/health.js` + testy jednostkowe handlera (M)
+- [x] Osobny serwer (`port`) + obsługa błędów portu (S)
+- [x] Montaż w CLI przed uwierzytelnieniem, warunek nasłuchu, `RED.health` (S)
+- [x] Drenaż przy SIGTERM (D-11): `stopping` od sygnału, hook `preShutdown`, `shutdownTimeout`, kolejność `RED.stop()` → zamknięcie serwera HTTP (D-05), `RED.health.shutdown` + test w procesie potomnym (M)
+- [x] Test cyklu życia (integracyjny) (M)
+- [x] Szablon `settings.js`, CHANGELOG, teksty logów (S)
+- [x] `deploy.startTimeout` – limit czasu startu w trybie `"started"`, kod `start_timeout`, start w tle (R-10, R-38) (S) – zrealizowane wcześniej w P-01 (R-45)
+
+#### Zrealizowane (gałąź `feature/p3-database`)
+- `runtime/lib/health.js`: `init`, `isEnabled`, `getPath`, `usesMainServer`, `handler` (Express i `http`), `start`
+  (walidacja `health.invalid-path`, log `health.path-shadows-route`, ostrzeżenie `health.port-is-ui-port`, własny
+  serwer przy `health.port` – `health.port-in-use` odrzuca start i ustawia `failed`), `stop` (po `stopped`),
+  `closeServer(server, limit)` (`close` + `closeIdleConnections` z limitem), `shutdown({reason, signal, stop})`
+  (część C kontraktu: `stopping` synchronicznie → `preShutdown` tylko przy `shutdownTimeout` i zarejestrowanych
+  handlerach, limit z ostrzeżeniem, błąd z logiem → `stop(reason)`; drugie wywołanie przerywa drenaż).
+- `runtime/lib/index.js` (`health.init`, `health.start` po katalogu komunikatów – sondy od `starting`, `health.stop`
+  po `stopped`, `runtime.health`); `node-red/lib/red.js` (`RED.health`); `node-red/red.js` (montaż przed
+  `httpAdminAuth`/`httpNodeAuth`, warunek nasłuchu, `exitWhenStopped(signal)` → `RED.health.shutdown` → zamknięcie
+  serwera tylko przy `health.enabled` → `process.exit()`); `util/lib/hooks.js` (`preShutdown` w `VALID_HOOKS`);
+  szablon `settings.js` (`health`, `shutdownTimeout`); `runtime.json` (`health.*`).
+- Testy: `health_spec.js` (42), `health_shutdown_spec.js` (12), `index_spec.js` (+5), `node-red/lib/red_spec.js` (+2),
+  `hooks_spec.js` (+1), proces potomny `test/unit/node-red/health-probes_spec.js` (5: pełna sekwencja start → ready →
+  wdrożenie z wolnym zamykaniem węzła (503) → ready → SIGTERM (503 od razu, `/live` 200, serwer główny przyjmuje,
+  żaden węzeł niezamknięty do końca `preShutdown`) → wyjście; drugi SIGTERM; serwer główny z `httpNodeAuth`;
+  worker bez Admin API i `httpNodeRoot`; ustawienia domyślne – brak sond i brak drenażu mimo hooka).
+- **Rozbieżności z kartą / uwagi:**
+  - wydzielenie montażu z `node-red/red.js` do osobnego modułu nie zostało zrobione – montaż i sygnały sprawdzane
+    testem procesu potomnego (zamiast `health_mount_spec.js`);
+  - `health_lifecycle_spec.js` (w procesie, odpytywanie co 50 ms) zastąpiony testem procesu potomnego; warianty
+    missing-types i `runtimeFlowState: stop` sprawdzone jednostkowo (`health_spec.js` po stanach, `flows/index_spec.js`);
+  - przy wyłączonych sondach CLI też przechodzi przez `RED.health.shutdown` (bez drenażu i bez zamykania serwera);
+    jedyna widoczna różnica względem 5.0.7 to log `Stopping Node-RED (SIGTERM)` (powód zatrzymania, R-23); drugi
+    sygnał bez drenażu jest ignorowany jak dotąd;
+  - handler `preShutdown` musi przyjmować argument `payload` (konwencja hooków: funkcja bez parametrów jest
+    traktowana jak wariant z wywołaniem zwrotnym) – opis w `settings.js`;
+  - nieprawidłowe `shutdownTimeout` (≤ 0, nie liczba) = brak drenażu, bez ostrzeżenia;
+  - `RED.health.closeServer` zamyka serwer z limitem 5 s (stała), własny serwer sond – 1 s.
 
 ---
 

@@ -14,6 +14,24 @@ Runtime
    unchanged)
  - The result of the start of the flows reports `flowsRunning: false` with a `reason` when the
    flows were not started on purpose (safe mode, flows stopped through `POST /flows/state`)
+ - New setting `health: { enabled, path, port, host }` (disabled by default): health probes
+   `<path>/live` (200 while the process runs) and `<path>/ready` (200 when the flows run or, on an
+   editor-only instance, are loaded; otherwise 503 with the constant body `{"status":"unavailable"}`),
+   without authentication, `Cache-Control: no-store`, 405 for other methods, 404 for other paths.
+   Without `port` they are mounted on the main server before any authentication and the server
+   listens even with `httpAdminRoot: false` and `httpNodeRoot: false`; with `port` a separate
+   server is started (`host` defaults to `uiHost`); a port in use fails the start
+   (`health.port-in-use`)
+ - New setting `shutdownTimeout` (ms, not set by default): on a stop signal `/ready` answers 503 at
+   once, the new hook `preShutdown` (`{reason, deadline, signal}`) is called and waited for at most
+   `shutdownTimeout`, then the flows stop. Without the setting the hook is not called and the flows
+   stop at once as before. A second signal during the drain stops at once
+ - With `health.enabled` the HTTP server is closed (idle connections too) after the flows stopped
+   on a stop signal; without it the shutdown is unchanged
+ - New api for embedding applications `RED.health` (`enabled`, `path`, `usesMainServer`, `handler`,
+   `shutdown({reason, signal})`, `closeServer(server, limit)`)
+ - The CLI passes the signal as the stop reason (`RED.stop("SIGTERM")`), logged as
+   `Stopping Node-RED (SIGTERM)`
 
 #### Unreleased: Security and fixes
 

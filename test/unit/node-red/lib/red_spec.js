@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   E-02: RED.stop(reason) passes the reason to the runtime (R-23)
+ *   Z-08: RED.health
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -76,6 +77,29 @@ describe("red/red", function() {
         it.skip('only initialises api component if httpAdmin enabled');
         it.skip('stubs httpAdmin if httpAdmin disabled');
         it.skip('stubs httpNode if httpNode disabled');
+    });
+
+    describe("health (Z-08)", function() {
+        const health = NR_TEST_UTILS.require("@node-red/runtime/lib/health");
+        afterEach(function() {
+            sinon.restore();
+            health.init({});
+            NR_TEST_UTILS.require("@node-red/runtime/lib/state").reset();
+        });
+        it('exposes the health settings and handler', function() {
+            health.init({ health: { enabled: true, path: "/probe" }, uiPort: 1880 });
+            RED.health.enabled.should.be.true();
+            RED.health.path.should.equal("/probe");
+            RED.health.usesMainServer.should.be.true();
+            RED.health.handler.should.equal(health.handler);
+            RED.health.closeServer.should.equal(health.closeServer);
+        });
+        it('shutdown stops through RED.stop with the reason', async function() {
+            health.init({});
+            const stop = sinon.stub(runtime, "stop").resolves();
+            await RED.health.shutdown({ reason: "SIGTERM", signal: "SIGTERM" });
+            stop.firstCall.args.should.eql(["SIGTERM"]);
+        });
     });
 
     describe("stop (E-02)", function() {

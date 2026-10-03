@@ -18,6 +18,10 @@ describe("util/hooks", function() {
             done(err);
         })
     })
+    it("allows preShutdown hook", function() {
+        hooks.add("preShutdown", function(payload) {});
+        hooks.has("preShutdown").should.be.true();
+    })
     it("rejects invalid hook id", function(done) {
         try {
             hooks.add("foo", function(payload) {})

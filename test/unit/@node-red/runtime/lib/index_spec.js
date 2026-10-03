@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-02: test of publicRoute() in the stubbed admin api
  *   E-02: the instance state on start and stop, RED.stop(reason)
+ *   Z-08: the health probes follow the start and stop of the runtime
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -376,6 +377,110 @@ describe("runtime", function() {
 
         it("exposes the state on the internal runtime object", function() {
             runtime._.state.should.equal(instanceState);
+        });
+    });
+    describe("health probes (Z-08)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const health = NR_TEST_UTILS.require("@node-red/runtime/lib/health");
+        const express = require("express");
+        const request = require("supertest");
+        const net = require("net");
+        let stubs;
+        beforeEach(function() {
+            instanceState.reset();
+            stubs = [
+                sinon.stub(storage,"init").callsFake(function() {return Promise.resolve();}),
+                sinon.stub(redNodes,"init").callsFake(function() {}),
+                sinon.stub(redNodes,"load").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"cleanModuleList").callsFake(function(){}),
+                sinon.stub(redNodes,"getNodeList").callsFake(function() {return []}),
+                sinon.stub(redNodes,"loadContextsPlugin").callsFake(function() {return Promise.resolve()})
+            ];
+            mockUtil();
+        });
+        afterEach(async function() {
+            stubs.forEach(s => s.restore());
+            unmockUtil();
+            await health.stop();
+            health.init({});
+            instanceState.reset();
+        });
+        function stub(obj, name, fn) {
+            const s = sinon.stub(obj, name).callsFake(fn);
+            stubs.push(s);
+            return s;
+        }
+        function app() {
+            const a = express();
+            a.use(runtime._.health.getPath(), runtime._.health.handler);
+            return a;
+        }
+
+        it("ready 503 when RED.start resolved before the flows started, 200 after", async function() {
+            let finishStart;
+            stub(redNodes, "loadFlows", () => Promise.resolve());
+            stub(redNodes, "startFlows", () => new Promise(resolve => { finishStart = resolve }).then(r => { instanceState.report(r); return r }));
+            runtime.init({testSettings: true, httpAdminRoot:"/", health: {enabled: true}});
+            await runtime.start();
+            (await request(app()).get("/health/ready")).status.should.equal(503);
+            (await request(app()).get("/health/live")).status.should.equal(200);
+            finishStart({errors: []});
+            await new Promise(resolve => setTimeout(resolve, 10));
+            (await request(app()).get("/health/ready")).status.should.equal(200);
+        });
+
+        it("ready 503 synchronously after stop() is called (slow close)", async function() {
+            instanceState.markStarting();
+            instanceState.report({errors: []});
+            runtime.init({testSettings: true, httpAdminRoot:"/", health: {enabled: true}});
+            let finishStop;
+            stub(redNodes, "stopFlows", () => new Promise(resolve => { finishStop = resolve }));
+            stub(redNodes, "closeContextsPlugin", () => Promise.resolve());
+            (await request(app()).get("/health/ready")).status.should.equal(200);
+            const stopped = runtime.stop();
+            (await request(app()).get("/health/ready")).status.should.equal(503);
+            (await request(app()).get("/health/live")).status.should.equal(200);
+            finishStop();
+            await stopped;
+        });
+
+        it("a busy health.port rejects the start with health.port-in-use and sets failed", async function() {
+            const blocker = net.createServer();
+            await new Promise(resolve => blocker.listen(0, "127.0.0.1", resolve));
+            try {
+                runtime.init({testSettings: true, httpAdminRoot:"/", health: {enabled: true, port: blocker.address().port, host: "127.0.0.1"}});
+                const err = await runtime.start().should.be.rejected();
+                err.should.have.property("code", "health.port-in-use");
+                instanceState.get().state.should.equal("failed");
+                storage.init.called.should.be.false();
+            } finally {
+                blocker.close();
+            }
+        });
+
+        it("the own server of the probes is closed when the runtime stopped", async function() {
+            const srv = net.createServer();
+            await new Promise(resolve => srv.listen(0, "127.0.0.1", resolve));
+            const port = srv.address().port;
+            await new Promise(resolve => srv.close(resolve));
+            stub(redNodes, "loadFlows", () => Promise.resolve());
+            stub(redNodes, "startFlows", () => Promise.resolve({errors: []}));
+            stub(redNodes, "stopFlows", () => Promise.resolve());
+            stub(redNodes, "closeContextsPlugin", () => Promise.resolve());
+            runtime.init({testSettings: true, httpAdminRoot:"/", health: {enabled: true, port: port, host: "127.0.0.1"}});
+            await runtime.start();
+            should.exist(runtime._.health.getServer());
+            await runtime.stop();
+            should(runtime._.health.getServer()).be.null();
+        });
+
+        it("disabled by default - no server", async function() {
+            stub(redNodes, "loadFlows", () => Promise.resolve());
+            stub(redNodes, "startFlows", () => Promise.resolve({errors: []}));
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start();
+            runtime._.health.isEnabled().should.be.false();
+            should(runtime._.health.getServer()).be.null();
         });
     });
 });
