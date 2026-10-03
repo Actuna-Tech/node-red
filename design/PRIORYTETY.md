@@ -136,6 +136,11 @@ Poza budżetem (osobny etap): Z-10, Z-09 (wiele workerów na tenanta), Z-07, Z-0
 FL-B-011. Zasady oszczędności: jedna runda przeglądu na fazę (druga tylko przy zmianach bezpieczeństwa), dokumentacja
 w kartach i CHANGELOG, pełna propagacja przy kamieniu milowym; przeliczenie planu po F3 na podstawie rzeczywistego zużycia.
 
+**Przeliczenie po F3 (2026-10-03):** pozostało 65/250; F3 kosztowało 25 (szacunek 33 → współczynnik 0,76). Po zapasie
+12,5 → ~52 na F4/F5. Plan (skorygowany): K8S-T-001 ~11, K8S-T-004 ~9, Z-11 ~5, Z-08 ~5, Z-15 ~5, K8S-T-009 ~8 =
+~43. Z-10/Z-09 poza budżetem. Zależności `pg`, `ioredis` (R-47); wtyczki w `plugins/` (R-48). Tag `milestone-f3`
+nie wypchnięty – proxy sesji odrzuca wypychanie tagów (403); do założenia na GitHubie na commicie `e0017f9`.
+
 ## Decyzje
 
 | ID | Decyzja | Rekomendacja |

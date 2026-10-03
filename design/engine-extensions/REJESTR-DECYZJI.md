@@ -6,7 +6,7 @@ Zebrane ze wszystkich dokumentów (ANALIZA §7.1, „Pytania” w kartach etapó
 bez duplikatów, w kolejności priorytetów biznesowych ([../PRIORYTETY.md](../PRIORYTETY.md)). Przechodzimy punkt po
 punkcie; wynik każdej decyzji trafia do kolumny „Decyzja” i do dokumentów, których dotyczy.
 
-**Stan (2026-10-03):** wszystkie punkty R-01…R-46 rozstrzygnięte. R-01…R-32 naniesione na ANALIZA §7.0, ZASADY,
+**Stan (2026-10-03):** wszystkie punkty R-01…R-48 rozstrzygnięte. R-01…R-32 naniesione na ANALIZA §7.0, ZASADY,
 MIGRACJA, PRIORYTETY i karty etapów; R-33…R-46 – doprecyzowania po propagacji (sekcja niżej).
 
 **Już rozstrzygnięte (nie wracamy):** D-01 baza 5.0.7 · D-02 nazwy (rewizja: utrzymane) · D-03 bez Playwright ·
@@ -102,3 +102,5 @@ Zamawiający może je zmienić w dowolnej chwili), **Z** = decyzja Zamawiająceg
 | R-44 | FL-B-010: import a zablokowany flow (`locked`) | Z | **wariant B** – przy zablokowanym flow opcja „zastąp” nieaktywna (podpowiedź „odblokuj, aby zastąpić”), możliwa tylko kopia lub pominięcie; blokada to ochrona edytora przed przypadkową zmianą, nie uprawnienie (2026-10-03) |
 | R-45 | P-01: blokada wdrożeń po przekroczeniu `deploy.startTimeout` (bezpiecznik W2 vs R-43) | Z | **A domyślnie** – blokada trwa do końca startu (R-43), po 60 s ostrzeżenie w logu; `deploy.startTimeout` nadal daje 500 `start_timeout` w trybie `"started"` bez zwalniania blokady; zwolnienie blokady po upływie limitu tylko przy jawnym `deploy.startTimeoutReleasesLock: true` (domyślnie `false`; ryzyko równoległego startu opisane w `settings.js`) (2026-10-03) |
 | R-46 | Z-04: nieprawidłowy nagłówek `Node-RED-API-Version` na `/flow` | Z | **jak v1 + ostrzeżenie** – żądanie obsługiwane jak v1 (zgodność z 5.0.7), `log.warn` raz na wartość (z ograniczeniem liczby wartości); `/flows` bez zmian (400 `invalid_api_version`) (2026-10-03) |
+| R-47 | Zależności npm wtyczek bazodanowych | Z | **zgoda na `pg` i `ioredis`** (MIT) – tylko w pakietach wtyczek, nie w rdzeniu (2026-10-03) |
+| R-48 | Miejsce wtyczek priorytetu 3 | Z | **katalog `plugins/` w tym repozytorium** (gałąź `feature/p3-database`), każdy pakiet z własnym `package.json` i testami; wydzielenie później (2026-10-03) |
