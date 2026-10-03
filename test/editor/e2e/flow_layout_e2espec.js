@@ -668,7 +668,7 @@ function sendJSON(method, url, body) {
 
             afterEach(removeFlowWithSubflow);
 
-            it("replaces the existing subflow with the imported layout; a flow can only be imported as a copy", async function() {
+            it("replaces the existing subflow with the imported layout and keeps the flow when it is not imported", async function() {
                 await createFlowWithSubflow();
                 const exported = await exportJSON("flow");
                 exported.find(n => n.id === "sfImp").layout.should.equal("TB");
@@ -677,15 +677,20 @@ function sendJSON(method, url, body) {
                 await startImport(exported);
                 await page.click(".red-ui-notification button:has-text('View nodes')");
                 await page.waitForSelector("#red-ui-clipboard-dialog-import-conflict", { state: "visible" });
-                // The editor offers to replace the subflow, but not the flow
+                // The editor offers to replace both the subflow and the flow (FL-B-010);
+                // by default both are imported as copies
                 const offered = await page.evaluate(() => {
                     const ids = [];
-                    $('.red-ui-clipboard-dialog-import-conflicts-controls input[type="checkbox"]:visible').each(function() { ids.push($(this).attr("data-node-id")); });
+                    $('.red-ui-clipboard-dialog-import-conflicts-controls input[type="checkbox"]:visible').each(function() {
+                        ids.push($(this).attr("data-node-id") + ":" + (this.checked ? "replace" : "copy"));
+                    });
                     return ids;
                 });
-                offered.should.eql(["sfImp"]);
+                offered.should.eql(["sfImp:copy", "tImp:copy"]);
                 // Replace the subflow and do not import the flow again
                 await page.evaluate(() => {
+                    // A conflicting subflow is not selected by default: select it, then choose "replace"
+                    $('.red-ui-clipboard-dialog-import-conflicts-gutter input[data-node-id="sfImp"]').prop("checked", true).trigger("change");
                     $('.red-ui-clipboard-dialog-import-conflicts-controls input[data-node-id="sfImp"]').prop("checked", true);
                     $('#red-ui-clipboard-dialog-import-conflicts-list input[data-node-id="tImp"]').prop("checked", false).trigger("change");
                 });
@@ -706,6 +711,71 @@ function sendJSON(method, url, body) {
                 // The flow was not imported, so it keeps its own layout
                 result.flows.should.eql(["tImp"]);
                 result.tab.should.equal("LR");
+            });
+
+            it("replaces the existing flow with the imported layout and content; undo restores it (FL-B-010)", async function() {
+                await createFlowWithSubflow();
+                const exported = await exportJSON("flow");
+                exported.find(n => n.id === "tImp").layout.should.equal("TB");
+                // Local changes: flow properties and content
+                await changeLocalLayout();
+                await page.evaluate(() => {
+                    RED.nodes.workspace("tImp").label = "Import test (local)";
+                    RED.nodes.workspace("tImp").info = "local";
+                    RED.view.importNodes([
+                        { id: "localImpN", type: "inject", z: "tImp", name: "local", props: [], repeat: "", once: false, topic: "", x: 200, y: 80, wires: [] }
+                    ], { generateIds: false, touchImport: true });
+                });
+                const before = await page.evaluate(() => RED.nodes.filterNodes({ z: "tImp" }).map(n => n.id).sort());
+                before.should.eql(["iImp", "localImpN"]);
+
+                await startImport(exported);
+                await page.click(".red-ui-notification button:has-text('View nodes')");
+                await page.waitForSelector("#red-ui-clipboard-dialog-import-conflict", { state: "visible" });
+                await page.evaluate(() => {
+                    $('.red-ui-clipboard-dialog-import-conflicts-gutter input[data-node-id="sfImp"]').prop("checked", true).trigger("change");
+                    $('.red-ui-clipboard-dialog-import-conflicts-controls input[data-node-id="sfImp"]').prop("checked", true);
+                    $('.red-ui-clipboard-dialog-import-conflicts-controls input[data-node-id="tImp"]').prop("checked", true);
+                });
+                await page.click("#red-ui-clipboard-dialog-import-conflict");
+                await page.waitForTimeout(500);
+
+                const state = () => page.evaluate(() => {
+                    const flows = [];
+                    RED.nodes.eachWorkspace(ws => { if (/^Import test/.test(ws.label)) { flows.push(ws.id); } });
+                    const subflows = [];
+                    RED.nodes.eachSubflow(sf => { if (/^Import subflow/.test(sf.name)) { subflows.push(sf.id); } });
+                    const ws = RED.nodes.workspace("tImp");
+                    return {
+                        flows,
+                        subflows,
+                        tab: { label: ws.label, info: ws.info, layout: ws.layout || null },
+                        nodes: RED.nodes.filterNodes({ z: "tImp" }).map(n => n.id).sort(),
+                        instances: RED.nodes.subflow("sfImp").instances.map(n => n.id),
+                        dirty: RED.nodes.dirty()
+                    };
+                });
+                const replaced = await state();
+                // One flow with the imported properties, layout and content
+                replaced.flows.should.eql(["tImp"]);
+                replaced.subflows.should.eql(["sfImp"]);
+                replaced.tab.should.eql({ label: "Import test", info: "", layout: "TB" });
+                replaced.nodes.should.eql(["iImp"]);
+                replaced.instances.should.eql(["iImp"]);
+                replaced.dirty.should.be.true();
+                // The instance in the replaced flow is drawn top to bottom
+                await showFlow("tImp");
+                (await nodeGeometry("iImp")).orientation.should.equal("TB");
+
+                // Undo restores the flow as it was before the import
+                await page.evaluate(() => RED.history.pop());
+                await page.waitForTimeout(300);
+                const restored = await state();
+                restored.flows.should.eql(["tImp"]);
+                restored.subflows.should.eql(["sfImp"]);
+                restored.tab.should.eql({ label: "Import test (local)", info: "local", layout: "LR" });
+                restored.nodes.should.eql(["iImp", "localImpN"]);
+                restored.instances.should.eql(["iImp"]);
             });
 
             it("imports a copy of the flow and subflow with the imported layout and keeps the existing ones", async function() {
