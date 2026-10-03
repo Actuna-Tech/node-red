@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-02: tests of the httpAdmin guard (httpAdminNodeRoutes) in the node api
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 const should = require("should");
 const sinon = require("sinon");
@@ -69,6 +74,184 @@ describe("red/nodes/registry/util",function() {
             registerSubflow.lastCall.args[0].should.eql("my-node")
             registerSubflow.lastCall.args[1].should.eql(subflowDef)
 
+        });
+    });
+    describe("createNodeApi httpAdmin guard", function() {
+        const express = require("express");
+        const request = require("supertest");
+        const log = NR_TEST_UTILS.require("@node-red/util").log;
+        const ADMIN_ROUTE_AUTH = Symbol.for("node-red.adminRouteAuth");
+        let adminApp;
+        let fakeAuth;
+        let logInfo;
+        let logWarn;
+
+        // A fake auth api: needsPermission() requires an 'x-token' header,
+        // which must contain the permission (or 'any' for permission "")
+        function createFakeAuth() {
+            return {
+                needsPermission: sinon.spy(function(permission) {
+                    const fn = function(req,res,next) {
+                        const token = req.headers['x-token'];
+                        if (token && (permission === "" || token === permission)) {
+                            return next();
+                        }
+                        res.status(401).end();
+                    };
+                    fn[ADMIN_ROUTE_AUTH] = "permission";
+                    return fn;
+                }),
+                publicRoute: function() {
+                    const fn = function(req,res,next) { next() };
+                    fn[ADMIN_ROUTE_AUTH] = "public";
+                    return fn;
+                }
+            }
+        }
+        function createApi(settings, node) {
+            registryUtil.init({
+                nodes: {},
+                settings: settings,
+                adminApp: adminApp,
+                adminApi: { auth: fakeAuth },
+                plugins: {},
+                library: {}
+            });
+            return registryUtil.createNodeApi(node || {id: "my-module/my-set", module: "my-module", namespace: "my-module"});
+        }
+        function ok(req,res) { res.status(200).end() }
+
+        beforeEach(function() {
+            adminApp = express();
+            fakeAuth = createFakeAuth();
+            logInfo = sinon.stub(log,"info");
+            logWarn = sinon.stub(log,"warn");
+            sinon.stub(log,"_").callsFake(function(key, opts) { return key+" "+JSON.stringify(opts||{}) });
+        });
+        afterEach(function() {
+            log._.restore();
+            logInfo.restore();
+            logWarn.restore();
+        });
+
+        it("returns runtime.adminApp unchanged when setting is not set", async function() {
+            const RED = createApi({adminAuth: {}});
+            RED.httpAdmin.should.equal(adminApp);
+            RED.httpAdmin.get("/z02/open", ok);
+            await request(adminApp).get("/z02/open").expect(200);
+            logWarn.called.should.be.false();
+        });
+        it("returns runtime.adminApp unchanged when open", function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "open"});
+            RED.httpAdmin.should.equal(adminApp);
+            logWarn.called.should.be.false();
+        });
+        it("exposes publicRoute in open mode", async function() {
+            const RED = createApi({adminAuth: {}});
+            RED.auth.publicRoute.should.be.a.Function();
+            RED.httpAdmin.get("/z02/public", RED.auth.publicRoute(), ok);
+            await request(adminApp).get("/z02/public").expect(200);
+            logInfo.called.should.be.false();
+        });
+        it("prepends authentication to routes without marker", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.should.not.equal(adminApp);
+            RED.httpAdmin.get("/z02/open", ok);
+            await request(adminApp).get("/z02/open").expect(401);
+            await request(adminApp).get("/z02/open").set("x-token","any").expect(200);
+            fakeAuth.needsPermission.calledWith("").should.be.true();
+        });
+        it("keeps routes with needsPermission unchanged", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.get("/z02/perm", RED.auth.needsPermission("z02.read"), ok);
+            fakeAuth.needsPermission.callCount.should.equal(1);
+            await request(adminApp).get("/z02/perm").set("x-token","any").expect(401);
+            await request(adminApp).get("/z02/perm").set("x-token","z02.read").expect(200);
+        });
+        it("finds the marker in an array of handlers", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.get("/z02/perm", [RED.auth.needsPermission("z02.read"), ok]);
+            fakeAuth.needsPermission.callCount.should.equal(1);
+            await request(adminApp).get("/z02/perm").set("x-token","z02.read").expect(200);
+        });
+        it("does not guard publicRoute and logs it", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.get("/z02/public", RED.auth.publicRoute(), ok);
+            await request(adminApp).get("/z02/public").expect(200);
+            logInfo.calledOnce.should.be.true();
+            const msg = logInfo.firstCall.args[0];
+            msg.should.containEql("my-module");
+            msg.should.containEql("GET");
+            msg.should.containEql("/z02/public");
+        });
+        it("guards post, all, use and route", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.post("/z02/post", ok);
+            RED.httpAdmin.all("/z02/all", ok);
+            RED.httpAdmin.use("/z02/use", ok);
+            const route = RED.httpAdmin.route("/z02/route");
+            route.get(ok).should.equal(route);
+            route.put(ok);
+            await request(adminApp).post("/z02/post").expect(401);
+            await request(adminApp).delete("/z02/all").expect(401);
+            await request(adminApp).get("/z02/use/x").expect(401);
+            await request(adminApp).get("/z02/route").expect(401);
+            await request(adminApp).put("/z02/route").expect(401);
+            await request(adminApp).post("/z02/post").set("x-token","any").expect(200);
+            await request(adminApp).delete("/z02/all").set("x-token","any").expect(200);
+            await request(adminApp).get("/z02/use/x").set("x-token","any").expect(200);
+            await request(adminApp).get("/z02/route").set("x-token","any").expect(200);
+            await request(adminApp).put("/z02/route").set("x-token","any").expect(200);
+        });
+        it("guards use without a path", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.use(ok);
+            await request(adminApp).get("/anything").expect(401);
+            await request(adminApp).get("/anything").set("x-token","any").expect(200);
+        });
+        it("guards a mounted sub-application", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            const sub = express();
+            sub.get("/x", ok);
+            RED.httpAdmin.use("/sub", sub);
+            await request(adminApp).get("/sub/x").expect(401);
+            await request(adminApp).get("/sub/x").set("x-token","any").expect(200);
+        });
+        it("passes app.get(setting) through", function() {
+            adminApp.set("my-setting", 123);
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.get("my-setting").should.equal(123);
+        });
+        it("routes registered through the guard are added to runtime.adminApp", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.param("id", function(req,res,next,id) { req.z02 = id; next() });
+            RED.httpAdmin.get("/z02/item/:id", function(req,res) { res.send(req.z02) });
+            const res = await request(adminApp).get("/z02/item/abc").set("x-token","any").expect(200);
+            res.text.should.equal("abc");
+        });
+        it("unknown value guards like authenticated and logs warning (R-41)", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "closed"});
+            RED.httpAdmin.get("/z02/open", ok);
+            await request(adminApp).get("/z02/open").expect(401);
+            logWarn.calledOnce.should.be.true();
+            logWarn.firstCall.args[0].should.containEql("closed");
+            // Only warns once
+            registryUtil.createNodeApi({id: "other/set", module: "other", namespace: "other"});
+            logWarn.calledTwice.should.be.false();
+        });
+        it("warns once and does not guard when adminAuth is not set", async function() {
+            createApi({httpAdminNodeRoutes: "authenticated"});
+            const RED = registryUtil.createNodeApi({id: "other/set", module: "other", namespace: "other"});
+            RED.httpAdmin.should.equal(adminApp);
+            RED.httpAdmin.get("/z02/open", ok);
+            await request(adminApp).get("/z02/open").expect(200);
+            logWarn.calledOnce.should.be.true();
+        });
+        it("provides publicRoute when the admin api is not available", function() {
+            registryUtil.init({ nodes: {}, settings: {httpAdminNodeRoutes: "authenticated"}, adminApp: adminApp, plugins: {}, library: {} });
+            const RED = registryUtil.createNodeApi({id: "my-module/my-set", namespace: "my-module"});
+            RED.auth.publicRoute.should.be.a.Function();
+            RED.auth.needsPermission("foo").should.be.a.Function();
         });
     });
     describe("checkModuleAllowed", function() {

@@ -152,6 +152,27 @@ Brak osobnego limitu `RED.stop()` – ostatecznym limitem jest `terminationGrace
 - Zamknięcie serwera HTTP – **tylko przy `health.enabled`** (R-22); bez tego – zachowanie 5.0.7.
 - Odpowiedź sondy w stanie niegotowości: **stała treść 503 `{"status":"unavailable"}`** – bez ujawniania nazwy stanu (R-22).
 
+#### Mapa kroków potoku (E-01)
+
+Stan po E-01 (`30a786d`); ścieżki względem `packages/node_modules/@node-red/runtime/lib/`. „Kotwica” = komentarz w kodzie,
+w którym pakiet dopisuje swój krok (bez pustych hooków).
+
+| Krok | Funkcja | Pakiet |
+|---|---|---|
+| A1 | `api/flows.js` `setFlows`/`addFlow`/`updateFlow`/`deleteFlow` → `flows/pipeline.js` `deploy({type, source:"api", …})` (dokładnie raz) | E-01 |
+| blokada | `flows/lock.js` `runExclusive` – w `pipeline.deploy`, `api/flows.js` `setState`, `storage/localfilesystem/projects/index.js` `reloadActiveProject` | E-01 (R-11); Z-09 (B4–B5) |
+| A2 | `pipeline.deploy` → `checkRevision` (409 `version_mismatch`); `reload`: `flows/index.js` `readFlowsFromStorage()` pod blokadą | E-01; Z-04, Z-05 |
+| A2a | kotwica w `pipeline.deploy` | Z-12.08 (R-27) |
+| A3 | kotwica w `pipeline.deploy` (`reload` – po odczycie A2) | Z-06 |
+| A4, A8 | kotwice w `pipeline.deploy` | E-02, Z-08 |
+| A5–A7 | `flows/index.js` `setFlows(…, deployOpts, loaded)` (zapis → `stop` → `context.clean` → `start` asynchronicznie); `/flow`: krok `apply` → `addFlow`/`updateFlow`/`removeFlow` = `build*FlowConfig` + `setFlows`; `reload`: `load(true, deployOpts, loaded)` | E-01; P-01 (`deployOpts.waitForStart`, punkt rozszerzenia w `setFlows`), Z-04 (`build*FlowConfig`), Z-15 |
+| A7 (wynik) | `flows/index.js` `start()` → `{errors: [{code: "missing_types" \| "missing_modules" \| "flow_start_failed", …}]}` | E-01; P-01 (+ `safe_mode`, `start_timeout`) |
+| A9 | `flows/index.js` `setFlows` – zdarzenie `runtime-deploy` po `start()` | bez zmian |
+| A10 | wynik `pipeline.deploy` (`{rev}` lub `{result}` kroku `apply`) → `api/flows.js` | E-01; P-01 |
+| A11 | kotwica w `pipeline.deploy` (po zwolnieniu blokady) | Z-06 |
+| B | `readFlowsFromStorage()` + `pipeline.deploy({type:"reload", source:"storage", loaded})` (bez ponownego odczytu) | Z-09 |
+| `setState`, Projekty | tylko blokada – bez kroków A2–A5 i bez hooków (R-11, R-15) | E-01 |
+
 ### 2.4 Katalog kodów błędów (propozycja)
 
 `version` w kodach błędów oznacza **rewizję flow (`rev`)**, nie wersję API. Konwencja: `snake_case` we wszystkich polach `code` (także `errors[].code` z E-01); odpowiedź

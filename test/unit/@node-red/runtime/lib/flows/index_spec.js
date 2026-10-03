@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-14: flow layout: tests for layout properties in the single-flow API
+ *   E-01: tests of the deploy pipeline contract
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -735,6 +736,279 @@ describe('flows/index', function() {
             });
         });
     })
+    describe('deploy pipeline contract', function() {
+        const redUtil = NR_TEST_UTILS.require("@node-red/util").util;
+        const baseConfig = [
+            {id:"t1-1",x:10,y:10,z:"t1",type:"test",wires:[]},
+            {id:"t1",type:"tab",label:"Flow 1"},
+            {id:"t2-1",x:10,y:10,z:"t2",type:"test",wires:[]},
+            {id:"t2",type:"tab",label:"Flow 2"}
+        ];
+        let recorded;
+        let recorder;
+        const recordedEvents = ["flows:stopping","flows:stopped","flows:starting","flows:started"];
+        function startRecording() {
+            recorded = [];
+            recorder = {};
+            recordedEvents.forEach(function(name) {
+                recorder[name] = function() { recorded.push(name) };
+                events.on(name, recorder[name]);
+            });
+            recorder["runtime-event"] = function(evt) {
+                if (evt.id === "runtime-deploy") {
+                    recorded.push("runtime-deploy");
+                }
+            };
+            events.on("runtime-event", recorder["runtime-event"]);
+        }
+        function stopRecording() {
+            if (recorder) {
+                Object.keys(recorder).forEach(function(name) {
+                    events.removeListener(name, recorder[name]);
+                });
+                recorder = null;
+            }
+        }
+        function waitFor(name) {
+            return new Promise(resolve => {
+                const check = () => { if (recorded.indexOf(name) !== -1) { resolve() } else { setTimeout(check, 2) } };
+                check();
+            });
+        }
+        function loadAndStart(config) {
+            storage.getFlows = function() {
+                return Promise.resolve({flows:clone(config||baseConfig), rev:"loadedRev"});
+            }
+            flows.init({log:mockLog, settings:{},storage:storage});
+            return flows.load().then(function() {
+                return flows.startFlows();
+            });
+        }
+        afterEach(function() {
+            stopRecording();
+        });
+
+        ["full","nodes","flows"].forEach(function(type) {
+            it('emits deploy events in order for '+type, async function() {
+                await loadAndStart();
+                startRecording();
+                const newConfig = clone(baseConfig);
+                newConfig[0].changed = true;
+                await flows.setFlows(newConfig, type);
+                recorded.push("resolved");
+                await waitFor("runtime-deploy");
+                recorded.filter(e => e !== "resolved").should.eql(["flows:stopping","flows:stopped","flows:starting","flows:started","runtime-deploy"]);
+                // The promise resolves after the nodes stopped, before flows:started
+                recorded.indexOf("resolved").should.be.above(recorded.indexOf("flows:stopped"));
+                recorded.indexOf("resolved").should.be.below(recorded.indexOf("flows:started"));
+            });
+        });
+        it('resolves setFlows before flows:started by default', async function() {
+            await loadAndStart();
+            startRecording();
+            await flows.setFlows(clone(baseConfig), "full");
+            recorded.should.not.containEql("flows:started");
+            await waitFor("flows:started");
+        });
+        it('saves to storage before stopping the nodes', async function() {
+            await loadAndStart();
+            startRecording();
+            let savedBeforeStop = null;
+            storage.saveFlows = function(conf) {
+                savedBeforeStop = recorded.indexOf("flows:stopping") === -1;
+                storage.conf = conf;
+                return Promise.resolve("savedRev");
+            };
+            const rev = await flows.setFlows(clone(baseConfig), "full");
+            rev.should.equal("savedRev");
+            savedBeforeStop.should.be.true();
+        });
+        it('readFlowsFromStorage returns the stored config', async function() {
+            storage.getFlows = function() { return Promise.resolve({flows:clone(baseConfig), rev:"storedRev"}) };
+            flows.init({log:mockLog, settings:{},storage:storage});
+            const loaded = await flows.readFlowsFromStorage();
+            loaded.should.have.property("rev","storedRev");
+            loaded.flows.should.eql(baseConfig);
+        });
+        it('reload saves nothing and restarts all flows', async function() {
+            await loadAndStart();
+            startRecording();
+            let reads = 0;
+            storage.getFlows = function() { reads++; return Promise.resolve({flows:clone(baseConfig), rev:"storedRev"}) };
+            storage.saveFlows = sinon.spy(function() { return Promise.resolve() });
+            flowCreate.resetHistory();
+            const rev = await flows.load(true);
+            rev.should.equal("storedRev");
+            reads.should.equal(1);
+            storage.saveFlows.called.should.be.false();
+            await waitFor("runtime-deploy");
+            // global + t1 + t2 recreated
+            flowCreate.callCount.should.equal(3);
+        });
+        it('reload with a loaded config does not read storage again', async function() {
+            await loadAndStart();
+            let reads = 0;
+            storage.getFlows = function() { reads++; return Promise.resolve({flows:[], rev:"other"}) };
+            storage.saveFlows = sinon.spy(function() { return Promise.resolve() });
+            const loaded = {flows:clone(baseConfig).slice(0,2), rev:"loadedRev2"};
+            const rev = await flows.load(true, undefined, loaded);
+            rev.should.equal("loadedRev2");
+            reads.should.equal(0);
+            storage.saveFlows.called.should.be.false();
+            flows.getFlows().should.eql({flows:loaded.flows, rev:"loadedRev2"});
+        });
+        it('buildAddFlowConfig matches the 5.0.7 result of addFlow', async function() {
+            await loadAndStart();
+            const generateId = sinon.stub(redUtil, "generateId").returns("new-flow");
+            try {
+                const flow = {
+                    label: "new flow", info: "info", disabled: false, env: [{name:"a",value:"1",type:"str"}],
+                    layout: "TB", wireStyle: "orthogonal",
+                    nodes: [{id:"n1",type:"test",z:"other",wires:[]}],
+                    configs: [{id:"c1",type:"test-config"}]
+                };
+                const expected = clone(baseConfig).concat([
+                    {type:"tab",label:"new flow",id:"new-flow",info:"info",disabled:false,env:[{name:"a",value:"1",type:"str"}],layout:"TB",wireStyle:"orthogonal"},
+                    {id:"n1",type:"test",z:"new-flow",wires:[]},
+                    {id:"c1",type:"test-config",z:"new-flow"}
+                ]);
+                const built = flows.buildAddFlowConfig(clone(flow));
+                built.should.have.property("id","new-flow");
+                built.config.should.eql(expected);
+                const id = await flows.addFlow(clone(flow));
+                id.should.equal("new-flow");
+                storage.conf.flows.should.eql(expected);
+            } finally {
+                generateId.restore();
+            }
+        });
+        it('buildAddFlowConfig rejects duplicate ids and invalid types as before', async function() {
+            await loadAndStart();
+            (function() { flows.buildAddFlowConfig({nodes:[{id:"t1-1",type:"test"}]}) }).should.throw('duplicate id');
+            (function() { flows.buildAddFlowConfig({nodes:[{id:"x",type:"tab"}]}) }).should.throw('invalid node type: tab');
+            (function() { flows.buildAddFlowConfig({}) }).should.throw('missing nodes property');
+        });
+        it('buildUpdateFlowConfig matches the 5.0.7 result of updateFlow', async function() {
+            await loadAndStart();
+            const newFlow = {id:"t1",label:"Flow 1b",info:"i",layout:"auto",nodes:[{id:"t1-9",type:"test",wires:[]}],configs:[{id:"c9",type:"test-config"}]};
+            const expected = [
+                {id:"t2-1",x:10,y:10,z:"t2",type:"test",wires:[]},
+                {id:"t2",type:"tab",label:"Flow 2"},
+                {type:"tab",label:"Flow 1b",id:"t1",info:"i",layout:"auto"},
+                {id:"t1-9",type:"test",wires:[],z:"t1"},
+                {id:"c9",type:"test-config",z:"t1"}
+            ];
+            const built = flows.buildUpdateFlowConfig("t1", clone(newFlow));
+            built.config.should.eql(expected);
+            built.should.have.property("label","Flow 1");
+            await flows.updateFlow("t1", clone(newFlow));
+            storage.conf.flows.should.eql(expected);
+        });
+        it('buildUpdateFlowConfig for global matches the 5.0.7 result of updateFlow', async function() {
+            await loadAndStart(baseConfig.concat([{id:"g1",type:"test-config"}]));
+            const newGlobal = {configs:[{id:"g2",type:"test-config"}],subflows:[{id:"sf1",type:"subflow",name:"sf",nodes:[{id:"sf1-1",type:"test",z:"sf1"}],configs:[]}]};
+            const expected = clone(baseConfig).concat([
+                {id:"g2",type:"test-config"},
+                {id:"sf1-1",type:"test",z:"sf1"},
+                {id:"sf1",type:"subflow",name:"sf"}
+            ]);
+            const built = flows.buildUpdateFlowConfig("global", clone(newGlobal));
+            built.config.should.eql(expected);
+            await flows.updateFlow("global", clone(newGlobal));
+            storage.conf.flows.should.eql(expected);
+        });
+        it('buildUpdateFlowConfig rejects an unknown flow with code 404', async function() {
+            await loadAndStart();
+            let error;
+            try {
+                flows.buildUpdateFlowConfig("unknown", {nodes:[]});
+            } catch(err) {
+                error = err;
+            }
+            should.exist(error);
+            error.should.have.property("code", 404);
+        });
+        it('buildRemoveFlowConfig matches the 5.0.7 result of removeFlow', async function() {
+            await loadAndStart();
+            const expected = [
+                {id:"t2-1",x:10,y:10,z:"t2",type:"test",wires:[]},
+                {id:"t2",type:"tab",label:"Flow 2"}
+            ];
+            const built = flows.buildRemoveFlowConfig("t1");
+            built.config.should.eql(expected);
+            await flows.removeFlow("t1");
+            storage.conf.flows.should.eql(expected);
+            (function() { flows.buildRemoveFlowConfig("global") }).should.throw('not allowed to remove global');
+        });
+        it('start returns no errors when flows start', async function() {
+            storage.getFlows = function() { return Promise.resolve({flows:clone(baseConfig)}) };
+            flows.init({log:mockLog, settings:{},storage:storage});
+            await flows.load();
+            const result = await flows.startFlows();
+            result.should.eql({errors:[]});
+        });
+        it('start returns missing_types error', async function() {
+            storage.getFlows = function() { return Promise.resolve({flows:[{id:"t1-1",z:"t1",type:"missing"},{id:"t1",type:"tab"}]}) };
+            flows.init({log:mockLog, settings:{},storage:storage});
+            await flows.load();
+            const result = await flows.startFlows();
+            result.errors.should.have.length(1);
+            result.errors[0].should.have.property("code","missing_types");
+            result.errors[0].should.have.property("types",["missing"]);
+            result.errors[0].should.have.property("message");
+        });
+        it('start returns missing_modules error', async function() {
+            storage.getFlows = function() { return Promise.resolve({flows:[{id:"node-with-missing-modules",z:"t1",type:"test"},{id:"t1",type:"tab"}]}) };
+            flows.init({log:mockLog, settings:{},storage:storage});
+            await flows.load();
+            const result = await flows.startFlows();
+            result.errors.should.have.length(1);
+            result.errors[0].should.have.property("code","missing_modules");
+            result.errors[0].should.have.property("modules",[]);
+        });
+        it('start returns flow_start_failed when Flow.start throws', async function() {
+            storage.getFlows = function() { return Promise.resolve({flows:clone(baseConfig)}) };
+            flows.init({log:mockLog, settings:{},storage:storage});
+            await flows.load();
+            flowCreate.restore();
+            // replaced stub - restored by the outer afterEach
+            flowCreate = sinon.stub(Flow,"create").callsFake(function(parent, global, flow) {
+                const id = flow ? flow.id : "global";
+                return {
+                    start: async function() { if (id === "t2") { throw new Error("boom") } },
+                    stop: sinon.spy(async () => {}),
+                    update: sinon.spy(),
+                    getActiveNodes: () => ({})
+                };
+            });
+            const consoleLog = sinon.stub(console, "log");
+            let result;
+            try {
+                result = await flows.startFlows();
+            } finally {
+                consoleLog.restore();
+            }
+            result.errors.should.have.length(1);
+            result.errors[0].should.have.property("code","flow_start_failed");
+            result.errors[0].should.have.property("flow","t2");
+            result.errors[0].should.have.property("message","boom");
+        });
+        it('default mode swallows stop errors (unchanged, D-05)', async function() {
+            await loadAndStart();
+            Object.keys(flowCreate.flows).forEach(function(id) {
+                flowCreate.flows[id].stop = function() { return Promise.reject(new Error("stop failed")) };
+            });
+            const rev = await flows.setFlows(clone(baseConfig), "full");
+            should.not.exist(rev);
+        });
+        it('setFlows accepts deployOpts without changing the default behaviour', async function() {
+            await loadAndStart();
+            startRecording();
+            await flows.setFlows(clone(baseConfig), null, "full", false, false, null, {waitForStart:false});
+            recorded.should.not.containEql("flows:started");
+            await waitFor("runtime-deploy");
+        });
+    });
     describe('#updateFlow', function() {
         it.skip("updateFlow");
     })

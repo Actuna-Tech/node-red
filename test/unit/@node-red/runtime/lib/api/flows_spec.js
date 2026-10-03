@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   E-01: tests of the deploy pipeline and the shared deploy lock
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 
 var should = require("should");
@@ -79,7 +84,8 @@ describe("runtime-api/flows", function() {
                 flows: {
                     getFlows: function() { return {rev:"currentRev",flows:[]} },
                     setFlows: setFlows,
-                    loadFlows: loadFlows
+                    loadFlows: loadFlows,
+                    readFlowsFromStorage: function() { return Promise.resolve({flows:[],rev:"storedRev"}) }
                 }
             })
 
@@ -546,4 +552,127 @@ describe("runtime-api/flows", function() {
         });
     });
 
+
+    describe("deploy pipeline (E-01)", function() {
+        const pipeline = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/pipeline");
+        let runtime;
+        let release;
+        let order;
+        function pendingSetFlows() {
+            return sinon.spy(function(config) {
+                order.push("setFlows:start");
+                return new Promise(resolve => {
+                    release = function() { order.push("setFlows:end"); resolve("newRev") };
+                });
+            });
+        }
+        beforeEach(function() {
+            order = [];
+            runtime = {
+                log: mockLog(),
+                settings: { runtimeState: { enabled: true, ui: true }, set: function() {} },
+                flows: {
+                    getFlows: function() { return {rev:"currentRev",flows:[]} },
+                    setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
+                    loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
+                    readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    addFlow: sinon.spy(function() { order.push("addFlow"); return Promise.resolve("newId") }),
+                    updateFlow: sinon.spy(function() { order.push("updateFlow"); return Promise.resolve() }),
+                    removeFlow: sinon.spy(function() { order.push("removeFlow"); return Promise.resolve() }),
+                    startFlows: sinon.spy(function() { order.push("startFlows"); return Promise.resolve() }),
+                    stopFlows: sinon.spy(function() { order.push("stopFlows"); return Promise.resolve() }),
+                    state: function() { return "start" }
+                }
+            };
+            flows.init(runtime);
+        });
+        afterEach(function() {
+            if (pipeline.deploy.restore) {
+                pipeline.deploy.restore();
+            }
+        });
+        it("setFlows passes no deployOpts by default", async function() {
+            await flows.setFlows({flows:{flows:[1]}});
+            runtime.flows.setFlows.calledOnce.should.be.true();
+            should.not.exist(runtime.flows.setFlows.firstCall.args[6]);
+        });
+        it("reload passes no deployOpts by default", async function() {
+            const result = await flows.setFlows({deploymentType:"reload"});
+            result.should.eql({rev:"loadRev"});
+            runtime.flows.loadFlows.firstCall.args[0].should.be.true();
+            should.not.exist(runtime.flows.loadFlows.firstCall.args[1]);
+            runtime.flows.loadFlows.firstCall.args[2].should.eql({flows:[],rev:"storedRev"});
+        });
+        it("all api entries call deploy once", async function() {
+            const deploySpy = sinon.spy(pipeline, "deploy");
+            await flows.setFlows({flows:{flows:[1]}});
+            deploySpy.callCount.should.equal(1);
+            deploySpy.lastCall.args[0].should.have.property("type","full");
+            await flows.setFlows({deploymentType:"reload"});
+            deploySpy.callCount.should.equal(2);
+            deploySpy.lastCall.args[0].should.have.property("type","reload");
+            await flows.addFlow({flow:{}});
+            deploySpy.callCount.should.equal(3);
+            await flows.updateFlow({id:"1",flow:{}});
+            deploySpy.callCount.should.equal(4);
+            await flows.deleteFlow({id:"1"});
+            deploySpy.callCount.should.equal(5);
+            deploySpy.getCalls().slice(2).forEach(c => c.args[0].should.have.property("type","flows"));
+            deploySpy.getCalls().forEach(c => c.args[0].should.have.property("source","api"));
+        });
+        it("setState waits for running deploy (R-11)", async function() {
+            runtime.flows.setFlows = pendingSetFlows();
+            const deploy = flows.setFlows({flows:{flows:[1]}});
+            const setState = flows.setState({state:"stop"});
+            await new Promise(resolve => setTimeout(resolve, 10));
+            order.should.eql(["setFlows:start"]);
+            release();
+            await deploy;
+            const state = await setState;
+            state.should.have.property("state");
+            order.should.eql(["setFlows:start", "setFlows:end", "stopFlows"]);
+        });
+        it("setState does not reject with 409 while deploy runs (R-11)", async function() {
+            runtime.flows.setFlows = pendingSetFlows();
+            const deploy = flows.setFlows({flows:{flows:[1]}});
+            const setState = flows.setState({state:"start"});
+            await new Promise(resolve => setTimeout(resolve, 10));
+            release();
+            await deploy;
+            await setState.should.be.fulfilled();
+            runtime.flows.startFlows.calledOnce.should.be.true();
+        });
+        it("a deploy waits for a running setState", async function() {
+            let releaseStop;
+            runtime.flows.stopFlows = sinon.spy(function() {
+                order.push("stopFlows:start");
+                return new Promise(resolve => { releaseStop = () => { order.push("stopFlows:end"); resolve() } });
+            });
+            const setState = flows.setState({state:"stop"});
+            const add = flows.addFlow({flow:{}});
+            await new Promise(resolve => setTimeout(resolve, 10));
+            order.should.eql(["stopFlows:start"]);
+            releaseStop();
+            await setState;
+            await add;
+            order.should.eql(["stopFlows:start", "stopFlows:end", "addFlow"]);
+        });
+        it("setState releases the lock when it fails", async function() {
+            runtime.flows.stopFlows = sinon.spy(function() { return Promise.reject(new Error("stop failed")) });
+            await flows.setState({state:"stop"}).should.be.rejected();
+            await flows.setFlows({flows:{flows:[1]}}).should.be.fulfilled();
+        });
+        it("single-flow entries wait for a running deploy", async function() {
+            runtime.flows.setFlows = pendingSetFlows();
+            const deploy = flows.setFlows({flows:{flows:[1]}});
+            const add = flows.addFlow({flow:{}});
+            const update = flows.updateFlow({id:"1",flow:{}});
+            const remove = flows.deleteFlow({id:"1"});
+            await new Promise(resolve => setTimeout(resolve, 10));
+            order.should.eql(["setFlows:start"]);
+            release();
+            await Promise.all([deploy, add, update, remove]);
+            order.should.eql(["setFlows:start", "setFlows:end", "addFlow", "updateFlow", "removeFlow"]);
+        });
+    });
 });

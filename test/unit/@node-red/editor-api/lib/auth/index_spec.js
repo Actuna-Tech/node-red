@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-02: tests of publicRoute() and of the needsPermission() marker
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require("sinon");
@@ -211,6 +216,21 @@ describe("api/auth/index",function() {
             },function() {
                 done(new Error("hasPermission unexpected passed"))
             });
+        });
+    });
+
+    describe("publicRoute", function() {
+        const ADMIN_ROUTE_AUTH = Symbol.for("node-red.adminRouteAuth");
+        it("publicRoute returns marked pass-through middleware", function(done) {
+            auth.init({adminAuth:{}});
+            const func = auth.publicRoute();
+            func[ADMIN_ROUTE_AUTH].should.equal("public");
+            func({},{},done);
+        });
+        it("needsPermission middleware is marked", function() {
+            auth.init({});
+            auth.needsPermission("foo")[ADMIN_ROUTE_AUTH].should.equal("permission");
+            auth.needsPermission("")[ADMIN_ROUTE_AUTH].should.equal("permission");
         });
     });
 });

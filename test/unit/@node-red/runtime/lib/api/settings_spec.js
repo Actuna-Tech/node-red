@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   P-03: tests of telemetryLocked and of ignoring telemetryEnabled while locked
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 
 var should = require("should");
@@ -416,6 +421,80 @@ describe("runtime-api/settings", function() {
                 done();
             }).catch(done);
         })
+    });
+    describe("telemetry locked by the administrator (P-03)", function() {
+        let userSettings;
+        let telemetry;
+        let log;
+        function initSettings(locked) {
+            telemetry = {
+                isEnabled: () => false,
+                isLocked: () => locked,
+                enable: sinon.stub(),
+                disable: sinon.stub()
+            };
+            log = mockLog();
+            settings.init({
+                settings: {
+                    getUserSettings: username => clone(userSettings[username]),
+                    setUserSettings: (username, settings) => {
+                        userSettings[username] = clone(settings);
+                        return Promise.resolve();
+                    },
+                    exportNodeSettings: () => {}
+                },
+                plugins: { exportPluginSettings: () => {} },
+                nodes: {
+                    listContextStores: () => { return {stores:["file","memory"], default: "file"} },
+                    installerEnabled: () => false,
+                    getCredentialKeyType: () => "test-key-type"
+                },
+                library: {getLibraries: () => ["lib1"] },
+                storage: {},
+                telemetry: telemetry,
+                log: log
+            });
+        }
+        beforeEach(function() {
+            userSettings = { "_": { abc: 123 } };
+        });
+        it('updateUserSettings ignores telemetryEnabled when locked', function() {
+            initSettings(true);
+            return settings.updateUserSettings({settings:{telemetryEnabled: true, def: 789}}).then(function() {
+                telemetry.enable.called.should.be.false();
+                telemetry.disable.called.should.be.false();
+                userSettings._.should.not.have.property("telemetryEnabled");
+                log.audit.calledWithMatch({event: "settings.update", telemetry: "locked"}).should.be.true();
+            });
+        });
+        it('updateUserSettings saves other settings when telemetry locked', function() {
+            initSettings(true);
+            return settings.updateUserSettings({settings:{telemetryEnabled: false, def: 789}}).then(function() {
+                telemetry.disable.called.should.be.false();
+                userSettings._.should.eql({abc: 123, def: 789});
+            });
+        });
+        it('updateUserSettings enables telemetry when not locked (unchanged)', function() {
+            initSettings(false);
+            return settings.updateUserSettings({settings:{telemetryEnabled: true, def: 789}}).then(function() {
+                telemetry.enable.calledOnce.should.be.true();
+                userSettings._.should.eql({abc: 123, def: 789});
+                log.audit.calledWithMatch({telemetry: "locked"}).should.be.false();
+            });
+        });
+        it('getRuntimeSettings includes telemetryLocked when locked', function() {
+            initSettings(true);
+            return settings.getRuntimeSettings({}).then(result => {
+                result.should.have.property("telemetryLocked", true);
+                result.should.have.property("telemetryEnabled", false);
+            });
+        });
+        it('getRuntimeSettings omits telemetryLocked by default', function() {
+            initSettings(false);
+            return settings.getRuntimeSettings({}).then(result => {
+                result.should.not.have.property("telemetryLocked");
+            });
+        });
     });
     describe("getUserKeys", function() {
         before(function() {

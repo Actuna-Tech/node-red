@@ -10,6 +10,39 @@ Fixes
  - Refresh the user details in the editor after logging in again when the session expired
  - Do not send comms subscriptions before websocket authentication completes
 
+#### Unreleased: Engine extensions
+
+Security
+
+ - New setting `httpAdminNodeRoutes: "open" | "authenticated"` (default `"open"`, unchanged).
+   With `"authenticated"` and `adminAuth`, admin routes added by nodes and plugins through
+   `RED.httpAdmin` without `RED.auth.needsPermission()` require an authenticated user (or
+   the default user of `adminAuth.default`); an unknown value is treated as
+   `"authenticated"` with a warning; without `adminAuth` the setting has no effect (warning)
+ - New node api `RED.auth.publicRoute()` marks an admin route as intentionally public; public
+   routes are logged at startup in `"authenticated"` mode. Node authors who need to support
+   older versions can use `RED.auth.publicRoute ? RED.auth.publicRoute() : (req,res,next) => next()`.
+   The debug node view routes use it
+ - New setting `telemetry.locked`: with `locked: true` the telemetry state is fixed to
+   `telemetry.enabled` (missing means disabled) and cannot be changed by users - the saved user
+   choice is ignored but kept, a `telemetryEnabled` value sent to `POST /settings/user` is ignored
+   (the other user settings are saved, the audit event has `telemetry: "locked"`), and
+   `GET /settings` reports `telemetryLocked: true`. `NODE_RED_DISABLE_TELEMETRY` and
+   `--no-telemetry` keep their behaviour and do not imply the lock
+
+Fixes
+
+ - `POST /flows/state` and project switches now wait for a running deployment (and the other
+   way round) instead of running concurrently with it - they share the deploy lock
+
+Runtime
+
+ - Internal deploy pipeline (`runtime/lib/flows/pipeline.js` `deploy(opts)`) and shared deploy
+   lock (`runtime/lib/flows/lock.js`) used by every Admin API deployment; `flows.start()` returns
+   the start errors (`missing_types`, `missing_modules`, `flow_start_failed`); new internal
+   `readFlowsFromStorage()` and `buildAddFlowConfig`/`buildUpdateFlowConfig`/`buildRemoveFlowConfig`.
+   No change to the Admin API, events or logs
+
 #### Unreleased: Flow layouts
 
 Developed by Actuna Sp. z o.o. (Wojciech Repiński), with AI-assisted development.

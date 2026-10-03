@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-02: debug view routes are marked as public
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var debugNode = require("nr-test-utils").require("@node-red/nodes/core/common/21-debug.js");
@@ -679,6 +684,24 @@ describe('debug node', function() {
                     .get('/debug/view/view.html')
                     .expect(200)
                     .end(done);
+            });
+        });
+        it('marks the debug view routes as public (httpAdminNodeRoutes)', function(done) {
+            var flow = [{id:"n1", type:"debug"}];
+            helper.load(debugNode, flow, function() {
+                try {
+                    var marker = Symbol.for("node-red.adminRouteAuth");
+                    ["/debug/view/view.html", "/debug/view/*"].forEach(function(routePath) {
+                        var layer = helper._httpAdmin._router.stack.find(function(l) {
+                            return l.route && l.route.path === routePath;
+                        });
+                        should.exist(layer, routePath);
+                        layer.route.stack[0].handle[marker].should.equal("public");
+                    });
+                    done();
+                } catch(err) {
+                    done(err);
+                }
             });
         });
     });

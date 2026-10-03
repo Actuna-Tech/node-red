@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-02: test of publicRoute() in the stubbed admin api
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 var should = require("should");
 var sinon = require("sinon");
 var path = require("path");
@@ -79,6 +84,13 @@ describe("runtime", function() {
             runtime.init({testSettings: true, httpAdminRoot:"/"});
             settings.init.called.should.be.true();
             redNodes.init.called.should.be.true();
+        });
+
+        it("stubbed adminApi.auth provides publicRoute", function(done) {
+            runtime.init({testSettings: true, httpAdminRoot: false});
+            const auth = runtime._.adminApi.auth;
+            auth.needsPermission("foo").should.be.a.Function();
+            auth.publicRoute()({},{},done);
         });
 
         it("returns version", function() {
