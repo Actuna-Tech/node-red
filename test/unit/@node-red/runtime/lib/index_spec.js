@@ -81,6 +81,13 @@ describe("runtime", function() {
             redNodes.init.called.should.be.true();
         });
 
+        it("stubbed adminApi.auth provides publicRoute", function(done) {
+            runtime.init({testSettings: true, httpAdminRoot: false});
+            const auth = runtime._.adminApi.auth;
+            auth.needsPermission("foo").should.be.a.Function();
+            auth.publicRoute()({},{},done);
+        });
+
         it("returns version", function() {
             runtime.init({testSettings: true, httpAdminRoot:"/"});
             return runtime.version().then(version => {

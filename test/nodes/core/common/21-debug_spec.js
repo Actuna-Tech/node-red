@@ -681,6 +681,24 @@ describe('debug node', function() {
                     .end(done);
             });
         });
+        it('marks the debug view routes as public (httpAdminNodeRoutes)', function(done) {
+            var flow = [{id:"n1", type:"debug"}];
+            helper.load(debugNode, flow, function() {
+                try {
+                    var marker = Symbol.for("node-red.adminRouteAuth");
+                    ["/debug/view/view.html", "/debug/view/*"].forEach(function(routePath) {
+                        var layer = helper._httpAdmin._router.stack.find(function(l) {
+                            return l.route && l.route.path === routePath;
+                        });
+                        should.exist(layer, routePath);
+                        layer.route.stack[0].handle[marker].should.equal("public");
+                    });
+                    done();
+                } catch(err) {
+                    done(err);
+                }
+            });
+        });
     });
 
 });

@@ -213,4 +213,19 @@ describe("api/auth/index",function() {
             });
         });
     });
+
+    describe("publicRoute", function() {
+        const ADMIN_ROUTE_AUTH = Symbol.for("node-red.adminRouteAuth");
+        it("publicRoute returns marked pass-through middleware", function(done) {
+            auth.init({adminAuth:{}});
+            const func = auth.publicRoute();
+            func[ADMIN_ROUTE_AUTH].should.equal("public");
+            func({},{},done);
+        });
+        it("needsPermission middleware is marked", function() {
+            auth.init({});
+            auth.needsPermission("foo")[ADMIN_ROUTE_AUTH].should.equal("permission");
+            auth.needsPermission("")[ADMIN_ROUTE_AUTH].should.equal("permission");
+        });
+    });
 });
