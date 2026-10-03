@@ -67,6 +67,8 @@ Wynik weryfikacji: **11 POTWIERDZONE, 3 CZĘŚCIOWO (02, 10, 13), 0 NIEPOTWIERDZ
    HTML – aby dodatki nie wprowadzały XSS. Istniejący problem: nazwa użytkownika wstawiana jako HTML
    (`ec/user.js:265` `"<b>"+username+"</b>"`) – przy strategii zewnętrznej nazwa pochodzi od dostawcy tożsamości;
    **rozstrzygnięte (R-08): osobna poprawka bezpieczeństwa teraz** (poza Z-12, priorytet 2, poprawka błędu z testem).
+   W tej samej poprawce – odświeżenie `RED.settings.user` po ponownym logowaniu po wygaśnięciu sesji (`ec/comms.js:96-105`;
+   dziś brak) z testem, który pada bez poprawki (**R-41**).
 4. **Logika uprawnień jest zdublowana**: serwer `ea/auth/permissions.js:22-61`, klient `ec/user.js:297-345` (identyczne
    reguły). Każda zmiana (08) – w obu miejscach, z **wspólną tabelą przypadków testowych** uruchamianą dla obu.
 5. **Konwencja nazw:** istniejące przestrzenie `RED.sidebar`, `RED.menu`, `RED.user`, `RED.events`, `RED.actions`,
@@ -277,7 +279,7 @@ Funkcja: Rozszerzenie ekranu logowania
 |---|---|
 | Etap / typ | 4 / funkcja |
 | Priorytet / ryzyko | Ś / **wysokie** |
-| Ustawienie | `adminAuth.strategy.codeInFragment: false` (nazwa robocza; `true` → przekierowanie z `#code=`) |
+| Ustawienie | `adminAuth.strategy.codeInFragment: false` (nazwa robocza; `true` → przekierowanie z `#code=`); `editorTheme.auth.tokenStorage: "local" \| "session"`, domyślnie `"local"` (R-26, **R-33**) |
 | Zależności | 01 (`loginPost`), 12 |
 | Pliki | `ec/settings.js:41-51,109-142`, `ec/user.js:104,220-242`, `ea/auth/index.js:254-268,277-284`, `ea/auth/tokens.js:134-198`, `ea/auth/strategies.js:84-100` |
 
@@ -300,8 +302,8 @@ Wynik: **CZĘŚCIOWO**.
 
 #### Specyfikacja
 - **Cel:** kod jednorazowy także we fragmencie adresu; oficjalny zapis tokena; w localStorage tylko pola tokena.
-- **Wejścia:** `#code=<kod>[&next=<głęboki link>]` (R-26) lub `?code=<kod>`; `RED.user.setSession({access_token, expires_in?})`; opcja przechowywania tokena w `sessionStorage` (R-26; domyślnie `localStorage`, nazwa ustawienia – do ustalenia).
-- **Wyjścia:** token w localStorage (lub `sessionStorage` przy włączonej opcji – R-26) w postaci `{access_token, expires_in?, expires_at?}`; adres oczyszczony bez
+- **Wejścia:** `#code=<kod>[&next=<głęboki link>]` (R-26) lub `?code=<kod>`; `RED.user.setSession({access_token, expires_in?})`; ustawienie `editorTheme.auth.tokenStorage`: `"local"` (domyślnie, `localStorage` – jak 5.0.7) lub `"session"` (`sessionStorage`) (R-26, **R-33**).
+- **Wyjścia:** token w localStorage (lub `sessionStorage` przy `editorTheme.auth.tokenStorage: "session"` – R-26, R-33) w postaci `{access_token, expires_in?, expires_at?}`; adres oczyszczony bez
   przeładowania (`history.replaceState`); przy `next` – nawigacja do głębokiego linku (format Z-12.10) po starcie edytora.
 - **Niezmienniki:** `?code=` i `?access_token=` działają jak dziś; domyślne przekierowanie serwera bez zmian
   (`codeInFragment: false`); fragmenty `#flow/…`, `#node/…` nie są interpretowane jako kod.
@@ -366,11 +368,11 @@ Funkcja: Wejście z kodem jednorazowym i zapis tokena
     Wtedy edytor startuje zalogowany i pokazuje wskazany bloczek
     I adres po starcie nie zawiera kodu
 
-  Scenariusz: Przechowywanie tokena w sessionStorage jako opcja (R-26)
-    Zakładając włączoną opcję przechowywania tokena w sessionStorage
+  Scenariusz: Przechowywanie tokena w sessionStorage jako opcja (R-26, R-33)
+    Zakładając editorTheme.auth.tokenStorage = "session"
     Kiedy zaloguję się
     Wtedy token jest zapisany w sessionStorage, a nie w localStorage
-    I bez opcji token jest zapisywany w localStorage jak w 5.0.7
+    I bez ustawienia (domyślnie "local") token jest zapisywany w localStorage jak w 5.0.7
 
   Scenariusz: Przekierowanie strategii z fragmentem
     Zakładając adminAuth.strategy.codeInFragment = true
@@ -382,14 +384,15 @@ Funkcja: Wejście z kodem jednorazowym i zapis tokena
 
 #### Testy
 - `test/unit/@node-red/editor-client/settings_auth_spec.js`: `parses code from fragment`, `ignores #flow hash`,
-  `keeps ?code and ?access_token`, `pickTokenFields drops extra fields`, `reads legacy stored token`, `parses next from fragment` (R-26), `rejects external next`, `stores token in sessionStorage when option enabled` (R-26), `defaults to localStorage`.
+  `keeps ?code and ?access_token`, `pickTokenFields drops extra fields`, `reads legacy stored token`, `parses next from fragment` (R-26), `rejects external next`, `stores token in sessionStorage when tokenStorage is session` (R-26, R-33), `defaults to localStorage when tokenStorage absent or local`.
+- `test/unit/@node-red/editor-api/lib/editor/theme_spec.js`: `passes auth.tokenStorage setting` (nowy klucz `editorTheme` przekazywany jawnie – jak w Z-12.10).
 - `test/unit/@node-red/editor-client/user_session_spec.js`: `setSession verifies before storing`, `rejects on 401`.
 - `test/unit/@node-red/editor-api/lib/auth/index_spec.js`: `redirects with fragment when codeInFragment`, `default redirect unchanged`.
 - E2E (osobny podzbiór): wejście z `#code=`, brak kodu w logu serwera testowego.
 
 #### DoD specyficzne
 - [ ] Ustawienie `codeInFragment` w szablonie `settings.js` (zakomentowane, opis ryzyka logów pośredników).
-- [ ] Dokumentacja: kod wydaje własna strategia `adminAuth`/plugin, rdzeń przyjmuje `#code=…&next=…` (R-26); opcja `sessionStorage` w szablonie `settings.js` (R-26).
+- [ ] Dokumentacja: kod wydaje własna strategia `adminAuth`/plugin, rdzeń przyjmuje `#code=…&next=…` (R-26); ustawienie `editorTheme.auth.tokenStorage` opisane w szablonie `settings.js` (R-26, R-33).
 - [ ] Przykład: `editor-extensions-example/session.js` (`setSession` po wymianie z własną trasą).
 
 #### Ryzyka i alternatywy
@@ -399,11 +402,11 @@ Funkcja: Wejście z kodem jednorazowym i zapis tokena
   – wtedy CSRF po stronie wdrożenia (opis w dokumentacji).
 - `setSession` dostępne dla każdego skryptu na stronie – nie zwiększa uprawnień (skrypt na tej samej stronie i tak ma
   dostęp do localStorage), ale musi być opisane.
-- `sessionStorage` zamiast `localStorage` (token znika po zamknięciu karty) – **rozstrzygnięte (R-26): jako opcja, domyślnie `localStorage`** (bez zmiany zachowania domyślnego).
+- `sessionStorage` zamiast `localStorage` (token znika po zamknięciu karty) – **rozstrzygnięte (R-26): jako opcja, domyślnie `localStorage`** (bez zmiany zachowania domyślnego); nazwa: `editorTheme.auth.tokenStorage: "local" | "session"` (**R-33**).
 
 #### Podzadania
 - [ ] Parser parametrów (`code`, `next` – R-26) i `pickTokenFields` + testy – S
-- [ ] Opcja `sessionStorage` (R-26) + test – S
+- [ ] `editorTheme.auth.tokenStorage` (R-26, R-33): odczyt w `ec/settings.js`, przekazanie w `ea/editor/theme.js`, testy – S
 - [ ] `RED.user.setSession` + potwierdzenie zmiany użytkownika – M
 - [ ] Serwer: `codeInFragment` + test – S
 - [ ] Dokumentacja, przykład, E2E – S
@@ -719,7 +722,8 @@ Wynik: **POTWIERDZONE**.
 - Menu tworzone tylko gdy `RED.settings.user` i `editorTheme.userMenu !== false` (`:280-290`).
 - **Uzupełnienie bezpieczeństwa:** nazwa użytkownika jako HTML (`:265`) – patrz Ustalenia przekrojowe p. 3; **R-08: osobna poprawka teraz** (poza Z-12; Z-12.06 bazuje na tej poprawce).
 - **Uzupełnienie:** po ponownym logowaniu po wygaśnięciu sesji (`ec/comms.js:96-105`) `RED.settings.user` nie jest
-  odświeżane – menu i uprawnienia mogą dotyczyć poprzedniego użytkownika (**do potwierdzenia** testem E2E; istotne dla 08).
+  odświeżane – menu i uprawnienia mogą dotyczyć poprzedniego użytkownika; **rozstrzygnięte (R-41):** naprawiane razem
+  z poprawką R-08 (poza Z-12; test, który pada bez poprawki); Z-12.06 i Z-12.08 bazują na tej poprawce.
 
 #### Specyfikacja
 - **Cel:** pozycje pluginów zachowane przy przebudowie menu.
@@ -913,9 +917,13 @@ Wynik: **POTWIERDZONE** (z uzupełnieniami istotnymi dla projektu).
 | tryb tylko do odczytu | brak `flows.write` (istniejące) | **tak** (istniejące `flows.write`) | blokada edycji obszaru roboczego (nowe w UI; dziś tylko Wdróż) |
 
 - **Wpisy odbierające:** element tablicy z prefiksem `!` (np. `["*", "!flows.export", "!nodes.type.exec"]`) odbiera
-  uprawnienie i wszystkie mu podrzędne; obsługa `!nodes.type.*` (wszystkie typy) z jawnym przyznaniem
-  `nodes.type.inject` – **odebranie ma pierwszeństwo** (model „implikacja + `!`” – **R-27**); listy dozwolonych typów (allow-list) – decyzją nieobjęte, poza zakresem. Istniejące konfiguracje nie
-  zawierają `!`, więc ich wynik się nie zmienia.
+  uprawnienie i wszystkie mu podrzędne (model „implikacja + `!`” – **R-27**). **Listy typów węzłów (R-42) – obie:**
+  (a) lista odbierająca – `["*", "!nodes.type.exec"]` (zakazane typy); (b) lista dozwolonych – `["!nodes.type.*",
+  "nodes.type.inject", …]` (odebranie wszystkich typów + jawne przyznanie wybranych). **Reguła pierwszeństwa dla
+  `nodes.type.*` (R-42):** (1) odebranie konkretnego typu (`!nodes.type.<typ>`) wygrywa ze wszystkim (także z
+  `nodes.type.<typ>` w tej samej tablicy); (2) przyznanie konkretnego typu (`nodes.type.<typ>`) wygrywa z
+  `!nodes.type.*`; (3) w pozostałych przypadkach – `!nodes.type.*` odbiera, w przeciwnym razie dziedziczenie z rodzica
+  (`flows.write`). Istniejące konfiguracje nie zawierają `!`, więc ich wynik się nie zmienia.
 - Sygnatury bez zmian: `permissions.hasPermission(userScope, permission)` (serwer), `RED.user.hasPermission(permission)`
   (klient); nowe: `RED.user.getPermissions() → Array<string>` (kopia), stała `RED.user.PERMISSIONS` (dokumentacja nazw).
 - Reguła implikacji jako tabela w jednym miejscu na stronę (serwer `permissions.js`, klient `user.js`) i **wspólny plik
@@ -924,7 +932,7 @@ Wynik: **POTWIERDZONE** (z uzupełnieniami istotnymi dla projektu).
 **2. Zdarzenie i atrybuty:**
 ```js
 /** Emitowane po każdym ustaleniu uprawnień: po RED.settings.load (start), po zalogowaniu z trybu anonimowego,
- *  po ponownym logowaniu po wygaśnięciu sesji (wymaga odświeżenia RED.settings.user – dziś brak, comms.js:96-105).
+ *  po ponownym logowaniu po wygaśnięciu sesji (odświeżenie RED.settings.user – poprawka R-08/R-41, comms.js:96-105).
  *  Gwarancja: przed editor:ready przy starcie; plugin w onready może czytać RED.user.hasPermission synchronicznie.
  * @event user:permissions @param {{permissions:Array<string>, user:Object}} */
 RED.events.on("user:permissions", fn);
@@ -937,7 +945,7 @@ RED.settings.user.attributes
 
 **3. Kontrola typów przy wdrożeniu (w zakresie – R-27, tor A; zmiana potoku E-01):** w `rt/api/flows.js` (pod blokadą, krok 2a potoku E-01 – ZASADY §2.3 A,
 po kontroli rewizji, przed `preDeploy`) porównanie nowej konfiguracji z aktywną; węzły dodane lub zmienione typu, do którego użytkownik nie ma
-`nodes.type.<typ>` → `403 node_type_not_permitted` z `types[]` (ZASADY §2.4), bez zapisu. Węzły istniejące i niezmienione – dozwolone. Dotyczy wszystkich wejść potoku z użytkownikiem (`/flows`, `/flow`, `/flow/:id`); `reload` i przeładowanie z magazynu – bez kontroli (brak nowej treści od użytkownika – do potwierdzenia przy przeglądzie E-01). Wymaga przekazania zakresu
+`nodes.type.<typ>` → `403 node_type_not_permitted` z `types[]` (ZASADY §2.4), bez zapisu. Węzły istniejące i niezmienione – dozwolone. Dotyczy wszystkich wejść potoku z użytkownikiem (`/flows`, `/flow`, `/flow/:id`); `reload` i przeładowanie z magazynu (Z-09) – **bez kontroli per użytkownik** (brak użytkownika; treść w magazynie pochodzi z kontrolowanych wdrożeń – **R-42**). Wymaga przekazania zakresu
 użytkownika do runtime (`opts.user` jest już przekazywany do API runtime – do potwierdzenia, czy z zakresem tokena).
 
 #### Kryteria akceptacji (BDD)
@@ -979,6 +987,23 @@ Funkcja: Szczegółowe uprawnienia edytora
     I magazyn i uruchomione flow pozostają bez zmian
     I hook preDeploy nie jest wywoływany
 
+  Scenariusz: Lista dozwolonych typów (R-42)
+    Zakładając użytkownika z ["*","!nodes.type.*","nodes.type.inject","nodes.type.debug"]
+    Kiedy wyśle POST /flows z nowymi węzłami inject i debug
+    Wtedy wdrożenie się powiedzie
+    Kiedy wyśle POST /flows z nowym węzłem function
+    Wtedy odpowiedź ma status 403 i kod node_type_not_permitted z types ["function"]
+
+  Scenariusz: Odebranie konkretnego typu wygrywa ze wszystkim (R-42)
+    Zakładając użytkownika z ["*","nodes.type.exec","!nodes.type.exec"]
+    Kiedy wyśle POST /flows z nowym węzłem exec
+    Wtedy odpowiedź ma status 403 i kod node_type_not_permitted z types ["exec"]
+
+  Scenariusz: Przeładowanie z magazynu bez kontroli typów (R-42)
+    Zakładając magazyn z flow zawierającym węzeł exec, zapisany przez innego użytkownika
+    Kiedy instancja przeładuje flow z magazynu (Z-09) lub wykona wdrożenie typu reload
+    Wtedy kontrola nodes.type nie jest wykonywana
+
   Scenariusz: Tryb tylko do odczytu
     Zakładając użytkownika z uprawnieniem "read"
     Wtedy obszar roboczy nie pozwala dodawać, przesuwać ani usuwać węzłów
@@ -994,11 +1019,13 @@ Funkcja: Szczegółowe uprawnienia edytora
 
 #### Testy
 - `test/unit/@node-red/editor-api/lib/auth/permissions_spec.js`: przypadki z `permissions-cases.json`: `implied by parent`,
-  `negation wins`, `wildcard negation nodes.type.*`, `legacy scopes unchanged`, `invalid entry ignored`.
+  `negation wins`, `wildcard negation nodes.type.*`, `specific grant wins over !nodes.type.*` (R-42),
+  `specific negation wins over specific grant` (R-42), `allow-list ["!nodes.type.*", "nodes.type.inject"]` (R-42),
+  `legacy scopes unchanged`, `invalid entry ignored`.
 - `test/unit/@node-red/editor-client/user_permissions_spec.js`: ten sam plik przypadków dla `RED.user.hasPermission`.
 - `test/unit/@node-red/editor-api/lib/admin/flows_spec.js`, `flow_spec.js`: `deploy denied with !flows.deploy`, `legacy write allowed`.
 - `test/unit/@node-red/runtime/lib/api/settings_spec.js`: `exposes attributes`, `never exposes password`, `rejects non-plain attributes`.
-- `test/unit/@node-red/runtime/lib/api/flows_spec.js`: `rejects added node of denied type`, `rejects changed node of denied type` (R-27), `allows unchanged denied node`, `type check runs after revision check and before preDeploy` (krok 2a), `403 body contains types[]`.
+- `test/unit/@node-red/runtime/lib/api/flows_spec.js`: `rejects added node of denied type`, `rejects changed node of denied type` (R-27), `allows unchanged denied node`, `type check runs after revision check and before preDeploy` (krok 2a), `403 body contains types[]`, `allow-list permits granted types only` (R-42), `reload and storage reload skip type check` (R-42).
 - Edytor (logika): `deploy_permissions_spec.js` – model stanów przycisku Wdróż wg uprawnień (wydzielony z `deploy.js`, E-03).
 - E2E (osobny podzbiór): matryca użytkowników × elementy UI.
 
@@ -1023,7 +1050,7 @@ Funkcja: Szczegółowe uprawnienia edytora
 - [ ] Model: implikacje + odbieranie (serwer + klient) + wspólna tabela przypadków – M
 - [ ] Trasy wdrożenia `flows.deploy` + testy kontraktu – S
 - [ ] Wbudowane elementy UI (Wdróż, import/eksport, paleta `nodes.write`, tryb tylko do odczytu) + testy logiki – M
-- [ ] `user:permissions`, odświeżenie `RED.settings.user` po ponownym logowaniu, `attributes` – M
+- [ ] `user:permissions`, `attributes` – M (odświeżenie `RED.settings.user` po ponownym logowaniu – w poprawce R-08, **R-41**)
 - [ ] Kontrola `nodes.type.<typ>` przy wdrożeniu (runtime, krok 2a potoku E-01) – L (**w zakresie – R-27**)
 - [ ] Dokumentacja, przykład, E2E – M
 
@@ -1108,7 +1135,7 @@ Funkcja: Konfiguracja palety
 |---|---|
 | Etap / typ | 4 / funkcja |
 | Priorytet / ryzyko | Ś / **średnie–wysokie** (kanał `postMessage`) |
-| Ustawienie | `editorTheme.embedding.allowedOrigins: []` (brak/pusta lista = wyłączone; nazwa wg R-28 i ZASADY §2.1 – zastępuje wcześniejsze `editorTheme.embedding.postMessage.allowedOrigins`); lista obejmuje także istniejący kanał `set-theme` (R-28) |
+| Ustawienie | `editorTheme.embedding.allowedOrigins` (nazwa wg R-28, **R-33** i ZASADY §2.1 – zastępuje wcześniejsze `editorTheme.embedding.postMessage.allowedOrigins`); lista obejmuje także istniejący kanał `set-theme` (R-28). Brak ustawienia = zachowanie 5.0.7 (`set-theme` bez kontroli źródła, nowy kanał nieaktywny) + ostrzeżenie w logu przy starcie; ustawiona lista – tylko wymienione źródła (**R-35**) |
 | Zależności | 03 |
 | Pliki | `ec/red.js:244-302`, `ec/ui/workspaces.js:350-366`, `ec/ui/view.js:7921`, `ec/ui/actions.js:6-56`, `ec/ui/userSettings.js:450-457`, `ea/editor/theme.js:380-420` |
 
@@ -1133,7 +1160,7 @@ Wynik: **CZĘŚCIOWO**.
 - **Wyjścia:** przejście do flow, zaznaczenie, opcjonalnie okno edycji; odpowiedź `postMessage`
   `{type:"node-red:result", requestId, ok, error?}` do `event.origin`.
 - **Niezmienniki:** zachowanie przy pierwszym wczytaniu jak dziś; bez ustawienia `allowedOrigins` edytor nie rejestruje
-  nasłuchu nowego kanału; kanał `set-theme` sprawdza `event.origin` wg tej samej listy (R-28) – zachowanie `set-theme` przy pustej liście (domyślnie) do ustalenia (wyłączenie zmienia zachowanie 5.0.7); kanał obsługuje **wyłącznie** zamkniętą listę typów komunikatów (bez wywoływania dowolnych akcji –
+  nasłuchu nowego kanału; kanał `set-theme` sprawdza `event.origin` wg tej samej listy (R-28); **bez ustawienia – `set-theme` jak w 5.0.7 (bez kontroli źródła) + ostrzeżenie w logu przy starcie serwera; przy ustawionej liście – tylko wymienione źródła (R-35)**; kanał obsługuje **wyłącznie** zamkniętą listę typów komunikatów (bez wywoływania dowolnych akcji –
   np. `core:deploy-flows` nie jest dostępne).
 - **Przypadki błędów:** nieznany id → powiadomienie „nie znaleziono” (tekst), odpowiedź `ok:false, error:"not_found"`;
   źródło spoza listy / `event.source !== window.parent` → komunikat ignorowany (log `debug`); nieprawidłowy kształt → ignorowany.
@@ -1169,6 +1196,12 @@ Funkcja: Nawigacja do bloczka
     Kiedy komunikat set-theme przyjdzie z https://evil.example
     Wtedy motyw nie zostaje zmieniony
 
+  Scenariusz: set-theme bez ustawienia działa jak w 5.0.7 (R-35)
+    Zakładając brak editorTheme.embedding.allowedOrigins
+    Kiedy komunikat set-theme przyjdzie z dowolnego źródła
+    Wtedy motyw zostaje zmieniony jak w 5.0.7
+    I przy starcie serwera w logu jest ostrzeżenie o braku listy źródeł
+
   Scenariusz: Brak pętli przy zmianie zakładki
     Kiedy przełączę zakładkę flow (edytor ustawia #flow/<id>)
     Wtedy obsługa hashchange nie wykonuje dodatkowej nawigacji
@@ -1196,12 +1229,13 @@ Funkcja: Nawigacja do bloczka
 
 #### Testy
 - `test/unit/@node-red/editor-client/ui/navigation_spec.js`: `parses flow/node/group/edit`, `rejects malformed`,
-  `parses flow/<flowId>/node/<nodeId>` (R-28), `ignores self-induced hash`, `origin allowlist exact match`, `set-theme checks origin allowlist` (R-28), `rejects non-parent source`, `rejects unknown message type`.
-- `test/unit/@node-red/editor-api/lib/editor/theme_spec.js`: `passes embedding settings`.
+  `parses flow/<flowId>/node/<nodeId>` (R-28), `ignores self-induced hash`, `origin allowlist exact match`, `set-theme checks origin allowlist` (R-28), `set-theme unchecked when allowedOrigins absent` (R-35), `rejects non-parent source`, `rejects unknown message type`.
+- `test/unit/@node-red/editor-api/lib/editor/theme_spec.js`: `passes embedding settings`, `warns at startup when embedding.allowedOrigins absent` (R-35; ostrzeżenie po stronie serwera, log przy starcie – R-43; realizacji).
 - E2E: strona testowa osadzająca edytor w ramce (dwa źródła).
 
 #### DoD specyficzne
 - [ ] Dokumentacja protokołu komunikatów (typy, odpowiedzi) i rekomendacji `frame-ancestors`.
+- [ ] Szablon `settings.js`: `editorTheme.embedding.allowedOrigins` z opisem zachowania bez ustawienia (5.0.7 + ostrzeżenie) i zaleceniem ustawienia listy w naszych instalacjach (R-35).
 - [ ] Przykład: strona osadzająca + plugin używający akcji.
 
 #### Ryzyka i alternatywy
@@ -1583,15 +1617,15 @@ wdrożenia) – kolejność scalania uzgadniana w E-01.
    `adminAuth.authenticate` (zmiana serwera), czy wystarczy krok `loginPost` z własną trasą? **Rozstrzygnięte (R-25):** dodatkowe pola przez krok `loginPost` z własną trasą pluginu (bez zmiany `adminAuth.authenticate`).
 5. **P-5 – 02:** w jaki sposób aplikacja zewnętrzna uzyskuje kod jednorazowy (własna strategia, osobna trasa wydająca kod)?
    Czy potrzebny jest format `#code=…&next=<głęboki link>`? **Rozstrzygnięte (R-26):** kod wydaje własna strategia `adminAuth`/plugin; rdzeń przyjmuje `#code=…&next=…` (format z `next` – tak).
-6. **P-6 – 02:** czy dopuszczalna jest zmiana przechowywania tokena na `sessionStorage` (opcja), czy pozostaje `localStorage`? **Rozstrzygnięte (R-26):** `sessionStorage` jako opcja, domyślnie `localStorage` (nazwa ustawienia – do ustalenia).
+6. **P-6 – 02:** czy dopuszczalna jest zmiana przechowywania tokena na `sessionStorage` (opcja), czy pozostaje `localStorage`? **Rozstrzygnięte (R-26):** `sessionStorage` jako opcja, domyślnie `localStorage`; nazwa ustawienia – `editorTheme.auth.tokenStorage: "local" | "session"` (**R-33**).
 7. **P-7 – 08:** czy akceptujecie model „implikacja + wpisy odbierające `!`” (zgodny wstecz), czy wolicie osobne pole
-   `restrictions` w obiekcie użytkownika? Jakie atrybuty użytkownika mają trafiać do edytora i jaki limit rozmiaru? **Rozstrzygnięte (R-27):** model „implikacja + `!`” (uprawnienia podrzędne dziedziczone, `!` odbiera, pierwszeństwo odebrania). Zakresu atrybutów użytkownika i limitu rozmiaru decyzja nie obejmuje (karta: biała lista + limit np. 8 KB – do potwierdzenia).
+   `restrictions` w obiekcie użytkownika? Jakie atrybuty użytkownika mają trafiać do edytora i jaki limit rozmiaru? **Rozstrzygnięte (R-27):** model „implikacja + `!`” (uprawnienia podrzędne dziedziczone, `!` odbiera, pierwszeństwo odebrania; dla typów węzłów doprecyzowane w R-42 – przyznanie konkretnego typu wygrywa z `!nodes.type.*`). Zakresu atrybutów użytkownika i limitu rozmiaru decyzja nie obejmuje (karta: biała lista + limit np. 8 KB – do potwierdzenia).
 8. **P-8 – 08/09, typy węzłów:** czy wymagana jest egzekucja serwerowa `nodes.type.<typ>` przy wdrożeniu (L, zmiana potoku
-   E-01), czy wystarczy UI + własny hook `preDeploy` (Z-06)? Czy potrzebne są listy dozwolonych typów (allow-list)? **Rozstrzygnięte (R-27):** egzekucja serwerowa `nodes.type.<typ>` przy wdrożeniu – w zakresie (zmiana potoku E-01, krok 2a; 403 `node_type_not_permitted`); `flows.export` – tylko utrudnienie. Listy dozwolonych typów (allow-list) – decyzją nieobjęte.
+   E-01), czy wystarczy UI + własny hook `preDeploy` (Z-06)? Czy potrzebne są listy dozwolonych typów (allow-list)? **Rozstrzygnięte (R-27):** egzekucja serwerowa `nodes.type.<typ>` przy wdrożeniu – w zakresie (zmiana potoku E-01, krok 2a; 403 `node_type_not_permitted`); `flows.export` – tylko utrudnienie. Listy dozwolonych typów – **R-42:** obie listy (odbierająca i dozwolonych); przyznanie konkretnego typu wygrywa z `!nodes.type.*`, odebranie konkretnego typu – ze wszystkim; przeładowanie z magazynu bez kontroli per użytkownik.
 9. **P-9 – 10:** co oznacza „format z identyfikatorem flow” – `#flow/<id>` już działa; czy chodzi o `#flow/<flowId>/node/<nodeId>`?
-   Czy istniejący kanał motywu (`set-theme` bez kontroli źródła) ma zostać objęty listą `allowedOrigins`? **Rozstrzygnięte (R-28):** nowy format `#flow/<flowId>/node/<nodeId>`, `hashchange`, `core:reveal-node`; `set-theme` objęty `editorTheme.embedding.allowedOrigins`.
+   Czy istniejący kanał motywu (`set-theme` bez kontroli źródła) ma zostać objęty listą `allowedOrigins`? **Rozstrzygnięte (R-28):** nowy format `#flow/<flowId>/node/<nodeId>`, `hashchange`, `core:reveal-node`; `set-theme` objęty `editorTheme.embedding.allowedOrigins`. **R-35:** brak ustawienia = zachowanie 5.0.7 z ostrzeżeniem w logu; ustawiona lista – tylko wymienione źródła.
 10. **P-10 – bezpieczeństwo poza zakresem:** czy zgłosić jako osobną poprawkę wstawianie nazwy użytkownika jako HTML w menu
-    użytkownika (`ec/user.js:265`) i brak odświeżenia `RED.settings.user` po ponownym logowaniu (`ec/comms.js:96-105`)? **Rozstrzygnięte (R-08):** osobna poprawka bezpieczeństwa teraz (nazwa użytkownika jako HTML, `ec/user.js:265`). Brak odświeżenia `RED.settings.user` po ponownym logowaniu – decyzja go nie wymienia (pozostaje w Z-12.08, podzadanie `user:permissions`).
+    użytkownika (`ec/user.js:265`) i brak odświeżenia `RED.settings.user` po ponownym logowaniu (`ec/comms.js:96-105`)? **Rozstrzygnięte (R-08):** osobna poprawka bezpieczeństwa teraz (nazwa użytkownika jako HTML, `ec/user.js:265`). Brak odświeżenia `RED.settings.user` po ponownym logowaniu – **R-41:** naprawiany razem z poprawką R-08 (test, który pada bez poprawki).
 11. **P-11 – stabilność API:** okres deprecjacji nowych API (rekomendacja jak w etap-4.md: min. jedna wersja minor z ostrzeżeniem). **Rozstrzygnięte (R-24):** min. jedna wersja minor z ostrzeżeniem.
 12. **P-12 – kolejność:** czy akceptujecie kolejność pakietów Z-12c → Z-12a → Z-12b → Z-12d → Z-12e (Z-01 równolegle) i
     ewentualne odłożenie 07 (N)? **Rozstrzygnięte (R-24):** tak – Z-12c → Z-12a → Z-12b → Z-12d → Z-12e (Z-01 równolegle); 07 może zostać odłożone.
@@ -1609,3 +1643,8 @@ Naniesione decyzje z [../REJESTR-DECYZJI.md](../REJESTR-DECYZJI.md):
 - **Z-12.09 (R-27):** ukrywanie typów wsparte egzekucją serwerową.
 - **Z-12.10 (R-28):** format `#flow/<flowId>/node/<nodeId>`; ustawienie `editorTheme.embedding.allowedOrigins` (nazwa wg ZASADY §2.1) obejmuje `set-theme`; 2 nowe scenariusze, testy.
 - **Grupowanie (R-24, R-25, R-27, R-28):** Z-12a – mniejszy zakres serwera; Z-12b – kontrola typów obowiązkowa; Z-12d – nowa nazwa ustawienia.
+- **Doprecyzowania R-33…R-42:**
+  - **Ustalenia przekrojowe, Z-12.06, P-10 (R-08, R-41):** odświeżenie `RED.settings.user` po ponownym logowaniu naprawiane w poprawce XSS R-08 (test, który pada bez poprawki); usunięte „do potwierdzenia” i podzadanie w Z-12.08 przeniesione do poprawki.
+  - **Z-12.02 (R-33):** nazwa `editorTheme.auth.tokenStorage: "local" | "session"`, domyślnie `"local"` (Ustawienie, Wejścia, Wyjścia, scenariusz, testy – w tym przekazanie w `theme.js`, DoD, Ryzyka, podzadanie, P-6).
+  - **Z-12.08 (R-42):** obie listy typów (odbierająca i dozwolonych); reguła pierwszeństwa: przyznanie konkretnego typu wygrywa z `!nodes.type.*`, odebranie konkretnego typu wygrywa ze wszystkim (zastępuje wcześniejsze „odebranie ma pierwszeństwo” dla `!nodes.type.*` + `nodes.type.inject`); `reload` i przeładowanie z magazynu bez kontroli per użytkownik; 3 nowe scenariusze, testy (wspólna tabela przypadków), P-7, P-8.
+  - **Z-12.10 (R-33, R-35):** nazwa `editorTheme.embedding.allowedOrigins` potwierdzona; brak ustawienia = 5.0.7 (`set-theme` bez kontroli, nowy kanał nieaktywny) + ostrzeżenie w logu; ustawiona lista – tylko wymienione źródła (Ustawienie, Niezmienniki, scenariusz, testy, DoD, P-9).

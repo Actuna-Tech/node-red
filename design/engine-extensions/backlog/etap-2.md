@@ -205,22 +205,24 @@ Wynik: **POTWIERDZONE (z korektą do punktu o globalnych configach).**
 - **Rewizja flow (definicja):** `sha256` z `JSON.stringify` tablicy: węzeł `tab` + wszystkie węzły z `z === id` (węzły, grupy, configi flow) w kolejności z `activeConfig.flows`, każdy bez właściwości `credentials`. Dla `id = "global"`: wszystkie węzły bez `z` lub z `z` wskazującym subflow / definicje subflow (zbiór zastępowany przez `PUT /flow/global`). Hex, jak rewizja całości.
 - **Wejścia:**
   - `GET /flow/:id` – nagłówek `Node-RED-API-Version` (`v1` domyślnie, `v2`);
-  - `PUT /flow/:id` – treść jak dziś + opcjonalnie `rev` (rewizja flow), `globalConfigs[]`, `globalRev` (rewizja `global`);
+  - `PUT /flow/:id` – treść jak dziś + opcjonalnie `rev` (rewizja flow), `globalConfigs[]`, `globalRev` (rewizja `global`); w `v2` opcjonalnie nagłówek `If-Match: <ETag>` – równoważny `rev` (R-34);
   - `POST /flow` – treść jak dziś + opcjonalnie `globalConfigs[]`, `globalRev`;
   - ustawienie `deploy.putCreatesFlow`.
 - **Wyjścia:**
   - `GET /flow/:id` z `v2` → obiekt flow + `rev` oraz nagłówek `ETag` z rewizją flow (R-13, D-09); z `v1` – bez zmian (bez `rev` i bez `ETag`, zob. Ryzyka – „round-trip”);
   - `PUT /flow/:id` → 200 `{id}` jak dziś; przy `v2` dodatkowo `rev` (nowa rewizja flow) i `revAll` (rewizja całości) – **nazwy do potwierdzenia**;
-  - `POST /flow` → **201** `{id}` (R-13; dziś 200), id nadawane przez serwer – 16 znaków hex (`generateId`) (+ `rev` przy `v2`).
+  - `PUT /flow/:id` tworzący (tylko przy `deploy.putCreatesFlow: true`) → **201** `{id}` w `v2`, **200** `{id}` w `v1`; bez ustawienia 404 jak dziś (R-34);
+  - `POST /flow` → **201** `{id}` **tylko w `v2`** (+ `rev`); w `v1` **200** jak dziś (R-13, R-34); id nadawane przez serwer – 16 znaków hex (`generateId`).
 - **Niezmienniki:**
-  - wywołania bez nowych pól i bez nagłówka `v2` dają te same odpowiedzi i skutki co w 5.0.7 – **wyjątek:** status `POST /flow` 201 zamiast 200 (R-13; zob. Ryzyka);
+  - wywołania bez nowych pól i bez nagłówka `v2` dają te same odpowiedzi i skutki co w 5.0.7 – bez wyjątków (status 201 tylko w `v2` – R-34);
   - właściwości układu flow (Z-14 część runtime, FL-B-001) obsługiwane w API pojedynczego flow **zawsze**, niezależnie od `editorTheme.flowLayout.enabled` (R-02);
   - rewizja flow zmienia się **wyłącznie** przy zmianie treści tego flow (zmiana innego flow, globalnego configu ani subflow jej nie zmienia); rewizja całości liczona jak dziś;
   - kontrola rewizji i zmiana stanu w **jednej** sekcji krytycznej (istniejący mutex `api/flows.js`), zgodnie z krokiem 2 E-01;
   - `copyFlowLayoutProperties` (FL-B-001) działa we wszystkich ścieżkach, także w tworzeniu pod id;
   - istniejące pole `configs` zachowuje znaczenie „configi przypisane do flow” (`z = id`).
 - **Przypadki błędów:**
-  - `rev` niezgodna → 409 `version_mismatch` (istniejący kod, `editor-api/lib/util.js:42-58`), bez zapisu;
+  - `rev` niezgodna → 409 `version_mismatch` (istniejący kod, `editor-api/lib/util.js:42-58`), bez zapisu; to samo dla niezgodnego `If-Match` w `v2` (R-34);
+  - `v2`: `If-Match` i `rev` w treści obecne i sprzeczne → **400** (R-34; kod `invalid_revision` – R-43);
   - `rev`/`globalRev` w złym formacie (pusty string, nie-string, poza `rev:null` przy tworzeniu) → 400 `invalid_revision` (ZASADY §2.4; kod używany też przez Z-05);
   - `globalRev` niezgodna → 409 `version_mismatch`;
   - PUT nieistniejącego id przy `putCreatesFlow:false` → 404 `not_found` (jak dziś);
@@ -238,9 +240,10 @@ Wynik: **POTWIERDZONE (z korektą do punktu o globalnych configach).**
 | `/flow/:id` | GET | `Node-RED-API-Version: v2` | 200 obiekt flow + `rev`, nagłówek `ETag`; 404 | **nowe** (addytywne, tylko v2; R-13) |
 | `/flow/:id` | PUT | flow jak dziś | 200 `{id}`; 400; 404 `not_found` | brak |
 | `/flow/:id` | PUT | + `rev` | 200 `{id[, rev, revAll]}`; 409 `version_mismatch` | **nowe** pole opcjonalne |
-| `/flow/:id` (nieistniejące) | PUT | flow, `deploy.putCreatesFlow:true`, opcjonalnie `rev:null` | 200 `{id}` (flow utworzony pod tym id); 400 `invalid_flow_id`; 409 | **nowe** za ustawieniem (domyślnie 404 jak dziś) |
+| `/flow/:id` | PUT | `v2` + nagłówek `If-Match: <ETag>` (zamiast lub razem z `rev`) | jak dla `rev`; `If-Match` ≠ `rev` → 400 | **nowe** (tylko v2; R-34) |
+| `/flow/:id` (nieistniejące) | PUT | flow, `deploy.putCreatesFlow:true`, opcjonalnie `rev:null` | **201** `{id}` w v2 / **200** `{id}` w v1 (flow utworzony pod tym id); 400 `invalid_flow_id`; 409 | **nowe** za ustawieniem (domyślnie 404 jak dziś) (R-34) |
 | `/flow/:id` | PUT | + `globalConfigs[]`, opcjonalnie `globalRev` | 200; 400 `duplicate_id` / `invalid_node_type`; 409 | **nowe** pole opcjonalne |
-| `/flow` | POST | flow (+ `globalConfigs[]`, `globalRev`) | **201** `{id[, rev]}` (id 16 hex); 400; 409 | **zmiana statusu 200 → 201** (R-13); nowe pola opcjonalne; id nadal nadawane przez serwer |
+| `/flow` | POST | flow (+ `globalConfigs[]`, `globalRev`) | v2: **201** `{id, rev}`; v1: **200** `{id}` jak dziś (id 16 hex); 400; 409 | **201 tylko w v2** (R-13, R-34); v1 bez zmian; nowe pola opcjonalne; id nadal nadawane przez serwer |
 | `/flow/global` | GET/PUT | jak dziś (+ `rev` jak wyżej) | jak dziś | rewizja jak dla każdego flow |
 | `/flow/:id` | DELETE | – (opcjonalnie `?rev=` – Z-05) | 204; 404; 409 | zob. Z-05 |
 | `/flows` | GET/POST | bez zmian | bez zmian | brak (rewizja całości bez zmian) |
@@ -254,7 +257,7 @@ Pełny dokument kontraktu (przykłady żądań/odpowiedzi) – w katalogu dostar
    - `applyGlobalConfigs(newConfig, globalConfigs)` – upsert po id: istniejący węzeł bez `z` → zastąpienie; nowy → dodanie bez `z`; konflikt → błąd `duplicate_id`;
    - sprawdzenie duplikatów id w `updateFlow` (względem węzłów spoza flow).
 2. `runtime/lib/api/flows.js`: w `addFlow`/`updateFlow` (wewnątrz mutexu): kontrola `opts.flow.rev` i `globalRev` przed budową konfiguracji; `putCreatesFlow` z `runtime.settings.get("deploy")` (bez wyjątku przy braku obiektu); mapowanie błędów (`404`, `400`, `409`) – spójnie z E-01; `getFlow` dołącza `rev` gdy `opts.apiVersion === "v2"`.
-3. `editor-api/lib/admin/flow.js`: odczyt `Node-RED-API-Version` (walidacja `^v[12]$` jak `admin/flows.js:25-27`), przekazanie `apiVersion`; usunięcie `rev`, `globalRev`, `globalConfigs` z obiektu flow przed zapisem (nie trafiają do węzła `tab`); `GET` v2 – nagłówek `ETag` z `rev` (R-13); `POST` – `res.status(201).json({id})` (R-13).
+3. `editor-api/lib/admin/flow.js`: odczyt `Node-RED-API-Version` (walidacja `^v[12]$` jak `admin/flows.js:25-27`), przekazanie `apiVersion`; usunięcie `rev`, `globalRev`, `globalConfigs` z obiektu flow przed zapisem (nie trafiają do węzła `tab`); `GET` v2 – nagłówek `ETag` z `rev` (R-13); `PUT` v2 – odczyt `If-Match` jako `rev` (oba obecne i różne → 400) (R-34); `POST` i `PUT` tworzący – `res.status(apiVersion === "v2" ? 201 : 200)` (R-13, R-34).
 4. `node-red/settings.js`: zakomentowany blok `deploy: { putCreatesFlow: false }` (wspólny obiekt z P-01/Z-05) w sekcji Runtime Settings z opisem.
 5. JSDoc `runtime/lib/api/flows.js` (nowe opcje), CHANGELOG, dokument kontraktu.
 
@@ -267,12 +270,25 @@ Funkcja: Pełne API pojedynczego flow
     Gdy wykonuję GET, POST, PUT i DELETE /flow tak jak w wersji 5.0.6 (bez nagłówka v2 i nowych pól)
     Wtedy statusy, treści odpowiedzi i zapisane flow są identyczne jak w wersji bazowej
     I PUT /flow/:id dla nieistniejącego id zwraca 404 "not_found"
-    I POST /flow nadaje nowe id
-    # wyjątek (R-13): POST /flow zwraca status 201 zamiast 200
+    I POST /flow nadaje nowe id i zwraca status 200 (R-34)
 
-  Scenariusz: POST /flow zwraca 201 i id 16 hex (R-13)
-    Gdy wykonuję POST /flow z nowym flow
+  Scenariusz: POST /flow w v2 zwraca 201 i id 16 hex (R-13, R-34)
+    Gdy wykonuję POST /flow z nowym flow i nagłówkiem Node-RED-API-Version "v2"
     Wtedy odpowiedź ma status 201 i {id} złożone z 16 znaków hex
+
+  Scenariusz: POST /flow w v1 zwraca 200 jak dziś (R-34)
+    Gdy wykonuję POST /flow z nowym flow bez nagłówka Node-RED-API-Version
+    Wtedy odpowiedź ma status 200 i {id} złożone z 16 znaków hex
+
+  Scenariusz: If-Match równoważny rev w v2 (R-34)
+    Zakładając, że ktoś zmienił flow "t1" po moim odczycie
+    Gdy wykonuję PUT /flow/t1 z nagłówkiem v2 i If-Match ze starym ETag, bez rev w treści
+    Wtedy odpowiedź ma status 409 i kod "version_mismatch"
+
+  Scenariusz: Sprzeczne If-Match i rev (R-34)
+    Gdy wykonuję PUT /flow/t1 z nagłówkiem v2, If-Match równym aktualnej rewizji i inną rev w treści
+    Wtedy odpowiedź ma status 400
+    I flow "t1" pozostaje bez zmian
 
   Scenariusz: [odbiór] GET zwraca rewizję flow
     Gdy wykonuję GET /flow/t1 z nagłówkiem Node-RED-API-Version "v2"
@@ -301,9 +317,14 @@ Funkcja: Pełne API pojedynczego flow
 
   Scenariusz: [odbiór] Tworzenie flow pod wskazanym id przy włączonym ustawieniu
     Zakładając, że deploy.putCreatesFlow jest true
-    Gdy wykonuję PUT /flow/nowy1 dla nieistniejącego flow z węzłami i layout "TB"
-    Wtedy odpowiedź ma status 200 i {id:"nowy1"}
+    Gdy wykonuję PUT /flow/nowy1 z nagłówkiem v2 dla nieistniejącego flow z węzłami i layout "TB"
+    Wtedy odpowiedź ma status 201 i {id:"nowy1"} (R-34)
     I flow "nowy1" istnieje z węzłami przypisanymi do "nowy1" i layout "TB"
+
+  Scenariusz: Tworzenie pod id w v1 zwraca 200 (R-34)
+    Zakładając, że deploy.putCreatesFlow jest true
+    Gdy wykonuję PUT /flow/nowy2 bez nagłówka v2 dla nieistniejącego flow
+    Wtedy odpowiedź ma status 200 i {id:"nowy2"}
 
   Scenariusz: Tworzenie pod id zajętym przez węzeł
     Zakładając, że deploy.putCreatesFlow jest true i istnieje węzeł "n1" w flow "t1"
@@ -349,11 +370,11 @@ Funkcja: Pełne API pojedynczego flow
 #### Testy
 - **Jednostkowe** `test/unit/@node-red/runtime/lib/flows/index_spec.js`: `describe('#getFlowRevision')` – `is stable for unchanged flow`, `changes when flow node changes`, `does not change when another flow changes`, `ignores credentials`, `computes global revision`; `describe('#updateFlow')` – `creates flow with given id when create flag set`, `rejects create when id used by a node`, `rejects node id used in another flow`, `upserts globalConfigs`, `rejects globalConfig id used in another flow`, `keeps configs flow-scoped`; istniejące testy FL-B-001 (`flow layout properties`, `:679-731`) bez zmian i zielone.
 - **Jednostkowe** `test/unit/@node-red/runtime/lib/api/flows_spec.js` (`addFlow`, `getFlow`, `updateFlow`): `rejects stale rev with 409 version_mismatch`, `accepts matching rev`, `returns rev only for v2`, `putCreatesFlow false returns 404`, `putCreatesFlow true creates flow`, `rev null with existing flow returns 409`, `globalRev mismatch returns 409`, `concurrent updates with same rev – one 409`.
-- **Kontraktowe** `test/unit/@node-red/editor-api/lib/admin/flow_spec.js` (supertest): `legacy GET/POST/PUT/DELETE unchanged` (zapis oczekiwanych odpowiedzi 5.0.7), `GET v2 returns rev and ETag header` (R-13), `GET v1 has no rev and no ETag`, `POST /flow returns 201 with 16-hex id` (R-13), `invalid API version returns 400 invalid_api_version`, `PUT with stale rev returns 409`, `PUT unknown id returns 404 by default`, `PUT unknown id creates when putCreatesFlow`, `PUT with globalConfigs conflict returns 400 duplicate_id`, `rev/globalRev/globalConfigs are not stored on tab node`.
+- **Kontraktowe** `test/unit/@node-red/editor-api/lib/admin/flow_spec.js` (supertest): `legacy GET/POST/PUT/DELETE unchanged` (zapis oczekiwanych odpowiedzi 5.0.7), `GET v2 returns rev and ETag header` (R-13), `GET v1 has no rev and no ETag`, `POST /flow v2 returns 201 with 16-hex id` (R-13, R-34), `POST /flow v1 returns 200` (R-34), `PUT create returns 201 in v2 and 200 in v1` (R-34), `PUT v2 If-Match acts as rev` (R-34), `PUT v2 conflicting If-Match and rev returns 400 invalid_revision` (R-34, R-43), `If-Match ignored in v1` (R-43), `invalid API version returns 400 invalid_api_version`, `PUT with stale rev returns 409`, `PUT unknown id returns 404 by default`, `PUT unknown id creates when putCreatesFlow`, `PUT with globalConfigs conflict returns 400 duplicate_id`, `rev/globalRev/globalConfigs are not stored on tab node`.
 - **E2E** (opcjonalnie, jak dla FL-B-001): skrypt HTTP na uruchomionym runtime – cykl GET v2 → PUT z rev → PUT ze starą rev (409).
 
 #### DoD specyficzne
-- [ ] Zgodność z R-13: `globalConfigs[]` (D-08), `rev` tylko w v2 + `ETag` (D-09), `POST /flow` → 201 z id 16 hex, `globalRev`; zmiana statusu `POST /flow` opisana w kontrakcie i CHANGELOG.
+- [ ] Zgodność z R-13/R-34: `globalConfigs[]` (D-08), `rev` tylko w v2 + `ETag` (D-09), `If-Match` w v2 równoważne `rev` (sprzeczne → 400), `POST /flow` i `PUT` tworzący → 201 tylko w v2 (v1 200), id 16 hex, `globalRev`; kontrakt i CHANGELOG.
 - [ ] Dokument kontraktu Admin API (tabela + przykłady) dołączony do gałęzi pakietu.
 - [ ] Testy FL-B-001 zielone; brak regresji `copyFlowLayoutProperties`.
 - [ ] Wszystkie nowe ścieżki wewnątrz istniejącego mutexu; zgodność z krokami E-01.
@@ -361,16 +382,17 @@ Funkcja: Pełne API pojedynczego flow
 
 #### Ryzyka i alternatywy
 - **Kolizja nazwy `configs` (decyzja Zamawiającego):** zlecenie opisuje „opcjonalne `configs[]` dodające globalne configi”, ale `configs` już istnieje i znaczy „configi flow” (zwracane też przez `GET /flow/:id`). Zmiana znaczenia złamałaby klientów robiących GET → PUT. Rekomendacja: nowe pole `globalConfigs[]`. Alternatywy: flaga `configsScope: "global"` w treści albo nagłówek; odrzucona – niejawne, łatwe do pomyłki.
-- **„Round-trip” GET → PUT:** gdyby `GET /flow/:id` zawsze zwracał `rev`, dotychczasowi klienci odsyłający cały obiekt zaczęliby nieświadomie wysyłać rewizję i dostawać 409 zamiast nadpisania. Dlatego `rev` w GET tylko przy `v2`; `rev` w PUT sprawdzane zawsze, gdy obecne. **Rozstrzygnięte (R-13):** `rev` w treści tylko przy v2, dodatkowo nagłówek `ETag`; v1 bez zmian (D-09). Obsługa `If-Match` w żądaniach decyzją nieobjęta – poza zakresem.
+- **„Round-trip” GET → PUT:** gdyby `GET /flow/:id` zawsze zwracał `rev`, dotychczasowi klienci odsyłający cały obiekt zaczęliby nieświadomie wysyłać rewizję i dostawać 409 zamiast nadpisania. Dlatego `rev` w GET tylko przy `v2`; `rev` w PUT sprawdzane zawsze, gdy obecne. **Rozstrzygnięte (R-13):** `rev` w treści tylko przy v2, dodatkowo nagłówek `ETag`; v1 bez zmian (D-09). **Rozstrzygnięte (R-34):** w v2 `If-Match: <ETag>` równoważne `rev`; oba obecne i sprzeczne → 400.
 - **Rewizja flow a zależności:** zmiana globalnego configu lub subflow używanego przez flow nie zmienia rewizji flow (zgodnie z wymaganiem „tylko przy zmianie tego flow”); klient chcący chronić globalne configi używa `globalRev`.
 - **Kolejność węzłów:** rewizja liczona w kolejności zapisu – przestawienie węzłów zmienia rewizję (bezpieczniej niż sortowanie).
-- **Status odpowiedzi przy tworzeniu – rozstrzygnięte (R-13):** `POST /flow` → 201 z id 16 hex. Zmiana statusu (200 → 201) dotyczy także dotychczasowych klientów – opis w CHANGELOG i MIGRACJA. Status i format id przy tworzeniu przez `PUT /flow/:id` (`putCreatesFlow`) – R-13 nie rozstrzyga jednoznacznie; karta utrzymuje 200 `{id}` do doprecyzowania.
+- **Status odpowiedzi przy tworzeniu – rozstrzygnięte (R-13, R-34):** `POST /flow` → 201 z id 16 hex **tylko w v2**; v1 nadal 200 – dotychczasowi klienci bez zmian. `PUT /flow/:id` tworzy tylko przy `deploy.putCreatesFlow: true` (201 w v2 / 200 w v1), bez ustawienia 404 jak dziś (R-34). Ograniczenia formatu id przy tworzeniu przez `PUT` – R-34 ich nie określa (walidacja wg `invalid_flow_id`).
 - **Węzły konfiguracyjne nierozpoznawalne po stronie API:** runtime nie weryfikuje, czy typ w `globalConfigs` jest węzłem konfiguracyjnym (wiedza w definicji edytora) – walidacja ograniczona do typów `tab/subflow/group` i braku `wires`; **do potwierdzenia**.
 - Wysokie ryzyko konfliktów scalania z P-01/Z-05/Z-06/FL-B-002 – łagodzone przez E-01.
 
 #### Podzadania
 - [ ] Testy kontraktowe stanu bieżącego (zapis odpowiedzi 5.0.7) – S
-- [ ] `getFlowRevision` + `rev` i `ETag` w GET v2; `POST /flow` → 201 (R-13) – S
+- [ ] `getFlowRevision` + `rev` i `ETag` w GET v2; `POST /flow` i `PUT` tworzący → 201 tylko w v2 (R-13, R-34) – S
+- [ ] `If-Match` w PUT v2 (równoważne `rev`, sprzeczne → 400) (R-34) – S
 - [ ] Kontrola `rev`/`globalRev` w PUT/POST (mutex) – M
 - [ ] Tworzenie pod id za ustawieniem (rozszerzenie `build*FlowConfig` z E-01) – M
 - [ ] `globalConfigs[]` (upsert, konflikty, duplikaty w `updateFlow`) – M
@@ -853,7 +875,7 @@ Funkcja: Trasy HTTP w kontekście węzła
 4. **Z-03 – ustawienia uploadu:** czy kanoniczne `externalModules.palette.allowUpload` z dwoma przestarzałymi aliasami jest akceptowalne? **Rozstrzygnięte (R-17):** kanoniczne `externalModules.palette.allowUpload` + aliasy, których użycie daje ostrzeżenie w logu.
 5. **Z-04 – `configs` vs `globalConfigs`:** zgoda na nowe pole `globalConfigs[]` (istniejące `configs` = configi flow, bez zmiany znaczenia)? **Rozstrzygnięte (R-13, D-08):** nowe pole `globalConfigs[]`; `configs` bez zmiany znaczenia.
 6. **Z-04 – transport rewizji:** `rev` w treści tylko przy `Node-RED-API-Version: v2` (ochrona klientów GET→PUT) czy zawsze? Czy zamiast/obok tego `ETag`/`If-Match`? **Rozstrzygnięte (R-13, D-09):** `rev` tylko przy v2 + nagłówek `ETag`; v1 bez zmian.
-7. **Z-04 – tworzenie pod id:** odpowiedź 200 `{id}` czy 201? Jakie ograniczenia formatu id (np. tylko `[a-z0-9.-_]`)? **Rozstrzygnięte (R-13):** `POST /flow` → 201 z id 16 hex. Status i ograniczenia formatu id przy tworzeniu przez `PUT /flow/:id` – nie wynikają jednoznacznie z decyzji (zob. Ryzyka Z-04).
+7. **Z-04 – tworzenie pod id:** odpowiedź 200 `{id}` czy 201? Jakie ograniczenia formatu id (np. tylko `[a-z0-9.-_]`)? **Rozstrzygnięte (R-13, R-34):** 201 tylko w v2 (v1 – 200) dla `POST /flow` i `PUT /flow/:id` tworzącego (przy `deploy.putCreatesFlow: true`); id z `POST` – 16 hex. Ograniczenia formatu id przy `PUT` – R-34 ich nie określa (zob. Ryzyka Z-04).
 8. **Z-04 – `globalRev`:** czy ochrona globalnych configów osobną rewizją jest potrzebna (rewizja flow celowo ich nie obejmuje)? **Rozstrzygnięte (R-13):** `globalRev` – tak.
 9. **Z-05 – macierz:** v1 przy wymogu zawsze 409 czy nagłówek z rewizją? Czy `DELETE /flow/:id` wymaga `?rev=`? Czy `reload` zwolniony? **Rozstrzygnięte (R-14):** v1 przy wymogu → zawsze 409 `version_required` (bez nagłówka); `DELETE /flow/:id` wymaga `?rev=`; `reload` zwolniony.
 10. **Z-05 – edytor:** propozycja D-12 (ANALIZA §7): przy wymogu rewizji „Overwrite” wysyła aktualną rewizję po potwierdzeniu w oknie; w `reload-only` niedostępne – prosimy o zatwierdzenie. **Rozstrzygnięte (R-12, D-12):** zatwierdzone – „Overwrite” wysyła aktualną rewizję po potwierdzeniu; w `reload-only` ukryty.
@@ -893,3 +915,4 @@ Naniesione decyzje z [../REJESTR-DECYZJI.md](../REJESTR-DECYZJI.md):
 - **Z-05 (R-14, R-12):** macierz – v1 → 409 `version_required` (nagłówek odrzucony), `DELETE /flow/:id` z `?rev=`, `reload` zwolniony; Overwrite wg D-12, ukryty w `reload-only`.
 - **Z-06 (R-15):** `deploy_hook_timeout` **400 → 503** (Wyjścia, Przypadki błędów, BDD, testy); bez hooków przy starcie procesu i operacjach Projektów (nowy scenariusz i test); modyfikacja w `preDeploy` – odrzucona.
 - **Z-07 (R-16):** bez przełącznika awaryjnego `http in`; `rawBodyCapture` – osobnym ustawieniem poza pakietem.
+- **Z-04 (R-34):** 201 **tylko w v2** – v1 nadal 200 (usunięty wyjątek z Niezmienników i scenariusza `[odbiór]`); `PUT /flow/:id` tworzący tylko przy `deploy.putCreatesFlow: true` – 201 w v2 / 200 w v1, bez ustawienia 404; w v2 `If-Match: <ETag>` równoważne `rev`, sprzeczne → 400 (Wejścia, Wyjścia, Przypadki błędów, kontrakt, Projekt pkt 3, 5 scenariuszy BDD, testy kontraktowe, DoD, Ryzyka, Pytanie 7, podzadanie).

@@ -6,8 +6,8 @@ Zebrane ze wszystkich dokumentów (ANALIZA §7.1, „Pytania” w kartach etapó
 bez duplikatów, w kolejności priorytetów biznesowych ([../PRIORYTETY.md](../PRIORYTETY.md)). Przechodzimy punkt po
 punkcie; wynik każdej decyzji trafia do kolumny „Decyzja” i do dokumentów, których dotyczy.
 
-**Stan (2026-10-03):** wszystkie punkty R-01…R-42 rozstrzygnięte. R-01…R-32 naniesione na ANALIZA §7.0, ZASADY,
-MIGRACJA, PRIORYTETY i karty etapów; R-33…R-42 – doprecyzowania po propagacji (sekcja niżej).
+**Stan (2026-10-03):** wszystkie punkty R-01…R-43 rozstrzygnięte. R-01…R-32 naniesione na ANALIZA §7.0, ZASADY,
+MIGRACJA, PRIORYTETY i karty etapów; R-33…R-43 – doprecyzowania po propagacji (sekcja niżej).
 
 **Już rozstrzygnięte (nie wracamy):** D-01 baza 5.0.7 · D-02 nazwy (rewizja: utrzymane) · D-03 bez Playwright ·
 D-04 podpisy, blokada upstream · D-10 przeładowanie różnicowe · D-11 drenaż SIGTERM · D-19 nagłówki · D-20
@@ -98,4 +98,4 @@ Zamawiający może je zmienić w dowolnej chwili), **Z** = decyzja Zamawiająceg
 | R-40 | Z-11: dokumentacja `readOnly`, bezwzględny `flowFile` | T | `readOnly` opisane w szablonie `settings.js`; `readOnlyUserDir` chroni także bezwzględny `flowFile` (zapis odrzucany niezależnie od ścieżki) |
 | R-41 | Z-02: nieznana wartość `httpAdminNodeRoutes`; R-08: odświeżenie użytkownika po ponownym logowaniu | T | nieznana wartość → traktowana jak `"authenticated"` (bezpieczniej) + ostrzeżenie w logu; brak odświeżenia `RED.settings.user` po ponownym logowaniu (`comms.js:96-105`) – naprawiany razem z poprawką R-08 (test, który pada bez poprawki) |
 | R-42 | Z-12.08/R-27: listy typów węzłów; kontrola przy przeładowaniu | Z (+T) | **obie listy**: wpisy odbierające `!nodes.type.<typ>` (zakazane) oraz lista dozwolonych (np. `["!nodes.type.*", "nodes.type.inject", …]` – odebranie wszystkich + jawne przyznanie wybranych; przyznanie konkretnego typu ma pierwszeństwo przed `!nodes.type.*`, odebranie konkretnego typu – przed wszystkim); **T:** przeładowanie z magazynu (`reload`, Z-09) nie jest kontrolowane per użytkownik – brak użytkownika; treść w magazynie pochodzi z kontrolowanych wdrożeń |
-
+| R-43 | Szczegóły z naniesienia R-33…R-43 | T | sprzeczne `If-Match` i `rev` → 400 `invalid_revision`; `If-Match` w v1 ignorowany (v1 bez zmian); pusta lista `[]` = jawnie „żadne źródło zewnętrzne” (`/comms` tylko własne źródło edytora, `set-theme` i nowy kanał nieaktywne) – brak ustawienia = jak 5.0.7 (R-35); ostrzeżenie o braku list – serwer, log przy starcie; po przekroczeniu `deploy.startTimeout` odpowiedź wraca, a blokada wdrożeń trwa do końca startu w tle (spójność potoku E-01); nazwy `adminAuth.strategy.codeInFragment`, `RED.header`, `RED.dialog` przyjęte jak w kartach |

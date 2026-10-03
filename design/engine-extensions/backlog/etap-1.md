@@ -181,7 +181,7 @@ Funkcja: Kontrakt potoku wdrożenia
 |---|---|
 | Etap / typ | 1 / funkcja |
 | Priorytet / ryzyko | P1 / średnie |
-| Ustawienie | `deploy.response: "stopped" \| "started"` (zlecenie: `flows.deployResponse`), domyślnie `"stopped"` |
+| Ustawienie | `deploy.response: "stopped" \| "started"` (zlecenie: `flows.deployResponse`), domyślnie `"stopped"`; `deploy.startTimeout` (ms), domyślnie wyłączony (R-38) |
 | Zależności | E-01 |
 | Pliki | `@node-red/runtime/lib/flows/index.js:207-241` (`setFlows`), `:228`, `:233`, `:272-432` (`start`), `:626,:800,:822`; `@node-red/runtime/lib/api/flows.js:66-100,118-200`; `@node-red/editor-api/lib/admin/flows.js:47-69`, `admin/flow.js:36-79`; `@node-red/editor-client/src/js/ui/deploy.js:556-683` (obsługa błędu z `rev`); `node-red/settings.js` (sekcja Runtime Settings) |
 | Powiązania | K8S-T-005/K8S-T-006 (wdrożenie na workerach, sondy gotowości – Z-08) |
@@ -202,17 +202,19 @@ Wynik: **POTWIERDZONE**, z rozszerzeniem.
   - `"started"`, sukces: jak dziś (v1 204, v2 `{rev}`, `/flow` `{id}`/204), ale po zdarzeniu `flows:started`, stanie `ready` i emisji `runtime-deploy` – **odpowiedź po kroku 9** ZASADY §2.3 A; hook `postDeploy` (Z-06, krok 11) wykonywany asynchronicznie **po** odpowiedzi i jej nie wstrzymuje.
   - `"started"`, błąd startu: odpowiedź błędu w formacie `rejectHandler` (`editor-api/lib/util.js:42-58`) `{code:"deploy_start_failed", message, rev, errors:[...]}`; HTTP 500 (ZASADY §2.4; **rozstrzygnięte R-10**: 500 `deploy_start_failed` + `rev` + `errors[]`). Konfiguracja pozostaje zapisana (rewizja zmieniona).
   - `"started"`, błąd zatrzymania: 500 `{code:"deploy_stop_failed", message, rev}` (ZASADY §2.3 krok 6, §2.4, D-05; potwierdzone R-10). W trybie domyślnym błąd zatrzymania połykany jak w 5.0.6.
+  - `"started"`, przekroczony `deploy.startTimeout` (gdy ustawiony): 500 `{code:"deploy_start_failed", message, rev, errors:[{code:"start_timeout", …}]}`; flow startują dalej w tle, wynik startu w logu (R-38).
+  - `"started"`, instancja `editorOnly: true` (Z-15): odpowiedź sukcesu `{rev, started: false}` – bez błędu, flow nie są uruchamiane (R-39).
   - Tryb domyślny, odrzucenie obietnicy `start()` (wywołanej bez `await`, `flows/index.js:228`): **logowane** (`Log.error`) zamiast nieobsłużonego odrzucenia – poprawka błędu (R-10, ZAŁ-A p.3); odpowiedź HTTP bez zmian.
 - **Niezmienniki:** wywołania wewnętrzne runtime (start, projekty) zachowują kolejność z 5.0.6 niezależnie od ustawienia; kolejność zdarzeń bez zmian (różni się tylko moment odpowiedzi); mutex API obejmuje cały czas oczekiwania na start (kolejne wdrożenie czeka); `runtimeFlowState: "stop"` (flow zatrzymane świadomie) → odpowiedź bez błędu po zapisie.
-- **Przypadki błędów (zakres „błędu startu” wg R-10):** nieznana wartość ustawienia → ostrzeżenie w logu przy starcie i tryb `"stopped"`; brakujące typy/moduły → `deploy_start_failed` z `errors[].code = missing_types|missing_modules`; tryb bezpieczny (`start()` kończy się bez uruchomienia flow, `flows/index.js:320-327`) → `deploy_start_failed` z kodem w `snake_case` wg ZASADY §2.4 (propozycja `safe_mode` – nazwa do potwierdzenia przy przeglądzie; przez Admin API tryb bezpieczny jest zwykle zdejmowany przed startem, `:105-107,:124-131`); wyjątek `Flow.start` → `flow_start_failed` (snake_case – ZASADY §2.4). Błędy konstruktorów pojedynczych węzłów (dziś tylko `Log.error` w `flows/util.js:273`) – **poza zakresem** (rozstrzygnięte R-10). Limit czasu oczekiwania na start – **poza P-01, w Z-08** (R-10).
+- **Przypadki błędów (zakres „błędu startu” wg R-10):** nieznana wartość ustawienia → ostrzeżenie w logu przy starcie i tryb `"stopped"`; brakujące typy/moduły → `deploy_start_failed` z `errors[].code = missing_types|missing_modules`; tryb bezpieczny (`start()` kończy się bez uruchomienia flow, `flows/index.js:320-327`) → `deploy_start_failed` z `errors[].code: "safe_mode"` (R-33; przez Admin API tryb bezpieczny jest zwykle zdejmowany przed startem, `:105-107,:124-131`); wyjątek `Flow.start` → `flow_start_failed` (snake_case – ZASADY §2.4). Błędy konstruktorów pojedynczych węzłów (dziś tylko `Log.error` w `flows/util.js:273`) – **poza zakresem** (rozstrzygnięte R-10). Limit czasu oczekiwania na start – ustawienie `deploy.startTimeout` (ms, domyślnie wyłączony); po przekroczeniu `deploy_start_failed` z `errors[].code: "start_timeout"`, flow startują dalej w tle (R-38; R-10 przypisywał limit do Z-08 – implementacja w P-01 albo Z-08 wg kolejności realizacji, kontrakt wspólny).
 - **Skutki uboczne:** dłuższy czas odpowiedzi w trybie `"started"` (o czas startu węzłów; nie o czas `postDeploy`); zdarzenie `runtime-deploy` dociera do edytorów przed odpowiedzią – edytor wdrażający je ignoruje (`deployInflight`, `deploy.js:143-145`).
 
 #### Projekt rozwiązania (minimalny)
 1. `runtime/lib/api/flows.js`: funkcja `getDeployOpts()` czyta `runtime.settings.deploy?.response`; `"started"` → `{waitForStart:true}`; przekazanie do `setFlows`, `loadFlows(true, opts)`, `addFlow/updateFlow/removeFlow`. Walidacja wartości i ostrzeżenie raz (przy `init`).
-2. `runtime/lib/flows/index.js` `setFlows` (punkt rozszerzenia z E-01): gdy `deployOpts.waitForStart` → `return start(...).then(result => { emit runtime-deploy; if (result.errors.length) throw deployStartError(result, flowRevision); return flowRevision })`, a błędy zatrzymania przepuszczane jako `deploy_stop_failed` z `rev`. Gałąź domyślna bez zmian (łącznie z pustym `.catch` – D-05) z jednym wyjątkiem (R-10, poprawka błędu): obietnica `start(...)` dostaje `.catch(err => Log.error(...))` – odrzucenie logowane zamiast nieobsłużonego; kolejność i moment odpowiedzi bez zmian. Kolejność zgodna z ZASADY §2.3 A: start (7) → stan (8) → `runtime-deploy` (9) → odpowiedź (10); `postDeploy` (11) uruchamia funkcja potoku E-01 po rozwiązaniu obietnicy, bez oczekiwania (Z-06).
+2. `runtime/lib/flows/index.js` `setFlows` (punkt rozszerzenia z E-01): gdy `deployOpts.waitForStart` → `return start(...).then(result => { emit runtime-deploy; if (result.errors.length) throw deployStartError(result, flowRevision); return flowRevision })`; przy ustawionym `deploy.startTimeout` – wyścig z licznikiem czasu: po przekroczeniu odrzucenie `deploy_start_failed` z `errors[].code: "start_timeout"` bez przerywania startu (wynik startu do logu) (R-38); przy `editorOnly` – rozwiązanie `{rev, started: false}` bez kroku 7 (R-39), a błędy zatrzymania przepuszczane jako `deploy_stop_failed` z `rev`. Gałąź domyślna bez zmian (łącznie z pustym `.catch` – D-05) z jednym wyjątkiem (R-10, poprawka błędu): obietnica `start(...)` dostaje `.catch(err => Log.error(...))` – odrzucenie logowane zamiast nieobsłużonego; kolejność i moment odpowiedzi bez zmian. Kolejność zgodna z ZASADY §2.3 A: start (7) → stan (8) → `runtime-deploy` (9) → odpowiedź (10); `postDeploy` (11) uruchamia funkcja potoku E-01 po rozwiązaniu obietnicy, bez oczekiwania (Z-06).
 3. `api/flows.js`: mapowanie błędów `deploy_start_failed`/`deploy_stop_failed` na `err.status` i dołączenie `rev`/`errors`; `editor-api/lib/util.js` `rejectHandler` – przepuszczenie `rev` i `errors` do odpowiedzi (dziś kopiuje tylko `code`, `message`, `remote`).
 4. Edytor (`deploy.js` `.fail`, `:676-683`): gdy odpowiedź błędu zawiera `rev`, ustawić `RED.nodes.version(rev)` i pokazać komunikat (tekst w `locales/en-US/editor.json`, klucz `deploy.errors.startFailed`) – inaczej kolejne wdrożenie dostaje 409. Zmiana nieaktywna w trybie domyślnym (serwer nie zwraca `rev` w błędach).
-5. `node-red/settings.js`: zakomentowany blok `deploy: { response: "stopped" }` z opisem; CHANGELOG.
+5. `node-red/settings.js`: zakomentowany blok `deploy: { response: "stopped", startTimeout: <ms> }` z opisem (R-38); CHANGELOG.
 
 #### Kryteria akceptacji (BDD)
 ```gherkin
@@ -304,6 +306,33 @@ Funkcja: Odpowiedź na wdrożenie po starcie nowych flow
     Wtedy w logu pojawi się ostrzeżenie
     I wdrożenia działają jak w trybie "stopped"
 
+  Scenariusz: Tryb bezpieczny zgłaszany kodem safe_mode (R-33)
+    Zakładając ustawienie deploy.response = "started"
+    I start flow kończy się w trybie bezpiecznym
+    Kiedy wdrożę flow przez API v2
+    Wtedy otrzymam odpowiedź 500 z kodem "deploy_start_failed"
+    I lista błędów zawiera kod "safe_mode"
+
+  Scenariusz: Przekroczony limit czasu startu (R-38)
+    Zakładając ustawienie deploy.response = "started" i deploy.startTimeout = 1000
+    I węzeł, którego start trwa 5 s
+    Kiedy wdrożę flow przez API v2
+    Wtedy po ok. 1 s otrzymam odpowiedź 500 z kodem "deploy_start_failed" i nową rewizją
+    I lista błędów zawiera kod "start_timeout"
+    I flow kończą start w tle, a wynik startu jest w logu
+
+  Scenariusz: Brak limitu czasu startu domyślnie (R-38)
+    Zakładając ustawienie deploy.response = "started" i brak deploy.startTimeout
+    I węzeł, którego start trwa 5 s
+    Kiedy wdrożę flow przez API v2
+    Wtedy odpowiedź sukcesu przyjdzie po zakończeniu startu
+
+  Scenariusz: Instancja tylko edycyjna w trybie "started" (R-39, weryfikacja po dostarczeniu Z-15)
+    Zakładając ustawienie deploy.response = "started" i editorOnly = true
+    Kiedy wdrożę flow przez API v2
+    Wtedy otrzymam odpowiedź sukcesu z treścią {rev, started: false}
+    I flow nie zostaną uruchomione
+
   Scenariusz: Kolejne wdrożenie czeka na zakończenie startu
     Zakładając ustawienie deploy.response = "started" i węzeł o długim starcie
     Kiedy wyślę dwa wdrożenia jedno po drugim
@@ -311,7 +340,7 @@ Funkcja: Odpowiedź na wdrożenie po starcie nowych flow
 ```
 
 #### Testy
-- Jednostkowe `test/unit/@node-red/runtime/lib/flows/index_spec.js` (`describe('#setFlows waitForStart')`): `resolves after flows:started when waitForStart`, `emits runtime-deploy before resolving when waitForStart`, `rejects with deploy_start_failed and rev on missing types`, `rejects with deploy_stop_failed and rev when stop fails`, `default swallows stop errors (unchanged, D-05)`, `default resolves before flows:started (unchanged)`, `load(true,{waitForStart}) waits for start`, `rejects with deploy_start_failed when safe mode prevents start` (R-10), `node constructor error does not reject (R-10)`, `default mode logs start() rejection` (R-10 – poprawka błędu; czerwony bez poprawki: nieobsłużone odrzucenie).
+- Jednostkowe `test/unit/@node-red/runtime/lib/flows/index_spec.js` (`describe('#setFlows waitForStart')`): `resolves after flows:started when waitForStart`, `emits runtime-deploy before resolving when waitForStart`, `rejects with deploy_start_failed and rev on missing types`, `rejects with deploy_stop_failed and rev when stop fails`, `default swallows stop errors (unchanged, D-05)`, `default resolves before flows:started (unchanged)`, `load(true,{waitForStart}) waits for start`, `rejects with deploy_start_failed and errors[].code safe_mode when safe mode prevents start` (R-10, R-33), `rejects with start_timeout after deploy.startTimeout and keeps starting in background` (R-38), `no timeout when deploy.startTimeout absent` (R-38), `editorOnly resolves {rev, started:false} when waitForStart` (R-39, po Z-15), `node constructor error does not reject (R-10)`, `default mode logs start() rejection` (R-10 – poprawka błędu; czerwony bez poprawki: nieobsłużone odrzucenie).
 - Jednostkowe `test/unit/@node-red/runtime/lib/api/flows_spec.js`: `setFlows passes waitForStart when deploy.response is started`, `reload passes waitForStart when deploy.response is started`, `addFlow/updateFlow/deleteFlow pass waitForStart`, `no deployOpts when setting absent`, `invalid deploy.response logs warning and falls back to stopped`, `maps deploy_start_failed to status 500 with rev and errors`, `maps deploy_stop_failed to status 500 with rev`, `response does not wait for postDeploy` (po Z-06; do tego czasu – test kotwicy kroku 11).
 - Kontraktowe `test/unit/@node-red/editor-api/lib/admin/flows_spec.js`, `flow_spec.js`, `test/unit/@node-red/editor-api/lib/util_spec.js` (istnieje): `rejectHandler includes rev and errors when present`; istniejące przypadki bez zmian.
 - Integracyjne (proces potomny `red.js`, tymczasowy `userDir`, wzorem `test/editor/e2e/flow_layout_e2espec.js`, ale bez przeglądarki): nowy plik `test/unit/node-red/deploy-response_spec.js` (lokalizacja do potwierdzenia): `started: new http-in endpoint returns 200 immediately after POST /flows`, `started: reload deploy - endpoint returns 200 immediately`, `started: POST /flow - endpoint returns 200 immediately`. Test trybu domyślnego **nie** sprawdza 404 (wyścig – test niestabilny); tryb domyślny pokrywają testy jednostkowe kolejności.
@@ -326,7 +355,7 @@ Funkcja: Odpowiedź na wdrożenie po starcie nowych flow
 
 #### Ryzyka i alternatywy
 - **Kod HTTP przy błędzie startu:** konfiguracja jest już zapisana – kod błędu może sugerować klientom brak zapisu; kod 200 z ostrzeżeniem łamie wymaganie „błąd startu zwracany w odpowiedzi”. **Rozstrzygnięte R-10:** 500 `deploy_start_failed` z `rev` i `errors[]` (klient po `rev` wie, że zapis nastąpił).
-- **Długi start** (węzły z wolną inicjalizacją): odpowiedź może przekroczyć limity proxy/Ingress; mutex blokuje kolejne wdrożenia. Brak limitu czasu w zakresie P-01 – **rozstrzygnięte R-10: limit czasu w Z-08**.
+- **Długi start** (węzły z wolną inicjalizacją): odpowiedź może przekroczyć limity proxy/Ingress; mutex blokuje kolejne wdrożenia. **Rozstrzygnięte R-10/R-38:** `deploy.startTimeout` (domyślnie wyłączony) – po przekroczeniu 500 `deploy_start_failed` z `errors[].code: "start_timeout"`, start trwa dalej w tle. Blokada wdrożeń trwa do końca startu w tle (R-43).
 - Granica „błędu startu”: błędy konstruktorów węzłów nie są dziś propagowane (`flows/util.js:273`) – rozszerzenie wymagałoby zmian w `Flow.js`; **rozstrzygnięte R-10: poza zakresem** (zakres: brakujące typy, moduły, tryb bezpieczny, wyjątki startu flow).
 - Alternatywa: oczekiwanie na zdarzenie `flows:started` w warstwie API zamiast parametru `setFlows` – kruche przy równoległych zdarzeniach; odrzucona.
 - Workery (K8S-T-005): wdrożenie przez Admin API workera w trybie `"started"` daje deterministyczną gotowość – korzystne dla sond Z-08.
@@ -336,6 +365,8 @@ Funkcja: Odpowiedź na wdrożenie po starcie nowych flow
 - [ ] `getDeployOpts` + przekazanie opcji w `api/flows.js` (S)
 - [ ] Gałąź `waitForStart` w `setFlows` + błędy start/stop z `rev`, tryb bezpieczny (M)
 - [ ] Tryb domyślny: logowanie odrzucenia `start()` + test regresji (R-10) (S)
+- [ ] `deploy.startTimeout` – limit czasu startu, kod `start_timeout`, opis w `settings.js` (R-38) (S)
+- [ ] Odpowiedź `{rev, started: false}` przy `editorOnly` (R-39; po Z-15 lub przy Z-15) (S)
 - [ ] `rejectHandler` – `rev`/`errors` (S)
 - [ ] Edytor: aktualizacja `rev` po błędzie startu + tekst en-US (S)
 - [ ] `settings.js`, JSDoc, CHANGELOG, notatka migracyjna (S)
@@ -677,7 +708,7 @@ Funkcja: tokens.get() przed init()
 #### Ryzyka i alternatywy
 - Ujawnienie podatności publicznym PR przed poprawką upstream – zgłoszenie dopiero po zniesieniu D-04, prywatnie (R-04); do tego czasu luka pozostaje w wersji bazowej – ryzyko dla innych użytkowników przyjęte przez Zamawiającego.
 - Odpowiedź `auth ok` bez `adminAuth` vs ignorowanie pakietu – **rozstrzygnięte R-05: `auth ok`**.
-- Brak kontroli `Origin` dla `/comms` – osobny problem bezpieczeństwa (odczyt komunikatów debug przez obcą stronę przy braku `adminAuth`); poza zakresem P-04. **Rozstrzygnięte R-06:** osobna zmiana – opcjonalne ustawienie z listą dozwolonych źródeł, domyślnie wyłączone (w instalacjach Zamawiającego włączone); karta pakietu i nazwa ustawienia – do opracowania.
+- Brak kontroli `Origin` dla `/comms` – osobny problem bezpieczeństwa (odczyt komunikatów debug przez obcą stronę przy braku `adminAuth`); poza zakresem P-04. **Rozstrzygnięte R-06:** osobna zmiana – opcjonalne ustawienie z listą dozwolonych źródeł, domyślnie wyłączone (w instalacjach Zamawiającego włączone). Nazwa ustawienia: `httpAdminCommsOrigins` (R-33). Brak ustawienia = zachowanie 5.0.7 (bez kontroli, ostrzeżenie w logu przy starcie); ustawiona lista – przyjmowane tylko wymienione źródła oraz własne źródło edytora; w naszych instalacjach lista zawsze ustawiona (R-35). Karta pakietu – do opracowania.
 - Alternatywa: tylko strażnik w `tokens.js` (bez zmiany `comms.js`) – usuwa awarię, ale klient z tokenem dostaje `auth fail` i pętlę logowania; odrzucona jako niepełna.
 
 #### Podzadania
@@ -802,13 +833,13 @@ Wynik: **POTWIERDZONE**.
   - trasa z `RED.auth.needsPermission(p)` → bez zmian;
   - trasa z `RED.auth.publicRoute()` → bez uwierzytelnienia; przy rejestracji wpis `info` w logu: moduł, metoda, ścieżka.
 - **Niezmienniki:** tryb `"open"` – `RED.httpAdmin` to ten sam obiekt co dziś, `publicRoute()` zwraca przepuszczające middleware, brak nowych logów; trasy wbudowane edytora i Admin API bez zmian (nie przechodzą przez `runtime.adminApp`); bez `adminAuth` – bez zmian w obu trybach (+ jedno ostrzeżenie przy starcie, że `"authenticated"` nie działa bez `adminAuth`); przy `httpAdminRoot:false` – atrapa ma `publicRoute`, brak błędów ładowania węzłów.
-- **Przypadki błędów:** nieznana wartość ustawienia → ostrzeżenie i `"open"` (R-07 przyjmuje rekomendację „domyślnie `open`” – zob. Pytanie 12; interpretacja dla wartości nieznanej do potwierdzenia przy przeglądzie); węzeł wołający `publicRoute` na starszej wersji → `TypeError` (dokumentacja zaleca `RED.auth.publicRoute ? RED.auth.publicRoute() : (q,s,n)=>n()`).
+- **Przypadki błędów:** brak ustawienia → `"open"` (R-07); nieznana wartość ustawienia → traktowana jak `"authenticated"` (bezpieczniej) + ostrzeżenie w logu (R-41); węzeł wołający `publicRoute` na starszej wersji → `TypeError` (dokumentacja zaleca `RED.auth.publicRoute ? RED.auth.publicRoute() : (q,s,n)=>n()`).
 - **Skutki uboczne:** moduły zewnętrzne z publicznymi trasami (np. pliki ładowane przez `<script>`/`<img>` w edytorze) przestaną działać w trybie `"authenticated"` do czasu dodania `publicRoute()` – lista ostrzeżeń w logu pomaga je znaleźć (401 + audyt `permission.fail`).
 
 #### Projekt rozwiązania (minimalny)
 1. **Znaczniki tras:** `Symbol.for("node-red.adminRouteAuth")` ustawiany na funkcji zwracanej przez `needsPermission(p)` (wartość `"permission"`) i `publicRoute()` (wartość `"public"`) – `editor-api/lib/auth/index.js`; globalny rejestr symboli, bez zależności registry → editor-api.
 2. `editor-api/lib/auth/index.js`: `publicRoute()` (JSDoc); eksport w `editor-api/lib/index.js:132-134` (`auth: {needsPermission, publicRoute}`); atrapa `adminApi.auth` w `runtime/lib/index.js:46-52` i fallback `registry/lib/util.js:119-121` – także `publicRoute`.
-3. `registry/lib/util.js`: nowa funkcja `guardAdminApp(app, auth, owner, log)` używana w `createNodeApi` **tylko** gdy `runtime.settings.httpAdminNodeRoutes === "authenticated"`: obiekt `Object.create(app)` z nadpisanymi metodami HTTP (`http.METHODS` małymi literami), `all`, `use`, `route` (opakowanie zwróconej trasy); każda metoda spłaszcza handlery, szuka znacznika; brak znacznika → `[auth.needsPermission(""), ...handlers]`; `"public"` → log `info` (klucz w `runtime/locales/en-US/runtime.json`, np. `server.public-admin-route` – do potwierdzenia przestrzeni nazw); `app.get(name)` z jednym argumentem (odczyt ustawienia express) przekazywane bez zmian.
+3. `registry/lib/util.js`: nowa funkcja `guardAdminApp(app, auth, owner, log)` używana w `createNodeApi`, gdy ustawienie `httpAdminNodeRoutes` jest obecne i różne od `"open"` (`"authenticated"` lub wartość nieznana – R-41): obiekt `Object.create(app)` z nadpisanymi metodami HTTP (`http.METHODS` małymi literami), `all`, `use`, `route` (opakowanie zwróconej trasy); każda metoda spłaszcza handlery, szuka znacznika; brak znacznika → `[auth.needsPermission(""), ...handlers]`; `"public"` → log `info` (klucz w `runtime/locales/en-US/runtime.json`, np. `server.public-admin-route` – do potwierdzenia przestrzeni nazw); `app.get(name)` z jednym argumentem (odczyt ustawienia express) przekazywane bez zmian.
 4. Core `21-debug.js:286,310`: dodanie `RED.auth.publicRoute()` jako pierwszego handlera (zachowanie bez zmian w obu trybach).
 5. Ostrzeżenie przy starcie, gdy `"authenticated"` bez `adminAuth`.
 6. `settings.js` (Security): zakomentowane `// httpAdminNodeRoutes: "authenticated"` z opisem i uwagą, że `disableEditor` nie wyłącza Admin API (workery: `httpAdminRoot:false` albo `adminAuth` + `"authenticated"`); CHANGELOG; dokumentacja dla autorów węzłów (JSDoc `publicRoute`).
@@ -879,6 +910,13 @@ Funkcja: Uwierzytelnienie tras administracyjnych bloczków
     Kiedy runtime załaduje węzeł debug
     Wtedy ładowanie kończy się bez błędu
 
+  Scenariusz: Nieznana wartość ustawienia traktowana jak "authenticated" (R-41)
+    Zakładając ustawienie httpAdminNodeRoutes = "closed"
+    I włączone adminAuth
+    Kiedy runtime się uruchomi
+    Wtedy w logu pojawi się ostrzeżenie o nieznanej wartości
+    I trasa bloczka bez uprawnienia zwraca 401 dla zapytania bez tokenu
+
   Szablon scenariusza: Wszystkie sposoby rejestracji są chronione
     Zakładając ustawienie httpAdminNodeRoutes = "authenticated"
     Kiedy bloczek zarejestruje trasę przez "<sposób>" bez uprawnienia
@@ -892,7 +930,7 @@ Funkcja: Uwierzytelnienie tras administracyjnych bloczków
 ```
 
 #### Testy
-- Jednostkowe `test/unit/@node-red/registry/lib/util_spec.js`, `describe("createNodeApi httpAdmin guard")`: `returns runtime.adminApp unchanged when open`, `prepends authentication to routes without marker`, `keeps routes with needsPermission unchanged`, `does not guard publicRoute and logs it`, `guards all/use/route`, `passes app.get(setting) through`; integracyjnie: `anonymous default user can access unmarked route (R-07)`.
+- Jednostkowe `test/unit/@node-red/registry/lib/util_spec.js`, `describe("createNodeApi httpAdmin guard")`: `returns runtime.adminApp unchanged when open`, `prepends authentication to routes without marker`, `keeps routes with needsPermission unchanged`, `does not guard publicRoute and logs it`, `guards all/use/route`, `passes app.get(setting) through`, `unknown value guards like authenticated and logs warning (R-41)`; integracyjnie: `anonymous default user can access unmarked route (R-07)`.
 - Jednostkowe `test/unit/@node-red/editor-api/lib/auth/index_spec.js`: `publicRoute returns marked pass-through middleware`, `needsPermission middleware is marked`.
 - Integracyjne (supertest) `test/unit/@node-red/editor-api/lib/index_spec.js` lub nowy `test/unit/node-red/lib/admin-node-routes_spec.js` (do potwierdzenia lokalizacji – potrzebne złożenie editor-api + runtime adminApp + atrapy użytkowników/tokenów jak w `comms_spec.js`): przypadki z Gherkin (401/200, needsPermission, public, tryb domyślny, brak `adminAuth`, `/auth/login`).
 - Węzły `test/nodes/core/common/21-debug_spec.js` (istniejący przypadek `GET /debug/view/view.html` `:679`): `debug view routes are public in authenticated mode`.
@@ -910,7 +948,7 @@ Funkcja: Uwierzytelnienie tras administracyjnych bloczków
 - Alternatywa B: jedno middleware przed `runtime.httpAdmin` w `node-red/lib/red.js:77` z listą tras publicznych rejestrowanych osobnym wywołaniem `publicRoute(method, path)` – prostsze i obejmuje wszystko, ale bez przypisania trasy do modułu w logu i z ryzykiem rozjazdu wzorców ścieżek; do rozważenia przy przeglądzie.
 - Użytkownik anonimowy (`adminAuth.default`) spełnia `needsPermission("")` → trasa bez uprawnienia dostępna anonimowo, gdy anonimowy dostęp jest włączony. **Rozstrzygnięte R-07:** tak – jak `needsPermission("")` (opis w `settings.js`).
 - Workery (K8S-T-005): `disableEditor` nie chroni Admin API ani tras węzłów – w chart należy wymusić `httpAdminRoot:false` albo `adminAuth` + `"authenticated"`.
-- Nieznana wartość ustawienia → `"open"` (zgodność) vs `"authenticated"` (bezpieczeństwo) – karta utrzymuje `"open"` wg rekomendacji przyjętej w R-07 (zob. Pytanie 12).
+- Nieznana wartość ustawienia – **rozstrzygnięte R-41:** traktowana jak `"authenticated"` (bezpieczniej) + ostrzeżenie w logu; brak ustawienia nadal `"open"` (R-07).
 
 #### Podzadania
 - [ ] Znaczniki + `publicRoute` w editor-api, atrapy w runtime/registry (S)
@@ -932,10 +970,10 @@ Funkcja: Uwierzytelnienie tras administracyjnych bloczków
 6. **P-02 – egzekwowanie po stronie serwera:** czy `reload-only` ma implikować wymóg `rev` (Z-05), czy pozostaje ochroną tylko edytora? Czy w oknie zostawić podgląd różnic tylko do odczytu lub eksport lokalnych zmian przed przeładowaniem? **Rozstrzygnięte (R-12):** `reload-only` tylko w edytorze (ukrywa „Overwrite”), bez implikacji wymogu `rev` – ten wyłącznie przez `deploy.requireRevision` (Z-05); etykieta „Przeładuj flow”; Projekty bez zmian. Podglądu różnic i eksportu zmian decyzja nie obejmuje – pozostają poza zakresem.
 7. **P-03 – zmienna `NODE_RED_DISABLE_TELEMETRY`:** czy ma implikować `locked: true` (zmiana względem 5.0.6)? Czy dopuszczalne jest `locked: true` z `enabled: true` (wymuszenie telemetrii)? **Rozstrzygnięte (R-09):** bez implikacji – zmienna działa jak dotąd; `telemetry.locked` blokuje zmianę `enabled` przy dowolnej wartości (także `enabled: true`).
 8. **P-04 – zgłoszenie:** czy zgłaszamy problem prywatnie zespołowi projektu wg `SECURITY.md` (nasza rekomendacja) i wstrzymujemy publikację gałęzi do czasu odpowiedzi? Prosimy o diff obecnej modyfikacji (do przeglądu). Czy przy wyłączonym `adminAuth` serwer ma odpowiadać na pakiet `auth` `{"auth":"ok"}` (rekomendacja) czy go ignorować? **Rozstrzygnięte (R-04, R-05):** zgłoszenie nie teraz – poprawka tylko w forku, zgłoszenie po zniesieniu D-04; przy wyłączonym `adminAuth` odpowiedź `{"auth":"ok"}`. Kwestii diffu obecnej modyfikacji rejestr nie obejmuje.
-9. **P-04 – kontrola `Origin` dla `/comms`:** brak weryfikacji pochodzenia połączenia websocket (wniosek z kodu). Czy dodać osobny pakiet poprawki? **Rozstrzygnięte (R-06):** tak, opcjonalnie – ustawienie z listą dozwolonych źródeł, domyślnie wyłączone (w instalacjach Zamawiającego włączone); osobna zmiana.
+9. **P-04 – kontrola `Origin` dla `/comms`:** brak weryfikacji pochodzenia połączenia websocket (wniosek z kodu). Czy dodać osobny pakiet poprawki? **Rozstrzygnięte (R-06):** tak, opcjonalnie – ustawienie z listą dozwolonych źródeł, domyślnie wyłączone (w instalacjach Zamawiającego włączone); osobna zmiana. Doprecyzowanie: nazwa `httpAdminCommsOrigins` (R-33); brak ustawienia = 5.0.7 z ostrzeżeniem w logu, lista obejmuje też własne źródło edytora (R-35).
 10. **Z-01 – testy klienta:** czy akceptują Państwo eksport CommonJS w `editor-client/src/js/comms.js` (wzorzec z `ui/search.js`) na potrzeby testu jednostkowego, czy wolą E2E (Playwright – nie jest zależnością projektu)? **Rozstrzygnięte (R-32):** tak – eksport CommonJS w `comms.js`, testy mocha z atrapą WebSocket w `npm test`.
 11. **Z-02 – użytkownik anonimowy:** czy przy `adminAuth.default` (dostęp anonimowy) trasa bez uprawnienia ma być dostępna anonimowo (zachowanie `needsPermission("")`), czy wymagać zalogowanego użytkownika? **Rozstrzygnięte (R-07):** jak `needsPermission("")` – użytkownik domyślny ma dostęp jak do wbudowanych tras.
-12. **Z-02 – nieznana wartość ustawienia:** zachować `"open"` (zgodność) czy przyjąć `"authenticated"` (bezpieczeństwo)? Czy znane są moduły zewnętrzne z publicznymi trasami, które muszą działać w trybie `"authenticated"`? **Rozstrzygnięte (R-07):** decyzja dotyczy p.11–12 i przyjmuje rekomendację (domyślnie `"open"`); karta utrzymuje: nieznana wartość → ostrzeżenie i `"open"`. Listy modułów zewnętrznych z publicznymi trasami rejestr nie podaje.
+12. **Z-02 – nieznana wartość ustawienia:** zachować `"open"` (zgodność) czy przyjąć `"authenticated"` (bezpieczeństwo)? Czy znane są moduły zewnętrzne z publicznymi trasami, które muszą działać w trybie `"authenticated"`? **Rozstrzygnięte (R-07):** decyzja dotyczy p.11–12 i przyjmuje rekomendację (domyślnie `"open"`); brak ustawienia → `"open"`. **Nieznana wartość – R-41:** traktowana jak `"authenticated"` + ostrzeżenie w logu. Listy modułów zewnętrznych z publicznymi trasami rejestr nie podaje.
 13. **Wersja bazowa:** potwierdzenie bazy 5.0.7 (ZASADY §2.2). **Rozstrzygnięte (D-01, poza rejestrem R):** baza 5.0.7.
 14. **E-01 – serializacja `setState` i przełączenia projektu:** czy zgadzają się Państwo, by `POST /flows/state` (start/stop flow) i przełączenie projektu korzystały ze wspólnej blokady wdrożeń (czekają na trwające wdrożenie; dziś działają bez blokady)? Rekomendacja: tak, bez hooków `preDeploy`/`postDeploy` dla tych ścieżek. **Rozstrzygnięte (R-11):** tak – `POST /flows`, `POST /flows/state` i przełączenie projektu pod wspólną blokadą; druga operacja czeka (bez 409); bez hooków (R-15).
 15. **E-01 – jawny `reload` przez API:** czy akceptują Państwo odczyt magazynu pod blokadą **przed** hookiem `preDeploy` (hook widzi treść, która zostanie uruchomiona; doprecyzowanie kroku 5 ZASADY §2.3 A dla typu `reload`)? Alternatywa: `preDeploy` dla `reload` z `flows: null`. **Rozstrzygnięte (R-11):** tak – odczyt magazynu pod blokadą przed `preDeploy`.
@@ -966,3 +1004,4 @@ Naniesione decyzje z [../REJESTR-DECYZJI.md](../REJESTR-DECYZJI.md):
 - **P-04 (R-04, R-05, R-06):** `auth ok` przy wyłączonym `adminAuth` potwierdzone; zgłoszenie upstream wstrzymane do zniesienia D-04 (Projekt pkt 3, DoD, Ryzyka); kontrola `Origin` – osobna zmiana z ustawieniem domyślnie wyłączonym.
 - **Z-01 (R-32):** eksport CommonJS i test klienta w `npm test` zaakceptowane; E2E niewymagane.
 - **Z-02 (R-07):** użytkownik anonimowy jak `needsPermission("")` – Specyfikacja, nowy scenariusz BDD i test integracyjny.
+- **Doprecyzowania R-33…R-42:** P-01 – kod `safe_mode` zamiast nazwy do potwierdzenia (R-33); `deploy.startTimeout` z kodem `start_timeout` i startem w tle (R-38: Ustawienie, Specyfikacja, Projekt pkt 2 i 5, 3 scenariusze BDD, testy, Ryzyka, podzadanie); odpowiedź `{rev, started: false}` na instancji `editorOnly` (R-39: Specyfikacja, Projekt, scenariusz, test, podzadanie). P-04 – nazwa `httpAdminCommsOrigins` (R-33) i domyślne listy źródeł (R-35) w Ryzykach i Pytaniu 9. Z-02 – nieznana wartość `httpAdminNodeRoutes` → jak `"authenticated"` + ostrzeżenie (R-41: Specyfikacja, Projekt pkt 3, scenariusz BDD, test, Ryzyka, Pytanie 12).

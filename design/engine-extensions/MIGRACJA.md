@@ -6,7 +6,7 @@ Data: 2026-10-03 · status: **obowiązujący dla planowania** (nazwy wg D-02 –
 mogą się doprecyzować w trakcie realizacji; zmiany oznaczone pakietem) · decyzje: [ANALIZA.md](ANALIZA.md) §7.
 
 > **Rejestr decyzji R-01…R-32 zamknięty (2026-10-03)** – [REJESTR-DECYZJI.md](REJESTR-DECYZJI.md). Kontrakty widoczne z
-> zewnątrz, które z niego wynikają, są naniesione poniżej z oznaczeniem „(R-xx)”.
+> zewnątrz, które z niego wynikają, są naniesione poniżej z oznaczeniem „(R-xx)”; naniesione także doprecyzowania R-33…R-42.
 
 ## 1. Po co ten dokument
 
@@ -69,15 +69,17 @@ nowego flow tuż po wdrożeniu (wraca zachowanie 5.0.7).
 | Z-02 | `httpAdminNodeRoutes` | `httpAdminNodeRoutes` | `"open"` | bez zmian |
 | Z-08 | `health: {enabled, path}` | `health: {enabled, path, port, host}` + **`shutdownTimeout`** (płasko) | wyłączone | `shutdownTimeout` < `terminationGracePeriodSeconds` w K8s |
 | Z-09 | – | `deploy.reload: {watch, type, preReloadTimeout, concurrency}` | `watch: false`, `type: "full"`, `preReloadTimeout: 1200000` (20 min) | to samo przeładowanie, co typ wdrożenia `reload` w Admin API; rekomendowane `type: "diff"`; `concurrency` – tylko liczba; bez łączności z koordynatorem przeładowanie czeka (działa stara konfiguracja) (R-20) |
-| Z-09 | – | `deploy.reload.retry: { min, max, attempts }` | `min: 1000`, `max: 60000` (ms) | ponowienia odczytu magazynu; po wyczerpaniu `attempts` → stan `failed`, `/ready` 503 (R-20, D-18) |
+| Z-09 | – | `deploy.reload.retry: { min, max, attempts }` | `min: 1000`, `max: 60000` (ms), `attempts: 10` (~8 min) (R-36) | ponowienia odczytu magazynu; po wyczerpaniu `attempts` → stan `failed`, `/ready` 503 (R-20, D-18, R-36); przy `watch: true` błąd rejestracji `watchFlows` → błąd startu (R-36) |
+| P-01 / Z-08 | – | `deploy.startTimeout` (ms) | wyłączony | limit czasu startu w trybie `deploy.response: "started"`; po przekroczeniu 500 `deploy_start_failed` z `errors[].code: "start_timeout"`, flow startują dalej w tle (R-38) |
 | Z-06 | – | `deploy.hookTimeout` | 30000 ms | |
 | Z-10 | – | `coordination: {plugin, options}`; `singleInstance` w węźle `inject` | wtyczka lokalna | wtyczkę zewnętrzną wybiera się **tylko jawnie** w `coordination.plugin` (bez automatycznego wykrywania) (R-21) |
-| Z-11 | `readOnlyUserDir` | `readOnlyUserDir` + zmienna środowiskowa `NODE_RED_READ_ONLY_USER_DIR` (nazwa robocza) | `false` | inne niż istniejące `readOnly` magazynu plikowego; zmienna działa także w CLI przed wyborem pliku ustawień (R-18) |
+| Z-11 | `readOnlyUserDir` | `readOnlyUserDir` + zmienna środowiskowa `NODE_RED_READ_ONLY_USER_DIR` (R-33) | `false` | inne niż istniejące `readOnly` magazynu plikowego (`readOnly` opisane w szablonie `settings.js` – R-40); zmienna działa także w CLI przed wyborem pliku ustawień (R-18); chroni także bezwzględny `flowFile` (R-40) |
 | Z-15 | – | `editorOnly` | `false` | wyklucza się z `disableEditor`; wybrane zamiast `runtimeState.autoStart` (R-19) |
 | Z-03 | – | `externalModules.palette.allowDowngrade` | `true` | |
 | Z-03 | `externalModules.palette.upload`, `editorTheme.palette.upload` | `externalModules.palette.allowUpload` (kanoniczne) | upload dozwolony | stare nazwy działają jako przestarzałe aliasy z ostrzeżeniem w logu – przejść na nazwę kanoniczną (R-17) |
-| P-04 / D-07 | – | `httpAdminCommsOrigins` (**nazwa robocza**, ZASADY §2.1) | wyłączone | lista dozwolonych `Origin` dla `/comms`; w naszych instalacjach **włączyć** (R-06) |
-| Z-12.10 | – | `editorTheme.embedding.allowedOrigins` | wyłączone | źródła dozwolone dla `postMessage` osadzonego edytora, w tym kanału `set-theme` (R-28) |
+| P-04 / D-07 | – | `httpAdminCommsOrigins` (R-33) | brak = zachowanie 5.0.7 (bez kontroli, ostrzeżenie w logu przy starcie) (R-35) | lista dozwolonych `Origin` dla `/comms`; przy ustawionej liście przyjmowane są tylko wymienione źródła oraz własne źródło edytora (R-35); w naszych instalacjach **zawsze ustawić** (R-06, R-35) |
+| Z-12.10 | – | `editorTheme.embedding.allowedOrigins` (R-33) | brak = zachowanie 5.0.7 (bez kontroli, ostrzeżenie w logu przy starcie) (R-35) | źródła dozwolone dla `postMessage` osadzonego edytora, w tym kanału `set-theme` (R-28); przy ustawionej liście – tylko wymienione źródła; w naszych instalacjach **zawsze ustawić** (R-35) |
+| Z-12.02 | – | `editorTheme.auth.tokenStorage: "local" \| "session"` (R-33) | `"local"` | przechowywanie tokenu: `localStorage` (jak 5.0.7) lub `sessionStorage` (R-26) |
 | Z-14 | – | `editorTheme.flowLayout.enabled` | `false` | układ flow (pionowy/hybrydowy) |
 
 ### 3.3 Kubernetes (wartości przykładowe dla rozmów do ~15 min)
@@ -85,14 +87,14 @@ nowego flow tuż po wdrożeniu (wraca zachowanie 5.0.7).
 | Ustawienie Node-RED | Manifest K8s |
 |---|---|
 | `health.port`, `health.path` | `readinessProbe.httpGet` (`<path>/ready`), `livenessProbe.httpGet` (`<path>/live`) |
-| `shutdownTimeout: 1140000` (19 min) | `terminationGracePeriodSeconds: 1200` (20 min) – grace period dłuższy niż drenaż |
+| `shutdownTimeout: 1140000` (19 min) | `terminationGracePeriodSeconds: 1200` (20 min) – grace period dłuższy niż drenaż; brak osobnego limitu `RED.stop()` – ostatecznym limitem jest grace period (R-37) |
 | `deploy.reload.preReloadTimeout: 1200000` | – |
 | workery: `disableEditor: true`, `httpAdminRoot: false` (Admin API wyłączone) | sondy na osobnym porcie (`health.port`) |
 | `health.enabled: true` | warunek zamykania serwera HTTP przy zatrzymaniu (R-22); bez sond – zachowanie 5.0.7 |
 | instancja edytora `editorOnly: true` | `readinessProbe` → 200 w stanie `loaded` (R-19) |
 
 Drugi SIGTERM w trakcie drenażu zatrzymuje proces natychmiast (R-22) – nie wysyłać go z narzędzi przed upływem `shutdownTimeout`.
-Bez `shutdownTimeout` drenaż jest wyłączony (zachowanie jak dotąd).
+Bez `shutdownTimeout` drenaż jest wyłączony (zachowanie jak dotąd), a hook `preShutdown` nie jest wywoływany (R-37).
 
 ## 4. Narzędzia Admin API (automaty, MCP, CI/CD)
 
@@ -106,9 +108,11 @@ Bez `shutdownTimeout` drenaż jest wyłączony (zachowanie jak dotąd).
 | Wdrożenie API **v1** (sama tablica) przy `requireRevision: true` | zawsze 409 `version_required` (R-14) | **przejść na v2** (`Node-RED-API-Version: v2`, treść `{flows, rev}`) |
 | Typ wdrożenia `reload` przy `requireRevision: true` | zwolniony z wymogu rewizji (R-14) | – |
 | `GET /flow/:id` z nagłówkiem v2 | zawiera `rev` flow i nagłówek `ETag` (Z-04, R-13); bez nagłówka v2 – odpowiedź bez zmian (D-09) | używać tej rewizji w `PUT /flow/:id` |
-| `POST /flow` | **201** z id nowego flow (16 znaków hex) (R-13) | odczytać id z odpowiedzi |
+| `POST /flow` | API **v2**: **201** z id nowego flow (16 znaków hex) (R-13, R-34); API v1: **200** jak dotąd (R-34) | odczytać id z odpowiedzi; nie zakładać 201 bez nagłówka v2 |
+| `PUT /flow/:id` z nagłówkiem `If-Match: <ETag>` (v2) | równoważne `rev` w treści; `If-Match` i `rev` sprzeczne → **400** (R-34) | wysyłać jedno z nich albo oba zgodne |
 | Globalne węzły konfiguracyjne – rewizja | `globalRev` (R-13) | wysyłać `globalRev` razem z `globalConfigs[]` |
-| `PUT /flow/:id` nieistniejącego id przy `deploy.putCreatesFlow: true` | tworzy flow pod tym id; rewizja `rev: null` | – |
+| `PUT /flow/:id` nieistniejącego id przy `deploy.putCreatesFlow: true` | tworzy flow pod tym id; rewizja `rev: null`; **201** w v2 / **200** w v1 (R-34) | – |
+| `PUT /flow/:id` nieistniejącego id bez `deploy.putCreatesFlow` | **404** jak dotąd (R-34) | utworzyć flow przez `POST /flow` |
 | `DELETE /flow/:id` przy `requireRevision: true` | wymaga `?rev=` – brak → 409 `version_required` (R-14) | dołączać `?rev=<rev flow>` |
 | Globalne węzły konfiguracyjne razem z flow | nowe pole `globalConfigs[]` (D-08) – pole `configs` zachowuje dotychczasowe znaczenie (konfiguracje flow) | nie wysyłać konfiguracji globalnych w `configs` |
 
@@ -123,6 +127,12 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   przyjąć nową rewizję (żeby kolejne wdrożenie nie dostało 409) i zgłosić błąd (R-10).
 - „Błąd startu” obejmuje: brakujące typy węzłów, brakujące moduły, tryb bezpieczny (safe mode), wyjątki startu flow;
   **nie** obejmuje błędów konstruktorów pojedynczych węzłów (te – jak dotąd, status/log węzła) (R-10).
+- Tryb bezpieczny zgłaszany jest w `errors[]` z `code: "safe_mode"` (R-33).
+- Limit czasu startu: `deploy.startTimeout` (ms, domyślnie wyłączony). Po przekroczeniu **500 `deploy_start_failed`**
+  z `errors[].code: "start_timeout"`; flow startują dalej w tle (wynik w logu) – narzędzie przyjmuje `rev` jak przy
+  innym błędzie startu (R-38).
+- Instancja tylko edycyjna (`editorOnly: true`): odpowiedź **`{rev, started: false}`** bez błędu – flow nie są
+  uruchamiane (R-39).
 - Błąd zatrzymania: 500 `deploy_stop_failed` z `rev`.
 
 ### 4.3 Walidacja przed wdrożeniem (Z-06)
@@ -132,8 +142,11 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 - `preDeploy` służy **tylko do walidacji** (nie modyfikuje treści); `postDeploy` wykonuje się asynchronicznie po odpowiedzi,
   jego błąd trafia tylko do logu (R-15).
 - Hooki **nie** są wywoływane przy starcie procesu (wczytanie flow z magazynu) ani przy operacjach Projektów (R-15).
-- Uprawnienia do typów węzłów (Z-12.08): wdrożenie z dodanym/zmienionym węzłem typu odebranego wpisem `!nodes.type.<typ>`
-  jest odrzucane w całości – **403 `node_type_not_permitted`** z `types[]` (R-27).
+- Uprawnienia do typów węzłów (Z-12.08): wdrożenie z dodanym/zmienionym węzłem typu niedozwolonego dla użytkownika
+  jest odrzucane w całości – **403 `node_type_not_permitted`** z `types[]` (R-27, R-33). Obsługiwane są obie listy
+  (R-42): odbierająca (`["*", "!nodes.type.exec"]`) i dozwolonych (`["!nodes.type.*", "nodes.type.inject", …]`);
+  przyznanie konkretnego typu ma pierwszeństwo przed `!nodes.type.*`, odebranie konkretnego typu – przed wszystkim.
+  Przeładowanie z magazynu (typ `reload`, Z-09) nie jest kontrolowane per użytkownik (R-42).
 - Wdrożenie przy `readOnlyUserDir: true` i magazynie plikowym: **400 `read_only_user_dir`** (R-18).
 
 ### 4.4 Pełny katalog kodów
@@ -150,19 +163,23 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   zatrzymane flow), `failed`, `stopping`. Treść 503 jest **stała**: `{"status":"unavailable"}` – nie zawiera nazwy stanu
   (stan odczytywać ze zdarzenia `instance:state` / `runtime.state`, nie z sondy).
 - **Przeładowanie z magazynu** (Z-09, R-20): `preReload` nie ma prawa weta (tylko opóźnia, limit `preReloadTimeout`);
-  przy dodatkowych flow zmienionych po drenażu – ponowny `preReload` dla nich (D-17); błąd odczytu magazynu → ponowienia
-  wg `deploy.reload.retry`, po wyczerpaniu `failed` i 503 (D-18).
-- **Instancja tylko edycyjna** (`editorOnly: true`, R-19): przycisk `inject` w edytorze nieaktywny z podpowiedzią;
-  operacje wymagające działających flow → 409 `editor_only`.
+  przy dodatkowych flow zmienionych po drenażu – ponowny `preReload` dla nich (D-17), poza blokadą, najwyżej jedna
+  runda, potem przeładowanie z ostrzeżeniem w logu (R-36); błąd odczytu magazynu → ponowienia wg `deploy.reload.retry`
+  (domyślnie 10 prób, ~8 min), po wyczerpaniu `failed` i 503 (D-18, R-36); przy `deploy.reload.watch: true` błąd
+  rejestracji `watchFlows` → błąd startu instancji (R-36).
+- **Instancja tylko edycyjna** (`editorOnly: true`, R-19): przycisk `inject` i akcja „Restart flows” w edytorze
+  ukryte/nieaktywne (R-39); operacje wymagające działających flow → 409 `editor_only`; wdrożenie w trybie
+  `deploy.response: "started"` → `{rev, started: false}` (R-39).
 
 ### 4.6 Połączenie `/comms` (P-04)
 
 - Przy **wyłączonym `adminAuth`** pakiet `auth` (np. token zapamiętany przez przeglądarkę) dostaje odpowiedź **`auth ok`**,
   połączenie działa dalej (R-05) – **zmiana względem łatki 0002** (tam: `auth fail`). Klienty nie powinny traktować
   `auth ok` jako dowodu uwierzytelnienia.
-- Kontrola nagłówka `Origin` (R-06): ustawienie z listą dozwolonych źródeł (nazwa robocza `httpAdminCommsOrigins`),
-  domyślnie wyłączone; po włączeniu połączenie z niedozwolonego źródła jest odrzucane – klienty spoza przeglądarki
-  i edytory osadzone w innych domenach muszą być na liście.
+- Kontrola nagłówka `Origin` (R-06): ustawienie `httpAdminCommsOrigins` z listą dozwolonych źródeł (R-33). Brak
+  ustawienia = zachowanie 5.0.7 (bez kontroli, ostrzeżenie w logu przy starcie) (R-35). Przy ustawionej liście
+  połączenie z niedozwolonego źródła jest odrzucane; własne źródło edytora jest przyjmowane zawsze (R-35) – klienty
+  spoza przeglądarki i edytory osadzone w innych domenach muszą być na liście.
 
 ## 5. Wtyczki i produkt
 
@@ -175,9 +192,9 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 | Trasy HTTP bloczków | `node.registerHttpRoute(method, path, ...handlers)` – automatyczne zdejmowanie przy zamknięciu | Z-07 |
 | Dodatki edytora (15 obecnych) | przeniesienie na API z Z-12.01…Z-12.14 (bez selektorów DOM); kolejność pakietów Z-12c → a → b → d → e; przestarzałe API – min. jedna wersja minor z ostrzeżeniem (R-24) | Z-12 |
 | Logowanie (12.01) | **wariant A**: skrypty logowania przez `editorTheme.page.scripts` lub wtyczkę motywu (bez zmian serwera); dodatkowe pola/kroki – hook edytora `loginPost` z własną trasą pluginu (R-25) | Z-12 |
-| Kod jednorazowy (12.02) | kod wydaje własna strategia `adminAuth`/plugin; rdzeń przyjmuje `#code=<kod>&next=<hash>`; przechowywanie tokena domyślnie `localStorage`, opcjonalnie `sessionStorage` (R-26) | Z-12 |
-| Uprawnienia (12.08) | zakresy podrzędne `flows.deploy`, `flows.import`, `flows.export`, `nodes.type.<typ>` dziedziczone z rodzica; wpis z prefiksem `!` odbiera (pierwszeństwo), np. `["*", "!nodes.type.exec"]`; serwer egzekwuje typy przy wdrożeniu; `flows.export` – tylko utrudnienie w UI (R-27) | Z-12 |
-| Linki i osadzanie (12.10) | głęboki link `#flow/<flowId>/node/<nodeId>` (obsługa `hashchange`, akcja `core:reveal-node`); `postMessage`, w tym kanał `set-theme`, tylko ze źródeł z `editorTheme.embedding.allowedOrigins` – produkt osadzający edytor musi się tam wpisać (R-28) | Z-12 |
+| Kod jednorazowy (12.02) | kod wydaje własna strategia `adminAuth`/plugin; rdzeń przyjmuje `#code=<kod>&next=<hash>`; przechowywanie tokena: `editorTheme.auth.tokenStorage` – `"local"` (domyślnie, `localStorage`) lub `"session"` (`sessionStorage`) (R-26, R-33) | Z-12 |
+| Uprawnienia (12.08) | zakresy podrzędne `flows.deploy`, `flows.import`, `flows.export`, `nodes.type.<typ>` dziedziczone z rodzica; wpis z prefiksem `!` odbiera, np. `["*", "!nodes.type.exec"]`; lista dozwolonych: `["!nodes.type.*", "nodes.type.inject", …]` – przyznanie konkretnego typu wygrywa z `!nodes.type.*`, odebranie konkretnego typu wygrywa ze wszystkim (R-42); serwer egzekwuje typy przy wdrożeniu (bez kontroli przy przeładowaniu z magazynu – R-42); `flows.export` – tylko utrudnienie w UI (R-27) | Z-12 |
+| Linki i osadzanie (12.10) | głęboki link `#flow/<flowId>/node/<nodeId>` (obsługa `hashchange`, akcja `core:reveal-node`); `postMessage`, w tym kanał `set-theme`, tylko ze źródeł z `editorTheme.embedding.allowedOrigins` – produkt osadzający edytor musi się tam wpisać (R-28); brak ustawienia = zachowanie 5.0.7 z ostrzeżeniem w logu (R-35) | Z-12 |
 | Klucze zarezerwowane | węzeł nie może zarejestrować ustawienia o nazwie `deploy`, `flows`, `health`, `coordination` | D-02 (U8) |
 
 ### 5.1 Terminologia polska (Z-13, R-29)
@@ -205,14 +222,14 @@ Nagłówki „Modified by Actuna Sp. z o.o.” – zachowane w forku (D-19); pli
 
 - [ ] `settings.js` / Helm: nazwy z §3.2; brak kluczy `flows.*` i `editor.staleFlowsPolicy`.
 - [ ] Ustawienia odtwarzające łatki (§3.1) na wszystkich instancjach.
-- [ ] Każde narzędzie Admin API: v2, wysyła rewizję, obsługuje `version_mismatch` i `version_required`, `deploy_start_failed` (przyjmuje `rev`), `deploy_rejected`.
+- [ ] Każde narzędzie Admin API: v2, wysyła rewizję, obsługuje `version_mismatch` i `version_required`, `deploy_start_failed` (przyjmuje `rev`; `errors[].code` m.in. `safe_mode`, `start_timeout`), `deploy_rejected`; `POST /flow` → 201 tylko w v2 (R-34); odpowiedź `{rev, started: false}` instancji `editorOnly` (R-39).
 - [ ] Kod nie wywołuje `waitForDeployStart()` (N-02).
 - [ ] Konfiguracje globalne w `globalConfigs[]`, nie w `configs` (gdy używane `/flow`).
 - [ ] K8s: sondy i drenaż wg §3.3.
 - [ ] Dodatki edytora przeniesione na API Z-12 (po wdrożeniu Z-12); linki w formacie `#flow/<id>/node/<id>`; źródła osadzenia w `editorTheme.embedding.allowedOrigins` (R-28).
 - [ ] Narzędzia obsługują 503 `deploy_hook_timeout` (ponowienie), 403 `node_type_not_permitted`, 400 `read_only_user_dir`; `DELETE /flow/:id` z `?rev=` (R-14, R-15, R-18, R-27).
 - [ ] Monitoring stanu: nazwy stanów i zdarzenie `instance:state` wg §4.5; brak parsowania treści 503 sondy (R-22, R-23).
-- [ ] Lista `Origin` dla `/comms` ustawiona na naszych instalacjach (R-06); klienty `/comms` bez założenia `auth fail` przy wyłączonym `adminAuth` (R-05).
+- [ ] Lista `Origin` dla `/comms` i `editorTheme.embedding.allowedOrigins` ustawione na naszych instalacjach (R-06, R-35); klienty `/comms` bez założenia `auth fail` przy wyłączonym `adminAuth` (R-05).
 - [ ] Konfiguracja uploadu tylko przez `externalModules.palette.allowUpload` (R-17); instancje tylko do odczytu – `readOnlyUserDir` lub zmienna środowiskowa (R-18).
 - [ ] Teksty i dokumentacja po polsku zgodne z terminologią §5.1 (R-29).
 - [ ] Test po migracji: wdrożenie przez narzędzie → natychmiastowe wywołanie endpointu nowego flow (200), konflikt rewizji (409), wdrożenie bez rewizji (409 `version_required`).
@@ -226,3 +243,4 @@ Nagłówki „Modified by Actuna Sp. z o.o.” – zachowane w forku (D-19); pli
 | N-04 | czy narzędzia używają API v2 | nieznane – przyjęto: przewodnik wymaga v2 |
 | – | `DELETE /flow/:id` z wymogiem rewizji | **rozstrzygnięte – R-14** (§4.1) |
 | R-01…R-32 | pozostałe decyzje wpływające na przewodnik | **rozstrzygnięte** – [REJESTR-DECYZJI.md](REJESTR-DECYZJI.md) |
+| R-33…R-42 | doprecyzowania (nazwy robocze, 201/`If-Match`, listy źródeł, `retry`, `startTimeout`, `editorOnly`, listy typów) | **rozstrzygnięte** – [REJESTR-DECYZJI.md](REJESTR-DECYZJI.md), naniesione powyżej |

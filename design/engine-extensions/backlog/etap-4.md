@@ -460,9 +460,9 @@ Wynik: **brak funkcji; dwa istniejące mechanizmy częściowe, oba nieodpowiedni
 - **Wejścia:** ustawienie (D-02; poniżej `editorOnly: true`); żądania wdrożenia (Admin API v1/v2, `/flow`, `reload`), `POST /flows/state`.
 - **Wyjścia:**
   - start runtime: flow wczytane (typy, poświadczenia, brakujące moduły raportowane jak dziś), **brak startu**; zdarzenie `runtime-state` `{state:'stop', error:'editor-only', type:'info', text:'notification.info.editor-only'}` (nazwy kluczy do potwierdzenia), log `nodes.flows.editor-only`;
-  - wdrożenie (każdy typ, w tym `reload`): zapis do magazynu (krok 5 potoku E-01), **bez kroków 6–7** (zatrzymanie/start), `runtime-deploy` jak dziś; odpowiedź `{rev}`;
+  - wdrożenie (każdy typ, w tym `reload`): zapis do magazynu (krok 5 potoku E-01), **bez kroków 6–7** (zatrzymanie/start), `runtime-deploy` jak dziś; odpowiedź `{rev}`; przy `deploy.response: "started"` (P-01) – `{rev, started: false}`, bez błędu (**R-39**);
   - `POST /flows/state {state:"start"}` → **409** `editor_only` (gdy endpoint włączony); `stop` → 200 bez zmian (nic nie działa);
-  - edytor: trwałe powiadomienie „Flow nie są wykonywane na tej instancji – wdrożenie zapisuje je w magazynie” (zamykalne), w menu Deploy ukryte „Start/Stop/Restart flows” (Restart = przeładowanie z magazynu bez startu – do decyzji).
+  - edytor: trwałe powiadomienie „Flow nie są wykonywane na tej instancji – wdrożenie zapisuje je w magazynie” (zamykalne), w menu Deploy ukryte „Start/Stop flows”; akcja „Restart flows” ukryta/nieaktywna – jak przycisk `inject` (**R-39**).
 - **Niezmienniki:** przy braku ustawienia zachowanie identyczne z 5.0.7 (w tym `runtimeFlowState` i `safeMode`); instancja edycyjna **nie wywołuje** `settings.set('runtimeFlowState', …)`; nie odczytuje `runtimeFlowState` (stan workerów jej nie dotyczy); węzły nie są konstruowane (brak tras HTTP `http in`, timerów `inject`, połączeń MQTT itp.).
 - **Przypadki błędów:** `editorOnly` razem z `safeMode` → `editorOnly` wygrywa (wdrożenie nie wyłącza trybu); błąd zapisu do magazynu → błąd jak dziś (500/400); próba uruchomienia przez API → 409; błędna wartość ustawienia (nie-boolean) → traktowana jak `false` + ostrzeżenie w logu (do potwierdzenia: czy raczej odmowa startu).
 - **Skutki uboczne / ograniczenia (do opisu w dokumentacji):**
@@ -477,12 +477,12 @@ Wynik: **brak funkcji; dwa istniejące mechanizmy częściowe, oba nieodpowiedni
 1. `flows/index.js` `start()`: po kontrolach typów/modułów i przed `safeMode`/`runtimeFlowState`: `if (settings.editorOnly === true) { log; emit runtime-state editor-only; state='stop'; started=false; return }` – ścieżka analogiczna do `runtimeFlowState` (`:333-338`), bez odczytu/zapisu ustawień w magazynie.
 2. `load()`/`setFlows()`: przy `editorOnly` nie usuwać `safeMode` i nie przekazywać `forceStart` dalej niż do `start()` (który i tak kończy) – zachowana gałąź „zapis bez startu” (`:235-240`); `stop()` przy `started=false` już jest no-op (`:435`).
 3. `api/flows.js` `setState`: `editorOnly` → 409 `editor_only` dla `start` (przed `settings.set`).
-4. `api/settings.js`: `safeSettings.editorOnly = true` (dla edytora); edytor (`red.js`, `deploy.js`): powiadomienie i ukrycie Start/Stop.
+4. `api/settings.js`: `safeSettings.editorOnly = true` (dla edytora); edytor (`red.js`, `deploy.js`): powiadomienie, ukrycie Start/Stop oraz ukrycie/dezaktywacja „Restart flows” (R-39).
 5. Model stanu (E-02): osobny stan `loaded` (flow wczytane, nieuruchomione; przejścia `starting` → `loaded` (T14), `loaded` → `deploying`/`reloadPending` → `loaded`; nigdy `ready`) – zgodnie z ANALIZA §4.2 i kartą E-02.
 6. Zgodność z pakietami:
    - **Z-08:** `/ready` na instancji edycyjnej → **200 w stanie `loaded`** (D-13, **R-19**), `/live` jak zwykle; `deploying` → 503 na czas zapisu;
    - **Z-09:** instancja edycyjna (przy `deploy.reload.watch: true`) obsługuje `watchFlows` przez przeładowanie konfiguracji **bez startu** (`loaded` → `reloadPending` → `reloading` → `loaded`; edytory dostają `runtime-deploy` → powiadomienie o zmianie na serwerze); `preReload` wywoływany (brak drenażu – nic nie działa) – propozycja;
-   - **P-01:** `deploy.response: "started"` na instancji edycyjnej = odpowiedź po zapisie (kroku startu brak), w odpowiedzi np. `{rev, started:false}` – **do potwierdzenia** (zmiana kształtu odpowiedzi tylko w trybie `started`);
+   - **P-01:** `deploy.response: "started"` na instancji edycyjnej = odpowiedź po zapisie (kroku startu brak) w postaci `{rev, started: false}`, bez błędu (**R-39**; zmiana kształtu odpowiedzi tylko w trybie `started`);
    - **Z-06:** `preDeploy`/`postDeploy` wywoływane normalnie – instancja edycyjna to naturalne miejsce walidacji i wyzwalacza publikacji (K8S-T-006);
    - **Z-10:** koordynacja niepotrzebna (brak węzłów) – wtyczka koordynacji może nie być inicjowana (do potwierdzenia).
 7. `settings.js`: opis ustawienia z listą ograniczeń.
@@ -544,6 +544,13 @@ Funkcja: Instancja tylko edycyjna
     Kiedy otworzę edytor
     Wtedy widzę komunikat, że flow nie są wykonywane na tej instancji
     I menu Deploy nie zawiera pozycji Start/Stop flows
+    I akcja "Restart flows" jest ukryta lub nieaktywna (R-39)
+
+  Scenariusz: Odpowiedź wdrożenia w trybie "started" (R-39)
+    Zakładając editorOnly = true i deploy.response = "started"
+    Kiedy wdrożę zmieniony flow przez API v2
+    Wtedy odpowiedź ma status 200 i treść {rev, started: false}
+    I flow nie zostały uruchomione
 
   Scenariusz: Wspólny magazyn – workery nie są zatrzymywane
     Zakładając instancję edycyjną i worker korzystające z tego samego magazynu
@@ -552,17 +559,18 @@ Funkcja: Instancja tylko edycyjna
 ```
 
 #### Testy
-- `test/unit/@node-red/runtime/lib/flows/index_spec.js`: `editorOnly: start does not start flows`, `editorOnly: emits runtime-state editor-only`, `editorOnly: does not read or write runtimeFlowState`, `editorOnly: setFlows saves without starting (full/nodes/flows)`, `editorOnly: load(true) does not start`, `editorOnly: safeMode is not cleared by deploy`, `default: unchanged start behaviour`.
+- `test/unit/@node-red/runtime/lib/flows/index_spec.js`: `editorOnly: start does not start flows`, `editorOnly: emits runtime-state editor-only`, `editorOnly: does not read or write runtimeFlowState`, `editorOnly: setFlows saves without starting (full/nodes/flows)`, `editorOnly: load(true) does not start`, `editorOnly: safeMode is not cleared by deploy`, `editorOnly: waitForStart resolves {rev, started:false}` (R-39), `default: unchanged start behaviour`.
 - `test/unit/@node-red/runtime/lib/api/flows_spec.js`: `setState start returns 409 editor_only`, `setState stop is no-op`, `reload in editorOnly does not start`.
 - `test/unit/@node-red/runtime/lib/api/settings_spec.js`: `exposes editorOnly to the editor`, `omits editorOnly when not set`.
 - `test/unit/@node-red/runtime/lib/state_spec.js` / `health_spec.js`: `editorOnly start ends in loaded`, `ready 200 in loaded`, `deploy in editorOnly returns to loaded`.
 - `test/unit/@node-red/editor-api/lib/admin/flows_spec.js`: kontrakt `POST /flows/state` 409 (jeśli mapowanie kodu w editor-api wymaga zmian – do sprawdzenia).
 - Integracyjny (jeśli wykonalny bez nowych zależności): runtime z atrapą magazynu – brak `saveSettings` z `runtimeFlowState`.
-- Edytor (wg E-03): logika powiadomienia/ukrycia pozycji Deploy i nieaktywnego przycisku `inject` (R-19); E2E (D-03) – komunikat i podpowiedź widoczne.
+- Edytor (wg E-03): logika powiadomienia/ukrycia pozycji Deploy (w tym „Restart flows” – R-39) i nieaktywnego przycisku `inject` (R-19); E2E (D-03) – komunikat i podpowiedź widoczne.
 
 #### DoD specyficzne
 - [ ] Nazwa i semantyka wg R-19 (`editorOnly: true`, semantyka ścisła) opisane w `settings.js`.
-- [ ] Przycisk `inject` nieaktywny z podpowiedzią (R-19) – test logiki.
+- [ ] Przycisk `inject` nieaktywny z podpowiedzią (R-19) i „Restart flows” ukryte/nieaktywne (R-39) – test logiki.
+- [ ] Odpowiedź `{rev, started: false}` w trybie `deploy.response: "started"` (R-39) – test.
 - [ ] Brak jakiegokolwiek zapisu `runtimeFlowState` z instancji edycyjnej (test na atrapie magazynu).
 - [ ] Ograniczenia (debug, status, inject, kontekst, trasy admin węzłów, zdarzenia) opisane w `settings.js` i dokumentacji.
 - [ ] Zachowanie z P-01, Z-08, Z-09 opisane w ich kartach (odsyłacze) i pokryte testami po ich realizacji.
@@ -579,7 +587,7 @@ Funkcja: Instancja tylko edycyjna
 - [ ] Opis semantyki `editorOnly` (R-19) – S
 - [ ] Runtime: `start`/`load`/`setFlows` + testy (czerwone najpierw) – M
 - [ ] API: `setState` 409, `settings` dla edytora + testy – S
-- [ ] Edytor: powiadomienie, menu Deploy, nieaktywny przycisk `inject` z podpowiedzią (R-19) (+ test wg E-03) – S
+- [ ] Edytor: powiadomienie, menu Deploy (w tym „Restart flows” – R-39), nieaktywny przycisk `inject` z podpowiedzią (R-19) (+ test wg E-03) – S
 - [ ] `settings.js`, JSDoc, CHANGELOG, dokumentacja ograniczeń – S
 - [ ] Uzgodnienie z kartami P-01, Z-08, Z-09 (zachowanie instancji edycyjnej) – S
 
@@ -893,7 +901,7 @@ Funkcja: Środowisko weryfikacji
 9. **Z-14 – wyłączone ustawienie:** czy akceptujecie rekomendację „flow z zapisanym układem rysują się zgodnie z danymi, ukryte są tylko kontrolki, ustawienia użytkownika ignorowane”? Alternatywa: przy wyłączonym ignorować dane przy rysowaniu. **Rozstrzygnięte (R-01):** rysuj wg danych – ukryte tylko kontrolki.
 10. **Z-14 – runtime bez bramkowania:** czy przenoszenie `layout`/`wireStyle` w API pojedynczego flow i pomijanie `o`/układu subflow w `diffNodes` może działać niezależnie od ustawienia (brak skutku dla flow bez tych pól)? **Rozstrzygnięte (R-02):** tak – części runtime działają zawsze, niezależnie od ustawienia.
 11. **Z-14 – otwarte błędy:** zgoda na zakres FL-B-005 (wymagany) i FL-B-004 (zalecany); FL-B-007/008 opcjonalnie; FL-B-006 poza zakresem (zgłoszenie upstream)? **Rozstrzygnięte (R-03):** w zakresie wszystkie: FL-B-004, 005, 006, 007, 008 (+ 009 z B-01).
-12. **Z-15 – nazwa i semantyka (D-02):** `editorOnly: true` (flow nigdy nie startują; ZASADY §2.1) czy `runtimeState.autoStart: false` (możliwy ręczny start)? Czy odpowiedź P-01 `started` na instancji edycyjnej ma mieć postać `{rev, started:false}`? (`/ready` instancji edycyjnej – jedno pytanie: etap 3, pytanie 3.) **Rozstrzygnięte (R-19):** `editorOnly: true` (semantyka ścisła); `/ready` 200 w `loaded`. Kształt odpowiedzi P-01 `started` na instancji edycyjnej (`{rev, started:false}`) – nieobjęty decyzją.
+12. **Z-15 – nazwa i semantyka (D-02):** `editorOnly: true` (flow nigdy nie startują; ZASADY §2.1) czy `runtimeState.autoStart: false` (możliwy ręczny start)? Czy odpowiedź P-01 `started` na instancji edycyjnej ma mieć postać `{rev, started:false}`? (`/ready` instancji edycyjnej – jedno pytanie: etap 3, pytanie 3.) **Rozstrzygnięte (R-19):** `editorOnly: true` (semantyka ścisła); `/ready` 200 w `loaded`. Kształt odpowiedzi P-01 `started` na instancji edycyjnej – **R-39:** `{rev, started: false}` (bez błędu); „Restart flows” ukryte/nieaktywne jak przycisk `inject`.
 13. **Z-15 – przycisk `inject` i trasy admin węzłów:** wystarczy opis ograniczeń, czy przycisk ma być nieaktywny na instancji edycyjnej? **Rozstrzygnięte (R-19):** przycisk `inject` nieaktywny z podpowiedzią.
 14. **E-03 / D-03:** zgoda na Playwright w `devDependencies` (osobny skrypt `test:e2e`, poza `npm test`)? Jeśli nie – czy kryteria „test edytora” (P-02, Z-01, Z-12) mogą być spełnione testami logiki + scenariuszem ręcznym w raporcie? **Rozstrzygnięte (D-03, poza rejestrem R):** Playwright **nie** trafia do repozytorium (narzędzie instalowane poza nim; bez niego testy E2E pomijane); kryteria „test edytora” – testy logiki w `npm test` + scenariusz ręczny / E2E nieblokujące (R-31).
 15. **E-04 / D-04:** kto z Wykonawcy podpisuje DCO i CLA OpenJS; jak oznaczać pracę wspomaganą AI (trailer w commicie czy opis PR)? **Rozstrzygnięte (D-04/D-21, poza rejestrem R):** autor i `Signed-off-by` – Wojciech Repiński (Actuna Sp. z o.o.); praca z AI – trailer `Co-Authored-By`; CLA OpenJS dopiero przy ewentualnym zgłoszeniu upstream (zablokowane).
@@ -923,3 +931,4 @@ Naniesione decyzje z [../REJESTR-DECYZJI.md](../REJESTR-DECYZJI.md):
 - **Z-15 (R-19):** `editorOnly: true` (semantyka ścisła); przycisk `inject` nieaktywny z podpowiedzią (Skutki uboczne, nowy scenariusz, testy, DoD, Ryzyka, podzadania); `/ready` 200 w `loaded`.
 - **E-04 (R-30):** nazwy narzędzi stron trzecich dozwolone; CHANGELOG „Unreleased” w gałęzi pakietu; szablon nagłówka z łatek + `MODIFICATIONS.md`, uzupełnienie nagłówków z 0004, komentarze „upstream” → „wersja bazowa 5.0.7”, łatki zastąpione commitami (Projekt pkt 7, DoD, podzadanie).
 - **E-05 (R-31):** CI w forku `Actuna-Tech/node-red`, gałąź integracyjna `actuna/integration`; gałęzie pakietów – Node 22, integracja – Node 22 i 24; E2E nieblokujące (ręcznie/nocnie, wynik w raporcie) – Wyjścia, Projekt, BDD, testy, DoD, Ryzyka, podzadania.
+- **Z-15 (R-39):** odpowiedź w trybie `deploy.response: "started"` na instancji edycyjnej – `{rev, started: false}` bez błędu (Wyjścia, Projekt pkt 6, nowy scenariusz, test, DoD, Pytanie 12); akcja „Restart flows” ukryta/nieaktywna jak przycisk `inject` (Wyjścia, Projekt pkt 4, scenariusz „Komunikat w edytorze”, testy edytora, DoD, podzadanie).
