@@ -6,6 +6,7 @@
  *   FL-B-010: tests for replacing a flow with the same id on import
  *   FL-B-010: tests for replacing a flow after the rest of the import, copies, change flags and failures
  *   Z-14: tests for exporting flows with editorTheme.flowLayout.enabled set and unset
+ *   FL-B-006: tests for matching an imported subflow whose properties are in another order
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
@@ -215,6 +216,76 @@ describe("editor-client/nodes", function() {
             const exported = exportSubflow();
             const imported = Object.assign({}, exported[0], { id: "s2", layout: "TB" });
             should.not.exist(RED.nodes.checkForMatchingSubflow(imported, []));
+        });
+    });
+
+    describe("matching an imported subflow with properties in another order (FL-B-006)", function() {
+        /** Copy an object with its keys - and those of nested objects - in reverse order */
+        function reverseKeys(value) {
+            if (Array.isArray(value)) {
+                return value.map(reverseKeys);
+            } else if (value && typeof value === "object") {
+                const result = {};
+                Object.keys(value).reverse().forEach(function(k) { result[k] = reverseKeys(value[k]); });
+                return result;
+            }
+            return value;
+        }
+
+        function addSubflowWithPorts(props) {
+            const sf = subflow(Object.assign({
+                color: "#DDAA99",
+                layout: "TB",
+                wireStyle: "orthogonal",
+                in: [{ x: 50, y: 30, id: "s1-in" }],
+                out: [{ x: 250, y: 30, id: "s1-out" }]
+            }, props || {}));
+            RED.nodes.addSubflow(sf);
+            return sf;
+        }
+
+        function exportedSubflow() {
+            return RED.nodes.createExportableNodeSet([RED.nodes.subflow("s1")])[0];
+        }
+
+        it("matches the existing subflow when the keys are in another order", function() {
+            addSubflowWithPorts();
+            const imported = reverseKeys(Object.assign({}, exportedSubflow(), { id: "s2" }));
+            Object.keys(imported)[0].should.not.equal("id");
+            const match = RED.nodes.checkForMatchingSubflow(imported, []);
+            should.exist(match);
+            match.should.have.property("id", "s1");
+        });
+
+        it("matches the existing subflow when the layout is before the other properties", function() {
+            addSubflowWithPorts();
+            const exported = exportedSubflow();
+            const imported = { layout: exported.layout, wireStyle: exported.wireStyle };
+            Object.keys(exported).forEach(function(k) {
+                if (k !== "layout" && k !== "wireStyle") {
+                    imported[k] = exported[k];
+                }
+            });
+            imported.id = "s2";
+            should.exist(RED.nodes.checkForMatchingSubflow(imported, []));
+        });
+
+        it("does not modify the imported subflow", function() {
+            addSubflowWithPorts();
+            const imported = reverseKeys(Object.assign({}, exportedSubflow(), { id: "s2" }));
+            const keys = Object.keys(imported);
+            RED.nodes.checkForMatchingSubflow(imported, []);
+            Object.keys(imported).should.eql(keys);
+            imported.should.have.property("id", "s2");
+        });
+
+        it("does not match a subflow with other values in another order", function() {
+            addSubflowWithPorts();
+            const imported = reverseKeys(Object.assign({}, exportedSubflow(), { id: "s2", color: "#000000" }));
+            should.not.exist(RED.nodes.checkForMatchingSubflow(imported, []));
+            const imported2 = reverseKeys(Object.assign({}, exportedSubflow(), { id: "s2" }));
+            imported2.in[0].x = 60;
+            should.not.exist(RED.nodes.checkForMatchingSubflow(imported2, []));
         });
     });
 
