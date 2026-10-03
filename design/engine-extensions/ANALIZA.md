@@ -25,7 +25,7 @@ dokumenty powiązane: [ZASADY.md](ZASADY.md) (nazwy, kontrakt potoku wdrożenia,
    „edytor produkcyjny nie jest workerem”).
 5. **Uwagi do wymagań ogólnych:** wersja bazowa (rekomendacja 5.0.7 – poprawki bezpieczeństwa),
    projekt Node-RED wymaga **CLA OpenJS** (nie tylko DCO), brak infrastruktury testów jednostkowych edytora,
-   nasze dotychczasowe zmiany wymagają usunięcia atrybucji z nagłówków kodu (wymóg „bez nazw produktów”).
+   nagłówki o modyfikacji wg pkt 4(b) licencji zostają w forku (D-19, R-30); bez nazw produktów poza nimi.
 
 ## 1. Metoda
 
@@ -100,15 +100,23 @@ osobna poprawka błędu dla trybu domyślnego → **D-05**: w trybie domyślnym 
 P-01, Z-08 i Z-09 potrzebują jednego, wiarygodnego stanu runtime:
 
 ```
-init ──▶ starting ──▶ ready ──▶ deploying ──────────────▶ ready
-            │           │  └──▶ reloadPending ──▶ reloading ──▶ ready
-            │           │        (preReload, drenaż;   (pod blokadą)
-            │           │         unieważniane przez wdrożenie)
-            │           └──────────▶ stopping (SIGTERM/SIGINT, nieodwracalny) ──▶ stopped
-            └─▶ failed (start / odczyt flow się nie powiódł)
-            idle – flow świadomie zatrzymane (runtimeState „stop”), zgodnie z kartą E-02
-instancja tylko edycyjna (Z-15): init ──▶ loaded (flow wczytane, nie uruchomione)
+init (stan początkowy, przed runtime.start()) ──▶ starting
+starting ──▶ ready ──▶ deploying ──────────────▶ ready
+   │           │  └──▶ reloadPending ──▶ reloading ──▶ ready
+   │           │        (preReload, drenaż;   (pod blokadą)
+   │           │         unieważniane przez wdrożenie)
+   │           └──────────▶ stopping (SIGTERM/SIGINT, nieodwracalny) ──▶ stopped
+   ├─▶ failed (start / odczyt flow się nie powiódł)
+   └─▶ idle   (flow zatrzymane: runtimeState „stop” lub safe mode; także ready/failed ──▶ idle przez setState stop)
+instancja tylko edycyjna (Z-15, editorOnly): starting ──▶ loaded (flow wczytane, nie uruchomione)
+stany spoczynku ready / failed / idle / loaded ──▶ deploying (wdrożenie) – szczegóły T5–T11 w karcie E-02
 ```
+**Korekta (R-23):** pełna lista stanów (kontrakt, [MIGRACJA.md](MIGRACJA.md)): `init, starting, ready, deploying,
+reloadPending, reloading, idle, loaded, failed, stopping, stopped`. `init` = stan początkowy (przed `runtime.start()`,
+przejście T1), **`idle` = flow zatrzymane** (nie stan początkowy). Zdarzenie `instance:state` `{state, previous, reason}`;
+`RED.stop(reason)` przekazuje powód do `preShutdown` i logu. `/health/ready`: 200 w `ready` i `loaded`; `idle` (safe mode,
+zatrzymane flow) → 503 (R-19, D-13); pozostałe stany – wg tabeli stanów w karcie E-02.
+
 Szczegóły przejść (T1–T13) i niezmienniki – karta E-02 w [backlog/etap-3.md](backlog/etap-3.md);
 kolejność kroków wdrożenia/przeładowania/zatrzymania – [ZASADY.md](ZASADY.md) §2.3.
 
@@ -122,7 +130,7 @@ kolejność kroków wdrożenia/przeładowania/zatrzymania – [ZASADY.md](ZASADY
 
 | Problem | Pakiet | Rekomendacja |
 |---|---|---|
-| Zdalne zatrzymanie procesu bez uwierzytelnienia (wniosek z kodu) | P-04 | potwierdzić testem; zgłoszenie **prywatnie** wg `SECURITY.md` projektu, nie publiczny PR; do czasu wydania – poprawka w naszym obrazie |
+| Zdalne zatrzymanie procesu bez uwierzytelnienia (wniosek z kodu) | P-04 | potwierdzone testem; poprawka tylko w forku, bez zgłoszenia teraz – zgłoszenie prywatne wg `SECURITY.md` po zniesieniu blokady D-04 (R-04) |
 | Połączenie `/comms` (upgrade websocket) pomija `httpAdminMiddleware` i nie sprawdza nagłówka `Origin` (`editor/comms.js:222-245`) – atak może przyjść z obcej strony otwartej w przeglądarce użytkownika (wniosek z kodu, karta P-04) | P-04 | kontrola `Origin` dla `/comms` jako osobna decyzja (D-07); dołączyć do zgłoszenia bezpieczeństwa |
 | Trasy admin węzłów bez uprawnień | Z-02 | tryb `authenticated`; przegląd publicznych widoków core (`21-debug.js:286,310`) |
 | Admin API dostępne na workerach (`disableEditor` go nie wyłącza) | – (konfiguracja) | workery: `httpAdminRoot: false`; sondy z Z-08 niezależne od `httpAdminRoot` (osobny port) |
@@ -175,7 +183,7 @@ Spójny zestaw: obiekt `deploy` (P-01, Z-04, Z-05), `editorTheme.deploy` (P-02),
 | `updateFlow` nie sprawdza duplikatów id względem innych flow | `runtime/lib/flows/index.js` | Z-04 | do potwierdzenia, test kontraktu |
 | Błąd startu zapisuje konfigurację – odpowiedź z błędem musi zawierać `rev`, inaczej kolejne wdrożenie edytora dostanie 409 | `runtime/lib/flows/index.js` | P-01 | w specyfikacji P-01 |
 | Hook `preDeploy` wykonywany pod blokadą API – długi hook blokuje wszystkie wdrożenia | `runtime/lib/api/flows.js:67` | Z-06 | limit czasu hooka |
-| Nazwa użytkownika wstawiana do menu użytkownika jako HTML (możliwe XSS przez nazwę z `adminAuth`) | `editor-client/src/js/user.js:265` | Z-12.06 / priorytet 2 | poprawka bezpieczeństwa (wstawianie jako tekst) z testem – do potwierdzenia |
+| Nazwa użytkownika wstawiana do menu użytkownika jako HTML (możliwe XSS przez nazwę z `adminAuth`) | `editor-client/src/js/user.js:265` | Z-12.06 / priorytet 2 | osobna poprawka bezpieczeństwa (wstawianie jako tekst) z testem – teraz, priorytet 2 (R-08) |
 | Po ponownym zalogowaniu `RED.settings.user` nie jest odświeżane | `editor-client/src/js/user.js` | Z-12.08 | w ramach Z-12b |
 
 ### 4.10 Przeładowanie i zatrzymanie w wielu replikach (ryzyko z karty Z-09/Z-08)
@@ -196,7 +204,7 @@ Spójny zestaw: obiekt `deploy` (P-01, Z-04, Z-05), `editorTheme.deploy` (P-02),
 |---|---|---|---|
 | 3.1 | baza 5.0.6 | 5.0.7 zawiera poprawki bezpieczeństwa | baza 5.0.7 (D-01) |
 | 3.2 | domyślnie jak 5.0.6 | spełnione przez ustawienia; wyjątek: poprawki błędów (P-04, Z-01) i nasze Z-14 (wymaga ustawienia `editorTheme.flowLayout.enabled`) | E-04 |
-| 3.3 | brak nazw produktów | nasze pliki `view-layout.js` i `flowLayout.js` mają atrybucję w nagłówku; CHANGELOG zawiera nazwę firmy | E-04: atrybucja tylko w dokumentacji projektowej (`design/`) i opisie dostarczenia |
+| 3.3 | brak nazw produktów | nasze pliki `view-layout.js` i `flowLayout.js` mają atrybucję w nagłówku; CHANGELOG zawiera nazwę firmy | E-04: nagłówki o modyfikacji zachowane w forku (D-19, R-30); gałęzie do upstream bez nich |
 | 3.5 | `npm test` bez błędów | w środowisku bez `ssh-keygen` 5 testów projektów pada (niezwiązane) | środowisko CI z `ssh-keygen` (jak w `.github/workflows/tests.yml`) |
 | 3.5 | testy edytora | brak harnessu jednostkowego edytora | E-03, D-03 |
 | 3.8 | DCO `Signed-off-by` | projekt Node-RED wymaga podpisania **CLA OpenJS** (`CONTRIBUTING.md:48`); podpis DCO musi złożyć osoba odpowiedzialna za wkład (praca z AI – osoba z Wykonawcy przegląda i podpisuje) | D-04: kto podpisuje CLA/DCO; polityka oznaczania pracy wspomaganej AI |
@@ -213,7 +221,7 @@ Spójny zestaw: obiekt `deploy` (P-01, Z-04, Z-05), `editorTheme.deploy` (P-02),
 | E-01 | kontrakt potoku wdrożenia (ADR) | zatwierdzona kolejność kroków, punkty hooków, stany, mutex |
 | E-02 | model stanu instancji | specyfikacja przejść + testy (implementacja w Z-08) |
 | E-03 | harness testów edytora | szablon testu jednostkowego klienta + decyzja E2E |
-| E-04 | dostosowanie istniejącej gałęzi | usunięcie atrybucji z kodu, podział na gałęzie pakietów, ustawienie `editorTheme.flowLayout.enabled` |
+| E-04 | dostosowanie istniejącej gałęzi | nagłówki o modyfikacji wg pkt 4(b) (D-19, R-30), podział na gałęzie pakietów, ustawienie `editorTheme.flowLayout.enabled` |
 | E-05 | środowisko weryfikacji | CI z pełnym `npm test` (w tym `ssh-keygen`), szablon raportu pakietu – karta w [backlog/etap-4.md](backlog/etap-4.md) |
 
 > **Priorytety biznesowe (2026-10-03)** zmieniają kolejność faz – obowiązuje [../PRIORYTETY.md](../PRIORYTETY.md); poniższe tory i zależności techniczne pozostają w mocy.
@@ -245,11 +253,11 @@ Test czerwony → implementacja → testy pakietu → `npm test` → niezależny
 
 **Z-14 – Układ flow (góra–dół, automatyczny, routing linii)** – zrealizowany na gałęzi `claude/loving-fermat-ftfo9h`
 ([dokumentacja](../flow-layout/DOKUMENTACJA.md)). Dostosowanie (E-04): ustawienie `editorTheme.flowLayout.enabled` (domyślnie
-`false` → brak nowych elementów UI), usunięcie atrybucji z kodu i CHANGELOG, `Signed-off-by`, podział na PR
+`false` → brak nowych elementów UI), nagłówki o modyfikacji wg pkt 4(b) i `MODIFICATIONS.md` (D-19, R-30), `Signed-off-by`, podział na PR
 (runtime `diffNodes` + API flow → razem z Z-04; geometria `view-layout.js`; UI), klucze `layout.*` w `pl` (Z-13),
-otwarte błędy FL-B-004…008 według priorytetów.
+otwarte błędy FL-B-004…008 (+009) – pełny zakres (R-03).
 
-**Z-15 – Instancja tylko edycyjna** – ustawienie (propozycja: `runtimeState.autoStart: false` lub `editorOnly: true` – D-02),
+**Z-15 – Instancja tylko edycyjna** – ustawienie `editorOnly: true` (R-19),
 przy którym runtime wczytuje flow, ale ich nie uruchamia, **bez zapisu stanu do magazynu** (dziś `runtimeFlowState`
 trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od działającego runtime (debug, status, przycisk
 `inject`) – opis ograniczeń; przekazywanie zdarzeń z workerów pozostaje wtyczką (K8S-T-003).
@@ -277,7 +285,48 @@ trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od dzia
 | **N-03** | **dostosowujemy inne rozwiązania** (bez aliasów starych nazw w silniku) | [MIGRACJA.md](MIGRACJA.md) |
 | **N-04** | czy narzędzia używają API v2 – **nieznane** | przyjęto: przewodnik wymaga v2 i obsługi obu kodów 409 |
 
+**Rejestr decyzji R-01…R-32 (2026-10-03, zamknięty).** Źródło prawdy: [REJESTR-DECYZJI.md](REJESTR-DECYZJI.md) (kolumna
+„Decyzja”); poniżej skrót i miejsce naniesienia.
+
+| ID | Decyzja (skrót) | Skutek w planie |
+|---|---|---|
+| **R-01** | Z-14 przy `editorTheme.flowLayout.enabled: false`: flow z zapisanym układem rysują się wg danych, ukryte tylko kontrolki | karta Z-14 |
+| **R-02** | Z-14 części runtime (API flow, `diffNodes`) działają zawsze, niezależnie od ustawienia | karta Z-14, Z-04 |
+| **R-03** | zakres: FL-B-004, 005, 006, 007, 008 (+ 009 z B-01) | [../PRIORYTETY.md](../PRIORYTETY.md) priorytet 1 |
+| **R-04** | P-04: zgłoszenie luki zespołowi Node-RED **nie teraz** – poprawka tylko w forku; zgłoszenie po zniesieniu D-04 | karta P-04, PRIORYTETY |
+| **R-05** | P-04: przy wyłączonym `adminAuth` `/comms` odpowiada na pakiet `auth` – `auth ok`, połączenie działa dalej (zmiana względem łatki 0002) | karta P-04, [MIGRACJA.md](MIGRACJA.md) |
+| **R-06** | D-07: kontrola `Origin` dla `/comms` – ustawienie z listą dozwolonych źródeł, **domyślnie wyłączone**; w naszych instalacjach włączone | [ZASADY.md](ZASADY.md) §2.1, MIGRACJA |
+| **R-07** | Z-02: użytkownik anonimowy (`adminAuth.default`) jak `needsPermission("")` | karta Z-02 |
+| **R-08** | XSS nazwy użytkownika w menu (`user.js:265`) – **osobna poprawka teraz** (priorytet 2, test) | PRIORYTETY priorytet 2 |
+| **R-09** | P-03: `NODE_RED_DISABLE_TELEMETRY` bez implikacji `locked`; `telemetry.locked` blokuje zmianę `enabled` przy dowolnej wartości | karta P-03 |
+| **R-10** | P-01: 500 `deploy_start_failed` + `rev` + `errors[]`; błąd startu = brakujące typy, moduły, safe mode, wyjątki startu flow (bez błędów konstruktorów pojedynczych węzłów); tryb domyślny – odrzucenie `start()` logowane (poprawka błędu); limit czasu → Z-08; błędy zatrzymania wg D-05 | ZASADY §2.3–2.4, MIGRACJA |
+| **R-11** | E-01: `POST /flows`, `POST /flows/state` i przełączenie projektu pod wspólną blokadą; przy `reload` odczyt magazynu przed `preDeploy` | ZASADY §2.3 |
+| **R-12** | P-02: `reload-only` tylko w edytorze (ukrywa „Overwrite”); wymóg `rev` wyłącznie przez `deploy.requireRevision`; etykieta „Przeładuj flow”; Projekty bez zmian | karty P-02, Z-05 |
+| **R-13** | Z-04: `globalConfigs[]` (D-08); `rev` tylko w v2 + `ETag` (D-09); `POST /flow` → 201, id 16 hex; `globalRev` | MIGRACJA §4 |
+| **R-14** | Z-05: przy `requireRevision: true` v1 → 409 `version_required`; `DELETE /flow/:id` wymaga `?rev=`; `reload` zwolniony | ZASADY §2.3–2.4, MIGRACJA |
+| **R-15** | Z-06: `preDeploy` tylko walidacja (400 `deploy_rejected`), limit 30 s (`deploy.hookTimeout`, **503** `deploy_hook_timeout`); `postDeploy` asynchronicznie; bez hooków przy starcie i operacjach Projektów | ZASADY §2.3–2.4, MIGRACJA |
+| **R-16** | Z-07: bez przełącznika awaryjnego `http in`; `rawBodyCapture` osobnym ustawieniem | karta Z-07 |
+| **R-17** | Z-03: zakres skorygowany; bez `dryRun`; kanoniczne `externalModules.palette.allowUpload` + aliasy z ostrzeżeniem w logu | ZASADY §2.1 |
+| **R-18** | Z-11: kontekst plikowy → błąd startu (D-15); wdrożenie przy magazynie plikowym → 400 `read_only_user_dir`; dodatkowo zmienna środowiskowa | ZASADY §2.1, MIGRACJA |
+| **R-19** | Z-15: `editorOnly: true`; przycisk `inject` nieaktywny z podpowiedzią; `/health/ready` 200 w `loaded` (D-13), safe mode i zatrzymane flow → 503 | §4.2, MIGRACJA |
+| **R-20** | Z-09: `concurrency` liczbowo, bez koordynatora czeka; `preReload` bez weta (20 min); błąd odczytu → ponowienia, po wyczerpaniu `failed` + 503 (D-18); `deploy.reload.retry: { min: 1000, max: 60000, attempts }`; D-17 | ZASADY §2.1, MIGRACJA |
+| **R-21** | Z-10: D-14 + status „standby”; wtyczka tylko jawnie (`coordination.plugin`); `mqtt in` w osobnym pakiecie; test dwóch instancji w jednym procesie | MIGRACJA |
+| **R-22** | Z-08: stała treść 503 `{"status":"unavailable"}`; zamykanie serwera HTTP tylko przy `health.enabled`; drenaż domyślnie wyłączony; drugi SIGTERM → natychmiast | ZASADY §2.3, MIGRACJA |
+| **R-23** | E-02: stany `init…stopped`, zdarzenie `instance:state` `{state, previous, reason}`, `RED.stop(reason)`; `init` początkowy, `idle` = flow zatrzymane | §4.2 (korekta), MIGRACJA |
+| **R-24** | Z-12: `RED.deploy.addMenuItem`, `deployPre`, dokumentacja `RED.view.annotations` poza Z-12; JSDoc + `design/editor-api/`; deprecjacja min. jedna wersja minor; kolejność Z-12c → a → b → d → e | karta Z-12 |
+| **R-25** | 12.01: wariant A (`editorTheme.page.scripts`/wtyczka motywu) + krok `loginPost` | MIGRACJA |
+| **R-26** | 12.02: kod wydaje strategia/plugin, rdzeń przyjmuje `#code=…&next=…`; `sessionStorage` jako opcja (domyślnie `localStorage`) | MIGRACJA |
+| **R-27** | 12.08: implikacja + `!`; serwer odrzuca przy wdrożeniu węzły zabronionego typu (zmiana potoku E-01); `flows.export` – tylko utrudnienie | ZASADY §2.3–2.4, MIGRACJA |
+| **R-28** | 12.10: link `#flow/<flowId>/node/<nodeId>`, `hashchange`, `core:reveal-node`; `set-theme` objęty `editorTheme.embedding.allowedOrigins` | ZASADY §2.1, MIGRACJA |
+| **R-29** | Z-13: `messages.json`, `runtime.json` teraz, pomoc HTML osobno (D-16); forma bezosobowa; „węzeł”, „flow”/„subflow”, „Wdróż”; automatyczny wybór `pl`; test zgodności kluczy | karta Z-13, MIGRACJA |
+| **R-30** | E-04: szablon nagłówka + `MODIFICATIONS.md`; „upstream” → „wersja bazowa 5.0.7”; łatki zastąpione commitami; CHANGELOG „Unreleased” w gałęzi pakietu; nazwy narzędzi stron trzecich dozwolone | ZASADY §2.5 |
+| **R-31** | E-05: CI (GitHub Actions) w forku, gałąź integracyjna; pakiety Node 22, integracja Node 22 i 24; E2E nieblokujące | ZASADY §2.5 |
+| **R-32** | Z-01: logika `comms.js` eksportowana CommonJS, testy mocha z atrapą WebSocket w `npm test` | karta Z-01 |
+
 ### 7.1 Do podjęcia
+
+> **Stan (2026-10-03): wszystkie pytania rozstrzygnięte** – rejestr [REJESTR-DECYZJI.md](REJESTR-DECYZJI.md) (R-01…R-32),
+> skrót w §7.0. Kolumna „Stan” poniżej wskazuje rozstrzygnięcie; kolumna „Rekomendacja” zachowana jako historia.
 
 **N-01 – pusty `rev: ""` przy wdrożeniu (opis i wpływ) – rozstrzygnięte: wariant A (§7.0)**
 
@@ -295,25 +344,26 @@ traktuje `""` jak brak rewizji → 409 `version_required`.
 **Rekomendacja: A** – zero zmian domyślnie, zgodność z łatką Zamawiającego, jedna ścieżka obsługi w narzędziach.
 
 
-| ID | Decyzja | Rekomendacja |
-|---|---|---|
-| D-04 | CLA OpenJS / DCO, polityka oznaczania pracy z AI | podpis osoby odpowiedzialnej; informacja o wspomaganiu AI w opisie PR |
-| D-05 | poprawki ujawnione w weryfikacji, ale spoza zakresu (połykanie błędów zatrzymania, `splice` w `http in`, niespójne nazwy ustawień uploadu, zamykanie serwera HTTP przy SIGTERM) | dołączyć do pakietów, których dotyczą (P-01, Z-07, Z-03, Z-08), jako poprawki błędów z testami regresji |
-| D-06 | Z-14 i Z-15 w zakresie zlecenia | tak |
-| D-07 | kontrola nagłówka `Origin` dla `/comms` (ochrona przed obcymi stronami) | tak, jako ustawienie z bezpieczną listą domyślną (do uzgodnienia w zgłoszeniu bezpieczeństwa) |
-| D-08 | Z-04: kolizja pola `configs` (dziś z zasięgiem flow) – nowe pole `globalConfigs[]` vs zmiana znaczenia | `globalConfigs[]` (zgodność wstecz) |
-| D-09 | Z-04: `rev` w `GET /flow/:id` tylko dla `Node-RED-API-Version: v2` (klienci v1 robiący GET→PUT nie dostaną nagle 409) | tak |
-| ~~D-10~~ (podjęta, §7.0) | Z-09: przeładowanie rozłożone w czasie i/lub różnicowe | `deploy.reload.type` domyślnie `"full"` (jak dziś), **rekomendowane `"diff"`** dla wdrożeń z długimi rozmowami; limit równoległości `deploy.reload.concurrency` przez koordynację (Z-10) |
-| D-12 | P-02/Z-05: „Overwrite” w edytorze przy `deploy.requireRevision` | wymuszone nadpisanie wysyła aktualną rewizję po potwierdzeniu w oknie; w `reload-only` niedostępne |
-| D-13 | Z-08/Z-15: `/ready` instancji tylko edycyjnej | 200 po wczytaniu flow (stan `loaded`) – instancja gotowa do edycji |
-| D-14 | Z-10: semantyka „tylko jedna instancja” w `inject` | harmonogram cron: zajęcie klucza `<id>:<czas zaplanowany>` (dokładnie raz); interwał: lider |
-| D-15 | Z-11: kontekst `localfilesystem` przy `readOnlyUserDir` | błąd startu z czytelnym komunikatem (bez cichej zmiany na `memory`) |
-| D-16 | Z-13: zakres – `runtime.json` i pomoc HTML węzłów (~13,3 tys. słów) | `runtime.json` tak; pomoc HTML – osobna wycena |
-| D-17 | Z-09: flow zmienione po drenażu (odczyt pod blokadą) | ponowny `preReload` tylko dla dodatkowych flow, w ramach pozostałego limitu czasu |
-| D-18 | Z-09: ponawianie odczytu magazynu po błędzie (`deploy.reload.retry`) | tak – wykładniczo, z limitem; stan `failed` po wyczerpaniu |
+| ID | Decyzja | Rekomendacja | Stan |
+|---|---|---|---|
+| D-04 | CLA OpenJS / DCO, polityka oznaczania pracy z AI | podpis osoby odpowiedzialnej; informacja o wspomaganiu AI w opisie PR | **rozstrzygnięte** – D-04 (§7.0); zgłoszenie luki P-04 – R-04 |
+| D-05 | poprawki ujawnione w weryfikacji, ale spoza zakresu (połykanie błędów zatrzymania, `splice` w `http in`, niespójne nazwy ustawień uploadu, zamykanie serwera HTTP przy SIGTERM) | dołączyć do pakietów, których dotyczą (P-01, Z-07, Z-03, Z-08), jako poprawki błędów z testami regresji | **rozstrzygnięte** – R-10 (błędy zatrzymania wg D-05), R-17 (nazwy uploadu), R-22 (serwer HTTP); `splice` w `http in` – w zakresie Z-07 (R-16 nie zmienia) |
+| D-06 | Z-14 i Z-15 w zakresie zlecenia | tak | **rozstrzygnięte pośrednio** – R-01…R-03 (Z-14), R-19 (Z-15) |
+| D-07 | kontrola nagłówka `Origin` dla `/comms` (ochrona przed obcymi stronami) | tak, jako ustawienie z bezpieczną listą domyślną (do uzgodnienia w zgłoszeniu bezpieczeństwa) | **rozstrzygnięte – R-06**: ustawienie, domyślnie wyłączone (zgłoszenie – R-04) |
+| D-08 | Z-04: kolizja pola `configs` (dziś z zasięgiem flow) – nowe pole `globalConfigs[]` vs zmiana znaczenia | `globalConfigs[]` (zgodność wstecz) | **rozstrzygnięte – R-13** |
+| D-09 | Z-04: `rev` w `GET /flow/:id` tylko dla `Node-RED-API-Version: v2` (klienci v1 robiący GET→PUT nie dostaną nagle 409) | tak | **rozstrzygnięte – R-13** (+ `ETag`) |
+| ~~D-10~~ (podjęta, §7.0) | Z-09: przeładowanie rozłożone w czasie i/lub różnicowe | `deploy.reload.type` domyślnie `"full"` (jak dziś), **rekomendowane `"diff"`** dla wdrożeń z długimi rozmowami; limit równoległości `deploy.reload.concurrency` przez koordynację (Z-10) | **rozstrzygnięte** (§7.0); `concurrency` – R-20 |
+| D-12 | P-02/Z-05: „Overwrite” w edytorze przy `deploy.requireRevision` | wymuszone nadpisanie wysyła aktualną rewizję po potwierdzeniu w oknie; w `reload-only` niedostępne | **rozstrzygnięte – R-12** |
+| D-13 | Z-08/Z-15: `/ready` instancji tylko edycyjnej | 200 po wczytaniu flow (stan `loaded`) – instancja gotowa do edycji | **rozstrzygnięte – R-19** |
+| D-14 | Z-10: semantyka „tylko jedna instancja” w `inject` | harmonogram cron: zajęcie klucza `<id>:<czas zaplanowany>` (dokładnie raz); interwał: lider | **rozstrzygnięte – R-21** (+ status „standby”) |
+| D-15 | Z-11: kontekst `localfilesystem` przy `readOnlyUserDir` | błąd startu z czytelnym komunikatem (bez cichej zmiany na `memory`) | **rozstrzygnięte – R-18** |
+| D-16 | Z-13: zakres – `runtime.json` i pomoc HTML węzłów (~13,3 tys. słów) | `runtime.json` tak; pomoc HTML – osobna wycena | **rozstrzygnięte – R-29** |
+| D-17 | Z-09: flow zmienione po drenażu (odczyt pod blokadą) | ponowny `preReload` tylko dla dodatkowych flow, w ramach pozostałego limitu czasu | **rozstrzygnięte – R-20** |
+| D-18 | Z-09: ponawianie odczytu magazynu po błędzie (`deploy.reload.retry`) | tak – wykładniczo, z limitem; stan `failed` po wyczerpaniu | **rozstrzygnięte – R-20** (`deploy.reload.retry`) |
 
 Pozostałe pytania z kart (ok. 35, pogrupowane i bez duplikatów) – [PRZEGLAD.md](PRZEGLAD.md) §7; każda karta
-ma też sekcję „Pytania do Zamawiającego”.
+ma też sekcję „Pytania do Zamawiającego”. **Wszystkie rozstrzygnięte w rejestrze R-01…R-32** ([REJESTR-DECYZJI.md](REJESTR-DECYZJI.md));
+naniesienie na karty etapów – osobny krok.
 
 ## 8. Backlog
 

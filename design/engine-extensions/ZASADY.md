@@ -15,6 +15,9 @@
 > **Decyzje Zamawiającego z 2026-10-03:** D-01 baza **5.0.7**; D-02 rekomendacje nazw **przyjęte po krytycznym
 > sprawdzeniu** (wynik w §2.1a); D-03 **bez Playwright w repozytorium** – E2E to osobny podzbiór testów;
 > D-10 przyjęte. Szczegóły i pozostałe decyzje: [ANALIZA.md](ANALIZA.md) §7.
+>
+> **Rejestr decyzji R-01…R-32 (2026-10-03) – zamknięty**, źródło prawdy: [REJESTR-DECYZJI.md](REJESTR-DECYZJI.md);
+> w tym dokumencie naniesione R-06, R-10, R-11, R-14, R-15, R-17, R-18, R-20, R-22, R-23, R-27, R-28, R-30, R-31 (oznaczenia „(R-xx)”).
 
 ### 2.1 Nazwy ustawień
 
@@ -33,14 +36,19 @@
 | Z-09 | `watchFlows(callback)`, hook `preReload` | bez zmian | spójne z API magazynu i nazwami hooków `pre*`/`post*` |
 | Z-10 | typ wtyczki „koordynacja” | typ `node-red-coordination`, API węzłów `RED.coordination` | spójne z istniejącym typem `node-red-library-source` |
 | Z-11 | `readOnlyUserDir` | `readOnlyUserDir` (bez zmian) | |
+| Z-11 | – | zmienna środowiskowa `NODE_RED_READ_ONLY_USER_DIR` (**nazwa robocza** – z karty Z-11) | działa w CLI przed wyborem pliku ustawień (kopia `settings.js` do `~/.node-red`); równoważna `readOnlyUserDir: true` (**R-18**) |
 | Z-14 | – | `editorTheme.flowLayout: { enabled: false }` | wymóg zlecenia 3.2: domyślnie zachowanie jak oficjalne wydanie (bez nowych elementów UI) |
 | Z-15 | – | `editorOnly: false` (alternatywa: `runtimeState.autoStart`) | jedno znaczenie: instancja wczytuje flow, nie uruchamia ich i nie zapisuje stanu w magazynie |
 | Z-06 | – | `deploy.hookTimeout: 30000` (ms) | hook `preDeploy` działa pod blokadą wdrożeń – limit chroni przed zablokowaniem API |
-| Z-09 | – | `deploy.reload: { watch: false, type: "full" \| "diff", preReloadTimeout: 1200000, concurrency: <opcjonalnie> }` | `type` domyślnie `"full"` (jak dzisiejszy `reload`); dla długich rozmów rekomendowane `"diff"`; `concurrency` wymaga wtyczki koordynacji (Z-10) |
+| Z-09 | – | `deploy.reload: { watch: false, type: "full" \| "diff", preReloadTimeout: 1200000, concurrency: <opcjonalnie> }` | `type` domyślnie `"full"` (jak dzisiejszy `reload`); dla długich rozmów rekomendowane `"diff"`; `concurrency` wymaga wtyczki koordynacji (Z-10) – tylko wartość liczbowa; bez łączności z koordynatorem przeładowanie czeka, działa stara konfiguracja (R-20) |
+| Z-09 | – | `deploy.reload.retry: { min: 1000, max: 60000, attempts }` (ms) | ponawianie odczytu magazynu po błędzie, opóźnienie wykładnicze `min`…`max`; po wyczerpaniu `attempts` – stan `failed` i `/ready` 503 (D-18, **R-20**); wartość domyślna `attempts` – do ustalenia w karcie Z-09 |
 | Z-10 | – | `coordination: { plugin, options }`; właściwość węzła `inject`: `singleInstance` | wybór wtyczki jak `contextStorage`; domyślnie wtyczka lokalna |
+| Z-03 | – | `externalModules.palette.allowUpload` – **nazwa kanoniczna**; `externalModules.palette.upload` i `editorTheme.palette.upload` – przestarzałe aliasy | aliasy nadal honorowane (każde `false` wyłącza upload), ich użycie → ostrzeżenie w logu; w szablonie `settings.js` tylko nazwa kanoniczna (**R-17**) |
 | Z-03 | – | `externalModules.palette.allowDowngrade: true` (domyślnie = zachowanie 5.0.6) | `false` blokuje instalację starszej wersji z `.tgz` (rekomendowane w produkcji); domyślna wartość nie zmienia dzisiejszego zachowania (DoD §3) |
 | Z-08 | – | `health.host` (opcjonalnie); **`shutdownTimeout`** (płasko, domyślnie wyłączony drenaż – zachowanie 5.0.6); API osadzających `RED.health` | drenaż przy SIGTERM (D-11); nazwa płaska jak `nodeCloseTimeout`/`functionTimeout` – to cykl życia procesu, nie sonda |
-| E-02 | – | zdarzenie `instance:state`, odczyt `runtime.state` | jedno źródło stanu dla P-01, Z-08, Z-09, Z-15 |
+| E-02 | – | zdarzenie `instance:state` `{state, previous, reason}`, odczyt `runtime.state`; `RED.stop(reason)` | jedno źródło stanu dla P-01, Z-08, Z-09, Z-15; stany: `init, starting, ready, deploying, reloadPending, reloading, idle, loaded, failed, stopping, stopped` – kontrakt w [MIGRACJA.md](MIGRACJA.md) (**R-23**) |
+| P-04 / D-07 | – | `httpAdminCommsOrigins: ["https://…"]` (**nazwa robocza**) | kontrola nagłówka `Origin` przy połączeniu `/comms`; brak/pusta lista = kontrola wyłączona (domyślnie, zachowanie 5.0.7); w naszych instalacjach włączone (**R-06**); nazwa z rodziny `httpAdmin*` (D-02), bo `/comms` działa pod `httpAdminRoot` – do potwierdzenia w karcie P-04 |
+| Z-12.10 | – | `editorTheme.embedding.allowedOrigins: []` | lista źródeł dla `postMessage` osadzonego edytora; obejmuje także istniejący kanał `set-theme`; pusta = wyłączone (**R-28**; karta Z-12.10 używa dziś `editorTheme.embedding.postMessage.allowedOrigins` – do ujednolicenia) |
 | Z-12 | – | `RED.header`, `RED.dialog`, `RED.deploy.addMenuItem`, hook edytora `deployPre` | robocze – do potwierdzenia po załączniku B |
 
 ### 2.1a Krytyczne sprawdzenie nazw (D-02, wynik)
@@ -72,15 +80,27 @@ bibliotekę JSONata, aktualizacja `body-parser`). **Decyzja D-01: baza `5.0.7`.*
 ### 2.3 Kontrakt potoku wdrożenia (zadanie E-01)
 Pakiety P-01, Z-04, Z-05, Z-06, Z-08, Z-09, Z-15 oraz nasze FL-B-001/FL-B-002 zmieniają te same funkcje
 (`runtime/lib/api/flows.js`, `runtime/lib/flows/index.js`, `editor-api/lib/admin/flow(s).js`).
-Wspólna kolejność kroków (rozstrzygnięcia K-1…K-3 z [PRZEGLAD.md](PRZEGLAD.md) – **propozycja do zatwierdzenia**):
+Wspólna kolejność kroków (rozstrzygnięcia K-1…K-3 z [PRZEGLAD.md](PRZEGLAD.md) – **propozycja do zatwierdzenia**;
+uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
+
+- **Wspólna blokada (R-11):** `POST /flows`, `POST /flows/state` (start/stop flow) i przełączenie projektu wykonują się
+  pod tą samą blokadą wdrożeń (mutex w `runtime/lib/api/flows.js`); druga operacja czeka na zakończenie pierwszej.
+- **Hooki (R-15):** `preDeploy` – tylko walidacja (bez modyfikacji treści), limit `deploy.hookTimeout` (30 s);
+  `postDeploy` – asynchronicznie, błąd tylko w logu; **brak hooków** `preDeploy`/`postDeploy` przy starcie procesu
+  (wczytanie flow z magazynu) i przy operacjach Projektów.
 
 **A. Wdrożenie przez Admin API lub wywołanie wewnętrzne** (`/flows`, `/flow`, `/flow/:id`, typ `reload`):
 ```
  1. przyjęcie żądania (źródło: api | internal)
  ── blokada wdrożeń (mutex, runtime/lib/api/flows.js) ──────────────────────────
- 2. kontrola rewizji            – istniejące 409 version_mismatch; Z-05 version_required; Z-04 rewizja flow
-       (typ reload: odczyt magazynu tutaj, pod blokadą – preDeploy w kroku 3 widzi treść, która zostanie uruchomiona)
- 3. hook preDeploy              – Z-06; tylko walidacja, limit deploy.hookTimeout; odrzucenie → 400 deploy_rejected
+ 2. kontrola rewizji            – istniejące 409 version_mismatch; Z-05 version_required (także klient v1 przy
+       requireRevision – R-14; DELETE /flow/:id wymaga ?rev= – R-14); Z-04 rewizja flow
+       (typ reload: zwolniony z wymogu rewizji – R-14; odczyt magazynu tutaj, pod blokadą, PRZED preDeploy – R-11;
+        preDeploy w kroku 3 widzi treść, która zostanie uruchomiona)
+ 2a. kontrola uprawnień do typów węzłów – Z-12.08: dodane/zmienione węzły typu z odebranym `nodes.type.<typ>`
+       (wpis „!”) → odrzucenie całego wdrożenia, bez zapisu (R-27)
+ 3. hook preDeploy              – Z-06; tylko walidacja, limit deploy.hookTimeout; odrzucenie → 400 deploy_rejected;
+       przekroczenie limitu → 503 deploy_hook_timeout (R-15)
  4. stan = "deploying"          – E-02 / Z-08 (/ready → 503)
  5. zapis do magazynu           – (typ reload: brak zapisu – treść odczytana w kroku 2)
  6. zatrzymanie zmienionych węzłów
@@ -92,7 +112,10 @@ Wspólna kolejność kroków (rozstrzygnięcia K-1…K-3 z [PRZEGLAD.md](PRZEGLA
  9. zdarzenie runtime-deploy (edytory)
 10. ODPOWIEDŹ HTTP
        deploy.response="stopped" (domyślnie): odpowiedź już po kroku 6, kroki 7–9 kończą się asynchronicznie (jak 5.0.6)
-       deploy.response="started": odpowiedź po kroku 9; błąd startu → 500 deploy_start_failed (z rev – konfiguracja jest zapisana)
+       deploy.response="started": odpowiedź po kroku 9; błąd startu → 500 deploy_start_failed (z rev i errors[] – konfiguracja
+       jest zapisana; R-10). Błąd startu = brakujące typy, brakujące moduły, safe mode, wyjątki startu flow – bez błędów
+       konstruktorów pojedynczych węzłów (R-10); limit czasu startu – Z-08 (R-10)
+       tryb domyślny: odrzucenie start() jest logowane (dziś połykane) – poprawka błędu (R-10)
 11. hook postDeploy             – Z-06; asynchronicznie, nie wstrzymuje odpowiedzi, błąd tylko w logu (nie cofa wdrożenia)
 ```
 
@@ -113,8 +136,14 @@ Wspólna kolejność kroków (rozstrzygnięcia K-1…K-3 z [PRZEGLAD.md](PRZEGLA
 ```
 
 **C. Zatrzymanie procesu** (Z-08, D-11): SIGTERM/SIGINT → stan `stopping` (/ready 503, nieodwracalny) →
-hook `preShutdown` / oczekiwanie do `shutdownTimeout` → `RED.stop()` → zamknięcie serwera HTTP → wyjście.
+hook `preShutdown` / oczekiwanie do `shutdownTimeout` → `RED.stop(reason)` → zamknięcie serwera HTTP → wyjście.
 Bez ustawionego `shutdownTimeout` – zachowanie 5.0.6 (natychmiastowe zatrzymanie).
+
+- `RED.stop(reason)` – powód (np. `"SIGTERM"`) trafia do hooka `preShutdown`, logu i pola `reason` zdarzenia `instance:state` (R-23).
+- Drenaż domyślnie wyłączony – bez `shutdownTimeout` jak dotąd (R-22).
+- **Drugi SIGTERM** w trakcie drenażu → natychmiastowe zatrzymanie (bez czekania na `shutdownTimeout`) (R-22).
+- Zamknięcie serwera HTTP – **tylko przy `health.enabled`** (R-22); bez tego – zachowanie 5.0.7.
+- Odpowiedź sondy w stanie niegotowości: **stała treść 503 `{"status":"unavailable"}`** – bez ujawniania nazwy stanu (R-22).
 
 ### 2.4 Katalog kodów błędów (propozycja)
 
@@ -124,20 +153,37 @@ Bez ustawionego `shutdownTimeout` – zachowanie 5.0.6 (natychmiastowe zatrzyman
 | Kod | HTTP | Pakiet | Kiedy |
 |---|---|---|---|
 | `version_mismatch` | 409 | istniejący, Z-04 | rewizja w żądaniu ≠ aktualna (całość lub flow) |
-| `version_required` | 409 | Z-05 | `deploy.requireRevision: true` i brak rewizji (nazwa jak w łatce 0006 Zamawiającego – decyzja D-20) |
+| `version_required` | 409 | Z-05 | `deploy.requireRevision: true` i brak rewizji (nazwa jak w łatce 0006 Zamawiającego – decyzja D-20); także każde wdrożenie API v1 (sama tablica) i `DELETE /flow/:id` bez `?rev=` przy `requireRevision: true` (R-14); typ `reload` zwolniony (R-14) |
 | `invalid_revision` | 400 | Z-04 | rewizja w złym typie (np. liczba, obiekt); **pusty `rev` nie jest tym błędem** – pusty `rev` (`""` lub `null`): przy `deploy.requireRevision: false` – jak w 5.0.7 (409 `version_mismatch`); przy `true` – traktowany jak brak rewizji → 409 `version_required` (decyzja N-01, wariant A) |
 | `deploy_rejected` | 400 | Z-06 | `preDeploy` odrzucił wdrożenie (komunikat z hooka) |
-| `deploy_hook_timeout` | 400 | Z-06 | `preDeploy` przekroczył `deploy.hookTimeout` |
+| `deploy_hook_timeout` | 503 | Z-06 | `preDeploy` przekroczył `deploy.hookTimeout` (R-15; wcześniej proponowane 400) |
 | `deploy_stop_failed` | 500 | P-01 | tryb `started`: błąd zatrzymania węzłów |
-| `deploy_start_failed` | 500 | P-01 | tryb `started`: błąd startu (zawiera `rev` i `errors[]`) |
+| `deploy_start_failed` | 500 | P-01 | tryb `started`: błąd startu – odpowiedź `{ code, message, rev, errors[] }`, `errors[].code` w `snake_case`; zakres błędu startu wg §2.3 A krok 10 (R-10) |
 | `invalid_flow_id` | 400 | Z-04 | `PUT /flow/:id` z niedozwolonym id przy `deploy.putCreatesFlow` |
 | `duplicate_id` | 400 | Z-04 | id węzła/konfiguracji należy do innego flow |
 | `module_downgrade_not_allowed` | 400 | Z-03 | `.tgz` ze starszą wersją przy `allowDowngrade: false` |
 | `invalid_node_type` | 400 | Z-04 | węzeł w `globalConfigs[]` nie jest węzłem konfiguracyjnym |
 | `upload_not_allowed` | 400 | **Z-03 (nowy kod)** | upload wyłączony – dziś `Error` bez kodu / `invalid_request` |
-| `read_only_user_dir` | 400 | Z-11 | operacja wymagająca zapisu przy `readOnlyUserDir: true` |
+| `read_only_user_dir` | 400 | Z-11 | operacja wymagająca zapisu przy `readOnlyUserDir: true`, w tym wdrożenie przy magazynie plikowym (R-18) |
+| `node_type_not_permitted` | 403 | Z-12.08 | wdrożenie zawiera dodane/zmienione węzły typu, do którego użytkownik nie ma uprawnienia (`!nodes.type.<typ>`); pole `types[]` (R-27; kod z karty Z-12.08) |
 | `editor_only` | 409 | Z-15 | operacja wymagająca działających flow (np. `inject`) na instancji edycyjnej |
 | `state_operation_in_progress` | 409 | E-02 | (wewnętrzny) próba drugiej operacji stanu pod blokadą |
+
+### 2.5 Proces i dostarczenie (E-04, E-05)
+
+**E-04 – dostosowanie gałęzi (R-30):**
+- Nagłówek o modyfikacji wg szablonu z łatek załącznika A („Modified by Actuna Sp. z o.o.: <opis>”, D-19); pliki, w których
+  nie można umieścić komentarza lub nagłówka licencji (np. JSON) – wpis w `MODIFICATIONS.md` (lista plików i opis zmian);
+  uzupełnienie brakujących nagłówków z łatki 0004.
+- Komentarze w kodzie „upstream” → „wersja bazowa 5.0.7”.
+- Historia łatek: łatki zastąpione commitami pakietów (odwołanie do załącznika A w opisie).
+- CHANGELOG: sekcja „Unreleased” w gałęzi pakietu (bez nazw produktów).
+- Nazwy narzędzi stron trzecich (np. w opisie środowiska testów) – dozwolone.
+
+**E-05 – środowisko weryfikacji (R-31):**
+- CI (GitHub Actions) w forku `Actuna-Tech/node-red`, gałąź integracyjna (np. `actuna/integration`).
+- Macierz Node: gałęzie pakietów – Node 22; gałąź integracyjna – Node 22 i 24.
+- E2E (D-03) – nieblokujące: uruchamiane ręcznie lub nocnie, wynik w raporcie pakietu.
 
 ## 3. Wspólne Definition of Done (każdy pakiet)
 

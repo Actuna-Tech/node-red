@@ -6,6 +6,11 @@ Data: 2026-10-03 · źródło priorytetów: Zamawiający · dokument nadrzędny 
 [engine-extensions/ANALIZA.md](engine-extensions/ANALIZA.md) §6.2 (tam: zależności techniczne i tory),
 [flow-layout/BACKLOG.md](flow-layout/BACKLOG.md), [k8s-postgres/BACKLOG.md](k8s-postgres/BACKLOG.md).
 
+> **Rejestr decyzji zamknięty (2026-10-03):** wszystkie punkty R-01…R-32 rozstrzygnięte –
+> [engine-extensions/REJESTR-DECYZJI.md](engine-extensions/REJESTR-DECYZJI.md) (skrót: ANALIZA §7.0). Skutki dla tego planu:
+> zakres FL-B-004…008 (+ 009) w priorytecie 1 (R-03); poprawka XSS w menu użytkownika w priorytecie 2 (R-08);
+> P-04 bez zgłoszenia do zespołu Node-RED na tym etapie (R-04).
+
 ## Priorytety
 
 | # | Priorytet biznesowy | Cel mierzalny (kryterium biznesowe) |
@@ -17,7 +22,8 @@ Data: 2026-10-03 · źródło priorytetów: Zamawiający · dokument nadrzędny 
 ## Priorytet 1 – układ flow i przenoszalność wyglądu
 
 Stan: funkcja zrealizowana (pakiet **Z-14**, [flow-layout/DOKUMENTACJA.md](flow-layout/DOKUMENTACJA.md)); eksport/import
-`layout`, `wireStyle`, `o` potwierdzony testami E2E. **Luki do zamknięcia:**
+`layout`, `wireStyle`, `o` potwierdzony testami E2E. **Luki do zamknięcia** (zakres wg R-03: wszystkie FL-B-004, 005, 006,
+007, 008 + FL-B-009 z B-01 – wymagane do odbioru priorytetu 1):
 
 | ID | Zadanie | Dlaczego dla priorytetu 1 | Szacunek |
 |---|---|---|---|
@@ -25,8 +31,8 @@ Stan: funkcja zrealizowana (pakiet **Z-14**, [flow-layout/DOKUMENTACJA.md](flow-
 | FL-B-004 | Okno różnic (konflikt, Projekty) nie pokazuje dodanych `layout`/`wireStyle`/`o` | scalanie przy konflikcie – użytkownik nie widzi zmian wyglądu | S |
 | FL-B-005 | Nieprawidłowe wartości układu z importu znikają bez ostrzeżenia | import z innych narzędzi (MCP/CI) – cicha utrata parametru | S |
 | FL-B-006 | Dopasowanie subflow przy imporcie zależy od kolejności kluczy | import subflow z układem może utworzyć duplikat | M |
-| FL-B-007, FL-B-008 | Podpowiedzi portów i etykiety linków w układzie pionowym | jakość wyglądu pionowego | S + S |
-| E-04 / Z-14 | Dostosowanie do wymagań zlecenia: ustawienie `editorTheme.flowLayout.enabled`, usunięcie atrybucji z kodu, podpisy, podział na PR, klucze `pl` | warunek odbioru i zgłoszenia upstream | M |
+| FL-B-007, FL-B-008 | Podpowiedzi portów i etykiety linków w układzie pionowym | jakość wyglądu pionowego – w zakresie (R-03) | S + S |
+| E-04 / Z-14 | Dostosowanie do wymagań zlecenia: ustawienie `editorTheme.flowLayout.enabled`, nagłówki o modyfikacji wg pkt 4(b) (D-19, R-30), podpisy, podział na PR, klucze `pl` | warunek odbioru i zgłoszenia upstream | M |
 | Z-04 (część) | API pojedynczego flow zachowuje układ (FL-B-001 – już naprawione) – utrzymać w Z-04 | eksport/import przez API (MCP, CI/CD) | – |
 
 **Rekomendacja dla FL-B-009:** przy eksporcie (i przy zapisie przez Admin API z edytora) flow bez własnych wartości
@@ -41,7 +47,8 @@ instancji B → identyczne `layout`/`wireStyle`/`o` i identyczna geometria port�
 
 | Kolejność | ID | Zadanie | Typ |
 |---|---|---|---|
-| 1 | **P-04** | zdalne zatrzymanie procesu przez `/comms` bez `adminAuth` (+ kontrola `Origin`, D-07) – zgłoszenie prywatne wg `SECURITY.md` | bezpieczeństwo, poprawka błędu |
+| 1 | **P-04** | zdalne zatrzymanie procesu przez `/comms` bez `adminAuth` (+ kontrola `Origin`, D-07 – ustawienie domyślnie wyłączone, R-06) – poprawka tylko w forku; zgłoszenie prywatne wg `SECURITY.md` **nie teraz**, dopiero po zniesieniu blokady D-04 (R-04) | bezpieczeństwo, poprawka błędu |
+| 1a | **XSS w menu użytkownika** | nazwa użytkownika wstawiana jako HTML (`editor-client/src/js/user.js:265`) – osobna poprawka teraz, z testem padającym bez poprawki (R-08) | bezpieczeństwo, poprawka błędu |
 | 2 | **Z-02** | uwierzytelnianie tras administracyjnych bloczków (`httpAdminNodeRoutes`) | bezpieczeństwo |
 | 3 | **Z-01** | wyścig subskrypcji `/comms` | poprawka błędu |
 | 4 | **P-03** | telemetria blokowana przez administratora | bezpieczeństwo/prywatność (on-premise) |
@@ -72,8 +79,8 @@ punkty rozszerzeń (Z-09, Z-10, Z-11, Z-15). Nasze K8S-T-* to te implementacje.
 
 | Faza | Tor 1 (edytor / układ flow) | Tor 2 (runtime / API / bezpieczeństwo) | Wynik fazy |
 |---|---|---|---|
-| **F1** | FL-B-009 → FL-B-004 → FL-B-005 | **P-04** → **Z-01** (inne pliki niż tor 1: `editor-api` auth/comms, `editor-client/src/js/comms.js`) | priorytet 1 domknięty funkcjonalnie; krytyczna luka bezpieczeństwa zamknięta |
-| **F2** | E-04/Z-14 (ustawienie, atrybucja, podział na PR) → FL-B-006 → FL-B-007/008 | **Z-02** → **P-03** → E-01 (kontrakt potoku) | priorytet 1 gotowy do odbioru; bezpieczeństwo domknięte |
+| **F1** | FL-B-009 → FL-B-004 → FL-B-005 | **P-04** → poprawka XSS `user.js:265` (R-08) → **Z-01** (inne pliki niż tor 1: `editor-api` auth/comms, `editor-client/src/js/{user,comms}.js`) | priorytet 1 domknięty funkcjonalnie; krytyczna luka bezpieczeństwa zamknięta |
+| **F2** | E-04/Z-14 (ustawienie, nagłówki 4(b), podział na PR) → FL-B-006 → FL-B-007/008 | **Z-02** → **P-03** → E-01 (kontrakt potoku) | priorytet 1 gotowy do odbioru; bezpieczeństwo domknięte |
 | **F3** | **P-02** (edytor `deploy.js`) | **P-01** → **Z-04** → **Z-05** → **Z-06** | priorytet 2 – API |
 | **F4** | **Z-07** | K8S-T-001 (magazyn + `watchFlows`) → K8S-T-002 / **Z-15** | start priorytetu 3 |
 | **F5** | K8S-T-004 (kontekst), K8S-T-009 (pliki bloczków) | **Z-11** → **Z-08** → **Z-10** → **Z-09** | priorytet 3 – pełna niezależność od plików, wiele instancji |
