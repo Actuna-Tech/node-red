@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   P-01: tests of rejectHandler passing rev and errors of a deployment error
  *   W-3: revAll of a deployment error of the single-flow api
+ *   P-01: rev, revAll and errors are passed only for deploy_start_failed/deploy_stop_failed
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -136,6 +137,15 @@ describe("api/util", function() {
                 err.revAll = "all";
                 apiUtil.rejectHandler(req,res,err);
             });
+            app.get("/otherWithFields", function(req,res) {
+                var err = new Error("conflict");
+                err.code = "version_mismatch";
+                err.status = 409;
+                err.rev = "internal";
+                err.revAll = "internal-all";
+                err.errors = [{code:"x"}];
+                apiUtil.rejectHandler(req,res,err);
+            });
             app.get("/plain", function(req,res) {
                 var err = new Error("not found");
                 err.code = "not_found";
@@ -159,6 +169,10 @@ describe("api/util", function() {
         it("rejectHandler includes revAll and a null rev of the single-flow api (W-3)", async function() {
             const res = await request(app).get("/flowStopFailed").expect(500);
             res.body.should.eql({code:"deploy_stop_failed", message:"stop failed", rev:null, revAll:"all"});
+        });
+        it("rejectHandler passes rev, revAll and errors only for deploy_start_failed/deploy_stop_failed", async function() {
+            const res = await request(app).get("/otherWithFields").expect(409);
+            res.body.should.eql({code:"version_mismatch", message:"conflict"});
         });
         it("rejectHandler response unchanged without rev and errors", async function() {
             const res = await request(app).get("/plain").expect(404);
