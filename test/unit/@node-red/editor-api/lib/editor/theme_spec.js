@@ -17,6 +17,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-14: tests for passing editorTheme.flowLayout to the editor
+ *   P-02: tests for passing editorTheme.deploy.staleFlows to the editor
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -259,6 +260,47 @@ describe("api/editor/theme", function () {
 
         var settings = await theme.settings();
         settings.should.not.have.a.property("flowLayout");
+    });
+
+    it("passes editorTheme.deploy.staleFlows to the editor", async function () {
+        theme.init({
+            editorTheme: {
+                deploy: { staleFlows: "reload-only", unknownOption: true }
+            }
+        });
+
+        theme.app();
+
+        var settings = await theme.settings();
+        settings.should.have.a.property("deploy");
+        // only the known options are passed to the editor
+        settings.deploy.should.eql({ staleFlows: "reload-only" });
+    });
+
+    it("omits deploy when not set", async function () {
+        theme.init({
+            editorTheme: {
+                userMenu: true
+            }
+        });
+
+        theme.app();
+
+        var settings = await theme.settings();
+        settings.should.not.have.a.property("deploy");
+    });
+
+    it("omits deploy when staleFlows is not set", async function () {
+        theme.init({
+            editorTheme: {
+                deploy: {}
+            }
+        });
+
+        theme.app();
+
+        var settings = await theme.settings();
+        settings.should.not.have.a.property("deploy");
     });
 
 
