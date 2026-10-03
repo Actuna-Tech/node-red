@@ -103,6 +103,17 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   Projektów (zmiana gałęzi, pull, revert, scalanie); druga operacja czeka. Blokada trwa do końca startu flow (R-43).
 - Potok `runtime/lib/flows/pipeline.js` – kroki i punkty rozszerzeń: ZASADY §2.3.
 
+### Wiele instancji (gałąź `feature/p3-database`, w toku do scalenia z `main`)
+
+| Ustawienie / API | Domyślnie | Działanie | Pakiet |
+|---|---|---|---|
+| stan instancji `runtime.state`, zdarzenie `instance:state`, `RED.stop(reason)` | zawsze (pasywne) | `init, starting, ready, deploying, reloadPending, reloading, idle, loaded, failed, stopping, stopped` | E-02 |
+| `health: {enabled, path, port, host}` | wyłączone | `/live`, `/ready` (503 `{"status":"unavailable"}` poza stanem gotowości), bez uwierzytelnienia | Z-08 |
+| `shutdownTimeout` + hook `preShutdown` | brak | drenaż przy SIGTERM: `/ready` 503 od razu, hook z limitem, potem zatrzymanie; drugi sygnał = natychmiast | Z-08 |
+| `readOnlyUserDir`, zmienna `NODE_RED_READ_ONLY_USER_DIR` | `false` | brak zapisu do katalogu użytkownika; wdrożenie przy magazynie plikowym → 400 `read_only_user_dir` | Z-11 |
+| `coordination: {plugin, options}`, `RED.coordination` (węzły), typ wtyczki `node-red-coordination` | wtyczka lokalna | przywództwo i zajęcia z TTL; własna wtyczka wybierana jawnie | Z-10 |
+| `inject` – „Run only on one instance” (`singleInstance`) | wyłączone | cron raz w klastrze, interwał tylko na liderze, status „standby” | Z-10 |
+
 ## 6. Zmiany zachowania względem 5.0.7 (poprawki błędów)
 
 - Restart flow przy 409 i przyciski „Merge”/„Ignore & deploy” nie kończą się błędem skryptu.
@@ -128,10 +139,9 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 
 Ogólne API rdzenia do pracy wielu instancji (edytor + instancje wykonawcze); prywatne wtyczki magazynu
 i koordynacji podpina się poza tym repozytorium:
-- E-02 – model stanów instancji; Z-08 – sondy `/health/live`, `/health/ready`, drenaż przy SIGTERM;
+- zrealizowane (sekcja 5, „Wiele instancji”): E-02, Z-08, Z-10, Z-11;
 - Z-09 – przeładowanie flow po zmianie w magazynie (`watchFlows`, hook `preReload` z limitem – drenaż pracy w toku,
   łączenie powiadomień), także dla `flows.json` na wspólnym wolumenie;
-- Z-10 – koordynacja (`RED.coordination`, wtyczka lokalna), `inject` „tylko jedna instancja”;
-- Z-11 – katalog użytkownika tylko do odczytu; Z-15 – instancja tylko do edycji (`editorOnly`).
+- Z-15 – instancja tylko do edycji (`editorOnly`).
 
 Opis zostanie przeniesiony do sekcji 3–6 po scaleniu z `main`.
