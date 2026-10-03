@@ -26,8 +26,9 @@ Security
  - In `"authenticated"` mode, `RED.httpAdmin.use()` without a path is skipped for requests
    without authentication (instead of returning 401 for every later admin route, including
    public routes of other modules), and `RED.auth.needsPermission()` counts only when it comes
-   before the first handler of a route. The guard is a safer default for well-behaved nodes,
-   not a sandbox
+   before the first handler of a route. The same applies to `RED.httpAdmin.use()` with a path
+   that matches every path (such as `""`, `"*"`, `"/*"`, `["/"]` or a regular expression
+   matching everything). The guard is a safer default for well-behaved nodes, not a sandbox
  - New setting `telemetry.locked`: with `locked: true` the telemetry state is fixed to
    `telemetry.enabled` (missing means disabled) and cannot be changed by users - the saved user
    choice is ignored but kept, a `telemetryEnabled` value sent to `POST /settings/user` is ignored
@@ -37,7 +38,23 @@ Security
    the user settings is disabled, shows the effective value with a note that it was set by the
    administrator, and the consent prompt is not shown
 
+Editor
+
+ - New setting `editorTheme.deploy.staleFlows: "prompt" | "reload-only"` (default `"prompt"`,
+   unchanged). With `"reload-only"` an editor whose flows were changed elsewhere (a deploy that
+   gets 409, or a background update notification with another revision) shows a blocking dialog
+   whose only action reloads the flows - no review, merge or "Ignore & deploy"; the deploy button
+   stays disabled until then and a deploy always carries the flow revision. Changes not deployed
+   from that editor are lost. The protection covers the editor only: a client of the Admin API
+   can still deploy without the revision. An unknown value is treated as `"prompt"` with a
+   warning in the browser console
+
 Fixes
+
+ - Restarting the flows from the editor no longer fails with a script error when the server
+   answers 409; the conflict dialog is shown
+ - "Merge" and "Ignore & deploy" in the conflict dialog no longer fail with a script error when
+   no background update notification was shown
 
  - `POST /flows/state` and project switches now wait for a running deployment (and the other
    way round) instead of running concurrently with it - they share the deploy lock
@@ -45,6 +62,9 @@ Fixes
    Admin API response still returns before the start completes
  - Project operations that change the flow files (branch change, pull, revert, merge, project
    switch and settings) run together with the reload of the flows under the deploy lock
+ - A project commit checks whether it completes a merge under the deploy lock; reading a project
+   (`GET /projects/:id`) and creating a project from the existing flow files run under the
+   deploy lock, so a deployment cannot save the old flow files between the copy and the switch
 
 Runtime
 
