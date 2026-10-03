@@ -1,3 +1,15 @@
+#### Unreleased: Security and fixes
+
+Security
+
+ - Prevent crash on websocket auth packet when admin auth is disabled
+ - Render the username as text in the editor user menu and login notification
+
+Fixes
+
+ - Refresh the user details in the editor after logging in again when the session expired
+ - Do not send comms subscriptions before websocket authentication completes
+
 #### Unreleased: Flow layouts
 
 Developed by Actuna Sp. z o.o. (Wojciech Repiński), with AI-assisted development.
