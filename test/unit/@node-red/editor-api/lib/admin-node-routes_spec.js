@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-02: integration tests of httpAdminNodeRoutes (editor-api auth + node admin routes)
+ *   Z-02: use() without a path and the position of the permission marker
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -119,6 +120,25 @@ describe("api/admin node routes (httpAdminNodeRoutes)", function() {
             await request(api.httpAdmin).get("/z02/all").expect(401);
             await request(api.httpAdmin).get("/z02/use").expect(401);
             await request(api.httpAdmin).get("/z02/route").expect(401);
+        });
+        it("use without a path does not block public routes of other modules (W1)", async function() {
+            const plugin = registryUtil.createNodeApi({ id: "w1-plugin/w1", module: "w1-plugin", namespace: "w1-plugin" });
+            plugin.httpAdmin.use(function(req,res,next) { res.set("x-w1","1"); next() });
+            const other = registryUtil.createNodeApi({ id: "w1-other/w1", module: "w1-other", namespace: "w1-other" });
+            other.httpAdmin.get("/w1/view/x", other.auth.publicRoute(), ok);
+            other.httpAdmin.get("/w1/protected", ok);
+            const pub = await request(api.httpAdmin).get("/w1/view/x").expect(200);
+            should.not.exist(pub.headers["x-w1"]);
+            await request(api.httpAdmin).get("/z02/public").expect(200);
+            await request(api.httpAdmin).get("/w1/protected").expect(401);
+            await request(api.httpAdmin).get("/w1/unknown").expect(404);
+            const authed = await request(api.httpAdmin).get("/w1/protected").set("Authorization","Bearer tok-reader").expect(200);
+            authed.headers["x-w1"].should.equal("1");
+        });
+        it("a permission marker after a handler does not count (D1)", async function() {
+            const RED = registryUtil.createNodeApi({ id: "d1-module/d1", module: "d1-module", namespace: "d1-module" });
+            RED.httpAdmin.get("/d1/order", ok, RED.auth.needsPermission("z02.write"));
+            await request(api.httpAdmin).get("/d1/order").expect(401);
         });
         it("built-in routes are unchanged", async function() {
             await request(api.httpAdmin).get("/auth/login").expect(200);
