@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-11: a localfilesystem store in the read-only user directory fails the load
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require('sinon');
@@ -451,6 +456,38 @@ describe('context', function() {
             it('should load localfilesystem module', function() {
                 Context.init({contextStorage:{file:{module:"localfilesystem",config:{dir:resourcesDir}}}});
                 return Context.load();
+            });
+            describe('readOnlyUserDir (Z-11)', function() {
+                const os = require("os");
+                let userDir;
+                beforeEach(function() {
+                    userDir = fs.mkdtempSync(path.join(os.tmpdir(), "nr-ro-context-"));
+                });
+                afterEach(async function() {
+                    await Context.close();
+                    fs.removeSync(userDir);
+                });
+                it('rejects a localfilesystem store inside the user directory', async function() {
+                    Context.init({userDir: userDir, readOnlyUserDir: true, contextStorage:{file:{module:"localfilesystem"}}});
+                    const err = await Context.load().should.be.rejected();
+                    err.should.have.property("code", "read_only_user_dir");
+                    fs.readdirSync(userDir).should.eql([]);
+                });
+                it('rejects a localfilesystem store with dir inside the user directory', async function() {
+                    Context.init({userDir: userDir, readOnlyUserDir: true, contextStorage:{default:{module:"memory"},file:{module:"localfilesystem",config:{dir:path.join(userDir,"data")}}}});
+                    (await Context.load().should.be.rejected()).should.have.property("code", "read_only_user_dir");
+                });
+                it('allows a localfilesystem store with dir outside the user directory', function() {
+                    Context.init({userDir: userDir, readOnlyUserDir: true, contextStorage:{file:{module:"localfilesystem",config:{dir:resourcesDir}}}});
+                    return Context.load();
+                });
+                it('allows a localfilesystem store in the user directory without readOnlyUserDir', async function() {
+                    Context.init({userDir: userDir, contextStorage:{file:{module:"localfilesystem"}}});
+                    await Context.load();
+                    fs.existsSync(path.join(userDir, "context")).should.be.true();
+                    // the outer afterEach cleans the store: point it at an existing directory
+                    Context.init({});
+                });
             });
             it('should ignore reserved storage name `_`', function(done) {
                 Context.init({contextStorage:{_:{module:testPlugin}}});

@@ -1406,7 +1406,12 @@ describe('flows/index', function() {
             instanceState.reset();
             instanceState.markStarting();
         });
-        afterEach(function() {
+        afterEach(async function() {
+            // Leave a configuration without missing types: a type registered by
+            // later tests must not start these flows
+            await flows.stopFlows();
+            storage.getFlows = function() { return Promise.resolve({flows:clone(okConfig), rev:"cleanRev"}) };
+            await flows.load();
             instanceState.reset();
         });
 

@@ -1368,15 +1368,46 @@ Funkcja: Katalog użytkownika tylko do odczytu
 - Test `chmod` nie działa jako root (typowe w kontenerach CI) – test pominięty z uzasadnieniem, atrapa `fs` jako dowód podstawowy.
 
 #### Podzadania
-- [ ] Moduł katalogów chronionych + testy – S
-- [ ] Efektywne flagi i komunikat startu – S
-- [ ] Instalatory i moduły zewnętrzne (obrona w głąb) – M
-- [ ] Magazyn plikowy (pomijanie/odrzucanie) – M
-- [ ] Kontekst `localfilesystem` – S
-- [ ] CLI: zmienna `NODE_RED_READ_ONLY_USER_DIR` (R-18) + fallback przy kopiowaniu `settings.js` – S
-- [ ] Testy integracyjne (`chmod` + atrapa `fs`, `userDir` nieustawiony) – M
-- [ ] Dokumentacja (tabela zapisów), szablon `settings.js` (w tym opis `readOnly` – R-40), CHANGELOG – S
-- [ ] Ochrona bezwzględnego `flowFile` + test (R-40) – S
+- [x] Moduł katalogów chronionych + testy – S
+- [x] Efektywne flagi i komunikat startu – S
+- [ ] Instalatory i moduły zewnętrzne (obrona w głąb) – M – **poza zakresem tej gałęzi** (zakaz zmian `registry/**`); działają efektywne flagi `externalModules.*`
+- [x] Magazyn plikowy (pomijanie/odrzucanie) – M
+- [x] Kontekst `localfilesystem` – S
+- [x] CLI: zmienna `NODE_RED_READ_ONLY_USER_DIR` (R-18) + fallback przy kopiowaniu `settings.js` – S
+- [~] Testy integracyjne (`chmod` + atrapa `fs`, `userDir` nieustawiony) – M – migawka drzewa katalogów zamiast atrapy `fs`; `chmod` pomijany jako root; `userDir` nieustawiony – tylko test modułu
+- [x] Dokumentacja (tabela zapisów), szablon `settings.js` (w tym opis `readOnly` – R-40), CHANGELOG – S (tabela 16 zapisów – w tej karcie; w `settings.js` skrót)
+- [x] Ochrona bezwzględnego `flowFile` + test (R-40) – S
+
+#### Zrealizowane (gałąź `feature/p3-database`)
+- Nowy moduł `runtime/lib/readOnlyUserDir.js` (zamiast `util/lib/readOnlyDir.js` – `util` poza zakresem plików):
+  `isEnabled`, `protectedDirs` (`userDir` albo `NODE_RED_HOME`, katalog bieżący, `~/.node-red`), `isProtected`,
+  `error` (400 `read_only_user_dir`), `assertWritable`, `applySettings` (efektywne flagi), `logStartup`.
+- `runtime/lib/index.js`: `applySettings` w `init()` **przed** `settings.init` (ustawienia runtime i edytora widzą
+  wartości efektywne), blok `readonly-userdir.enabled` + ostrzeżenia `readonly-userdir.setting-overridden` przy starcie.
+- Magazyn plikowy: #11 (`node_modules`, `package.json`), #13 (ustawienia, także migracja `.config.json`), #14 (sesje)
+  – pominięte jak `readOnly`; #12 `saveFlows`/`saveCredentials` i #15 `saveLibraryEntry` – odrzucenie
+  `read_only_user_dir` (niezależnie od ścieżki `flowFile` – R-40; ma pierwszeństwo przed cichym `readOnly`);
+  `api/library.js` przekazuje kod (400) zamiast `unexpected_error`. #16 Projekty – wyłączone flagą.
+- Kontekst: `nodes/context/index.js` – magazyn `localfilesystem` z katalogiem w katalogu chronionym → błąd ładowania
+  `read_only_user_dir` z nazwą magazynu i wskazaniem `contextStorage.<nazwa>.config.dir` (przed `open()`, bez
+  tworzenia katalogu) → start odrzucony, stan `failed`.
+- CLI `node-red/red.js`: `NODE_RED_READ_ONLY_USER_DIR` (dowolna wartość poza `false`) czytana przed wyborem pliku
+  ustawień – brak kopiowania `settings.js`, `readOnlyUserDir: true`; błąd kopiowania → `console.warn` i domyślny plik.
+- Szablon `settings.js`: `readOnlyUserDir` (skrót miejsc zapisu, zmienna, zalecenie `--settings`) i `readOnly` (R-40).
+- Testy: `readOnlyUserDir_spec.js` (9), `storage/localfilesystem/readonly_userdir_spec.js` (6 + 1 pominięty jako root;
+  migawka drzewa katalogów przed/po), `nodes/context/index_spec.js` (+4), `index_spec.js` (+3), `api/library_spec.js`
+  (+1), proces potomny `test/unit/node-red/readonly-userdir_spec.js` (4: zmienna środowiskowa – brak kopii i zapisów,
+  wdrożenie 400 i flow bez zmian; bez zmiennej – kopia jak dotąd; błąd kopiowania – ostrzeżenie; bezwzględny `flowFile`).
+- **Rozbieżności z kartą / niezweryfikowane:**
+  - obrona w głąb w `registry/lib/installer.js` i `externalModules.js` (`assertWritable`) – niezrobiona (zakaz zmian
+    `registry/**`); instalacje blokują wyłącznie istniejące flagi `externalModules.*` – kody `install_not_allowed`,
+    `update_not_allowed`, `module_not_allowed` nie były testowane w tej gałęzi; `upload_not_allowed` – zależny od Z-03;
+  - zapis ustawień i sesji jest pomijany po cichu (bez `log.warn` przy pierwszej próbie) – informację daje blok
+    przy starcie;
+  - brak testu „każde z 16 miejsc objęte kontrolą” i testu z atrapą `fs` przy nieustawionym `userDir` (dowód: migawka
+    katalogu przy magazynie plikowym, test modułu dla katalogów zastępczych);
+  - CLI: wariant „katalog domowy tylko do odczytu” sprawdzony przez `~/.node-red` będący plikiem (proces działa jako
+    root, `chmod` nie blokuje zapisu).
 
 ---
 

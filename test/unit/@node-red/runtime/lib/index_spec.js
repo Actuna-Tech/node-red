@@ -18,6 +18,7 @@
  *   Z-02: test of publicRoute() in the stubbed admin api
  *   E-02: the instance state on start and stop, RED.stop(reason)
  *   Z-08: the health probes follow the start and stop of the runtime
+ *   Z-11: readOnlyUserDir - effective settings and the log at start
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -481,6 +482,64 @@ describe("runtime", function() {
             await runtime.start();
             runtime._.health.isEnabled().should.be.false();
             should(runtime._.health.getServer()).be.null();
+        });
+    });
+    describe("readOnlyUserDir (Z-11)", function() {
+        let stubs;
+        beforeEach(function() {
+            stubs = [
+                sinon.stub(storage,"init").callsFake(function() {return Promise.resolve();}),
+                sinon.stub(redNodes,"init").callsFake(function() {}),
+                sinon.stub(redNodes,"load").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"cleanModuleList").callsFake(function(){}),
+                sinon.stub(redNodes,"getNodeList").callsFake(function() {return []}),
+                sinon.stub(redNodes,"loadContextsPlugin").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"loadFlows").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"startFlows").callsFake(function() {return Promise.resolve({errors:[]})})
+            ];
+            mockUtil();
+        });
+        afterEach(function() {
+            stubs.forEach(s => s.restore());
+            unmockUtil();
+            NR_TEST_UTILS.require("@node-red/runtime/lib/state").reset();
+        });
+
+        it("disables the features that write and logs one block with warnings for overridden settings", async function() {
+            // editorTheme.projects is covered by readOnlyUserDir_spec: an editorTheme key
+            // would stay as a getter on the shared runtime settings for later test files
+            const userSettings = {testSettings: true, httpAdminRoot:"/", readOnlyUserDir: true,
+                externalModules: {autoInstall: true, palette: {allowInstall: true}}};
+            runtime.init(userSettings);
+            userSettings.externalModules.palette.should.eql({allowInstall: false, allowUpload: false, allowUpdate: false});
+            userSettings.externalModules.autoInstall.should.be.false();
+            userSettings.externalModules.modules.allowInstall.should.be.false();
+            // the runtime settings see the effective values
+            settings.externalModules.palette.allowInstall.should.be.false();
+            await runtime.start();
+            log._.calledWithMatch("readonly-userdir.enabled").should.be.true();
+            log._.withArgs("readonly-userdir.setting-overridden").callCount.should.equal(2);
+        });
+
+        it("does not install missing modules at start (autoInstall overridden)", async function() {
+            redNodes.getNodeList.restore();
+            stubs.splice(4, 1);
+            stubs.push(sinon.stub(redNodes,"getNodeList").callsFake(function(cb) {
+                return [{module:"module",enabled:true,loaded:false,types:["typeA"]}].filter(cb);
+            }));
+            const installModule = sinon.stub(redNodes,"installModule").callsFake(() => Promise.resolve({nodes:[]}));
+            stubs.push(installModule);
+            runtime.init({testSettings: true, httpAdminRoot:"/", readOnlyUserDir: true, externalModules: {autoInstall: true}});
+            await runtime.start();
+            installModule.called.should.be.false();
+        });
+
+        it("nothing changes without the setting", async function() {
+            const userSettings = {testSettings: true, httpAdminRoot:"/", externalModules: {autoInstall: true}};
+            runtime.init(userSettings);
+            userSettings.should.eql({testSettings: true, httpAdminRoot:"/", externalModules: {autoInstall: true}, version: userSettings.version});
+            await runtime.start();
+            log._.calledWithMatch("readonly-userdir.enabled").should.be.false();
         });
     });
 });

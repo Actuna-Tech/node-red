@@ -32,6 +32,18 @@ Runtime
    `shutdown({reason, signal})`, `closeServer(server, limit)`)
  - The CLI passes the signal as the stop reason (`RED.stop("SIGTERM")`), logged as
    `Stopping Node-RED (SIGTERM)`
+ - New setting `readOnlyUserDir` (default `false`) and the CLI environment variable
+   `NODE_RED_READ_ONLY_USER_DIR`: the runtime does not write to the user directory. Palette
+   install/update/remove/upload, auto-install of missing modules, modules of the function node and
+   Projects are disabled (settings set to `true` are overridden with a warning); one log block at
+   start lists the disabled features. With the file storage a deployment and saving a library entry
+   are rejected with 400 `read_only_user_dir` (also for an absolute `flowFile` outside the user
+   directory), settings and sessions are kept in memory only; a `localfilesystem` context store in
+   the user directory fails the start. With the environment variable the CLI does not copy the
+   default settings file to `~/.node-red`
+ - The CLI no longer fails with an exception when the default settings file cannot be copied to the
+   user directory: it warns and uses the default settings file
+ - The existing `readOnly` setting is described in the settings template
 
 #### Unreleased: Security and fixes
 
