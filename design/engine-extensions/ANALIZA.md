@@ -270,9 +270,29 @@ trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od dzia
 | **D-19** | nagłówki „Modified by Actuna Sp. z o.o.” (pkt 4(b) licencji Apache 2.0) **zachowane w forku** | w kodzie forka i jego dystrybucji nagłówki zostają i są dopisywane także do plików zmienionych przez nas (np. `view.js`); gałęzie przygotowane do ewentualnego zgłoszenia upstream (dziś zablokowane) – bez nagłówków (prawa przenosi CLA); E-04 zmienione z „usunięcie atrybucji” na „nagłówki o modyfikacji wg pkt 4(b)” |
 | **D-20** | kod błędu `version_required` (jak w łatce 0006) zamiast `revision_required` | ZASADY §2.4, karty P-02, Z-05 |
 | **D-21** | adres autora commitów i `Signed-off-by`: `wrepinski@gmail.com` | konfiguracja repozytorium zmieniona (od commita po 2026-10-03, po przekazaniu załączników) |
-| D-02 (rewizja) | ponowna analiza nazw przez architekta i analityka (model Fable): **rekomendacja – utrzymać D-02 w całości** (do potwierdzenia przez Zamawiającego) | [NAZWY-ANALIZA.md](NAZWY-ANALIZA.md): uzupełnienia U1–U8, notatka migracyjna jako warunek odbioru P-01, pytania N-01…N-04 |
+| **D-02 (rewizja)** | **przyjęte zgodnie z rekomendacją** – utrzymać D-02 w całości; wymaga jasnej dokumentacji, bo zmienia inne rozwiązania → [MIGRACJA.md](MIGRACJA.md) | [NAZWY-ANALIZA.md](NAZWY-ANALIZA.md): uzupełnienia U1–U8, notatka migracyjna jako warunek odbioru P-01, pytania N-01…N-04 |
+
+| **N-02** | użycie `waitForDeployStart()` poza runtime – **nieznane** | przyjęto: brak aliasu; sprawdzenie w liście kontrolnej [MIGRACJA.md](MIGRACJA.md) §7 |
+| **N-03** | **dostosowujemy inne rozwiązania** (bez aliasów starych nazw w silniku) | [MIGRACJA.md](MIGRACJA.md) |
+| **N-04** | czy narzędzia używają API v2 – **nieznane** | przyjęto: przewodnik wymaga v2 i obsługi obu kodów 409 |
 
 ### 7.1 Do podjęcia
+
+**N-01 – pusty `rev: ""` przy wdrożeniu (opis i wpływ)**
+
+Kiedy to występuje: narzędzie (automat, MCP, skrypt CI) wysyła pole `rev`, ale puste – np. zainicjowało je pustym
+napisem albo nie zdołało odczytać rewizji. Dziś (5.0.7) runtime sprawdza rewizję, gdy pole **istnieje**, więc `""`
+różni się od aktualnej rewizji → **409 `version_mismatch`** (`runtime/lib/api/flows.js:76-84`). Łatka 0006 Zamawiającego
+traktuje `""` jak brak rewizji → 409 `version_required`.
+
+| Wariant | Odpowiedź | Wpływ na narzędzia | Wpływ na zgodność |
+|---|---|---|---|
+| **A** | przy `requireRevision: false` – jak dziś (409 `version_mismatch`); przy `requireRevision: true` – `""`/`null` = brak rewizji → 409 `version_required` | narzędzie dostaje 409 w obu przypadkach i wykonuje tę samą ścieżkę „pobierz rewizję i ponów”; kod mówi wprost, że rewizji brakuje | domyślnie bez zmian; zgodne z łatką 0006 |
+| B | zawsze 400 `invalid_revision` | narzędzie musi obsłużyć nowy kod 400; błąd po stronie narzędzia jest widoczny jako błąd, nie konflikt | **zmienia dzisiejsze zachowanie** (dziś 409) – sprzeczne z zasadą „domyślnie jak 5.0.7” |
+| C | zawsze jak dziś (409 `version_mismatch`), także przy wymogu | kod sugeruje konflikt, choć rewizji nie było – mylące przy diagnozie | zgodne z 5.0.7, niezgodne z łatką |
+
+**Rekomendacja: A** – zero zmian domyślnie, zgodność z łatką Zamawiającego, jedna ścieżka obsługi w narzędziach.
+
 
 | ID | Decyzja | Rekomendacja |
 |---|---|---|
