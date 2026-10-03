@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   P-03: tests of telemetryLocked and of ignoring telemetryEnabled while locked
+ *   Z-05: test of the deploy.requireRevision flag in the runtime settings
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -494,6 +495,42 @@ describe("runtime-api/settings", function() {
             return settings.getRuntimeSettings({}).then(result => {
                 result.should.not.have.property("telemetryLocked");
             });
+        });
+    });
+    describe("deploy.requireRevision in the runtime settings (Z-05)", function() {
+        function initWith(deploy) {
+            const runtimeSettings = {
+                httpNodeRoot: "/",
+                version: "v",
+                exportNodeSettings: () => {}
+            };
+            if (deploy !== undefined) {
+                runtimeSettings.deploy = deploy;
+            }
+            settings.init({
+                settings: runtimeSettings,
+                plugins: { exportPluginSettings: () => {} },
+                nodes: {
+                    listContextStores: () => { return {stores:["memory"], default: "memory"} },
+                    installerEnabled: () => false,
+                    getCredentialKeyType: () => "test-key-type"
+                },
+                library: {getLibraries: () => [] },
+                storage: {},
+                telemetry: { isEnabled: () => false }
+            });
+        }
+        it("exposes only the requireRevision flag when it is set", async function() {
+            initWith({requireRevision: true, putCreatesFlow: true, response: "started"});
+            const result = await settings.getRuntimeSettings({});
+            result.should.have.property("deploy", {requireRevision: true});
+        });
+        it("omits deploy when requireRevision is not set", async function() {
+            for (const deploy of [undefined, {}, {requireRevision: false}]) {
+                initWith(deploy);
+                const result = await settings.getRuntimeSettings({});
+                result.should.not.have.property("deploy");
+            }
         });
     });
     describe("getUserKeys", function() {

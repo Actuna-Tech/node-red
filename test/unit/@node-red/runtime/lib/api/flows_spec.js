@@ -17,6 +17,9 @@
  * Modified by Actuna Sp. z o.o.:
  *   E-01: tests of the deploy pipeline and the shared deploy lock
  *   E-01: setState and deployments wait for the start of a deployment (R-43)
+ *   P-01: tests of deploy.response "started" (waitForStart, deploy errors with status 500)
+ *   Z-04: tests of the single-flow api (rev, globalRev, globalConfigs, putCreatesFlow)
+ *   Z-05: tests of deploy.requireRevision in both states
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -950,12 +953,151 @@ describe("runtime-api/flows", function() {
             ]);
             results.sort().should.eql(["ok","version_mismatch"]);
         });
+        it("deleteFlow checks an optional rev", async function() {
+            initRuntime();
+            let err = await rejected(flows.deleteFlow({id:"t1", rev:"old"}));
+            err.should.have.property("code","version_mismatch");
+            err.should.have.property("status",409);
+            runtime.flows.removeFlow.called.should.be.false();
+            await flows.deleteFlow({id:"t1", rev:"rev-t1"});
+            runtime.flows.removeFlow.calledOnce.should.be.true();
+        });
         it("calls without the new fields are unchanged", async function() {
             initRuntime();
             const flow = {id:"t1", label:"x", nodes:[]};
             (await flows.updateFlow({id:"t1", flow:flow})).should.equal("t1");
             runtime.flows.updateFlow.firstCall.args[1].should.equal(flow);
             runtime.flows.getFlowRevision.called.should.be.false();
+        });
+    });
+
+    describe("requireRevision (Z-05)", function() {
+        let runtime;
+        let revisions;
+        function initRuntime(deploySettings) {
+            revisions = { t1: "rev-t1", global: "rev-global" };
+            runtime = {
+                log: mockLog(),
+                settings: deploySettings === undefined ? {} : { deploy: deploySettings },
+                flows: {
+                    getFlows: function() { return {rev:"rev-all",flows:[]} },
+                    getFlowRevision: function(id) { return revisions[id] || null },
+                    setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
+                    loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
+                    readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    addFlow: sinon.spy(function() { return Promise.resolve("added") }),
+                    updateFlow: sinon.spy(function(id, flow, user, deployOpts, opts) {
+                        if (!revisions[id] && !(opts && opts.create)) {
+                            const err = new Error();
+                            err.code = 404;
+                            return Promise.reject(err);
+                        }
+                        return Promise.resolve({created: !revisions[id]});
+                    }),
+                    removeFlow: sinon.spy(function() { return Promise.resolve() })
+                }
+            };
+            flows.init(runtime);
+        }
+        async function outcome(promise) {
+            try {
+                await promise;
+                return "ok";
+            } catch(err) {
+                return err.status + " " + err.code;
+            }
+        }
+        function deployed() {
+            return runtime.flows.setFlows.called || runtime.flows.updateFlow.called || runtime.flows.addFlow.called || runtime.flows.removeFlow.called;
+        }
+
+        [false, true].forEach(function(required) {
+            describe("deploy.requireRevision: " + required, function() {
+                const expectRequired = required ? "409 version_required" : "ok";
+                beforeEach(function() {
+                    initRuntime({requireRevision: required, putCreatesFlow: true});
+                });
+                it("setFlows without rev", async function() {
+                    (await outcome(flows.setFlows({flows:{flows:[1]}, apiVersion:"v2"}))).should.equal(expectRequired);
+                    deployed().should.equal(!required);
+                });
+                it("setFlows v1 without rev", async function() {
+                    (await outcome(flows.setFlows({flows:{flows:[1]}, apiVersion:"v1"}))).should.equal(expectRequired);
+                    deployed().should.equal(!required);
+                });
+                it("setFlows with the current rev", async function() {
+                    (await outcome(flows.setFlows({flows:{flows:[1], rev:"rev-all"}, apiVersion:"v2"}))).should.equal("ok");
+                });
+                it("setFlows with a stale rev", async function() {
+                    (await outcome(flows.setFlows({flows:{flows:[1], rev:"old"}, apiVersion:"v2"}))).should.equal("409 version_mismatch");
+                });
+                it("setFlows with an empty rev (N-01)", async function() {
+                    (await outcome(flows.setFlows({flows:{flows:[1], rev:""}, apiVersion:"v2"}))).should.equal(required ? "409 version_required" : "409 version_mismatch");
+                    (await outcome(flows.setFlows({flows:{flows:[1], rev:null}, apiVersion:"v2"}))).should.equal(required ? "409 version_required" : "409 version_mismatch");
+                });
+                it("setFlows reload without rev", async function() {
+                    (await outcome(flows.setFlows({deploymentType:"reload", apiVersion:"v1"}))).should.equal("ok");
+                    runtime.flows.loadFlows.calledOnce.should.be.true();
+                });
+                it("updateFlow without rev", async function() {
+                    (await outcome(flows.updateFlow({id:"t1", flow:{nodes:[]}}))).should.equal(expectRequired);
+                    deployed().should.equal(!required);
+                });
+                it("updateFlow global without rev", async function() {
+                    (await outcome(flows.updateFlow({id:"global", flow:{configs:[]}}))).should.equal(expectRequired);
+                });
+                it("updateFlow with an empty or null rev of an existing flow", async function() {
+                    (await outcome(flows.updateFlow({id:"t1", flow:{nodes:[], rev:""}}))).should.equal(required ? "409 version_required" : "409 version_mismatch");
+                    (await outcome(flows.updateFlow({id:"t1", flow:{nodes:[], rev:null}}))).should.equal(required ? "409 version_required" : "409 version_mismatch");
+                });
+                it("updateFlow with the current rev", async function() {
+                    (await outcome(flows.updateFlow({id:"t1", flow:{nodes:[], rev:"rev-t1"}}))).should.equal("ok");
+                });
+                it("updateFlow create with rev null", async function() {
+                    (await outcome(flows.updateFlow({id:"new1", flow:{nodes:[], rev:null}}))).should.equal("ok");
+                });
+                it("updateFlow create without rev", async function() {
+                    (await outcome(flows.updateFlow({id:"new1", flow:{nodes:[]}}))).should.equal(expectRequired);
+                });
+                it("updateFlow with rev of a wrong type", async function() {
+                    (await outcome(flows.updateFlow({id:"t1", flow:{nodes:[], rev:5}}))).should.equal("400 invalid_revision");
+                });
+                it("addFlow without globalConfigs", async function() {
+                    (await outcome(flows.addFlow({flow:{nodes:[]}}))).should.equal("ok");
+                });
+                it("addFlow with globalConfigs without globalRev", async function() {
+                    (await outcome(flows.addFlow({flow:{nodes:[], globalConfigs:[{id:"c1",type:"x"}]}}))).should.equal(expectRequired);
+                    (await outcome(flows.addFlow({flow:{nodes:[], globalConfigs:[{id:"c1",type:"x"}], globalRev:"rev-global"}}))).should.equal("ok");
+                });
+                it("deleteFlow without rev", async function() {
+                    (await outcome(flows.deleteFlow({id:"t1"}))).should.equal(expectRequired);
+                    (await outcome(flows.deleteFlow({id:"t1", rev:"rev-t1"}))).should.equal("ok");
+                });
+            });
+        });
+        it("missing deploy settings object treated as false", async function() {
+            initRuntime();
+            (await outcome(flows.setFlows({flows:{flows:[1]}, apiVersion:"v1"}))).should.equal("ok");
+            (await outcome(flows.deleteFlow({id:"t1"}))).should.equal("ok");
+        });
+        it("v1 is told to use the v2 api", async function() {
+            initRuntime({requireRevision: true});
+            runtime.log._ = function(key) { return key };
+            let error;
+            try {
+                await flows.setFlows({flows:{flows:[1]}, apiVersion:"v1"});
+            } catch(err) {
+                error = err;
+            }
+            error.should.have.property("code","version_required");
+            error.message.should.equal("api.flows.version-required-v1");
+        });
+        it("version_required is audited", async function() {
+            initRuntime({requireRevision: true});
+            await outcome(flows.updateFlow({id:"t1", flow:{nodes:[]}}));
+            runtime.log.audit.calledWithMatch({event:"flow.update", error:"version_required"}).should.be.true();
+            await outcome(flows.setFlows({flows:{flows:[1]}, apiVersion:"v2"}));
+            runtime.log.audit.calledWithMatch({event:"flows.set", error:"version_required"}).should.be.true();
         });
     });
 });

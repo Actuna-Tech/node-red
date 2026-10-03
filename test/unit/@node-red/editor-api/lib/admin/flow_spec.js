@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-04: contract tests of the single-flow api v2 (rev, ETag, If-Match, 201)
+ *   Z-05: contract tests of DELETE /flow/:id?rev=
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -357,6 +358,38 @@ describe("api/admin/flow", function() {
                 res.body.should.have.property("code","invalid_api_version");
             }
             calls.should.have.length(0);
+        });
+    });
+
+    describe("DELETE /flow/:id?rev= (Z-05)", function() {
+        let calls;
+        before(function() {
+            flow.init({
+                flows: {
+                    deleteFlow: function(opts) {
+                        calls.push(opts);
+                        if (opts.rev === undefined) {
+                            const err = new Error("A revision (rev) is required to deploy");
+                            err.code = "version_required";
+                            err.status = 409;
+                            return Promise.reject(err);
+                        }
+                        return Promise.resolve();
+                    }
+                }
+            });
+        });
+        beforeEach(function() {
+            calls = [];
+        });
+        it("passes ?rev= to the runtime", async function() {
+            await request(app).del('/flow/t1?rev=abc').expect(204);
+            calls[0].should.have.property("rev","abc");
+        });
+        it("error body has code and message", async function() {
+            const res = await request(app).del('/flow/t1').expect(409);
+            res.body.should.eql({code:"version_required", message:"A revision (rev) is required to deploy"});
+            calls[0].should.not.have.property("rev");
         });
     });
 });

@@ -19,6 +19,7 @@
  *   E-01: tests of the deploy pipeline contract; the deploy lock is held until the start completes
  *   P-01: tests of setFlows waiting for the start (deploy.response "started"), start errors,
  *   deploy.startTimeout and the log of a rejected start in the default mode
+ *   Z-04: tests of getFlowRevision and the single-flow configuration (create, globalConfigs)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
