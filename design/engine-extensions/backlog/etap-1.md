@@ -40,7 +40,7 @@ Kolejność realizacji (ANALIZA §6.2): E-01 – etap 0 (dokument kontraktu i re
 | Ustawienie | brak |
 | Zależności | brak; **warunek** P-01 (oraz Z-04, Z-05, Z-06, Z-08, Z-09, FL-B-001/FL-B-002 w kolejnych etapach) |
 | Pliki | `@node-red/runtime/lib/flows/index.js:118-241` (`setFlows`), `:272-432` (`start`), `:434+` (`stop`), `:104-110` (`load`), `:570-830` (`addFlow`/`updateFlow`/`removeFlow`); `@node-red/runtime/lib/api/flows.js:37-38` (`async-mutex`), `:66-100` (mutex, 409), `:118-200`, `:283` (`setState` – bez mutexu); `@node-red/runtime/lib/storage/localfilesystem/projects/index.js:396` (przełączenie projektu → `runtime.nodes.loadFlows(true)`); `@node-red/editor-api/lib/admin/flows.js:47-69`, `admin/flow.js:36-79`; nowe: `@node-red/runtime/lib/flows/lock.js` (wspólny mutex), `@node-red/runtime/lib/flows/pipeline.js` (funkcja potoku `deploy(opts)`; nazwy modułów – do potwierdzenia przy przeglądzie) |
-| Powiązania | FL-B-001/FL-B-002 (`copyFlowLayoutProperties` w `addFlow/getFlow/updateFlow`), K8S-T-005/K8S-T-006 (drenaż i wydania na workerach) |
+| Powiązania | FL-B-001/FL-B-002 (`copyFlowLayoutProperties` w `addFlow/getFlow/updateFlow`), drenaż i wydania na workerach |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE** (potrzeba wspólnego kontraktu wynika z kodu).
@@ -198,7 +198,7 @@ Funkcja: Kontrakt potoku wdrożenia
 | Ustawienie | `deploy.response: "stopped" \| "started"` (zlecenie: `flows.deployResponse`), domyślnie `"stopped"`; `deploy.startTimeout` (ms), domyślnie wyłączony (R-38); `deploy.startTimeoutReleasesLock` (domyślnie `false`, R-45) |
 | Zależności | E-01 |
 | Pliki | `@node-red/runtime/lib/flows/index.js:207-241` (`setFlows`), `:228`, `:233`, `:272-432` (`start`), `:626,:800,:822`; `@node-red/runtime/lib/api/flows.js:66-100,118-200`; `@node-red/editor-api/lib/admin/flows.js:47-69`, `admin/flow.js:36-79`; `@node-red/editor-client/src/js/ui/deploy.js:556-683` (obsługa błędu z `rev`); `node-red/settings.js` (sekcja Runtime Settings) |
-| Powiązania | K8S-T-005/K8S-T-006 (wdrożenie na workerach, sondy gotowości – Z-08) |
+| Powiązania | wdrożenie na workerach, sondy gotowości – Z-08 |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE**, z rozszerzeniem.
@@ -372,7 +372,7 @@ Funkcja: Odpowiedź na wdrożenie po starcie nowych flow
 - **Długi start** (węzły z wolną inicjalizacją): odpowiedź może przekroczyć limity proxy/Ingress; mutex blokuje kolejne wdrożenia. **Rozstrzygnięte R-10/R-38:** `deploy.startTimeout` (domyślnie wyłączony) – po przekroczeniu 500 `deploy_start_failed` z `errors[].code: "start_timeout"`, start trwa dalej w tle. Blokada wdrożeń trwa do końca startu w tle (R-43).
 - Granica „błędu startu”: błędy konstruktorów węzłów nie są dziś propagowane (`flows/util.js:273`) – rozszerzenie wymagałoby zmian w `Flow.js`; **rozstrzygnięte R-10: poza zakresem** (zakres: brakujące typy, moduły, tryb bezpieczny, wyjątki startu flow).
 - Alternatywa: oczekiwanie na zdarzenie `flows:started` w warstwie API zamiast parametru `setFlows` – kruche przy równoległych zdarzeniach; odrzucona.
-- Workery (K8S-T-005): wdrożenie przez Admin API workera w trybie `"started"` daje deterministyczną gotowość – korzystne dla sond Z-08.
+- Workery: wdrożenie przez Admin API workera w trybie `"started"` daje deterministyczną gotowość – korzystne dla sond Z-08.
 
 #### Podzadania
 - [ ] Testy (czerwone): jednostkowe `waitForStart`, integracyjny http-in (M)
@@ -536,7 +536,7 @@ Funkcja: Ochrona przed nadpisaniem flow przez nieaktualny edytor
 | Ustawienie | `telemetry: { enabled: false, locked: true }` (zlecenie: `telemetry.locked` – bez zmian) |
 | Zależności | brak |
 | Pliki | `@node-red/runtime/lib/telemetry/index.js:99-138` (`isTelemetryEnabled`), `:183-199` (`enable/disable`), `:205` (`isEnabled`); `@node-red/runtime/lib/api/settings.js:164`, `:224-233`; `@node-red/editor-client/src/js/ui/userSettings.js:238-248`, `:280-300`; `@node-red/editor-client/src/js/red.js:691-720` (`checkTelemetry`); `node-red/red.js:222-224`; `node-red/settings.js:317-332` |
-| Powiązania | K8S-T-002 (ustawienia w bazie – `telemetryEnabled` zapisywane w magazynie ustawień) |
+| Powiązania | zewnętrzny magazyn ustawień – `telemetryEnabled` zapisywane w magazynie ustawień |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE**.
@@ -656,7 +656,7 @@ Funkcja: Telemetria blokowana przez administratora
 | Ustawienie | brak (poprawka błędu – wyjątek od zasady „domyślnie wyłączone”) |
 | Zależności | brak |
 | Pliki | `@node-red/editor-api/lib/auth/tokens.js:19,86-94,118-135` (`loadSessions`, `get`); `@node-red/editor-api/lib/auth/index.js:45-50` (`Tokens.init` tylko przy `adminAuth`); `@node-red/editor-api/lib/editor/comms.js:69-70` (`pendingAuth`), `:82-107` (`handleAuthPacket`), `:131-165` (`message`), `:222-245` (`upgrade`); `node-red/red.js:525-540` |
-| Powiązania | Z-01 (ten sam protokół `/comms`), K8S-T-005 (workery z `disableEditor` – `/comms` nie jest uruchamiane) |
+| Powiązania | Z-01 (ten sam protokół `/comms`), workery z `disableEditor` – `/comms` nie jest uruchamiane |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE, poważniejsze niż w zleceniu** (wniosek z kodu, nie uruchamiano).
@@ -755,7 +755,7 @@ Funkcja: tokens.get() przed init()
 | Ustawienie | brak (poprawka błędu) |
 | Zależności | brak (ten sam protokół co P-04, inne pliki) |
 | Pliki | `@node-red/editor-client/src/js/comms.js:25` (`pendingAuth`), `:60-69` (`completeConnection`), `:79-98`, `:175-183` (`subscribe`); serwer (bez zmian) `@node-red/editor-api/lib/editor/comms.js:110-112,149-165` |
-| Powiązania | K8S-T-002 (edytor z `adminAuth` w roli editor) |
+| Powiązania | edytor z `adminAuth` w roli editor (Z-15) |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE, z korektą**.
@@ -847,7 +847,7 @@ Funkcja: Subskrypcje przed potwierdzeniem uwierzytelnienia
 | Ustawienie | `httpAdminNodeRoutes: "open" \| "authenticated"` (zlecenie: bez zmian), domyślnie `"open"`; API węzłów `RED.auth.publicRoute()` (zlecenie: `RED.auth.public()`) |
 | Zależności | brak |
 | Pliki | `@node-red/registry/lib/util.js:65-125` (`createNodeApi`: `httpAdmin: runtime.adminApp` `:102`, `red.auth` `:114-122`); `@node-red/runtime/lib/index.js:40-52` (atrapa `adminApi` przy `httpAdminRoot:false`), `:95`; `node-red/lib/red.js:77` (montowanie); `@node-red/editor-api/lib/index.js:132-134` (`auth: {needsPermission}`); `@node-red/editor-api/lib/auth/index.js:59-78` (`needsPermission`); `@node-red/nodes/core/common/21-debug.js:286,310`; `node-red/settings.js` (sekcja Security) |
-| Powiązania | K8S-T-002/K8S-T-005 (workery z `disableEditor` nadal wystawiają Admin API i trasy węzłów) |
+| Powiązania | workery z `disableEditor` nadal wystawiają Admin API i trasy węzłów |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE**.
@@ -979,7 +979,7 @@ Funkcja: Uwierzytelnienie tras administracyjnych bloczków
 - Opakowanie aplikacji express (`Object.create`) może nie objąć rzadkich API (`app.param`, `app.engine`, podaplikacje montowane przez `use(subApp)` – te ostatnie objęte jak `use`); do potwierdzenia testami.
 - Alternatywa B: jedno middleware przed `runtime.httpAdmin` w `node-red/lib/red.js:77` z listą tras publicznych rejestrowanych osobnym wywołaniem `publicRoute(method, path)` – prostsze i obejmuje wszystko, ale bez przypisania trasy do modułu w logu i z ryzykiem rozjazdu wzorców ścieżek; do rozważenia przy przeglądzie.
 - Użytkownik anonimowy (`adminAuth.default`) spełnia `needsPermission("")` → trasa bez uprawnienia dostępna anonimowo, gdy anonimowy dostęp jest włączony. **Rozstrzygnięte R-07:** tak – jak `needsPermission("")` (opis w `settings.js`).
-- Workery (K8S-T-005): `disableEditor` nie chroni Admin API ani tras węzłów – w chart należy wymusić `httpAdminRoot:false` albo `adminAuth` + `"authenticated"`.
+- Workery: `disableEditor` nie chroni Admin API ani tras węzłów – w konfiguracji wdrożenia należy wymusić `httpAdminRoot:false` albo `adminAuth` + `"authenticated"`.
 - Nieznana wartość ustawienia – **rozstrzygnięte R-41:** traktowana jak `"authenticated"` (bezpieczniej) + ostrzeżenie w logu; brak ustawienia nadal `"open"` (R-07).
 
 #### Podzadania

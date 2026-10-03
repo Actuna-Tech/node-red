@@ -4,8 +4,8 @@
 > Zasady, szablon karty i wspólne DoD: [../ZASADY.md](../ZASADY.md). Fakty z kodu: [../WERYFIKACJA.md](../WERYFIKACJA.md).
 > Ścieżki kodu względem `packages/node_modules/`, ścieżki testów względem katalogu repozytorium. Baza: 5.0.7 (ZASADY §2.2).
 > Oznaczenie „do potwierdzenia” = nie sprawdzono w kodzie albo wymaga decyzji Zamawiającego.
-> Kontekst wdrożenia: [../../k8s-postgres/ARCHITEKTURA.md](../../k8s-postgres/ARCHITEKTURA.md) §0.1, §3.5 (rozmowy voicebota ~3–4 min, czatbota ~15 min, bez twardych limitów → drenaż 20 min; on-premise; edytor + workery; PostgreSQL + Redis).
-> Implementacje wtyczek klastrowych (magazyn z `watchFlows` na PostgreSQL LISTEN/NOTIFY lub Redis, koordynacja na blokadzie doradczej PostgreSQL lub Redis) są **poza zakresem zlecenia** – w zlecenie wchodzą punkty rozszerzeń w rdzeniu i domyślna wtyczka lokalna.
+> Kontekst wdrożenia: wiele instancji (edytor + workery), on-premise; długie sesje (rozmowy ~3–4 min, do ~15 min, bez twardych limitów) → drenaż do 20 min.
+> Implementacje zewnętrznych wtyczek (magazyn z `watchFlows`, wtyczka koordynacji) są **poza zakresem zlecenia i poza tym repozytorium** – w zlecenie wchodzą punkty rozszerzeń w rdzeniu i domyślna wtyczka lokalna.
 
 ## Podsumowanie
 
@@ -30,7 +30,7 @@ Kolejność realizacji (ANALIZA §6.2, tor A – sekwencyjnie): E-02 (etap 0, sp
 | Ustawienie | brak (moduł wewnętrzny, zawsze aktywny, pasywny – nie zmienia zachowania) |
 | Zależności | E-01 (`start()` zwraca `{errors}`, kroki 4 i 8 potoku); warunek Z-08, Z-09; wykorzystywany opcjonalnie przez P-01, przez Z-10 (`stopping`) i Z-15 (`loaded`) |
 | Pliki | nowy `@node-red/runtime/lib/state.js`; `@node-red/runtime/lib/index.js:135-248` (`start`), `:239-245` (start flow, pusty `.catch` `:245`), `:316-328` (`stop`), obiekt `runtime` (`:331+`); `@node-red/runtime/lib/flows/index.js:57-66` (`type-registered` → późny start), `:118-242` (`setFlows`), `:272-432` (`start`), `:434-515` (`stop`), `:873` (`state()`); `@node-red/runtime/lib/api/flows.js:66-100` (mutex, `reload`), `:283-330` (`setState`) |
-| Powiązania | K8S-T-005 (sondy), ARCHITEKTURA §3.5 (drenaż 20 min) |
+| Powiązania | Z-08 (sondy), drenaż do 20 min |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE** (brak jednego, wiarygodnego stanu instancji).
@@ -349,7 +349,7 @@ Funkcja: Model stanu instancji
 | Ustawienie | `health: { enabled: false, path: "/health", port: <opcjonalnie>, host: <opcjonalnie> }` (zlecenie: `health: { enabled, path }`; ZASADY §2.1); `shutdownTimeout` (płasko, **domyślnie nieustawiony – drenaż wyłączony**, zachowanie 5.0.6; R-22); hook `preShutdown` (bez `shutdownTimeout` nie jest wywoływany – R-37); API osadzających `RED.health`; `deploy.startTimeout` (ms, domyślnie wyłączony – limit czasu startu w trybie `deploy.response: "started"`, R-38) |
 | Zależności | E-02 (stan), E-01 (kroki 4/8). Stany `reloadPending`/`reloading` (E-02) to **punkt integracji wykorzystywany przez Z-09** – Z-08 nie zależy od Z-09 |
 | Pliki | nowy `@node-red/runtime/lib/health.js`; `@node-red/runtime/lib/index.js` (init/start/stop modułu, `runtime.health`); `node-red/red.js:417-436` (kolejność montowania przed uwierzytelnieniem), `:484` (warunek nasłuchu), `:543-558` (sygnały); `node-red/lib/red.js:60-140` (eksport `RED.health` dla osadzających, ZASADY §2.1); `@node-red/util/lib/hooks.js:3-17` (`preShutdown` w `VALID_HOOKS`); `node-red/settings.js` (sekcja Runtime Settings); `@node-red/runtime/locales/en-US/runtime.json` |
-| Powiązania | K8S-T-005 (sondy, workery z `httpAdminRoot: false`), ARCHITEKTURA §3.5 (drenaż 20 min) |
+| Powiązania | workery z `httpAdminRoot: false`, drenaż do 20 min |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE**, z rozszerzeniem.
@@ -573,7 +573,7 @@ Funkcja: Sondy zdrowia
 | Ustawienie | API wtyczki magazynu: opcjonalne `watchFlows(callback)` (bez zmian względem zlecenia); hook `preReload`. Parametry (ZASADY §2.1): `deploy.reload: { watch: false, type: "full" \| "diff" (domyślnie "full"), preReloadTimeout: 1200000, concurrency: <opcjonalnie, tylko liczba> }`; `deploy.reload.retry: { min: 1000, max: 60000, attempts: 10 }` (**R-20**, D-18; `attempts` domyślnie 10 ≈ 8 min – **R-36**). Bez `watchFlows` w magazynie ustawienie nie ma efektu. |
 | Zależności | E-01 (wspólny mutex, potok bez kroku 5), E-02 (`reloadPending`, `reloading`), Z-08 (`/ready` – punkt integracji), Z-06 (`VALID_HOOKS`, wzorzec limitu czasu, wywołanie `postDeploy` – punkt integracji), Z-10 (zajęcie slotu przy `concurrency`), P-01 (błędy startu w wyniku `start()`) |
 | Pliki | `@node-red/runtime/lib/storage/index.js:51-120` (wykrycie `watchFlows`, `getFlows` – rewizja `:80`); `@node-red/runtime/lib/flows/index.js:104-110` (`load`), `:118-242` (`setFlows`, gałąź `load` `:141-148`), `:434-515`; `@node-red/runtime/lib/flows/util.js` (`diffConfigs`); `@node-red/runtime/lib/api/flows.js:37-38,66-100` (mutex, `reload`); nowy `@node-red/runtime/lib/flows/reload.js`; `@node-red/runtime/lib/coordination/index.js` (Z-10, `claim` slotu); `@node-red/runtime/lib/index.js:239-245,316-328`; `@node-red/util/lib/hooks.js:3-17`; `node-red/settings.js`; `@node-red/runtime/locales/en-US/runtime.json` |
-| Powiązania | K8S-T-001 (nasza wtyczka magazynu implementuje `watchFlows` – PostgreSQL LISTEN/NOTIFY lub Redis), K8S-T-006 (wydania niezmienne – opcja operacyjna), ARCHITEKTURA §3.3, §3.5 (drenaż 20 min), ANALIZA §3 (Z-09 mechanizmem podstawowym) |
+| Powiązania | zewnętrzna wtyczka magazynu implementuje `watchFlows` (poza repozytorium); wydania niezmienne – opcja operacyjna; drenaż do 20 min; ANALIZA §3 (Z-09 mechanizmem podstawowym) |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE**; mechanizm przeładowania już istnieje.
@@ -876,9 +876,9 @@ Funkcja: Przeładowanie flow po zmianie w magazynie
 - [ ] `deploy.reload.retry: { min, max, attempts }` w szablonie `settings.js` (`attempts` domyślnie 10 – R-36); po wyczerpaniu `failed` + 503 (R-20, D-18).
 
 #### Ryzyka i alternatywy
-- **Wszystkie workery jednocześnie 503:** powiadomienie dociera do wszystkich instancji naraz; przy `/ready` 503 od rozpoczęcia drenażu (wymóg zlecenia „503 na czas przeładowania”, E-02 T7a) i drenażu do 20 min cały Deployment mógłby przestać przyjmować ruch. Rozwiązanie (D-10): `deploy.reload.concurrency` – zajęcie slotu przez koordynację Z-10 **przed** drenażem (instancje czekające na slot zwracają 200), oraz `type: "diff"` – drenaż i restart tylko zmienionych flow. Bez wtyczki koordynacji klastrowej limit nie działa (ostrzeżenie); alternatywa operacyjna: wydania niezmienne + rolling update (K8S-T-006).
+- **Wszystkie workery jednocześnie 503:** powiadomienie dociera do wszystkich instancji naraz; przy `/ready` 503 od rozpoczęcia drenażu (wymóg zlecenia „503 na czas przeładowania”, E-02 T7a) i drenażu do 20 min cały Deployment mógłby przestać przyjmować ruch. Rozwiązanie (D-10): `deploy.reload.concurrency` – zajęcie slotu przez koordynację Z-10 **przed** drenażem (instancje czekające na slot zwracają 200), oraz `type: "diff"` – drenaż i restart tylko zmienionych flow. Bez wtyczki koordynacji klastrowej limit nie działa (ostrzeżenie); alternatywa operacyjna: wydania niezmienne + rolling update.
 - **Pełne vs różnicowe:** dziś `load(true)` = pełny restart – przerywa wszystkie rozmowy także w niezmienionych flow (przy rozmowach ~15 min istotne). Rozstrzygnięcie (ZASADY §2.1, D-10): oba tryby, `type: "full" | "diff"`, **domyślnie `"full"`** (semantyka 5.0.6), **zalecane `"diff"`** dla wdrożeń z długimi rozmowami. Ograniczenia różnicowego: zmiana globalnych configów → pełny (jak `setFlows`); diff nie widzi zmian samych poświadczeń (poświadczenia nie są w konfiguracji węzłów przy `load`) → przy `credentialsChanged` pełny restart lub restart węzłów, których poświadczenia się zmieniły (**do potwierdzenia** w implementacji).
-- **Rewizja bez poświadczeń** (`storage/index.js:80`): bez `credentialsChanged` od wtyczki zmiana hasła w węźle konfiguracyjnym nie zostanie przeładowana (pominięcie jako „własny zapis”). Wymaganie dla wtyczek magazynu (K8S-T-001).
+- **Rewizja bez poświadczeń** (`storage/index.js:80`): bez `credentialsChanged` od wtyczki zmiana hasła w węźle konfiguracyjnym nie zostanie przeładowana (pominięcie jako „własny zapis”). Wymaganie dla zewnętrznych wtyczek magazynu.
 - **Wdrożenie lokalne w trakcie drenażu:** rozstrzygnięte w ZASADY §2.3 B – wdrożenie unieważnia oczekujące przeładowanie (brak ryzyka cofnięcia świeżego wdrożenia); kosztem jest przerwany drenaż na tej instancji (dotyczy głównie instancji z edytorem, gdzie `deploy.reload.watch` domyślnie wyłączone).
 - **Instancja z edytorem:** dostaje powiadomienia o własnych zapisach (pomijane po rewizji) i o zapisach innych klientów (np. MCP/CI przez inną instancję) – edytor pokaże powiadomienie o zmianie flow (`runtime-deploy`). W naszej architekturze publikacja idzie przez Admin API edytora – na edytorze `deploy.reload.watch` pozostaje wyłączone (domyślnie `false`).
 - **Hook bez prawa weta:** zwrot `false` w innych hookach oznacza zatrzymanie – tu przeładowanie mimo to (spójność klastra ważniejsza). **Rozstrzygnięte (R-20).**
@@ -908,7 +908,7 @@ Funkcja: Przeładowanie flow po zmianie w magazynie
 | Ustawienie | typ wtyczki `node-red-coordination`; wybór wtyczki: `coordination: { plugin: "<id>", options: {...} }` (brak → wtyczka lokalna) – wybór **tylko jawny** (R-21; nazwy wg D-02); w węźle `inject` nowa właściwość `singleInstance` (domyślnie `false`) |
 | Zależności | E-02 (oddanie przywództwa w `stopping`); punkt startu wspólny z Z-09 (`runtime/lib/index.js:239-247`) |
 | Pliki | nowy `@node-red/runtime/lib/coordination/index.js` + `local.js`; `@node-red/runtime/lib/index.js:140` (init przed `redNodes.load()` `:166`), `:239-247` (gotowość przed `startFlows`), `:316-328` (stop); `@node-red/registry/lib/plugins.js:21-57`; `@node-red/registry/lib/util.js:85-104` (`createNodeApi` → `RED.coordination`); `@node-red/nodes/core/common/20-inject.js:75-95` (timery), `:168-177` (`close`), `20-inject.html` + `locales/en-US/common/20-inject.{json,html}`; `node-red/settings.js`; `@node-red/runtime/locales/en-US/runtime.json` |
-| Powiązania | K8S-T-013 (**zastąpione** przez Z-10), K8S-T-014 (kolejki – uzupełnienie), ARCHITEKTURA §3.4 („flow singletonowe”) |
+| Powiązania | flow singletonowe przy wielu instancjach; kolejki – uzupełnienie (poza rdzeniem) |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE.**
@@ -1100,8 +1100,8 @@ Funkcja: Wykonanie na jednej instancji
 - **Zmiana lidera w trakcie wykonania:** dla `inject` wyzwolenie jest natychmiastowe (bez skutku); dla długich zadań węzłów z palety – autor musi reagować na `onLeaderChange(false)` lub `renew()` → `false`. Okno „dwóch liderów” przy podziale sieci zależy od implementacji wtyczki (fencing poza zakresem) – dokumentacja.
 - **Interwał/„raz po starcie” przez przywództwo** vs claim slotu – **rozstrzygnięte (D-14, R-21): przywództwo**. „Raz po starcie” przy restarcie lidera wyzwoli się ponownie – zgodne z semantyką „po starcie”.
 - **Wybór jawny vs automatyczny:** automatyczne użycie jedynej zainstalowanej wtyczki byłoby wygodne, ale zmienia zachowanie po instalacji modułu – **rozstrzygnięte (R-21): tylko jawnie** (`coordination.plugin`).
-- **Kolejki (K8S-T-014)** – Z-10 nie zastępuje kolejek: odbiorcy kolejek z rozdziałem pracy (SKIP LOCKED, grupy konsumentów Redis Streams) nie potrzebują przywództwa; dla subskrypcji bez rozdziału (np. MQTT bez współdzielonych subskrypcji) węzły mogą użyć `RED.coordination.onLeaderChange`. Węzły core poza `inject` (np. `mqtt in`) – **poza zakresem; `mqtt in` w osobnym pakiecie (R-21)**.
-- Alternatywa: osobny Deployment z 1 repliką dla flow singletonowych (K8S-T-013) – zostaje jako obejście operacyjne, ale wymaga podziału flow.
+- **Kolejki** – Z-10 nie zastępuje kolejek: odbiorcy kolejek z rozdziałem pracy (konsumenci współdzielący kolejkę) nie potrzebują przywództwa; dla subskrypcji bez rozdziału (np. MQTT bez współdzielonych subskrypcji) węzły mogą użyć `RED.coordination.onLeaderChange`. Węzły core poza `inject` (np. `mqtt in`) – **poza zakresem; `mqtt in` w osobnym pakiecie (R-21)**.
+- Alternatywa: osobny Deployment z 1 repliką dla flow singletonowych – zostaje jako obejście operacyjne, ale wymaga podziału flow.
 
 #### Podzadania
 - [ ] Wtyczka lokalna + testy – S
@@ -1123,7 +1123,7 @@ Funkcja: Wykonanie na jednej instancji
 | Ustawienie | `readOnlyUserDir: false` (bez zmian względem zlecenia); zmienna środowiskowa CLI `NODE_RED_READ_ONLY_USER_DIR` (R-33, ZASADY §2.1) równoważna `readOnlyUserDir: true`, czytana przed wyborem pliku ustawień (**R-18**) |
 | Zależności | Z-03 (ujednolicone ustawienia uploadu i **nowy kod `upload_not_allowed`** definiowany w Z-03 – ZASADY §2.4) |
 | Pliki | `node-red/red.js:121-157` (wybór/kopiowanie `settings.js`, `:151`); `@node-red/runtime/lib/index.js:135-248` (komunikaty startu, `:167-215,:268` autoinstalacja); `@node-red/registry/lib/installer.js:221,239,274,361,426-485,516,544,575-600`; `@node-red/registry/lib/externalModules.js:35,43,72-73,228-277`; `@node-red/runtime/lib/nodes/context/localfilesystem.js:70-95` (`getBasePath`), `:145-146,202,231,387,412,415`; `@node-red/runtime/lib/nodes/context/index.js:80-180`; `@node-red/runtime/lib/storage/localfilesystem/index.js:36-71`, `settings.js:75,83,117,127`, `sessions.js:47-50`, `library.js:148-172`, `projects/index.js:129-130,607,626,651,662`, `util.js:89-118`; `node-red/settings.js`; `@node-red/runtime/locales/en-US/runtime.json` |
-| Powiązania | K8S-T-005 (obraz, system plików tylko do odczytu), K8S-A-002 (węzły używające `fs`), K8S-T-004 |
+| Powiązania | obraz z systemem plików tylko do odczytu; węzły używające `fs` (poza zakresem) |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE** – 16 miejsc zapisu (tabela poniżej, z WERYFIKACJA Z-11).
@@ -1180,7 +1180,7 @@ Wynik: **POTWIERDZONE** – 16 miejsc zapisu (tabela poniżej, z WERYFIKACJA Z-1
 4. `registry/lib/installer.js`, `externalModules.js`: kontrola `assertWritable` na wejściu `installModule`, `installTarball`, `uninstallModule`, `ensureModuleDir`/`installModules` (obrona w głąb – niezależnie od flag z pkt 2).
 5. `context/localfilesystem.js`: kontrola w `open()` (przed `ensureDir`) – błąd z nazwą magazynu.
 6. `node-red/red.js:121-157`: odczyt zmiennej `NODE_RED_READ_ONLY_USER_DIR` przed wyborem pliku ustawień (R-18) – pominięcie kopiowania i ustawienie `readOnlyUserDir: true` w wczytanych ustawieniach; `try/catch` wokół `fs.copySync` (`:151`) z fallbackiem na domyślny plik i ostrzeżeniem; w szablonie i dokumentacji – zalecenie `--settings` dla obrazów.
-7. Dokumentacja: tabela 16 zapisów (jak wyżej) w szablonie `settings.js` (skrót) i w dokumentacji pakietu; opis relacji `readOnly` ↔ `readOnlyUserDir`; uwaga, że węzły z palety (np. `file`) mogą pisać dowolnie – poza zakresem (K8S-A-002).
+7. Dokumentacja: tabela 16 zapisów (jak wyżej) w szablonie `settings.js` (skrót) i w dokumentacji pakietu; opis relacji `readOnly` ↔ `readOnlyUserDir`; uwaga, że węzły z palety (np. `file`) mogą pisać dowolnie – poza zakresem.
 
 #### Kryteria akceptacji (BDD)
 ```gherkin
@@ -1304,7 +1304,7 @@ Funkcja: Katalog użytkownika tylko do odczytu
 - **Kontekst `localfilesystem`:** błąd startu (głośny, bez utraty danych po cichu) vs przełączenie na `memory` z ostrzeżeniem – **rozstrzygnięte (R-18, D-15): błąd startu**.
 - **Wdrożenie przy magazynie plikowym:** odrzucenie (400) różni się od istniejącego cichego pominięcia przy `readOnly` – świadoma rozbieżność, **rozstrzygnięte (R-18): 400 `read_only_user_dir`**.
 - **Relacja z `readOnly`:** `readOnly` = „magazyn plikowy nie zapisuje” (nieudokumentowane), `readOnlyUserDir` = „runtime nie pisze do katalogu użytkownika w ogóle” (szersze, obejmuje instalatory i kontekst). Rekomendacja: nie łączyć; `readOnlyUserDir` implikuje zachowanie `readOnly` dla zapisów pomijanych (#11, #13, #14).
-- **Wykrywanie przez kontrolę ścieżek vs flagi:** sama kontrola flag może przeoczyć przyszłe miejsca zapisu; obrona w głąb (`assertWritable`) w instalatorach i kontekście + test z atrapą `fs` zmniejsza ryzyko. Moduły z palety i węzły (`file`, `watch` itp.) nie są objęte (K8S-A-002).
+- **Wykrywanie przez kontrolę ścieżek vs flagi:** sama kontrola flag może przeoczyć przyszłe miejsca zapisu; obrona w głąb (`assertWritable`) w instalatorach i kontekście + test z atrapą `fs` zmniejsza ryzyko. Moduły z palety i węzły (`file`, `watch` itp.) nie są objęte.
 - Test `chmod` nie działa jako root (typowe w kontenerach CI) – test pominięty z uzasadnieniem, atrapa `fs` jako dowód podstawowy.
 
 #### Podzadania

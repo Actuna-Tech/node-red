@@ -28,8 +28,7 @@ Godziny kroków przed pierwszym commitem są orientacyjne; godziny commitów poc
 | 09:45 | Testy przenoszalności | 3 testy jednostkowe runtime (bez poprawki padają) + 5 testów E2E (okna eksportu/importu, kopiuj/wklej, subflow, Admin API) |
 | 10:00 | Audyt backupów, eksportu, importu, scalania i biblioteki | wyniki w [PROBLEMY.md](PROBLEMY.md): P1 naprawione wcześniej; **P2 otwarte** – okno Review Changes nie pokazuje dodanych `layout`/`o` (odtworzone w przeglądarce, scalanie działa); P3, P4 – drobne, otwarte |
 | 10:15 | Backlog błędów i zadań z Definition of Done/Ready i szablonami zgłoszeń | [BACKLOG.md](BACKLOG.md): 5 otwartych błędów, 7 zadań, 4 pozycje zamknięte; sekcja na tematy do analizy |
-| 10:40 | Analiza przeniesienia stanu do PostgreSQL pod Kubernetes (na podstawie kodu runtime, registry, editor-api) | [../k8s-postgres/ANALIZA.md](../k8s-postgres/ANALIZA.md); karta FL-A-001 w backlogu |
-| 11:10 | Architektura docelowa K8s v2 (edytor + workery, PostgreSQL baza na tenanta, Redis, pliki węzłów uniwersalnych, wydania niezmienne) + backlog K8S | [../k8s-postgres/ARCHITEKTURA.md](../k8s-postgres/ARCHITEKTURA.md), [../k8s-postgres/BACKLOG.md](../k8s-postgres/BACKLOG.md) |
+| 10:40 | Analiza przeniesienia stanu poza lokalne pliki (na podstawie kodu runtime, registry, editor-api) | karta FL-A-001 w backlogu (wynik poza repozytorium) |
 | F2 | Z-14: ustawienie `editorTheme.flowLayout.enabled` (test-first: 2 + 22 testy czerwone) | commit `405e844`; E2E obu stanów ustawienia |
 | F2 | E-04: `MODIFICATIONS.md` (pliki bez nagłówka, szablon) | commit `2e961c9` |
 | F2 | FL-B-006: analiza i poprawka dopasowania subflow (2 testy czerwone) | commit `6feb771`; pokrewne FL-B-011 |

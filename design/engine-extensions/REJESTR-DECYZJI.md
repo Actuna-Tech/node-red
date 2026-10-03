@@ -6,7 +6,7 @@ Zebrane ze wszystkich dokumentów (ANALIZA §7.1, „Pytania” w kartach etapó
 bez duplikatów, w kolejności priorytetów biznesowych ([../PRIORYTETY.md](../PRIORYTETY.md)). Przechodzimy punkt po
 punkcie; wynik każdej decyzji trafia do kolumny „Decyzja” i do dokumentów, których dotyczy.
 
-**Stan (2026-10-03):** wszystkie punkty R-01…R-48 rozstrzygnięte. R-01…R-32 naniesione na ANALIZA §7.0, ZASADY,
+**Stan (2026-10-03):** wszystkie punkty R-01…R-46 rozstrzygnięte. R-01…R-32 naniesione na ANALIZA §7.0, ZASADY,
 MIGRACJA, PRIORYTETY i karty etapów; R-33…R-46 – doprecyzowania po propagacji (sekcja niżej).
 
 **Już rozstrzygnięte (nie wracamy):** D-01 baza 5.0.7 · D-02 nazwy (rewizja: utrzymane) · D-03 bez Playwright ·
@@ -46,7 +46,7 @@ kod `invalid_node_type` w katalogu.
 | R-16 | Z-07: przełącznik awaryjny `http in`, `rawBodyCapture` osobno | etap-2 p.14 | bez przełącznika; osobno || **bez przełącznika awaryjnego; `rawBodyCapture` osobnym ustawieniem** (2026-10-03) |
 | R-17 | Z-03: zakres skorygowany, potwierdzenie przed instalacją (`dryRun`), aliasy ustawień uploadu | etap-2 p.1, 3, 4 | zakres skorygowany; bez `dryRun`; kanoniczne `allowUpload` + aliasy || **zgodnie z rekomendacją** – zakres skorygowany (`upload_not_allowed`, `module_downgrade_not_allowed` przy `allowDowngrade: true` domyślnie, walidacja typu); bez `dryRun`; kanoniczne `externalModules.palette.allowUpload` + aliasy z ostrzeżeniem w logu (2026-10-03) |
 
-## Priorytet 3 – baza danych, wiele instancji
+## Priorytet 3 – przeładowanie flow, wiele instancji
 
 | ID | Temat | Źródło | Rekomendacja | Decyzja |
 |---|---|---|---|---|
@@ -102,5 +102,3 @@ Zamawiający może je zmienić w dowolnej chwili), **Z** = decyzja Zamawiająceg
 | R-44 | FL-B-010: import a zablokowany flow (`locked`) | Z | **wariant B** – przy zablokowanym flow opcja „zastąp” nieaktywna (podpowiedź „odblokuj, aby zastąpić”), możliwa tylko kopia lub pominięcie; blokada to ochrona edytora przed przypadkową zmianą, nie uprawnienie (2026-10-03) |
 | R-45 | P-01: blokada wdrożeń po przekroczeniu `deploy.startTimeout` (bezpiecznik W2 vs R-43) | Z | **A domyślnie** – blokada trwa do końca startu (R-43), po 60 s ostrzeżenie w logu; `deploy.startTimeout` nadal daje 500 `start_timeout` w trybie `"started"` bez zwalniania blokady; zwolnienie blokady po upływie limitu tylko przy jawnym `deploy.startTimeoutReleasesLock: true` (domyślnie `false`; ryzyko równoległego startu opisane w `settings.js`) (2026-10-03) |
 | R-46 | Z-04: nieprawidłowy nagłówek `Node-RED-API-Version` na `/flow` | Z | **jak v1 + ostrzeżenie** – żądanie obsługiwane jak v1 (zgodność z 5.0.7), `log.warn` raz na wartość (z ograniczeniem liczby wartości); `/flows` bez zmian (400 `invalid_api_version`) (2026-10-03) |
-| R-47 | Zależności npm wtyczek bazodanowych | Z | **zgoda na `pg` i `ioredis`** (MIT) – tylko w pakietach wtyczek, nie w rdzeniu (2026-10-03) |
-| R-48 | Miejsce wtyczek priorytetu 3 | Z | **katalog `plugins/` w tym repozytorium** (gałąź `feature/p3-database`), każdy pakiet z własnym `package.json` i testami; wydzielenie później (2026-10-03) |

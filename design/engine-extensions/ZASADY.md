@@ -7,7 +7,7 @@
 
 - Pakiety zlecenia: `P-01`…`P-04`, `Z-01`…`Z-13`; nasz pakiet proponowany: `Z-14` (układ flow).
 - Zadania przekrojowe: `E-nn` (np. `E-01` – kontrakt potoku wdrożenia).
-- Powiązania z istniejącymi backlogami: `FL-*` ([../flow-layout/BACKLOG.md](../flow-layout/BACKLOG.md)), `K8S-*` ([../k8s-postgres/BACKLOG.md](../k8s-postgres/BACKLOG.md)).
+- Powiązania z istniejącymi backlogami: `FL-*` ([../flow-layout/BACKLOG.md](../flow-layout/BACKLOG.md)).
 - Statusy i priorytety jak w backlogu układu flow (§1).
 
 ## 2. Decyzje (pkt 3.4 zlecenia)
@@ -268,7 +268,7 @@ evals:
 | Ustawienie | rekomendowana nazwa (propozycja zlecenia) |
 | Zależności | inne pakiety, E-01 |
 | Pliki | ścieżki (+ linie z weryfikacji) |
-| Powiązania | FL-*, K8S-* |
+| Powiązania | FL-*, inne pakiety P/Z/E |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: POTWIERDZONE / CZĘŚCIOWO / NIEPOTWIERDZONE + fakty z plik:linia; różnice względem opisu zlecenia.

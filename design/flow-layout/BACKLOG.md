@@ -569,19 +569,19 @@ rozważenia w kolejnym pakiecie):
 
 _Miejsce na dodatkową listę do przeanalizowania – każdy punkt dostaje kartę `FL-A-nnn` i jest przenoszony do błędów / zadań po analizie._
 
-### FL-A-001 – Stan Node-RED w PostgreSQL pod Kubernetes
+### FL-A-001 – Stan Node-RED poza lokalnymi plikami (wiele instancji)
 
 | Pole | Wartość |
 |---|---|
 | Status | **Zamknięte (analiza wykonana)** – 2026-10-03 |
-| Wynik | [design/k8s-postgres/ANALIZA.md](../k8s-postgres/ANALIZA.md) |
-| Powstałe zadania | osobny backlog: [design/k8s-postgres/BACKLOG.md](../k8s-postgres/BACKLOG.md); architektura docelowa (v2): [ARCHITEKTURA.md](../k8s-postgres/ARCHITEKTURA.md) |
+| Wynik | poza tym repozytorium (decyzja Zamawiającego, 2026-10-03) |
+| Powstałe zadania | w rdzeniu – ogólne punkty rozszerzeń: E-02, Z-08, Z-09, Z-10, Z-11 ([../engine-extensions/backlog/etap-3.md](../engine-extensions/backlog/etap-3.md)), Z-15 ([etap-4.md](../engine-extensions/backlog/etap-4.md)) |
 
 **Wniosek:** cały trwały stan (flow z układem, poświadczenia, ustawienia, sesje, biblioteka,
-kontekst) da się przenieść do PostgreSQL przez istniejące punkty rozszerzeń, bez zmian w rdzeniu.
+kontekst) da się przenieść do zewnętrznej wtyczki magazynu przez istniejące punkty rozszerzeń, bez zmian w rdzeniu.
 Węzły z palety, moduły zewnętrzne i Projekty należą do obrazu kontenera. Pełna bezstanowość
-przy kilku aktywnych replikach wymaga decyzji architektonicznej (modele A/B/C) – stan
-działających flow pozostaje w pamięci. Otwarte pytania – §9 analizy.
+przy kilku aktywnych replikach wymaga przeładowania i koordynacji instancji (Z-09, Z-10) – stan
+działających flow pozostaje w pamięci.
 
 ---
 

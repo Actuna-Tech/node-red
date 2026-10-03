@@ -37,7 +37,7 @@ Bez tego automaty MCP/CI mogą dostawać sporadyczne 404 po wdrożeniu → **not
 | U3 | `deploy.reload.*` = to samo przeładowanie, które Admin API wykonuje typem wdrożenia `reload` | karta Z-09, `settings.js` |
 | U4 | „`version` w kodach błędów oznacza rewizję flow (`rev`)”; rozstrzygnąć `rev: ""` (409 jak w łatce vs 400 `invalid_revision`) | ZASADY §2.4 – pytanie N-01 |
 | U5 | `waitForDeployStart()` nie jest kontraktem (moduł wewnętrzny) – alias tylko, jeśli używany poza runtime | karta P-01 – pytanie N-02 |
-| U6 | tabela „ustawienie ↔ manifest K8s” (`health.port` ↔ `readinessProbe`, `shutdownTimeout` < `terminationGracePeriodSeconds`) | karta Z-08, `k8s-postgres/BACKLOG.md` |
+| U6 | tabela „ustawienie ↔ manifest K8s” (`health.port` ↔ `readinessProbe`, `shutdownTimeout` < `terminationGracePeriodSeconds`) | karta Z-08, MIGRACJA.md §3.3 |
 | U7 | bez aliasów i ostrzeżeń dla `flows.*`/`editor.*` (nigdy nie działały) – chyba że któreś środowisko już je wpisało | pytanie N-03 |
 | U8 | lista kluczy zarezerwowanych: węzeł o typie `deploy`/`flows`/`health` mógłby przez regułę prefiksu `registerNodeSettings` wyeksportować cały obiekt do edytora (`runtime/lib/settings.js:127-158`) | ZASADY §2.1a |
 
