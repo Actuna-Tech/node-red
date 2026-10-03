@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   P-03: tests of telemetryLocked and of ignoring telemetryEnabled while locked
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 
 var should = require("should");

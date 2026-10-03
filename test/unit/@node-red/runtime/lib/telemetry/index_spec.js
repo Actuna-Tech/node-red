@@ -1,3 +1,8 @@
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   P-03: tests of telemetry.locked
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 const should = require("should");
 const NR_TEST_UTILS = require("nr-test-utils");
 
