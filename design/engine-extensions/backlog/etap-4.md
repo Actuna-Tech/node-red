@@ -428,12 +428,21 @@ Funkcja: Układ flow sterowany ustawieniem editorTheme.flowLayout.enabled
 - **E2E poza `npm test`:** regresje UI wykrywane tylko w osobnym zadaniu CI (FL-T-003) – zależne od D-03.
 
 #### Podzadania
-- [ ] Przekazanie ustawienia (`theme.js`) + testy – S
-- [ ] Bramkowanie kontrolek i ustawień użytkownika w edytorze + testy logiki – M
-- [ ] `settings.js`, CHANGELOG, JSDoc API układu – S
+- [x] Przekazanie ustawienia (`theme.js`) + testy – S (`405e844`)
+- [x] Bramkowanie kontrolek i ustawień użytkownika w edytorze + testy logiki – M (`405e844`)
+- [x] `settings.js`, CHANGELOG, JSDoc API układu – S (`405e844`)
 - [ ] Podział na gałęzie Z-14a/b/c (z E-04) + `npm test` na każdej – M
 - [ ] FL-B-004, 005, 006, 007, 008, 009 (R-03) – L
-- [ ] E2E obu stanów ustawienia (wg D-03) – S
+- [x] E2E obu stanów ustawienia (wg D-03) – S (`405e844`)
+
+#### Realizacja – ustawienie `editorTheme.flowLayout.enabled` (2026-10-03, commit `405e844`) – **Do weryfikacji**
+- Przekazanie: `editor-api/lib/editor/theme.js` (wzorzec `multiplayer`, wartość bez zmian – normalizacja w edytorze); `runtime/lib/api/settings.js` – bez zmian (niepotrzebne).
+- Edytor: `RED.viewLayout.isEnabled()` (`RED.settings.theme("flowLayout.enabled", false) === true`, wyjątek/nie-obiekt/nie-boolean → `false`), `RED.view.layout.isEnabled()`, `RED.viewLayout.getUserViewSettings()` (`{}` przy wyłączonym – R-01), `RED.viewLayout.getFlowOptions(flow, viewSettings)` (logika wydzielona z `view.js` `getFlowLayoutOptions` 1:1).
+- Bramkowanie: `flowLayout.create/apply` (no-op), `appearance.js` (wiersz „Ports”), `flowProperties.js` (wysokość pola opisu jak w 5.0.7), `userSettings.js` (sekcja dodawana w `init()` – przy wyłączonym nie zapisuje też wartości domyślnych `LR`/`curved` w profilu), `contextMenu.js`, `view-tools.js` (akcje nierejestrowane), `nodes.js` `exportFlowLayoutOptions` (puste ustawienia użytkownika w `getPersistedFlowOptions`).
+- `settings.js` – zakomentowany przykład w `editorTheme`; plik bez nagłówka licencji → wpis w `MODIFICATIONS.md` (R-30). CHANGELOG – wpis w „Unreleased: Flow layouts”.
+- Testy jednostkowe (czerwone przed implementacją: 2 w `theme_spec.js`, 22 w editor-client): `theme_spec.js` (+3), `view-layout_spec.js` (+18: `isEnabled`, `getUserViewSettings`, `getFlowOptions` z „disabled ignores user settings”, „disabled uses flow layout data”, „invalid setting treated as disabled”, „invalid layout value treated as unset”), `nodes_spec.js` (+7, oba stany), `flowLayout_spec.js` (+4).
+- E2E: główny zestaw uruchamia Node-RED z `flowLayout.enabled: true` (+1 test menu kontekstowego); nowy zestaw bez ustawienia (5 testów: brak kontrolek, rysowanie wg danych, krzywa LR jak `generateLinkPath`, ignorowanie i zachowanie ustawień użytkownika, zachowanie danych przy edycji i deployu). Bez zmian w kodzie 2 z 5 nowych testów E2E padały.
+- Niezweryfikowane: zrzuty „przed (5.0.7) / po (enabled:false)” (DoD) – nie wykonane; podział na gałęzie Z-14a/b/c – nie wykonany (E-04, D-04).
 
 ---
 

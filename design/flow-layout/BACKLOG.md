@@ -315,6 +315,9 @@ ponownym wczytaniu). Bez zmian: kopiuj/wklej, okno różnic, dopasowanie subflow
 `editor-client/nodes_spec.js` (3 padały bez poprawki), `ui/view-layout_spec.js` – `getPersistedFlowOptions`. Test E2E –
 nie uruchomiony (brak Playwrighta). Uwaga: ustawienie `editorTheme.flowLayout.enabled` (E-04) jeszcze nie istnieje – przy
 jego wprowadzeniu wyłączenie funkcji musi dawać puste `viewSettings` w eksporcie (R-01).
+**Uzupełnienie (Z-14, 2026-10-03):** ustawienie wprowadzone – przy wyłączonym `exportFlowLayoutOptions` dostaje puste
+ustawienia użytkownika (`RED.viewLayout.getUserViewSettings()`), więc eksport/deploy nie dopisuje wartości domyślnych;
+testy `nodes_spec.js` „…with flow layout disabled (Z-14, R-01)”.
 
 **Poprawka po przeglądzie (2026-10-03, `3a95e1d`):** eksport z domyślnym układem edytora psuł rozpoznanie identycznego
 subflow przy imporcie (powstawał duplikat). `checkForMatchingSubflow` porównuje teraz z eksportem z i bez wartości

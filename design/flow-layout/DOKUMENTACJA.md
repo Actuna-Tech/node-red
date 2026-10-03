@@ -37,6 +37,29 @@ tryb automatyczny przy przesuwaniu węzła oraz ustawienia domyślne edytora.
 Nagranie można odtworzyć skryptem [`demo/record-demo.js`](demo/record-demo.js)
 na flow [`demo/demo-flows.json`](demo/demo-flows.json) (instrukcja w nagłówku skryptu).
 
+## Włączenie (`editorTheme.flowLayout.enabled`, Z-14)
+
+Kontrolki układu są dostępne po włączeniu w `settings.js`:
+
+```js
+editorTheme: {
+    flowLayout: { enabled: true }
+}
+```
+
+Domyślnie (`false`, brak obiektu lub wartość inna niż `true`) edytor wygląda jak w 5.0.7: brak pól
+„Layout”/„Wires” we właściwościach flow i wyglądzie subflow, brak „Ports” w wyglądzie węzła, brak sekcji
+„Flow layout” w ustawieniach użytkownika, brak pozycji menu kontekstowego i akcji `core:*-node-ports*`.
+Przy wyłączonym ustawieniu (decyzja R-01):
+- flow z zapisanym `layout`/`wireStyle`/`o` **rysują się zgodnie z danymi**, a dane są zachowywane przy
+  edycji, eksporcie, deployu i w Admin API;
+- ustawienia użytkownika `view-flow-layout`/`view-wire-style` są **ignorowane** (układ domyślny `LR`/`curved`),
+  ale nie są usuwane; eksport i deploy nie dopisują wartości domyślnych użytkownika (FL-B-009);
+- części runtime (`diffNodes`, API pojedynczego flow) działają zawsze (R-02).
+
+Ustawienie trafia do edytora przez `editor-api/lib/editor/theme.js` (`RED.settings.theme("flowLayout.enabled")`);
+w edytorze sprawdza je `RED.viewLayout.isEnabled()` / `RED.view.layout.isEnabled()`.
+
 ## Gdzie ustawić
 
 Ustawienia działają hierarchicznie – bardziej szczegółowe wygrywa:
@@ -155,6 +178,7 @@ Uwagi:
 |---|---|
 | `HORIZONTAL`, `VERTICAL`, `AUTO` | stałe układów (`"LR"`, `"TB"`, `"auto"`) |
 | `WIRE_CURVED`, `WIRE_ORTHOGONAL` | stałe stylów linii |
+| `isEnabled()` | czy kontrolki układu są włączone (`editorTheme.flowLayout.enabled`) |
 | `getFlowOptions([z])` | `{layout, wireStyle}` obowiązujące dla flow `z` (domyślnie aktywnego) |
 | `getNodeOrientation(node)` | `"LR"` lub `"TB"` – efektywna orientacja portów węzła |
 | `layoutOptions(includeAuto)` | opcje do pola wyboru układu |
@@ -173,6 +197,9 @@ Czysta geometria bez zależności od DOM (testowana jednostkowo):
 | `generateLinkPath(...)` | oryginalna pozioma krzywa Node-RED |
 | `transposePath(path)` | zamiana osi x/y ścieżki SVG |
 | `computeAutoOrientations(links)` | mapa `id → "TB"` dla trybu automatycznego |
+| `isEnabled()` | `true` tylko przy `editorTheme.flowLayout.enabled === true` (Z-14) |
+| `getUserViewSettings()` | ustawienia użytkownika dotyczące układu; `{}` przy wyłączonym ustawieniu (R-01) |
+| `getFlowOptions(flow, viewSettings)` | `{layout, wireStyle}` – wartości flow, potem ustawienia użytkownika, potem `LR`/`curved`; nieznane wartości jak brak |
 | `getPersistedFlowOptions(flow, viewSettings)` | `{layout?, wireStyle?}` zapisywane z flow przy eksporcie i deployu (własne wartości flow albo niedomyślne ustawienia użytkownika) |
 
 `RED.nodes.createExportableNodeSet(set, {flowLayoutDefaults})` i
@@ -183,6 +210,7 @@ dopisuje do flow bez własnych wartości efektywny układ (używane przez ekspor
 
 `create(form, flow)` / `apply(flow, editState)` – formularz „Layout / Wires” używany
 we właściwościach flow i wyglądzie subflow; do wykorzystania we własnych panelach.
+Przy wyłączonym `editorTheme.flowLayout.enabled` nie dodaje pól, a `apply` nie zmienia flow.
 
 ## Testy
 
