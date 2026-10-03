@@ -1,6 +1,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   FL-B-009: tests for the layout properties stored with a flow on export and deploy
+ *   FL-B-005: tests for the select option of an unknown layout value
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
@@ -399,6 +400,30 @@ describe("editor-client/ui/view-layout", function() {
             layout.computeAutoOrientations([{ source: a, target: b, link: true }]).should.eql({});
         });
     });
+    describe("addUnknownOption", function() {
+        const options = [{ val: "LR", text: "lr" }, { val: "TB", text: "tb" }];
+        const label = function(v) { return "unknown " + v };
+        it("adds an option for an unknown value", function() {
+            layout.addUnknownOption(options, "XY", label).should.eql([
+                { val: "LR", text: "lr" }, { val: "TB", text: "tb" }, { val: "XY", text: "unknown XY" }
+            ]);
+        });
+        it("adds an option for a non-string value", function() {
+            layout.addUnknownOption(options, 5, label).should.eql([
+                { val: "LR", text: "lr" }, { val: "TB", text: "tb" }, { val: "5", text: "unknown 5" }
+            ]);
+        });
+        it("does not add an option for a known or unset value", function() {
+            layout.addUnknownOption(options, "TB", label).should.eql(options);
+            layout.addUnknownOption(options, undefined, label).should.eql(options);
+            layout.addUnknownOption(options, "", label).should.eql(options);
+        });
+        it("does not modify the options", function() {
+            layout.addUnknownOption(options, "XY", label);
+            options.should.have.length(2);
+        });
+    });
+
     describe("getPersistedFlowOptions", function() {
         it("stores nothing for a flow using the default layout and wire style", function() {
             layout.getPersistedFlowOptions({ id: "f1" }, {}).should.eql({});
