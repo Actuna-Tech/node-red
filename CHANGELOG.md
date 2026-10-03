@@ -14,8 +14,10 @@ See `design/flow-layout/` for the analysis, documentation and work log.
  - Editor: flow layout geometry moved to `ui/view-layout.js` (`RED.viewLayout`)
  - Runtime: changes to node port orientation or subflow layout do not restart nodes
    on a modified-nodes deploy
- - Tests: unit tests for the layout geometry and runtime diff, Playwright
-   end-to-end tests (`npm run test:e2e`)
+ - Runtime: the single-flow Admin API (`POST /flow`, `GET`/`PUT /flow/:id`) keeps the
+   flow `layout` and `wireStyle`
+ - Tests: unit tests for the layout geometry, runtime diff and flow API, Playwright
+   end-to-end tests including export/import (`npm run test:e2e`)
 
 #### 5.0.7: Maintenance Release
 

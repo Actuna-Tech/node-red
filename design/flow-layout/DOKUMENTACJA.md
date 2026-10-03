@@ -100,6 +100,29 @@ Wszystkie zmiany można cofnąć (*Undo*).
 - **Zgodność** – flow bez ustawionych właściwości eksportują się bez zmian.
   Starsze wersje Node-RED ignorują `layout`, `wireStyle` i `o` (rysują układ lewo‑prawo).
 
+## Eksport, import i przenoszalność
+
+Układ jest częścią flow, więc przenosi się razem z nim:
+
+| Operacja | Co jest przenoszone |
+|---|---|
+| Eksport → *bieżący flow* | zakładka z `layout`/`wireStyle` oraz `o` węzłów |
+| Eksport → *wszystkie flow* | jw. dla wszystkich zakładek i subflow |
+| Eksport → *zaznaczone węzły*, kopiuj/wklej | tylko `o` węzłów (zakładka nie jest częścią zaznaczenia); węzły bez `o` przyjmują układ flow, do którego zostały wklejone |
+| Subflow użyty przez eksportowane węzły | definicja subflow z `layout`/`wireStyle` |
+| Import (okno *Import*, plik, biblioteka) | wszystkie powyższe właściwości; nowy flow rysuje się w zapisanym układzie |
+| Deploy / zapis do pliku flow | wszystkie właściwości |
+| Admin API: `POST /flow`, `GET /flow/:id`, `PUT /flow/:id`, `GET`/`POST /flows` | `layout`/`wireStyle` zakładki oraz `o` węzłów |
+
+Uwagi:
+- przy imporcie subflow identycznego z już istniejącym Node-RED używa istniejącego;
+  subflow różniący się tylko układem jest traktowany jako inny subflow,
+- ustawienie domyślne użytkownika (Settings → View) **nie** jest częścią flow – po
+  przeniesieniu flow bez własnego `layout` do innej instancji zostanie on narysowany
+  według ustawień tamtego użytkownika,
+- starsze wersje Node-RED wczytają taki flow poprawnie (w układzie lewo → prawo),
+  ale przy ponownym eksporcie z nich właściwości układu zostaną pominięte.
+
 ## Format w pliku flow
 
 ```json

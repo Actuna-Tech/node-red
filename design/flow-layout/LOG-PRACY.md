@@ -24,6 +24,8 @@ Godziny kroków przed pierwszym commitem są orientacyjne; godziny commitów poc
 | 08:58 | Testy E2E w Playwright (17) + `npm run test:e2e` | commit `9cb0ae8` |
 | 09:05 | Dokumentacja (`design/flow-layout/` – katalog `docs/` jest ignorowany przez git), log pracy, CHANGELOG, oznaczenie autorstwa | ten commit |
 | 09:22 | Nagranie demonstracyjne (Playwright + ffmpeg, podpisy i widoczny kursor) | `node-red-flow-layout-demo.mp4`, skrypt `demo/record-demo.js` |
+| 09:35 | Weryfikacja przenoszalności (eksport/import, schowek, subflow, Admin API) | eksport/import w edytorze działał; **znaleziona luka**: `POST/GET/PUT /flow` gubiły `layout`/`wireStyle` → poprawka w `runtime/lib/flows/index.js` |
+| 09:45 | Testy przenoszalności | 3 testy jednostkowe runtime (bez poprawki padają) + 5 testów E2E (okna eksportu/importu, kopiuj/wklej, subflow, Admin API) |
 
 ## Wyniki testów (ostatnie uruchomienie)
 
@@ -31,8 +33,8 @@ Godziny kroków przed pierwszym commitem są orientacyjne; godziny commitów poc
 |---|---|
 | `npm run lint` | bez błędów |
 | jednostkowe edytora (`test/unit/@node-red/editor-client`) | 54 ✔ (w tym 46 nowych) |
-| jednostkowe runtime flows (`test/unit/@node-red/runtime/lib/flows`) | 133 ✔, 4 pending (istniejące) |
-| E2E (`npm run test:e2e`) | 17 ✔ |
+| jednostkowe runtime + editor-api + editor-client | 953 ✔, 8 pending; 5 ✘ tylko testy SSH projektów – brak `ssh-keygen` w środowisku, niezwiązane ze zmianą |
+| E2E (`npm run test:e2e`) | 22 ✔ |
 | build (`npm run build`) | OK |
 
 ## Otwarte tematy

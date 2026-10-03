@@ -111,6 +111,10 @@ Routing omija węzły **na końcach linii**; pełne omijanie dowolnych przeszkó
 
 ### 3.5 Runtime
 
+Endpointy pojedynczego flow (`POST /flow`, `GET /flow/:id`, `PUT /flow/:id`) budują obiekt
+zakładki z wybranych pól (`label`, `info`, `disabled`, `env`) – muszą też przenosić
+`layout` i `wireStyle`, inaczej układ ginie przy imporcie/eksporcie przez API.
+
 Zmiana `o` węzła lub `layout`/`wireStyle` subflow jest czysto wizualna – `diffNodes`
 musi ją ignorować, inaczej deploy „tylko zmienione” restartowałby węzły.
 Zmiana `layout` zakładki niczego nie restartuje (dla zakładek porównywane jest tylko `env`).
@@ -129,6 +133,7 @@ Zmiana `layout` zakładki niczego nie restartuje (dla zakładek porównywane jes
 | `editor-client/src/js/ui/view-tools.js`, `contextMenu.js` | akcje `core:set-selected-node-ports-horizontal/vertical`, `core:reset-selected-node-ports` + menu kontekstowe |
 | `editor-client/locales/en-US/editor.json` | teksty (pozostałe języki dziedziczą angielskie) |
 | `runtime/lib/flows/util.js` | `diffNodes` ignoruje `o` oraz `layout`/`wireStyle` subflow |
+| `runtime/lib/flows/index.js` | API pojedynczego flow (`addFlow`, `getFlow`, `updateFlow` → `POST/GET/PUT /flow`) przenosi `layout`/`wireStyle` |
 | `scripts/build/config.js` | dołączenie `view-layout.js` przed `view.js` |
 | `package.json` | skrypt `test:e2e` |
 
@@ -156,6 +161,6 @@ Zmiana `layout` zakładki niczego nie restartuje (dla zakładek porównywane jes
 | Rodzaj | Plik | Zakres |
 |---|---|---|
 | jednostkowe (edytor) | `test/unit/@node-red/editor-client/ui/view-layout_spec.js` | pozycje portów, rozmiary, każda kombinacja kierunków, styl prostokątny, obejścia, tryb auto (46 testów) |
-| jednostkowe (runtime) | `test/unit/@node-red/runtime/lib/flows/util_spec.js`, `index_spec.js` | brak restartu przy zmianach wizualnych, zachowanie właściwości przy zapisie |
-| E2E (przeglądarka) | `test/editor/e2e/flow_layout_e2espec.js` | wszystkie układy, przeciąganie linii, status, akcje, dialogi, undo, ustawienia użytkownika, deploy (17 testów) |
+| jednostkowe (runtime) | `test/unit/@node-red/runtime/lib/flows/util_spec.js`, `index_spec.js` | brak restartu przy zmianach wizualnych, zachowanie właściwości przy zapisie oraz w API pojedynczego flow |
+| E2E (przeglądarka) | `test/editor/e2e/flow_layout_e2espec.js` | wszystkie układy, przeciąganie linii, status, akcje, dialogi, undo, ustawienia użytkownika, eksport/import (bieżący flow, wszystkie flow, zaznaczenie, subflow), Admin API, deploy (22 testy) |
 | lint | `npm run lint` | cały kod edytora |
