@@ -622,6 +622,123 @@ function sendJSON(method, url, body) {
             await showFlow("xsfL");
             (await nodeGeometry("xsfn1")).orientation.should.equal("TB");
         });
+
+        describe("importing a flow and subflow with the same ids", function() {
+            // A flow with a subflow instance, both using the top to bottom layout
+            async function createFlowWithSubflow() {
+                await page.evaluate(() => {
+                    RED.view.importNodes([
+                        { id: "tImp", type: "tab", label: "Import test", disabled: false, info: "", env: [], layout: "TB" },
+                        { id: "sfImp", type: "subflow", name: "Import subflow", info: "", category: "", layout: "TB", wireStyle: "orthogonal",
+                            in: [{ x: 60, y: 40, wires: [{ id: "sfImpN" }] }], out: [], env: [], color: "#DDAA99" },
+                        { id: "sfImpN", type: "change", z: "sfImp", name: "", rules: [], x: 180, y: 120, wires: [[]] },
+                        { id: "iImp", type: "subflow:sfImp", z: "tImp", name: "", x: 300, y: 200, wires: [] }
+                    ], { generateIds: false, touchImport: true });
+                });
+                await showFlow("tImp");
+            }
+
+            async function startImport(nodes) {
+                await page.evaluate(() => RED.actions.invoke("core:show-import-dialog"));
+                await page.waitForSelector("#red-ui-clipboard-dialog-import-text", { state: "visible" });
+                await page.fill("#red-ui-clipboard-dialog-import-text", JSON.stringify(nodes));
+                await page.focus("#red-ui-clipboard-dialog-import-text");
+                await page.keyboard.press("End");
+                await page.waitForSelector("#red-ui-clipboard-dialog-ok:not(.disabled)");
+                await page.click("#red-ui-clipboard-dialog-ok");
+                // The editor asks what to do with the nodes that already exist
+                await page.waitForSelector(".red-ui-notification button:has-text('Import copy')", { state: "visible" });
+            }
+
+            async function changeLocalLayout() {
+                await page.evaluate(() => {
+                    RED.nodes.workspace("tImp").layout = "LR";
+                    RED.nodes.subflow("sfImp").layout = "LR";
+                    RED.nodes.subflow("sfImp").wireStyle = "curved";
+                });
+            }
+
+            async function removeFlowWithSubflow() {
+                await page.evaluate(() => {
+                    RED.view.select(null);
+                    ["tImp", "xtImp"].forEach(id => { if (RED.nodes.workspace(id)) { RED.workspaces.delete(RED.nodes.workspace(id)); } });
+                    RED.nodes.eachSubflow(sf => { if (/^Import subflow/.test(sf.name)) { RED.nodes.removeSubflow(sf); } });
+                });
+            }
+
+            afterEach(removeFlowWithSubflow);
+
+            it("replaces the existing subflow with the imported layout; a flow can only be imported as a copy", async function() {
+                await createFlowWithSubflow();
+                const exported = await exportJSON("flow");
+                exported.find(n => n.id === "sfImp").layout.should.equal("TB");
+                await changeLocalLayout();
+
+                await startImport(exported);
+                await page.click(".red-ui-notification button:has-text('View nodes')");
+                await page.waitForSelector("#red-ui-clipboard-dialog-import-conflict", { state: "visible" });
+                // The editor offers to replace the subflow, but not the flow
+                const offered = await page.evaluate(() => {
+                    const ids = [];
+                    $('.red-ui-clipboard-dialog-import-conflicts-controls input[type="checkbox"]:visible').each(function() { ids.push($(this).attr("data-node-id")); });
+                    return ids;
+                });
+                offered.should.eql(["sfImp"]);
+                // Replace the subflow and do not import the flow again
+                await page.evaluate(() => {
+                    $('.red-ui-clipboard-dialog-import-conflicts-controls input[data-node-id="sfImp"]').prop("checked", true);
+                    $('#red-ui-clipboard-dialog-import-conflicts-list input[data-node-id="tImp"]').prop("checked", false).trigger("change");
+                });
+                await page.click("#red-ui-clipboard-dialog-import-conflict");
+                await page.waitForTimeout(500);
+
+                const result = await page.evaluate(() => {
+                    const flows = [];
+                    RED.nodes.eachWorkspace(ws => { if (ws.label === "Import test") { flows.push(ws.id); } });
+                    const subflows = [];
+                    RED.nodes.eachSubflow(sf => { if (/^Import subflow/.test(sf.name)) { subflows.push(sf.id); } });
+                    const sf = RED.nodes.subflow("sfImp");
+                    return { flows, subflows, tab: RED.nodes.workspace("tImp").layout, sf: { layout: sf.layout, wireStyle: sf.wireStyle } };
+                });
+                // No duplicates: the existing subflow now has the imported layout
+                result.subflows.should.eql(["sfImp"]);
+                result.sf.should.eql({ layout: "TB", wireStyle: "orthogonal" });
+                // The flow was not imported, so it keeps its own layout
+                result.flows.should.eql(["tImp"]);
+                result.tab.should.equal("LR");
+            });
+
+            it("imports a copy of the flow and subflow with the imported layout and keeps the existing ones", async function() {
+                await createFlowWithSubflow();
+                const exported = await exportJSON("flow");
+                await changeLocalLayout();
+
+                await startImport(exported);
+                await page.click(".red-ui-notification button:has-text('Import copy')");
+                await page.waitForTimeout(500);
+                // Imported nodes follow the mouse until they are dropped
+                await page.mouse.move(900, 600);
+                await page.mouse.click(900, 600);
+                await page.waitForTimeout(300);
+
+                const result = await page.evaluate(() => {
+                    const flows = [];
+                    RED.nodes.eachWorkspace(ws => { if (ws.label === "Import test") { flows.push({ id: ws.id, layout: ws.layout }); } });
+                    const subflows = [];
+                    RED.nodes.eachSubflow(sf => { if (/^Import subflow/.test(sf.name)) { subflows.push({ id: sf.id, layout: sf.layout, wireStyle: sf.wireStyle }); } });
+                    return { flows, subflows };
+                });
+                // The existing flow and subflow keep their own layout
+                result.flows.find(f => f.id === "tImp").layout.should.equal("LR");
+                result.subflows.find(f => f.id === "sfImp").should.containEql({ layout: "LR", wireStyle: "curved" });
+                // The copies have new ids and the imported layout
+                const copies = result.subflows.filter(f => f.id !== "sfImp");
+                copies.should.have.length(1);
+                copies[0].should.containEql({ layout: "TB", wireStyle: "orthogonal" });
+                const flowCopies = result.flows.filter(f => f.id !== "tImp");
+                flowCopies.forEach(f => f.layout.should.equal("TB"));
+            });
+        });
     });
 
     describe("admin api", function() {

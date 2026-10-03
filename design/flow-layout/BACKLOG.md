@@ -154,6 +154,7 @@ W commitach i opisach PR podajemy identyfikator, np. `Fix diff rows for added pr
 | [FL-B-007](#fl-b-007--podpowiedzi-etykiet-portów-w-układzie-tb) | Podpowiedzi etykiet portów w układzie TB | błąd | Gotowe | P4 | Mała | edytor – widok |
 | [FL-B-008](#fl-b-008--obrócone-etykiety-linków-do-innych-zakładek-w-tb) | Obrócone etykiety linków do innych zakładek w TB | błąd | Gotowe | P4 | Mała | edytor – widok |
 | [FL-B-009](#fl-b-009--flow-z-ustawieniem-domyślnym-edytora-nie-przenosi-wyglądu) | Flow z ustawieniem domyślnym edytora nie przenosi wyglądu | błąd | Do weryfikacji (zrobione: `cf95b28`) | **P2 (biznes: priorytet 1)** | Średnia | eksport-import |
+| [FL-B-010](#fl-b-010--import-flow-o-tym-samym-identyfikatorze-tylko-jako-kopia) | Import flow o tym samym identyfikatorze – tylko jako kopia (brak „zastąp”) | funkcja | Do decyzji / realizacji | P2 (biznes: priorytet 1) | Średnia | eksport-import |
 | [FL-T-001](#fl-t-001--automatyczne-rozmieszczanie-węzłów) | Automatyczne rozmieszczanie węzłów | funkcja | Nowe | P3 | – | edytor – widok |
 | [FL-T-002](#fl-t-002--routing-omijający-wszystkie-węzły) | Routing omijający wszystkie węzły | funkcja | Nowe | P3 | – | edytor – widok |
 | [FL-T-003](#fl-t-003--testy-e2e-w-ci) | Testy E2E w CI | dług techniczny | Gotowe | P2 | – | testy |
@@ -314,6 +315,33 @@ ponownym wczytaniu). Bez zmian: kopiuj/wklej, okno różnic, dopasowanie subflow
 `editor-client/nodes_spec.js` (3 padały bez poprawki), `ui/view-layout_spec.js` – `getPersistedFlowOptions`. Test E2E –
 nie uruchomiony (brak Playwrighta). Uwaga: ustawienie `editorTheme.flowLayout.enabled` (E-04) jeszcze nie istnieje – przy
 jego wprowadzeniu wyłączenie funkcji musi dawać puste `viewSettings` w eksporcie (R-01).
+
+**Poprawka po przeglądzie (2026-10-03, `3a95e1d`):** eksport z domyślnym układem edytora psuł rozpoznanie identycznego
+subflow przy imporcie (powstawał duplikat). `checkForMatchingSubflow` porównuje teraz z eksportem z i bez wartości
+domyślnych; test `nodes_spec.js` „matching an imported subflow (FL-B-009)” padał bez poprawki.
+
+### FL-B-010 – Import flow o tym samym identyfikatorze tylko jako kopia
+
+| Pole | Wartość |
+|---|---|
+| Status / Priorytet / Waga | Do realizacji / P2 (priorytet biznesowy 1) / Średnia |
+| Obszar | eksport-import, edytor |
+| Źródło | wymaganie Zamawiającego (2026-10-03): „przy imporcie istniejącego flow decydujemy, czy nadpisujemy, czy robimy duplikat – gdy identyfikatory flow i subflow są takie same” |
+| Pliki | `editor-client/src/js/ui/clipboard.js` – `getNodeElement` (przełącznik „replace” ukryty dla `tab`), `editor-client/src/js/nodes.js` – `importNodes` (`importMap`), `replaceNodes` (obsługuje tylko subflow i węzły konfiguracyjne), `ui/view.js`/historia (`t: "replace"`) |
+
+**Stan (zweryfikowany E2E, `flow_layout_e2espec.js` „importing a flow and subflow with the same ids”):** przy imporcie
+elementów o istniejących identyfikatorach edytor pyta (Cancel / View nodes / Import copy). **Subflow:** można wybrać
+„zastąp” albo „kopia” – działa, układ (`layout`, `wireStyle`) przenoszony. **Flow (zakładka):** przełącznik „zastąp” jest
+ukryty – możliwa tylko kopia (nowe identyfikatory) albo pominięcie. Wymuszenie „replace” dla zakładki (`importMap`)
+powoduje ciche pominięcie flow i jego węzłów (`replaceNodes` nie obsługuje zakładek) – nie jest dostępne z UI.
+**Oczekiwane:** dla flow o tym samym identyfikatorze wybór „zastąp” (właściwości zakładki – etykieta, opis, `env`,
+`disabled`, `layout`, `wireStyle` – oraz cała zawartość zastąpiona importowaną) albo „kopia”.
+**Proponowane rozwiązanie:** pokazać przełącznik „replace” dla `tab`; `replaceNodes` – dla zakładki: migawka do historii
+(cofnięcie przywraca poprzednią zakładkę i węzły), usunięcie węzłów/grup/junction w zakładce, aktualizacja właściwości
+zakładki, import nowej zawartości z tym samym `z`; łącza `link in/out` z innych flow zachowane, jeśli identyfikatory się
+zgadzają. Zmiana zachowania tylko po jawnym wyborze „zastąp” – domyślne zachowanie bez zmian.
+**DoD:** test E2E: eksport flow z układem TB → lokalna zmiana → import z „zastąp” → jeden flow z układem i zawartością
+z importu; cofnięcie (undo) przywraca stan sprzed importu; testy jednostkowe `replaceNodes` dla zakładki; wariant „kopia” bez zmian.
 
 ## 6. Karty – zadania i funkcjonalności (`FL-T`)
 
