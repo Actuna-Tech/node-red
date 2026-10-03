@@ -676,6 +676,60 @@ describe('flows/index', function() {
 
         });
     })
+    describe('flow layout properties', function() {
+        function loadFlows(originalConfig) {
+            storage.getFlows = function() {
+                return Promise.resolve({flows:originalConfig});
+            }
+            flows.init({log:mockLog, settings:{},storage:storage});
+            return flows.load().then(function() {
+                return flows.startFlows();
+            });
+        }
+        it("addFlow keeps the layout of the new flow and getFlow returns it", function() {
+            return loadFlows([{id:"t1",type:"tab"}]).then(function() {
+                return flows.addFlow({
+                    label:'new flow',
+                    layout:'TB',
+                    wireStyle:'orthogonal',
+                    nodes:[{id:"t2-1",x:10,y:10,type:"test",o:"LR",wires:[]}]
+                });
+            }).then(function(id) {
+                var tab = flows.getFlows().flows.find(n => n.id === id);
+                tab.layout.should.equal('TB');
+                tab.wireStyle.should.equal('orthogonal');
+                var flow = flows.getFlow(id);
+                flow.layout.should.equal('TB');
+                flow.wireStyle.should.equal('orthogonal');
+                flow.nodes[0].o.should.equal('LR');
+            });
+        });
+        it("getFlow does not add layout properties to a flow without them", function() {
+            return loadFlows([{id:"t1",type:"tab",label:"Flow"}]).then(function() {
+                var flow = flows.getFlow("t1");
+                flow.should.not.have.property('layout');
+                flow.should.not.have.property('wireStyle');
+            });
+        });
+        it("updateFlow keeps the layout of the flow", function() {
+            return loadFlows([
+                {id:"t1-1",x:10,y:10,z:"t1",type:"test",wires:[]},
+                {id:"t1",type:"tab",label:"Flow"}
+            ]).then(function() {
+                return flows.updateFlow("t1", {
+                    id:"t1",
+                    label:'Flow',
+                    layout:'auto',
+                    nodes:[{id:"t1-1",x:10,y:10,z:"t1",type:"test",wires:[]}]
+                });
+            }).then(function() {
+                var tab = flows.getFlows().flows.find(n => n.id === "t1");
+                tab.layout.should.equal('auto');
+                tab.should.not.have.property('wireStyle');
+                flows.getFlow("t1").layout.should.equal('auto');
+            });
+        });
+    })
     describe('#updateFlow', function() {
         it.skip("updateFlow");
     })

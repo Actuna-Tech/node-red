@@ -131,6 +131,29 @@ function getJSON(url) {
     });
 }
 
+function sendJSON(method, url, body) {
+    return new Promise((resolve, reject) => {
+        const data = body === undefined ? "" : JSON.stringify(body);
+        const req = http.request(url, { method, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } }, res => {
+            let text = "";
+            res.on("data", d => text += d);
+            res.on("end", () => {
+                if (res.statusCode >= 300) {
+                    reject(new Error(res.statusCode + ": " + text));
+                    return;
+                }
+                try {
+                    resolve(text ? JSON.parse(text) : null);
+                } catch (err) {
+                    reject(err);
+                }
+            });
+        });
+        req.on("error", reject);
+        req.end(data);
+    });
+}
+
 (playwright ? describe : describe.skip)("editor flow layout (e2e)", function() {
     this.timeout(60000);
 
@@ -466,6 +489,173 @@ function getJSON(url) {
             (await page.$eval("#user-settings-view-wire-style", el => el.value)).should.equal("curved");
             const options = await page.$$eval("#user-settings-view-flow-layout option", els => els.map(e => e.value));
             options.should.eql(["LR", "TB", "auto"]);
+        });
+    });
+
+    describe("export and import", function() {
+        async function exportJSON(range) {
+            await page.evaluate(() => RED.actions.invoke("core:show-export-dialog"));
+            await page.waitForSelector("#red-ui-clipboard-dialog-export-rng-" + range, { state: "visible" });
+            await page.click("#red-ui-clipboard-dialog-export-rng-" + range);
+            await page.waitForTimeout(200);
+            const json = await page.$eval("#red-ui-clipboard-dialog-export-text", el => el.value);
+            await page.click("#red-ui-clipboard-dialog-cancel");
+            await page.waitForTimeout(300);
+            return JSON.parse(json);
+        }
+
+        async function importJSON(nodes) {
+            await page.evaluate(() => RED.actions.invoke("core:show-import-dialog"));
+            await page.waitForSelector("#red-ui-clipboard-dialog-import-text", { state: "visible" });
+            await page.fill("#red-ui-clipboard-dialog-import-text", JSON.stringify(nodes));
+            // The dialog validates the text on keyup
+            await page.focus("#red-ui-clipboard-dialog-import-text");
+            await page.keyboard.press("End");
+            await page.waitForSelector("#red-ui-clipboard-dialog-ok:not(.disabled)");
+            await page.click("#red-ui-clipboard-dialog-ok");
+            await page.waitForTimeout(500);
+            // Imported nodes follow the mouse until they are dropped
+            await page.mouse.move(900, 600);
+            await page.mouse.click(900, 600);
+            await page.waitForTimeout(300);
+        }
+
+        // Give every node a new id, as if the flow came from another Node-RED instance
+        function withNewIds(nodes) {
+            let json = JSON.stringify(nodes);
+            nodes.forEach(function(n) {
+                json = json.split('"' + n.id + '"').join('"x' + n.id + '"');
+            });
+            return JSON.parse(json);
+        }
+
+        it("exports the current flow with its layout and imports it into a new flow", async function() {
+            await showFlow("tTB");
+            await page.evaluate(() => {
+                RED.view.select({ nodes: [RED.nodes.node("v4")] });
+                RED.actions.invoke("core:set-selected-node-ports-horizontal");
+                RED.view.select(null);
+            });
+            const exported = await exportJSON("flow");
+            exported.find(n => n.type === "tab").should.containEql({ id: "tTB", layout: "TB" });
+            exported.find(n => n.id === "v4").o.should.equal("LR");
+            exported.find(n => n.id === "v1").should.not.have.property("o");
+
+            await importJSON(withNewIds(exported));
+            const result = await page.evaluate(() => {
+                const tab = RED.nodes.workspace("xtTB");
+                return {
+                    active: RED.workspaces.active(),
+                    tab: tab && { layout: tab.layout, wireStyle: tab.wireStyle },
+                    v1: RED.view.layout.getNodeOrientation(RED.nodes.node("xv1")),
+                    v4: RED.nodes.node("xv4").o,
+                    v4Orientation: RED.view.layout.getNodeOrientation(RED.nodes.node("xv4"))
+                };
+            });
+            result.tab.should.eql({ layout: "TB", wireStyle: undefined });
+            result.v1.should.equal("TB");
+            result.v4.should.equal("LR");
+            result.v4Orientation.should.equal("LR");
+            // The imported flow is drawn top to bottom
+            await showFlow("xtTB");
+            const g = await nodeGeometry("xv1");
+            g.input.y.should.be.below(0);
+        });
+
+        it("exports all flows with their layout options", async function() {
+            const exported = await exportJSON("full");
+            const tabs = exported.filter(n => n.type === "tab");
+            tabs.find(t => t.id === "tLR").should.not.have.property("layout");
+            tabs.find(t => t.id === "tTB").layout.should.equal("TB");
+            tabs.find(t => t.id === "tAuto").layout.should.equal("auto");
+            tabs.find(t => t.id === "tOrth").wireStyle.should.equal("orthogonal");
+            exported.find(n => n.id === "m3").o.should.equal("TB");
+        });
+
+        it("keeps the orientation of copied nodes, which otherwise follow the target flow", async function() {
+            await showFlow("tMix");
+            await page.evaluate(() => RED.view.select({ nodes: [RED.nodes.node("m1"), RED.nodes.node("m3")] }));
+            const exported = await exportJSON("selected");
+            exported.filter(n => n.type === "tab").should.have.length(0);
+            exported.find(n => n.id === "m3").o.should.equal("TB");
+
+            // Paste into a top to bottom flow
+            await showFlow("tTB");
+            await importJSON(withNewIds(exported));
+            const pasted = await page.evaluate(() => ({
+                m1: RED.view.layout.getNodeOrientation(RED.nodes.node("xm1")),
+                m1o: RED.nodes.node("xm1").o,
+                m3: RED.nodes.node("xm3").o,
+                z: RED.nodes.node("xm1").z
+            }));
+            pasted.should.eql({ m1: "TB", m1o: undefined, m3: "TB", z: "tTB" });
+        });
+
+        it("exports and imports the layout of a subflow with its instance", async function() {
+            await showFlow("tLR");
+            await page.evaluate(() => {
+                RED.view.importNodes([
+                    { id: "sfL", type: "subflow", name: "Vertical subflow", info: "", category: "", layout: "TB", wireStyle: "orthogonal",
+                        in: [{ x: 60, y: 40, wires: [{ id: "sfn1" }] }], out: [{ x: 300, y: 200, wires: [{ id: "sfn1", port: 0 }] }], env: [], color: "#DDAA99" },
+                    { id: "sfn1", type: "change", z: "sfL", name: "", rules: [], x: 180, y: 120, wires: [[]] },
+                    { id: "sfi1", type: "subflow:sfL", z: "tLR", name: "", x: 300, y: 300, wires: [[]] }
+                ], { generateIds: false, touchImport: true });
+                RED.view.select({ nodes: [RED.nodes.node("sfi1")] });
+            });
+            const exported = await exportJSON("selected");
+            const sf = exported.find(n => n.type === "subflow");
+            sf.layout.should.equal("TB");
+            sf.wireStyle.should.equal("orthogonal");
+
+            // Remove the original subflow, as an identical subflow that already
+            // exists would be reused rather than imported
+            await page.evaluate(() => { RED.history.pop(); RED.view.select(null); });
+            (await page.evaluate(() => !!RED.nodes.subflow("sfL"))).should.be.false();
+
+            await importJSON(withNewIds(exported));
+            const imported = await page.evaluate(() => {
+                const sf = RED.nodes.subflow("xsfL");
+                return sf && { layout: sf.layout, wireStyle: sf.wireStyle };
+            });
+            imported.should.eql({ layout: "TB", wireStyle: "orthogonal" });
+            // The flow inside the imported subflow is drawn top to bottom
+            await showFlow("xsfL");
+            (await nodeGeometry("xsfn1")).orientation.should.equal("TB");
+        });
+    });
+
+    describe("admin api", function() {
+        it("keeps the layout when a single flow is added, read and updated", async function() {
+            const added = await sendJSON("POST", url + "/flow", {
+                label: "API flow",
+                layout: "TB",
+                wireStyle: "orthogonal",
+                nodes: [
+                    { id: "api1", type: "inject", name: "api start", props: [], repeat: "", once: false, topic: "", x: 200, y: 80, wires: [["api2"]] },
+                    { id: "api2", type: "debug", name: "api end", active: true, o: "LR", x: 200, y: 200, wires: [] }
+                ]
+            });
+            const flow = await getJSON(url + "/flow/" + added.id);
+            flow.layout.should.equal("TB");
+            flow.wireStyle.should.equal("orthogonal");
+            flow.nodes.find(n => n.id === "api2").o.should.equal("LR");
+
+            flow.layout = "auto";
+            delete flow.wireStyle;
+            await sendJSON("PUT", url + "/flow/" + added.id, flow);
+            const updated = await getJSON(url + "/flow/" + added.id);
+            updated.layout.should.equal("auto");
+            updated.should.not.have.property("wireStyle");
+
+            // The editor picks up the flow added through the API
+            await page.reload();
+            await page.waitForSelector(".red-ui-flow-node-group", { timeout: 30000 });
+            const tab = await page.evaluate(id => {
+                const ws = RED.nodes.workspace(id);
+                return { layout: ws.layout, wireStyle: ws.wireStyle };
+            }, added.id);
+            tab.should.eql({ layout: "auto", wireStyle: undefined });
+            await sendJSON("DELETE", url + "/flow/" + added.id).catch(() => {});
         });
     });
 
