@@ -178,6 +178,8 @@ Funkcja: Wgrywanie paczki .tgz modułu już zainstalowanego
 
 ### Z-04 – Pełne API pojedynczego flow
 
+> **Zrealizowane (F3, 2026-10-03):** `flows/index.js` – `getFlowRevision(id)` (wg definicji; `null` dla nieistniejącego flow), `buildUpdateFlowConfig(id, flow, {create, globalConfigs})` (tworzenie pod id → `created`, `invalid_flow_id`, `duplicate_id` dla id węzłów innych flow/węzłów globalnych), `buildAddFlowConfig(flow, {globalConfigs})`, `applyGlobalConfigs` (upsert, `duplicate_id`, `invalid_node_type` dla `tab/subflow/group`); `flows/pipeline.js` `checkRevision({present, value, current, strictType})` – wspólna kontrola kroku 2 (`null` jako bieżąca = flow nie istnieje, więc `rev:null` przechodzi tylko przy tworzeniu); `api/flows.js` – wydzielenie `rev`/`globalRev`/`globalConfigs` z treści (nie trafiają do węzła `tab`), kontrola rewizji w sekcji blokady (krok `apply`), `deploy.putCreatesFlow`, wynik v2 `{id, rev, revAll, created}` / `{id, rev}`, `getFlow` v2 z `rev`; `editor-api/admin/flow.js` – walidacja `Node-RED-API-Version`, `ETag: "<rev>"`, `If-Match` (w v2, sprzeczny z `rev` → 400 `invalid_revision`, w v1 ignorowany), 201 dla `POST` v2 i `PUT` tworzącego w v2. Testy: `flows/index_spec.js` (`#getFlowRevision (Z-04)`, `single-flow configuration (Z-04)`), `api/flows_spec.js` (`single-flow api (Z-04)`), `admin/flow_spec.js` (`single-flow api v1/v2 (Z-04)` – 8 czerwonych przed zmianą `flow.js`), integracyjny `test/unit/node-red/flow-api_spec.js` (proces potomny). **Doprecyzowania/odstępstwa:** (1) `ETag` w cudzysłowie (format HTTP), `If-Match` z/bez cudzysłowu i `W/`, `*` = brak rewizji; (2) GET v1: Express dodaje własny słaby `ETag` (jak w 5.0.7) – test sprawdza brak `ETag` z rewizją flow, nie brak nagłówka; (3) `rev` w `POST /flow` ignorowany (jak dotąd), sprawdzany tylko `globalRev`; (4) `rev` w złym typie → 400 `invalid_revision` tylko w `/flow` (nowe pole); `POST /flows` bez zmian (409 jak 5.0.7, N-01); (5) wydzielanie `rev`/`globalRev`/`globalConfigs` w runtime API (nie w editor-api) – obejmuje też wywołania runtime API bez HTTP; (6) nieprawidłowy `Node-RED-API-Version` na `/flow` → 400 (wcześniej ignorowany) – drobna zmiana v1 dla błędnych klientów; (7) walidacja „węzeł konfiguracyjny” w `globalConfigs` ograniczona do `tab/subflow/group` (jak w Ryzykach); (8) nazwy `rev`/`revAll` w odpowiedzi PUT przyjęte jak w karcie („do potwierdzenia”).
+
 > **Decyzja N-01 (2026-10-03):** pusty `rev` (`""` lub `null`): przy `deploy.requireRevision: false` – jak w 5.0.7 (409 `version_mismatch`); przy `true` – traktowany jak brak rewizji → 409 `version_required` (decyzja N-01, wariant A); `400 invalid_revision` tylko dla rewizji w złym typie. Scenariusze BDD i testy kontraktu dostosować przy realizacji.
 
 | Pole | Wartość |
@@ -402,6 +404,8 @@ Funkcja: Pełne API pojedynczego flow
 
 ### Z-05 – Wymóg rewizji przy każdym wdrożeniu
 
+> **Zrealizowane – część serwerowa (F3, 2026-10-03):** `flows/pipeline.js` `checkRevision({…, required})` – brak/pusty `rev` (`""`, `null` – N-01) → 409 `version_required`, `null` przyjmowany tylko dla nieistniejącego celu (tworzenie), zły typ → 400 `invalid_revision`; `deploy({requireRevision, apiVersion})` – v1 przy wymogu zawsze 409 `version_required` z komunikatem wskazującym v2 (R-14), `reload` zwolniony; `api/flows.js` – macierz: `PUT /flow/:id` (także `global`, tworzenie z `rev:null`), `DELETE /flow/:id` (`opts.rev` z `?rev=`, sprawdzany zawsze, gdy podany), `POST /flow` z `globalConfigs` → `globalRev`; odczyt ustawienia przy każdym wywołaniu; audyt `flows.set`/`flow.update`/`flow.remove` z `error: "version_required"`; `api/settings.js` – `deploy: {requireRevision: true}` w ustawieniach runtime (tylko flaga, tylko gdy włączona); `editor-api` – `apiVersion` w `POST /flows`, `?rev=` w `DELETE /flow/:id`. Testy: `api/flows_spec.js` (`requireRevision (Z-05)` – oba stany), `api/settings_spec.js`, `admin/flows_spec.js`, `admin/flow_spec.js`. **Nie zrealizowane w tej gałęzi:** edytor `deploy.js` (wymuszone nadpisanie z pobraniem `rev` – D-12, komunikat `version_required`) – tor editor-client, po scaleniu P-02; test „rev check happens before preDeploy hook” – Z-06 odłożone. **Doprecyzowania:** (1) `PUT /flow/:id` nieistniejącego flow bez `putCreatesFlow` – 404 ma pierwszeństwo przed `version_required`; (2) `PUT /flow/:id` z `globalConfigs` – macierz wymaga tylko `rev` flow (bez `globalRev`); `globalRev` sprawdzany, gdy podany – **pytanie do Zamawiającego**, czy przy wymogu wymagać też `globalRev` (upsert nadpisuje globalne configi jak w `POST /flow`); (3) `DELETE` bez `?rev=` dla nieistniejącego flow – 404 (nie `version_required`).
+
 > **Decyzja N-01 (2026-10-03):** pusty `rev` (`""` lub `null`): przy `deploy.requireRevision: false` – jak w 5.0.7 (409 `version_mismatch`); przy `true` – traktowany jak brak rewizji → 409 `version_required` (decyzja N-01, wariant A); `400 invalid_revision` tylko dla rewizji w złym typie. Scenariusze BDD i testy kontraktu dostosować przy realizacji.
 
 | Pole | Wartość |
@@ -554,6 +558,8 @@ Funkcja: Wymóg rewizji przy wdrożeniu
 ---
 
 ### Z-06 – Hooki wdrożenia `preDeploy` / `postDeploy` w `RED.hooks`
+
+> **Odłożone (2026-10-03, decyzja budżetowa).** Poza F3; kotwice kroków 3 i 11 w `flows/pipeline.js` (E-01) pozostają bez zmian.
 
 | Pole | Wartość |
 |---|---|

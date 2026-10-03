@@ -115,6 +115,14 @@ Bez `shutdownTimeout` drenaż jest wyłączony (zachowanie jak dotąd), a hook `
 | `PUT /flow/:id` nieistniejącego id bez `deploy.putCreatesFlow` | **404** jak dotąd (R-34) | utworzyć flow przez `POST /flow` |
 | `DELETE /flow/:id` przy `requireRevision: true` | wymaga `?rev=` – brak → 409 `version_required` (R-14) | dołączać `?rev=<rev flow>` |
 | Globalne węzły konfiguracyjne razem z flow | nowe pole `globalConfigs[]` (D-08) – pole `configs` zachowuje dotychczasowe znaczenie (konfiguracje flow) | nie wysyłać konfiguracji globalnych w `configs` |
+| Format `ETag` (Z-04, doprecyzowanie przy realizacji) | `ETag: "<rev>"` (w cudzysłowie, zgodnie z HTTP); `If-Match` przyjmowany z cudzysłowem lub bez, także z prefiksem `W/`; `If-Match: *` = brak rewizji | odsyłać wartość `ETag` bez zmian |
+| Odpowiedź `PUT /flow/:id` w v2 (Z-04) | `{id, rev, revAll}` – `rev` nowa rewizja flow, `revAll` nowa rewizja całości | zapamiętać `rev` do kolejnego `PUT` |
+| `rev` w `POST /flow` (Z-04) | ignorowane jak dotąd (sprawdzane tylko `globalRev`) | – |
+| `PUT /flow/:id` z id węzła używanym w innym flow (Z-04) | 400 `duplicate_id` (dotąd przyjmowane, powstawały zdublowane id) | poprawić dane |
+| Nieprawidłowy nagłówek `Node-RED-API-Version` na `/flow` (Z-04) | 400 `invalid_api_version` (jak na `/flows`) | wysyłać `v1`/`v2` albo brak nagłówka |
+| `DELETE /flow/:id?rev=` bez `deploy.requireRevision` (Z-05) | rewizja sprawdzana, gdy podana (409 `version_mismatch`) | – |
+| `PUT /flow/:id` lub `DELETE` nieistniejącego flow przy `requireRevision` (Z-05) | 404 `not_found` ma pierwszeństwo przed `version_required` (bez `putCreatesFlow`) | – |
+| Stan wymogu rewizji dla edytora (Z-05) | `GET /settings` → `deploy: {requireRevision: true}` (tylko gdy włączony) | – |
 
 **Zalecenie:** wszystkie narzędzia na API **v2** i obsługa obu kodów 409 (`version_mismatch`, `version_required`) tą samą
 ścieżką „pobierz – nanieś – ponów”. Pytanie N-04 (czy narzędzia dziś używają v2) – **nieznane**, więc przewodnik zakłada
@@ -134,6 +142,9 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 - Instancja tylko edycyjna (`editorOnly: true`): odpowiedź **`{rev, started: false}`** bez błędu – flow nie są
   uruchamiane (R-39).
 - Błąd zatrzymania: 500 `deploy_stop_failed` z `rev`.
+- Kolejne wdrożenia czekają na start flow poprzedniego wdrożenia (blokada wdrożeń); przy ustawionym
+  `deploy.startTimeout` – najwyżej do upływu limitu (ostrzeżenie w logu, start trwa w tle), także w trybie
+  domyślnym (P-01, bezpiecznik W2; doprecyzowanie R-43).
 
 ### 4.3 Walidacja przed wdrożeniem (Z-06)
 

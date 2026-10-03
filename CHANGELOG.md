@@ -56,6 +56,59 @@ Fixes
  - "Merge" and "Ignore & deploy" in the conflict dialog no longer fail with a script error when
    no background update notification was shown
 
+Admin API
+
+ - New setting `deploy.response: "stopped" | "started"` (default `"stopped"`, unchanged).
+   With `"started"` the Admin API answers a deployment (`POST /flows` of every type including
+   `reload`, `POST /flow`, `PUT`/`DELETE /flow/:id`) once the new flows have started and the
+   `runtime-deploy` event was emitted, so http endpoints of the deployed flows answer straight
+   after the response. Errors (the configuration is saved): 500
+   `{code: "deploy_start_failed", message, rev, errors: [...]}` with `errors[].code`
+   `missing_types`, `missing_modules`, `safe_mode`, `flow_start_failed` or `start_timeout`
+   (errors of single node constructors are only logged, as before), and 500
+   `{code: "deploy_stop_failed", message, rev}` when stopping the old nodes fails (in the
+   default mode such errors are still ignored). Clients should take the new `rev` from
+   the error. Internal loads (runtime start, project switch) do not wait. An unknown value
+   is logged as a warning and treated as `"stopped"`
+ - New setting `deploy.startTimeout` (ms, default not set): with `"started"` a start that takes
+   longer returns 500 `deploy_start_failed` with `errors[].code: "start_timeout"`; the flows
+   keep starting in the background and the result is logged. In both modes the deploy lock is
+   released at the latest when the limit has passed (with a warning); without the setting the
+   lock is kept until the start completes and a warning is logged after 60 s
+ - Error responses of the Admin API include `rev` and `errors` when the error carries them
+ - Single-flow API (`/flow`): requests without the new fields and without
+   `Node-RED-API-Version: v2` behave as before. New:
+   - `GET /flow/:id` with v2 returns the flow revision `rev` (sha256 of the tab and its nodes,
+     without credentials; for `global` the global configuration nodes and subflows) and the
+     header `ETag: "<rev>"`; the revision changes only when that flow changes
+   - `PUT /flow/:id` checks an optional `rev` (409 `version_mismatch`, 400 `invalid_revision`
+     for a revision that is not a string); with v2 `If-Match` is equivalent to `rev` (both
+     given and different: 400 `invalid_revision`) and the response is `{id, rev, revAll}`
+   - optional `globalConfigs[]` (add or replace global configuration nodes in the same
+     deployment; 400 `duplicate_id` / `invalid_node_type`) and `globalRev` (revision of
+     `global`, 409 `version_mismatch`) in `PUT /flow/:id` and `POST /flow`; the existing
+     `configs` keeps its meaning (configuration nodes of the flow)
+   - `POST /flow` with v2 returns 201 `{id, rev}`; v1 still 200 `{id}`
+   - new setting `deploy.putCreatesFlow` (default `false`): `PUT /flow/:id` of a missing flow
+     creates it under that id (201 in v2, 200 in v1; `rev: null` = only if it does not exist;
+     400 `invalid_flow_id` if the id is used by another node); without it 404 as before
+   - `PUT /flow/:id` rejects node ids used in another flow (400 `duplicate_id`; before
+     they were accepted and produced duplicate ids)
+   - an invalid `Node-RED-API-Version` on `/flow` returns 400 `invalid_api_version`, as on `/flows`
+   - `DELETE /flow/:id?rev=<rev>` checks the flow revision when given (409 `version_mismatch`)
+ - New setting `deploy.requireRevision` (default `false`, unchanged): Admin API deployments
+   without a revision are rejected with 409 `{code: "version_required", message}` - `POST /flows`
+   v2 without `rev` (an empty `rev` counts as missing), every `POST /flows` v1 (the message
+   points to the v2 API), `PUT /flow/:id` without the flow `rev` (`rev: null` to create with
+   `deploy.putCreatesFlow`), `DELETE /flow/:id` without `?rev=`, `POST /flow` with
+   `globalConfigs` but without `globalRev`. A revision of a wrong type returns 400
+   `invalid_revision`. `reload` deployments and `POST /flows/state` are exempt. `GET /settings`
+   reports `deploy: {requireRevision: true}` for the editor
+
+Fixes
+
+ - A rejected start of the flows after a deployment is logged as an error instead of an
+   unhandled promise rejection (the response is unchanged)
  - `POST /flows/state` and project switches now wait for a running deployment (and the other
    way round) instead of running concurrently with it - they share the deploy lock
  - The deploy lock is held until the new flows have started (also when the start fails); the

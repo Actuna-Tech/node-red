@@ -13,6 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   P-01: contract test of the deploy_start_failed response (status 500, rev, errors)
+ *   Z-05: contract tests of version_required for v1 and v2 deployments
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var request = require('supertest');
@@ -304,5 +310,77 @@ describe("api/admin/flows", function() {
                 res.body.should.have.property("code","invalid_run_state");
                 done();
             });
+    });
+
+    it('set flows - deploy_start_failed returns 500 with rev and errors - v2 (P-01)', async function() {
+        flows.init({
+            flows:{
+                setFlows: function() {
+                    var err = new Error("Deployment saved, but the flows did not start");
+                    err.code = "deploy_start_failed";
+                    err.status = 500;
+                    err.rev = "newRev";
+                    err.errors = [{code:"missing_types", message:"Missing node types", types:["missing"]}];
+                    return Promise.reject(err);
+                }
+            }
+        });
+        const res = await request(app)
+            .post('/flows')
+            .set('Accept', 'application/json')
+            .set('Node-RED-API-Version','v2')
+            .send({flows:[]})
+            .expect(500);
+        res.body.should.eql({
+            code: "deploy_start_failed",
+            message: "Deployment saved, but the flows did not start",
+            rev: "newRev",
+            errors: [{code:"missing_types", message:"Missing node types", types:["missing"]}]
+        });
+    });
+
+    describe("requireRevision (Z-05)", function() {
+        let calls;
+        let required;
+        before(function() {
+            flows.init({
+                flows:{
+                    setFlows: function(opts) {
+                        calls.push(opts);
+                        if (required && (opts.apiVersion === "v1" || !opts.flows.rev)) {
+                            var err = new Error(opts.apiVersion === "v1" ? "A revision is required to deploy: use the Admin API v2 (Node-RED-API-Version: v2) with rev" : "A revision (rev) is required to deploy");
+                            err.code = "version_required";
+                            err.status = 409;
+                            return Promise.reject(err);
+                        }
+                        return Promise.resolve({rev:"newRev"});
+                    }
+                }
+            });
+        });
+        beforeEach(function() {
+            calls = [];
+        });
+        it("passes the API version to the runtime", async function() {
+            required = false;
+            await request(app).post('/flows').send([]).expect(204);
+            await request(app).post('/flows').set('Node-RED-API-Version','v2').send({flows:[]}).expect(200);
+            calls[0].should.have.property("apiVersion","v1");
+            calls[1].should.have.property("apiVersion","v2");
+        });
+        it("POST /flows v1|v2 returns 409 version_required when required", async function() {
+            required = true;
+            let res = await request(app).post('/flows').send([]).expect(409);
+            res.body.should.have.property("code","version_required");
+            res.body.message.should.match(/v2/);
+            res = await request(app).post('/flows').set('Node-RED-API-Version','v2').send({flows:[]}).expect(409);
+            res.body.should.have.property("code","version_required");
+            res.body.should.have.property("message");
+        });
+        it("same requests succeed when not required", async function() {
+            required = false;
+            await request(app).post('/flows').send([]).expect(204);
+            await request(app).post('/flows').set('Node-RED-API-Version','v2').send({flows:[]}).expect(200);
+        });
     });
 });
