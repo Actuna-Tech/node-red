@@ -29,6 +29,7 @@ Godziny kroków przed pierwszym commitem są orientacyjne; godziny commitów poc
 | 10:00 | Audyt backupów, eksportu, importu, scalania i biblioteki | wyniki w [PROBLEMY.md](PROBLEMY.md): P1 naprawione wcześniej; **P2 otwarte** – okno Review Changes nie pokazuje dodanych `layout`/`o` (odtworzone w przeglądarce, scalanie działa); P3, P4 – drobne, otwarte |
 | 10:15 | Backlog błędów i zadań z Definition of Done/Ready i szablonami zgłoszeń | [BACKLOG.md](BACKLOG.md): 5 otwartych błędów, 7 zadań, 4 pozycje zamknięte; sekcja na tematy do analizy |
 | 10:40 | Analiza przeniesienia stanu do PostgreSQL pod Kubernetes (na podstawie kodu runtime, registry, editor-api) | [../k8s-postgres/ANALIZA.md](../k8s-postgres/ANALIZA.md); karta FL-A-001 w backlogu |
+| 11:10 | Architektura docelowa K8s v2 (edytor + workery, PostgreSQL baza na tenanta, Redis, pliki węzłów uniwersalnych, wydania niezmienne) + backlog K8S | [../k8s-postgres/ARCHITEKTURA.md](../k8s-postgres/ARCHITEKTURA.md), [../k8s-postgres/BACKLOG.md](../k8s-postgres/BACKLOG.md) |
 
 ## Wyniki testów (ostatnie uruchomienie)
 

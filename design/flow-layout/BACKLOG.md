@@ -357,7 +357,7 @@ _Miejsce na dodatkową listę do przeanalizowania – każdy punkt dostaje kart�
 |---|---|
 | Status | **Zamknięte (analiza wykonana)** – 2026-10-03 |
 | Wynik | [design/k8s-postgres/ANALIZA.md](../k8s-postgres/ANALIZA.md) |
-| Powstałe zadania | `K8S-T-001` … `K8S-T-008` (tabela w §8 analizy) – do przeniesienia do osobnego backlogu po decyzji o modelu wdrożenia |
+| Powstałe zadania | osobny backlog: [design/k8s-postgres/BACKLOG.md](../k8s-postgres/BACKLOG.md); architektura docelowa (v2): [ARCHITEKTURA.md](../k8s-postgres/ARCHITEKTURA.md) |
 
 **Wniosek:** cały trwały stan (flow z układem, poświadczenia, ustawienia, sesje, biblioteka,
 kontekst) da się przenieść do PostgreSQL przez istniejące punkty rozszerzeń, bez zmian w rdzeniu.

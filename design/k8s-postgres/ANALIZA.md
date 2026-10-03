@@ -314,6 +314,9 @@ plus kryteria poniżej.
 
 ## 9. Pytania do ustalenia przed implementacją
 
+> Odpowiedzi zespołu i wynikająca z nich architektura docelowa: [ARCHITEKTURA.md](ARCHITEKTURA.md) (wersja 2).
+> Zadania: [BACKLOG.md](BACKLOG.md) – zastępują wstępną listę z §8.
+
 1. Wymagana dostępność (RTO/RPO) – czy wystarczy model A, czy potrzebny B/C?
 2. Jakie typy flow dominują (HTTP, MQTT, harmonogramy, przetwarzanie wsadowe)?
 3. Ile osób edytuje jednocześnie i czy edytor ma być dostępny w produkcji?
