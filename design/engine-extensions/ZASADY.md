@@ -40,7 +40,8 @@
 | Z-11 | – | zmienna środowiskowa `NODE_RED_READ_ONLY_USER_DIR` (R-33) | działa w CLI przed wyborem pliku ustawień (kopia `settings.js` do `~/.node-red`); równoważna `readOnlyUserDir: true` (**R-18**); `readOnlyUserDir` chroni także bezwzględny `flowFile` (R-40) |
 | Z-14 | – | `editorTheme.flowLayout: { enabled: false }` | wymóg zlecenia 3.2: domyślnie zachowanie jak oficjalne wydanie (bez nowych elementów UI) |
 | Z-15 | – | `editorOnly: false` (alternatywa: `runtimeState.autoStart`) | jedno znaczenie: instancja wczytuje flow, nie uruchamia ich i nie zapisuje stanu w magazynie; przy `deploy.response: "started"` odpowiedź `{rev, started: false}` (R-39) |
-| P-01 / Z-08 | – | `deploy.startTimeout` (ms), domyślnie wyłączony | limit czasu startu w trybie `deploy.response: "started"`; po przekroczeniu 500 `deploy_start_failed` z `errors[].code: "start_timeout"`, flow startują dalej w tle, wynik w logu (**R-38**) |
+| P-01 / Z-08 | – | `deploy.startTimeout` (ms), domyślnie wyłączony | limit czasu startu w trybie `deploy.response: "started"`; po przekroczeniu 500 `deploy_start_failed` z `errors[].code: "start_timeout"`, flow startują dalej w tle, wynik w logu (**R-38**); blokada wdrożeń trwa do końca startu (R-43, **R-45**) |
+| P-01 | – | `deploy.startTimeoutReleasesLock: false` | `true` (przy ustawionym `startTimeout`) – blokada wdrożeń zwalniana po upływie `startTimeout` w obu trybach odpowiedzi (ostrzeżenie w logu); ryzyko równoległego startu flow przez kolejne wdrożenie; domyślnie blokada do końca startu (**R-45**) |
 | Z-06 | – | `deploy.hookTimeout: 30000` (ms) | hook `preDeploy` działa pod blokadą wdrożeń – limit chroni przed zablokowaniem API |
 | Z-09 | – | `deploy.reload: { watch: false, type: "full" \| "diff", preReloadTimeout: 1200000, concurrency: <opcjonalnie> }` | `type` domyślnie `"full"` (jak dzisiejszy `reload`); dla długich rozmów rekomendowane `"diff"`; `concurrency` wymaga wtyczki koordynacji (Z-10) – tylko wartość liczbowa; bez łączności z koordynatorem przeładowanie czeka, działa stara konfiguracja (R-20); przy `watch: true` błąd rejestracji `watchFlows` → błąd startu (R-36); dodatkowy `preReload` (D-17) poza blokadą – najwyżej jedna runda, potem przeładowanie z ostrzeżeniem (R-36) |
 | Z-09 | – | `deploy.reload.retry: { min: 1000, max: 60000, attempts }` (ms) | ponawianie odczytu magazynu po błędzie, opóźnienie wykładnicze `min`…`max`; po wyczerpaniu `attempts` – stan `failed` i `/ready` 503 (D-18, **R-20**); `attempts` domyślnie **10** (~8 min), potem `failed` (**R-36**) |
@@ -89,7 +90,8 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
 
 - **Wspólna blokada (R-11):** `POST /flows`, `POST /flows/state` (start/stop flow) i przełączenie projektu wykonują się
   pod tą samą blokadą wdrożeń (`runtime/lib/flows/lock.js`); druga operacja czeka na zakończenie pierwszej.
-  Blokada trwa do końca startu nowych flow (krok A8, R-43), także gdy odpowiedź HTTP wraca wcześniej.
+  Blokada trwa do końca startu nowych flow (krok A8, R-43), także gdy odpowiedź HTTP wraca wcześniej i po przekroczeniu
+  `deploy.startTimeout`; zwolnienie po limicie tylko przy `deploy.startTimeoutReleasesLock: true` (R-45).
 - **Hooki (R-15):** `preDeploy` – tylko walidacja (bez modyfikacji treści), limit `deploy.hookTimeout` (30 s);
   `postDeploy` – asynchronicznie, błąd tylko w logu; **brak hooków** `preDeploy`/`postDeploy` przy starcie procesu
   (wczytanie flow z magazynu) i przy operacjach Projektów.

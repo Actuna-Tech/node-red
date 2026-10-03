@@ -19,6 +19,8 @@
  *   E-01: tests of the deploy pipeline contract; the deploy lock is held until the start completes
  *   P-01: tests of setFlows waiting for the start (deploy.response "started"), start errors,
  *   deploy.startTimeout and the log of a rejected start in the default mode
+ *   R-45: the deploy lock is kept after deploy.startTimeout unless
+ *   deploy.startTimeoutReleasesLock is set
  *   Z-04: tests of getFlowRevision and the single-flow configuration (create, globalConfigs)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
@@ -1191,13 +1193,51 @@ describe('flows/index', function() {
                 rev.should.equal("savedRev");
                 recorded.should.containEql("flows:started");
             });
-            it('with deploy.startTimeout releases the deploy lock after the limit while the start goes on (W2)', async function() {
+            [
+                {name: "default mode", deployOpts: undefined, deploy: {startTimeout: 30}},
+                {name: "started mode", deployOpts: waitForStart, deploy: {startTimeout: 30}},
+                {name: "started mode, startTimeoutReleasesLock false", deployOpts: waitForStart, deploy: {startTimeout: 30, startTimeoutReleasesLock: false}}
+            ].forEach(function(mode) {
+                it('with deploy.startTimeout keeps the deploy lock until the start completes - ' + mode.name + ' (R-45)', async function() {
+                    const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
+                    const utilLog = NR_TEST_UTILS.require("@node-red/util").log;
+                    const warn = sinon.stub(utilLog, "warn");
+                    let finishStart;
+                    try {
+                        await initFlows({deploy: mode.deploy});
+                        const pendingStart = new Promise(resolve => { finishStart = resolve });
+                        replaceFlowCreate(function() { return pendingStart });
+                        let error;
+                        await lock.runExclusive(function() {
+                            return flows.setFlows(clone(baseConfig), null, "full", false, false, null, mode.deployOpts);
+                        }).catch(err => { error = err });
+                        if (mode.deployOpts) {
+                            // 500 start_timeout is returned, the lock is kept
+                            error.should.have.property("code","deploy_start_failed");
+                            error.errors[0].should.have.property("code","start_timeout");
+                        } else {
+                            should.not.exist(error);
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 80));
+                        lock.isLocked().should.be.true();
+                        warn.called.should.be.false();
+                        finishStart();
+                        await lock.runExclusive(async () => {});
+                        lock.isLocked().should.be.false();
+                        await new Promise(resolve => setTimeout(resolve, 5));
+                    } finally {
+                        warn.restore();
+                        if (finishStart) { finishStart() }
+                    }
+                });
+            });
+            it('with deploy.startTimeoutReleasesLock releases the deploy lock after the limit while the start goes on (W2, R-45)', async function() {
                 const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
                 const utilLog = NR_TEST_UTILS.require("@node-red/util").log;
                 const warn = sinon.stub(utilLog, "warn");
                 let finishStart;
                 try {
-                    await initFlows({deploy: {startTimeout: 30}});
+                    await initFlows({deploy: {startTimeout: 30, startTimeoutReleasesLock: true}});
                     const pendingStart = new Promise(resolve => { finishStart = resolve });
                     replaceFlowCreate(function() { return pendingStart });
                     // default response mode: the result returns before the start

@@ -20,6 +20,7 @@
  *   P-01: tests of deploy.response "started" (waitForStart, deploy errors with status 500)
  *   Z-04: tests of the single-flow api (rev, globalRev, globalConfigs, putCreatesFlow)
  *   Z-05: tests of deploy.requireRevision in both states
+ *   R-45: warnings for deploy.startTimeoutReleasesLock
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -767,6 +768,20 @@ describe("runtime-api/flows", function() {
         });
         it("invalid deploy.startTimeout logs warning", function() {
             initRuntime({response:"started", startTimeout:"soon"});
+            runtime.log.warn.calledOnce.should.be.true();
+        });
+        it("deploy.startTimeoutReleasesLock: no warning for false or true with startTimeout (R-45)", function() {
+            for (const deploySettings of [{startTimeout:1000}, {startTimeout:1000, startTimeoutReleasesLock:false}, {startTimeout:1000, startTimeoutReleasesLock:true}, {startTimeoutReleasesLock:false}]) {
+                initRuntime(deploySettings);
+                runtime.log.warn.called.should.be.false();
+            }
+        });
+        it("invalid deploy.startTimeoutReleasesLock logs warning (R-45)", function() {
+            initRuntime({startTimeout:1000, startTimeoutReleasesLock:"yes"});
+            runtime.log.warn.calledOnce.should.be.true();
+        });
+        it("deploy.startTimeoutReleasesLock without startTimeout logs warning (R-45)", function() {
+            initRuntime({startTimeoutReleasesLock:true});
             runtime.log.warn.calledOnce.should.be.true();
         });
         it("maps deploy_start_failed to status 500 with rev and errors", async function() {

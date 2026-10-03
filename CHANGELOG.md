@@ -72,9 +72,13 @@ Admin API
    is logged as a warning and treated as `"stopped"`
  - New setting `deploy.startTimeout` (ms, default not set): with `"started"` a start that takes
    longer returns 500 `deploy_start_failed` with `errors[].code: "start_timeout"`; the flows
-   keep starting in the background and the result is logged. In both modes the deploy lock is
-   released at the latest when the limit has passed (with a warning); without the setting the
-   lock is kept until the start completes and a warning is logged after 60 s
+   keep starting in the background and the result is logged. The deploy lock is kept until the
+   start completes (a warning is logged after 60 s)
+ - New setting `deploy.startTimeoutReleasesLock` (default `false`): with `true` and
+   `deploy.startTimeout`, the deploy lock is released when the limit has passed (in both
+   response modes, with a warning) while the flows are still starting - a following
+   deployment may then run concurrently with that start. An invalid value or `true` without
+   `deploy.startTimeout` is logged as a warning
  - Error responses of the Admin API include `rev` and `errors` when the error carries them
  - Single-flow API (`/flow`): requests without the new fields and without
    `Node-RED-API-Version: v2` behave as before. New:

@@ -19,6 +19,7 @@
  *   E-01: tests of holdUntil - the lock is held until the start of the flows completes (R-43)
  *   P-01: tests of the limit of holding the lock (deploy.startTimeout) and the warning
  *   when the lock is held for long
+ *   R-45: the timer of the limit does not keep the process alive
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -130,6 +131,27 @@ describe("flows/lock", function() {
             warn.calledOnce.should.be.true();
             lock.isLocked().should.be.false();
             finishStart();
+        });
+        it("the timer of the limit does not keep the process alive", async function() {
+            const timers = [];
+            const originalSetTimeout = global.setTimeout;
+            let finishStart;
+            global.setTimeout = function() {
+                const timer = originalSetTimeout.apply(this, arguments);
+                timers.push(timer);
+                return timer;
+            };
+            try {
+                await lock.runExclusive(async function() {
+                    lock.holdUntil(new Promise(resolve => { finishStart = resolve }), { limit: 1000 });
+                });
+            } finally {
+                global.setTimeout = originalSetTimeout;
+            }
+            timers.length.should.be.above(0);
+            timers.forEach(timer => timer.hasRef().should.be.false());
+            finishStart();
+            await lock.runExclusive(async () => {});
         });
         it("counts the limit from holdUntil, not from the end of the section", async function() {
             let finishStart;
