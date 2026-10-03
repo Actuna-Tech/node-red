@@ -88,7 +88,8 @@ Wspólna kolejność kroków (rozstrzygnięcia K-1…K-3 z [PRZEGLAD.md](PRZEGLA
 uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
 
 - **Wspólna blokada (R-11):** `POST /flows`, `POST /flows/state` (start/stop flow) i przełączenie projektu wykonują się
-  pod tą samą blokadą wdrożeń (mutex w `runtime/lib/api/flows.js`); druga operacja czeka na zakończenie pierwszej.
+  pod tą samą blokadą wdrożeń (`runtime/lib/flows/lock.js`); druga operacja czeka na zakończenie pierwszej.
+  Blokada trwa do końca startu nowych flow (krok A8, R-43), także gdy odpowiedź HTTP wraca wcześniej.
 - **Hooki (R-15):** `preDeploy` – tylko walidacja (bez modyfikacji treści), limit `deploy.hookTimeout` (30 s);
   `postDeploy` – asynchronicznie, błąd tylko w logu; **brak hooków** `preDeploy`/`postDeploy` przy starcie procesu
   (wczytanie flow z magazynu) i przy operacjach Projektów.
@@ -96,7 +97,7 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
 **A. Wdrożenie przez Admin API lub wywołanie wewnętrzne** (`/flows`, `/flow`, `/flow/:id`, typ `reload`):
 ```
  1. przyjęcie żądania (źródło: api | internal)
- ── blokada wdrożeń (mutex, runtime/lib/api/flows.js) ──────────────────────────
+ ── blokada wdrożeń (runtime/lib/flows/lock.js) ─────────────────────────────────
  2. kontrola rewizji            – istniejące 409 version_mismatch; Z-05 version_required (także klient v1 przy
        requireRevision – R-14; DELETE /flow/:id wymaga ?rev= – R-14); Z-04 rewizja flow
        (typ reload: zwolniony z wymogu rewizji – R-14; odczyt magazynu tutaj, pod blokadą, PRZED preDeploy – R-11;
@@ -160,12 +161,12 @@ w którym pakiet dopisuje swój krok (bez pustych hooków).
 | Krok | Funkcja | Pakiet |
 |---|---|---|
 | A1 | `api/flows.js` `setFlows`/`addFlow`/`updateFlow`/`deleteFlow` → `flows/pipeline.js` `deploy({type, source:"api", …})` (dokładnie raz) | E-01 |
-| blokada | `flows/lock.js` `runExclusive` – w `pipeline.deploy`, `api/flows.js` `setState`, `storage/localfilesystem/projects/index.js` `reloadActiveProject` | E-01 (R-11); Z-09 (B4–B5) |
+| blokada | `flows/lock.js` `runExclusive` – w `pipeline.deploy`, `api/flows.js` `setState`, `storage/localfilesystem/projects/index.js` `withDeployLock` (`reloadActiveProject`, `setActiveProject`, `setBranch`, `pull`, `revertFile`, `resolveMerge`, `abortMerge`, `commit` kończący scalanie, `initialiseProject`, `updateProject`: zmiana plików i przeładowanie w jednej sekcji); `holdUntil(promise)` – blokada trwa po zakończeniu sekcji do rozstrzygnięcia obietnicy (start flow, R-43) | E-01 (R-11, R-43); Z-09 (B4–B5) |
 | A2 | `pipeline.deploy` → `checkRevision` (409 `version_mismatch`); `reload`: `flows/index.js` `readFlowsFromStorage()` pod blokadą | E-01; Z-04, Z-05 |
 | A2a | kotwica w `pipeline.deploy` | Z-12.08 (R-27) |
 | A3 | kotwica w `pipeline.deploy` (`reload` – po odczycie A2) | Z-06 |
-| A4, A8 | kotwice w `pipeline.deploy` | E-02, Z-08 |
-| A5–A7 | `flows/index.js` `setFlows(…, deployOpts, loaded)` (zapis → `stop` → `context.clean` → `start` asynchronicznie); `/flow`: krok `apply` → `addFlow`/`updateFlow`/`removeFlow` = `build*FlowConfig` + `setFlows`; `reload`: `load(true, deployOpts, loaded)` | E-01; P-01 (`deployOpts.waitForStart`, punkt rozszerzenia w `setFlows`), Z-04 (`build*FlowConfig`), Z-15 |
+| A4, A8 | kotwice w `pipeline.deploy`; A8 wykonuje się po zakończeniu startu (obietnica startu zarejestrowana przez `setFlows` w `lock.holdUntil`), blokada zwalniana po starcie także przy błędzie (R-43) | E-02, Z-08 |
+| A5–A7 | `flows/index.js` `setFlows(…, deployOpts, loaded)` (zapis → `stop` → `context.clean` → `start` asynchronicznie, zarejestrowany w `lock.holdUntil`); `/flow`: krok `apply` → `addFlow`/`updateFlow`/`removeFlow` = `build*FlowConfig` + `setFlows`; `reload`: `load(true, deployOpts, loaded)` | E-01; P-01 (`deployOpts.waitForStart`, punkt rozszerzenia w `setFlows`), Z-04 (`build*FlowConfig`), Z-15 |
 | A7 (wynik) | `flows/index.js` `start()` → `{errors: [{code: "missing_types" \| "missing_modules" \| "flow_start_failed", …}]}` | E-01; P-01 (+ `safe_mode`, `start_timeout`) |
 | A9 | `flows/index.js` `setFlows` – zdarzenie `runtime-deploy` po `start()` | bez zmian |
 | A10 | wynik `pipeline.deploy` (`{rev}` lub `{result}` kroku `apply`) → `api/flows.js` | E-01; P-01 |

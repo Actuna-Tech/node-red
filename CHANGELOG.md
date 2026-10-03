@@ -23,6 +23,11 @@ Security
    routes are logged at startup in `"authenticated"` mode. Node authors who need to support
    older versions can use `RED.auth.publicRoute ? RED.auth.publicRoute() : (req,res,next) => next()`.
    The debug node view routes use it
+ - In `"authenticated"` mode, `RED.httpAdmin.use()` without a path is skipped for requests
+   without authentication (instead of returning 401 for every later admin route, including
+   public routes of other modules), and `RED.auth.needsPermission()` counts only when it comes
+   before the first handler of a route. The guard is a safer default for well-behaved nodes,
+   not a sandbox
  - New setting `telemetry.locked`: with `locked: true` the telemetry state is fixed to
    `telemetry.enabled` (missing means disabled) and cannot be changed by users - the saved user
    choice is ignored but kept, a `telemetryEnabled` value sent to `POST /settings/user` is ignored
@@ -34,6 +39,10 @@ Fixes
 
  - `POST /flows/state` and project switches now wait for a running deployment (and the other
    way round) instead of running concurrently with it - they share the deploy lock
+ - The deploy lock is held until the new flows have started (also when the start fails); the
+   Admin API response still returns before the start completes
+ - Project operations that change the flow files (branch change, pull, revert, merge, project
+   switch and settings) run together with the reload of the flows under the deploy lock
 
 Runtime
 
