@@ -323,7 +323,7 @@ Funkcja: Odpowiedź na wdrożenie po starcie nowych flow
 | Etap / typ | 1 / funkcja |
 | Priorytet / ryzyko | P2 / średnie |
 | Ustawienie | `editorTheme.deploy.staleFlows: "prompt" \| "reload-only"` (zlecenie: `editor.staleFlowsPolicy`), domyślnie `"prompt"` |
-| Zależności | Z-05 – zależność **miękka** (`deploy.requireRevision` – egzekwowanie po stronie serwera; wymóg `rev` przeniesiony do Z-05 zgodnie ze zleceniem). P-02 realizowany przed Z-05 (ANALIZA §6.2); po dostarczeniu Z-05 tryb `reload-only` korzysta z wymogu rewizji (ostrzeżenie w logu, gdy wymóg wyłączony). Integracja edytora z Z-05 (Overwrite wg D-12, `revision_required`) dotyka `deploy.js` **po** scaleniu P-02 |
+| Zależności | Z-05 – zależność **miękka** (`deploy.requireRevision` – egzekwowanie po stronie serwera; wymóg `rev` przeniesiony do Z-05 zgodnie ze zleceniem). P-02 realizowany przed Z-05 (ANALIZA §6.2); po dostarczeniu Z-05 tryb `reload-only` korzysta z wymogu rewizji (ostrzeżenie w logu, gdy wymóg wyłączony). Integracja edytora z Z-05 (Overwrite wg D-12, `version_required`) dotyka `deploy.js` **po** scaleniu P-02 |
 | Pliki | `@node-red/editor-client/src/js/ui/deploy.js:142-176` (powiadomienie `runtime-deploy`), `:218-299` (`resolveConflict`), `:367-400` (`restart()`, `:390` – niezdefiniowane `nns`), `:404` (`save(skipValidation, force)`), `:540-543` (`rev`), `:680-681` (409); `@node-red/editor-api/lib/editor/theme.js:398-430` (przekazanie `editorTheme` do edytora); `@node-red/editor-client/locales/en-US/editor.json:378-392` (`deploy.confirm.*`); `node-red/settings.js:419+` (`editorTheme`) |
 | Powiązania | FL-B-004 (okno różnic – w `reload-only` scalanie i przegląd różnic znikają), Z-14 (teksty UI w tłumaczeniach), Z-05 |
 

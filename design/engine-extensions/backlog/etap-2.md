@@ -368,7 +368,7 @@ Funkcja: Pełne API pojedynczego flow
 | Etap / typ | 2 / funkcja |
 | Priorytet / ryzyko | P1 / średnie |
 | Ustawienie | `deploy.requireRevision: false` (propozycja zlecenia: `flows.requireRevision`) |
-| Zależności | E-01 (krok 2), Z-04 (rewizja flow, `globalRev`, `rev:null`, `invalid_revision`) – Z-05 realizowany **po** Z-04; integracja edytora (`deploy.js`: wymuszone nadpisanie wg D-12, `revision_required`) dotyka `deploy.js` **po scaleniu P-02** (etap 1). P-02 zależy od Z-05 tylko miękko – brak cyklu |
+| Zależności | E-01 (krok 2), Z-04 (rewizja flow, `globalRev`, `rev:null`, `invalid_revision`) – Z-05 realizowany **po** Z-04; integracja edytora (`deploy.js`: wymuszone nadpisanie wg D-12, `version_required`) dotyka `deploy.js` **po scaleniu P-02** (etap 1). P-02 zależy od Z-05 tylko miękko – brak cyklu |
 | Pliki | `runtime/lib/api/flows.js:66-98,100-200`; `editor-api/lib/admin/flows.js:38-68`; `editor-api/lib/admin/flow.js`; `editor-client/src/js/ui/deploy.js:262-279,367-400,536-560,675-690`; `runtime/lib/api/settings.js` (przekazanie ustawienia do edytora); `node-red/settings.js` |
 | Powiązania | K8S – publikacja przez edytor, MCP i CI/CD (`ARCHITEKTURA.md` §3.6: „każdy klient wysyła rewizję”) |
 
@@ -384,13 +384,13 @@ Wynik: **POTWIERDZONE.**
 #### Specyfikacja
 - **Cel:** przy włączonym ustawieniu żadne wdrożenie zmieniające treść flow przez Admin API nie nadpisze cudzych zmian bez jawnej rewizji.
 - **Wejścia:** `deploy.requireRevision` (domyślnie `false`); `rev` w treści (v2, `/flow/:id`), `globalRev` (Z-04), `?rev=` w `DELETE /flow/:id`.
-- **Wyjścia:** przy braku wymaganej rewizji → **409** `{code:"revision_required", message:"..."}`; przy niezgodnej → 409 `version_mismatch` (bez zmian).
+- **Wyjścia:** przy braku wymaganej rewizji → **409** `{code:"version_required", message:"..."}`; przy niezgodnej → 409 `version_mismatch` (bez zmian).
 - **Macierz (przy `requireRevision: true`; przy `false` – wszystko jak dziś):**
 
 | Ścieżka | Wymagana rewizja | Uzasadnienie |
 |---|---|---|
 | `POST /flows` v2 (`full`/`nodes`/`flows`) | `rev` całości | wymaganie zlecenia |
-| `POST /flows` v1 | zawsze 409 `revision_required` (komunikat wskazuje v2) | v1 nie ma pola na `rev`; alternatywa – nagłówek (pytanie) |
+| `POST /flows` v1 | zawsze 409 `version_required` (komunikat wskazuje v2) | v1 nie ma pola na `rev`; alternatywa – nagłówek (pytanie) |
 | `POST /flows` `reload` | **nie** | nie zmienia treści w magazynie, tylko przeładowuje to, co tam jest |
 | `PUT /flow/:id` (istniejący) | `rev` flow | wymaganie zlecenia |
 | `PUT /flow/:id` (tworzenie, Z-04) | `rev: null` (jawne „flow nie istnieje”) | brak rewizji do porównania |
@@ -401,8 +401,8 @@ Wynik: **POTWIERDZONE.**
 | wywołania wewnętrzne (`runtime.flows.*` bez Admin API) | nie | kontrola w warstwie `runtime/lib/api` |
 
 - **Niezmienniki:** przy `false` brak zmian w zachowaniu i odpowiedziach; kontrola przed hookiem `preDeploy` (E-01 krok 2 przed 3) i w mutexie; `version_mismatch` zachowuje znaczenie (zgodność z edytorem).
-- **Przypadki błędów:** brak `rev` → 409 `revision_required`; `rev` pusty string / nie-string → 400 `invalid_revision` (kod z Z-04, ZASADY §2.4); niezgodna → 409 `version_mismatch`.
-- **Skutki uboczne:** wpis audytu `flows.set`/`flow.update` z `error:"revision_required"`; edytor przy wymuszonym nadpisaniu wysyła aktualną rewizję po potwierdzeniu w oknie (D-12).
+- **Przypadki błędów:** brak `rev` → 409 `version_required`; `rev` pusty string / nie-string → 400 `invalid_revision` (kod z Z-04, ZASADY §2.4); niezgodna → 409 `version_mismatch`.
+- **Skutki uboczne:** wpis audytu `flows.set`/`flow.update` z `error:"version_required"`; edytor przy wymuszonym nadpisaniu wysyła aktualną rewizję po potwierdzeniu w oknie (D-12).
 
 #### Projekt rozwiązania (minimalny)
 1. `runtime/lib/api/flows.js`: funkcja `checkRevision({required, provided, current})` używana przez `setFlows`, `addFlow`, `updateFlow`, `deleteFlow` (wspólna z Z-04, w kroku 2 E-01); odczyt `deploy.requireRevision` przy każdym wywołaniu (zmiana bez restartu nie jest wymagana – **do potwierdzenia**).
@@ -410,7 +410,7 @@ Wynik: **POTWIERDZONE.**
 3. Udostępnienie stanu ustawienia edytorowi: `runtime/lib/api/settings.js` – pole `deploy.requireRevision` w ustawieniach runtime dla edytora (tylko flaga).
 4. Edytor `deploy.js` (zmiany **po scaleniu P-02**, na jego wersji pliku):
    - wymuszone nadpisanie (`save(true)`) przy `requireRevision` (D-12): okno potwierdzenia → `GET /flows` (v2) po aktualną `rev` → wdrożenie z nią (jawne, świadome nadpisanie; kolejny konflikt → ponowne okno); przy `editorTheme.deploy.staleFlows: "reload-only"` (P-02) wymuszone nadpisanie niedostępne;
-   - obsługa `revision_required` w `.fail` (komunikat zamiast okna konfliktu);
+   - obsługa `version_required` w `.fail` (komunikat zamiast okna konfliktu);
    - poprawka `restart()` (`:390`, `nns`) – w P-02 (właściciel); Z-05 tylko odwołanie.
 5. Szablon `settings.js`: `deploy.requireRevision` z opisem macierzy; CHANGELOG; nowy kod błędu w dokumencie kontraktu (Z-04).
 
@@ -431,7 +431,7 @@ Funkcja: Wymóg rewizji przy wdrożeniu
   Szablon scenariusza: [odbiór] Ustawienie włączone – brak rewizji odrzucony
     Zakładając, że deploy.requireRevision jest true
     Gdy wdrażam przez <ścieżka> bez rewizji
-    Wtedy odpowiedź ma status 409 i kod "revision_required"
+    Wtedy odpowiedź ma status 409 i kod "version_required"
     I magazyn i uruchomione flow pozostają bez zmian
     I hook preDeploy nie jest wywoływany
     Przykłady:
@@ -455,7 +455,7 @@ Funkcja: Wymóg rewizji przy wdrożeniu
   Scenariusz: v1 przy włączonym wymogu
     Zakładając, że deploy.requireRevision jest true
     Gdy wdrażam przez POST /flows v1
-    Wtedy odpowiedź ma status 409, kod "revision_required" i komunikat wskazujący API v2
+    Wtedy odpowiedź ma status 409, kod "version_required" i komunikat wskazujący API v2
 
   Scenariusz: Przeładowanie nie wymaga rewizji
     Zakładając, że deploy.requireRevision jest true
@@ -470,13 +470,13 @@ Funkcja: Wymóg rewizji przy wdrożeniu
   Scenariusz: Nowy flow z globalnymi configami wymaga globalRev
     Zakładając, że deploy.requireRevision jest true
     Gdy wykonuję POST /flow z globalConfigs bez globalRev
-    Wtedy odpowiedź ma status 409 i kod "revision_required"
+    Wtedy odpowiedź ma status 409 i kod "version_required"
 
   Scenariusz: Wymuszone nadpisanie w edytorze (D-12)
     Zakładając, że deploy.requireRevision jest true i wystąpił konflikt wdrożenia
     Gdy wybieram w edytorze "Overwrite" i potwierdzam w oknie
     Wtedy edytor pobiera aktualną rewizję i wdraża z nią
-    I serwer nie zwraca "revision_required"
+    I serwer nie zwraca "version_required"
 
   Scenariusz: Wymuszone nadpisanie niedostępne w trybie reload-only (D-12)
     Zakładając, że deploy.requireRevision jest true i editorTheme.deploy.staleFlows = "reload-only"
@@ -488,13 +488,13 @@ Funkcja: Wymóg rewizji przy wdrożeniu
 
 #### Testy
 - **Jednostkowe** `test/unit/@node-red/runtime/lib/api/flows_spec.js`: `describe("requireRevision")` z `[false, true].forEach` – `setFlows without rev`, `setFlows v1 without rev`, `setFlows reload without rev`, `updateFlow without rev`, `updateFlow create with rev null`, `addFlow without globalConfigs`, `addFlow with globalConfigs without globalRev`, `deleteFlow without rev`, `missing deploy settings object treated as false`, `rev check happens before preDeploy hook` (z Z-06).
-- **Kontraktowe** `test/unit/@node-red/editor-api/lib/admin/flows_spec.js` i `flow_spec.js`: `POST /flows v1|v2 returns 409 revision_required when required`, `same requests succeed when not required`, `DELETE /flow/:id?rev=`, `error body has code and message`.
+- **Kontraktowe** `test/unit/@node-red/editor-api/lib/admin/flows_spec.js` i `flow_spec.js`: `POST /flows v1|v2 returns 409 version_required when required`, `same requests succeed when not required`, `DELETE /flow/:id?rev=`, `error body has code and message`.
 - **Edytor:** E2E/ręcznie – wymuszone nadpisanie z potwierdzeniem i brak Overwrite w `reload-only` (brak testów jednostkowych `deploy.js`; ewentualnie harness z P-02/E-03). Restart przy 409 – test w P-02.
 
 #### DoD specyficzne
 - [ ] Macierz ścieżek zatwierdzona przez Zamawiającego (v1, DELETE, POST /flow, reload).
 - [ ] Testy obu stanów ustawienia dla v1, v2 i `/flow/:id` (wymóg zlecenia).
-- [ ] Kod `revision_required` opisany w kontrakcie Admin API i CHANGELOG.
+- [ ] Kod `version_required` opisany w kontrakcie Admin API i CHANGELOG.
 - [ ] Zmiany `deploy.js` naniesione na wersję po scaleniu P-02 (poprawka `restart()`/`nns` dostarczona w P-02).
 
 #### Ryzyka i alternatywy
@@ -506,7 +506,7 @@ Funkcja: Wymóg rewizji przy wdrożeniu
 #### Podzadania
 - [ ] `checkRevision` + macierz w runtime API – M
 - [ ] Przekazanie wersji API / `?rev=` w editor-api – S
-- [ ] Edytor (po scaleniu P-02): Overwrite z potwierdzeniem i pobraniem rewizji (D-12), `revision_required` – M
+- [ ] Edytor (po scaleniu P-02): Overwrite z potwierdzeniem i pobraniem rewizji (D-12), `version_required` – M
 - [ ] Testy obu stanów + kontrakt – M
 - [ ] Szablon `settings.js`, CHANGELOG – S
 
@@ -845,7 +845,7 @@ Poprawki z [../PRZEGLAD.md](../PRZEGLAD.md) („Lista poprawek do naniesienia”
 
 - **#1** – Z-06: Ryzyka i Projekt pkt 4 – `postDeploy` asynchronicznie po odpowiedzi, poza blokadą, błąd tylko w logu (ZASADY §2.3 A, krok 11); Niezmienniki, scenariusz „Kolejność wywołań” i test kolejności poprawione (`runtime-deploy` → odpowiedź → `postDeploy`); nowy scenariusz „postDeploy nie wstrzymuje odpowiedzi ani kolejnych wdrożeń”.
 - **#3** – „Kolejność realizacji”: Z-04 → Z-05 → Z-06 (Z-05 zależy od Z-04), dwa tory wg ANALIZA §6.2 (tor B: Z-03 → Z-07); zależności Z-05 w tabeli i karcie zgodne.
-- **#4** – Z-05: integracja edytora (wymuszone nadpisanie wg D-12, `revision_required`) dotyka `deploy.js` po scaleniu P-02; P-02 → Z-05 tylko miękko (brak cyklu); nowy scenariusz „Overwrite niedostępny w reload-only”; Pytanie 10 → zatwierdzenie D-12.
+- **#4** – Z-05: integracja edytora (wymuszone nadpisanie wg D-12, `version_required`) dotyka `deploy.js` po scaleniu P-02; P-02 → Z-05 tylko miękko (brak cyklu); nowy scenariusz „Overwrite niedostępny w reload-only”; Pytanie 10 → zatwierdzenie D-12.
 - **#5** – Z-06: zależność od Z-09 zastąpiona „punktem integracji wykorzystywanym przez Z-09” (tabela, karta).
 - **#6** – Z-06 Projekt pkt 3: jawny `reload` przez API → `preDeploy` i `postDeploy`; przeładowanie z magazynu → tylko `postDeploy` (`source:"storage"`); własny mechanizm „odczyt przed hookiem” usunięty na rzecz mechanizmu E-01 (`readFlowsFromStorage` + `deploy({loaded})`); scenariusze i testy obu ścieżek; `source` ujednolicone do `api|internal|storage`.
 - **#15** – oznaczenie `[odbiór]` w scenariuszach Z-03, Z-04, Z-05, Z-06, Z-07 + objaśnienie konwencji pod „Kolejnością realizacji”.

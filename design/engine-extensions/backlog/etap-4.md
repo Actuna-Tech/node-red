@@ -641,6 +641,14 @@ Funkcja: Harness testów edytora
 
 ### E-04 – Dostosowanie istniejącej gałęzi
 
+> **Zmiana po decyzji D-19 (2026-10-03, po załączniku A):** zamiast usuwać atrybucję z kodu – **nagłówki o modyfikacji
+> „Modified by Actuna Sp. z o.o.: <opis>” (pkt 4(b) licencji Apache 2.0) zostają w forku** i są dopisywane do każdego
+> pliku zmienionego przez nas (m.in. `ui/view.js`, `nodes.js`, panele edytora, `runtime/lib/flows/index.js`, `util.js`),
+> w formacie zgodnym z łatkami Zamawiającego. Nowe pliki (`view-layout.js`, `flowLayout.js`) zachowują nagłówek projektu
+> + informację o autorstwie. Gałęzie do ewentualnego zgłoszenia upstream (dziś zablokowane – D-04) – bez nagłówków.
+> Autor i `Signed-off-by`: Wojciech Repiński <wrepinski@gmail.com> (D-21). Kryterium „grep bez nazw firmy” obowiązuje
+> tylko dla gałęzi upstream; w forku – kryterium: każdy zmieniony plik ma nagłówek o modyfikacji.
+
 | Pole | Wartość |
 |---|---|
 | Etap / typ | 0 (karta w etapie 4) / przerobienie – proces dostarczenia |

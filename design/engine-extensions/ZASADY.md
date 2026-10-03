@@ -75,7 +75,7 @@ Wspólna kolejność kroków (rozstrzygnięcia K-1…K-3 z [PRZEGLAD.md](PRZEGLA
 ```
  1. przyjęcie żądania (źródło: api | internal)
  ── blokada wdrożeń (mutex, runtime/lib/api/flows.js) ──────────────────────────
- 2. kontrola rewizji            – istniejące 409 version_mismatch; Z-05 revision_required; Z-04 rewizja flow
+ 2. kontrola rewizji            – istniejące 409 version_mismatch; Z-05 version_required; Z-04 rewizja flow
        (typ reload: odczyt magazynu tutaj, pod blokadą – preDeploy w kroku 3 widzi treść, która zostanie uruchomiona)
  3. hook preDeploy              – Z-06; tylko walidacja, limit deploy.hookTimeout; odrzucenie → 400 deploy_rejected
  4. stan = "deploying"          – E-02 / Z-08 (/ready → 503)
@@ -121,7 +121,7 @@ Konwencja: `snake_case` we wszystkich polach `code` (także `errors[].code` z E-
 | Kod | HTTP | Pakiet | Kiedy |
 |---|---|---|---|
 | `version_mismatch` | 409 | istniejący, Z-04 | rewizja w żądaniu ≠ aktualna (całość lub flow) |
-| `revision_required` | 409 | Z-05 | `deploy.requireRevision: true` i brak rewizji |
+| `version_required` | 409 | Z-05 | `deploy.requireRevision: true` i brak rewizji (nazwa jak w łatce 0006 Zamawiającego – decyzja D-20) |
 | `invalid_revision` | 400 | Z-04 | rewizja w złym formacie |
 | `deploy_rejected` | 400 | Z-06 | `preDeploy` odrzucił wdrożenie (komunikat z hooka) |
 | `deploy_hook_timeout` | 400 | Z-06 | `preDeploy` przekroczył `deploy.hookTimeout` |
