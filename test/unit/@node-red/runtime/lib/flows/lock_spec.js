@@ -20,6 +20,7 @@
  *   P-01: tests of the limit of holding the lock (deploy.startTimeout) and the warning
  *   when the lock is held for long
  *   R-45: the timer of the limit does not keep the process alive
+ *   E-02: sectionHeld() lists the promises held in the running section
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -97,6 +98,19 @@ describe("flows/lock", function() {
         lock.isLocked().should.be.true();
         finishStart();
         (await lock.runExclusive(async () => "next")).should.equal("next");
+    });
+    it("sectionHeld lists the promises held in the running section (E-02)", async function() {
+        lock.sectionHeld().should.eql([]);
+        const p = Promise.resolve(1);
+        let inside;
+        await lock.runExclusive(async function() {
+            lock.holdUntil(p, { limit: 10 });
+            inside = lock.sectionHeld();
+        });
+        inside.should.have.length(1);
+        inside[0].promise.should.equal(p);
+        inside[0].options.should.eql({ limit: 10 });
+        lock.sectionHeld().should.eql([]);
     });
     it("ignores holdUntil outside a section", async function() {
         lock.holdUntil(new Promise(() => {}));

@@ -331,12 +331,42 @@ Funkcja: Model stanu instancji
 - Alternatywa odrzucona: wyprowadzanie stanu wyłącznie ze zdarzeń `flows:*` – zdarzenia nie odróżniają wdrożenia od startu i są emitowane mimo błędów `Flow.start`.
 
 #### Podzadania
-- [ ] Testy charakteryzujące zdarzeń startu/wdrożenia/zatrzymania (S)
-- [ ] `runtime/lib/state.js` (z `init`) + testy przejść (M)
-- [ ] `RED.stop(reason)` → `runtime.stop(reason)` (R-23) (S)
-- [ ] Wpięcie w `runtime/lib/index.js` (start, pusty `.catch`, stop) (S)
-- [ ] Wpięcie w potok E-01 i `setState` (+ mutex) (S)
-- [ ] JSDoc + opis w dokumencie kontraktu E-01 (S)
+- [x] Testy charakteryzujące zdarzeń startu/wdrożenia/zatrzymania (S)
+- [x] `runtime/lib/state.js` (z `init`) + testy przejść (M)
+- [x] `RED.stop(reason)` → `runtime.stop(reason)` (R-23) (S)
+- [x] Wpięcie w `runtime/lib/index.js` (start, pusty `.catch`, stop) (S)
+- [x] Wpięcie w potok E-01 i `setState` (+ mutex) (S)
+- [x] JSDoc + opis w dokumencie kontraktu E-01 (S)
+
+#### Zrealizowane (gałąź `feature/p3-database`)
+- `runtime/lib/state.js` – tabela przejść `TRANSITIONS` (źródło prawdy, JSDoc z tabelą T1–T14), `get`, `isReady`,
+  `onChange`, `begin`/`end` (token), `markReloadPending`/`markDraining`/`cancelPending` (Z-09, jeszcze nieużywane),
+  `markStarting`, `markStopping`/`markStopped`, `fail`, `reset`; zdarzenie `instance:state` na `RED.events`;
+  `runtime.state` w obiekcie runtime.
+- Wpięcie: `runtime/lib/index.js` (`markStarting`, `fail` zamiast pustego `.catch` – `storage-error`,
+  `flow-start-failed`, `startup-error` przy odrzuceniu `start()`; `stop(reason)` – `stopping` synchronicznie,
+  `stopped` po `closeContextsPlugin` także przy błędzie; log `runtime.stopping` tylko z powodem);
+  `flows/pipeline.js` krok 4 (`begin("deploy")`) i krok 8 (`end` po zakończeniu startu, przed zwolnieniem blokady –
+  `lock.sectionHeld()` + `holdUntil` z tymi samymi opcjami); `api/flows.js` `setState` (`begin/end("set-state")`,
+  już pod blokadą E-01); `flows/index.js` `start()` – wynik raportowany do modułu stanu poza operacją (pierwszy start,
+  późny start po `type-registered`, przełączenie projektu) oraz `flowsRunning:false` + `reason` (`safe-mode`,
+  `set-state`); `node-red/lib/red.js` `RED.stop(reason)`.
+- Testy: `state_spec.js` (138, w tym przejścia generowane z tabeli), `index_spec.js` (+9), `flows/index_spec.js`
+  (+8), `flows/pipeline_spec.js` (+10), `flows/lock_spec.js` (+1), `api/flows_spec.js` (+6), `node-red/lib/red_spec.js` (+2);
+  istniejące testy bez zmian.
+- **Rozbieżności z kartą (świadome):**
+  - przejścia dodatkowe w tabeli: `starting → deploying` (wdrożenie w trakcie pierwszego startu – wynik startu jest
+    wtedy ignorowany, stan ustala koniec wdrożenia) oraz między stanami spoczynku `ready/failed/idle` bez operacji
+    (wynik startu przy przełączeniu projektu – Projekty nie przechodzą przez `deploying`);
+  - `begin("set-state")` nie zmienia stanu do `end` (karta nie nazywa stanu pośredniego);
+  - `begin(…, {supersede: true})` w potoku i `setState`: przy `deploy.startTimeoutReleasesLock: true` (R-45) blokada
+    może zostać zwolniona przed końcem startu – nowa operacja przejmuje stan zamiast błędu `state_operation_in_progress`
+    (błąd nadal rzucany bez `supersede`);
+  - nowa funkcja `report(result)` (wynik startu poza operacją – T2/T3/T4/T9/T14), niewymieniona w API karty;
+  - ignorowane przejścia logowane na poziomie `trace` (nie `debug`) – `debug` trafia do `log.log` i zmieniałby logi
+    istniejących testów (niezmiennik 7);
+  - błąd zapisu/zatrzymania w kroku 5–6: błąd przed startem → powrót do stanu sprzed wdrożenia (`aborted`), wyjątek
+    `deploy_stop_failed` → `failed` (`deploy-stop-failed`).
 
 ---
 

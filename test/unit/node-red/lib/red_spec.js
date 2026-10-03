@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   E-02: RED.stop(reason) passes the reason to the runtime (R-23)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 var should = require("should");
 var sinon = require("sinon");
 var fs = require("fs");
@@ -71,6 +76,23 @@ describe("red/red", function() {
         it.skip('only initialises api component if httpAdmin enabled');
         it.skip('stubs httpAdmin if httpAdmin disabled');
         it.skip('stubs httpNode if httpNode disabled');
+    });
+
+    describe("stop (E-02)", function() {
+        afterEach(function() {
+            sinon.restore();
+        });
+        it('passes the reason to runtime.stop (R-23)', async function() {
+            const stop = sinon.stub(runtime, "stop").resolves();
+            await RED.stop("SIGTERM");
+            stop.calledOnce.should.be.true();
+            stop.firstCall.args.should.eql(["SIGTERM"]);
+        });
+        it('calls runtime.stop without a reason as before', async function() {
+            const stop = sinon.stub(runtime, "stop").resolves();
+            await RED.stop();
+            stop.firstCall.args.should.eql([undefined]);
+        });
     });
 
 });

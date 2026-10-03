@@ -1,3 +1,20 @@
+#### Unreleased: Instances and reload
+
+Runtime
+
+ - New internal module of the instance state (`runtime/lib/state.js`, available to the runtime as
+   `runtime.state`): states `init`, `starting`, `ready`, `deploying`, `reloadPending`, `reloading`,
+   `idle`, `loaded`, `failed`, `stopping`, `stopped`; every change emits the event `instance:state`
+   with `{state, previous, reason}` (plus `since`, `draining`, `errors`) on `RED.events`. The module
+   is passive - responses, logs and the order of the existing events do not change
+ - `RED.stop(reason)` / `runtime.stop(reason)`: an optional reason (for example `"SIGTERM"`) given
+   to `instance:state` and logged; without it nothing more is logged
+ - A failure to read the flows or to start them when the runtime starts is no longer swallowed
+   silently: the instance state is `failed` (the log messages and the result of `RED.start()` are
+   unchanged)
+ - The result of the start of the flows reports `flowsRunning: false` with a `reason` when the
+   flows were not started on purpose (safe mode, flows stopped through `POST /flows/state`)
+
 #### Unreleased: Security and fixes
 
 Security

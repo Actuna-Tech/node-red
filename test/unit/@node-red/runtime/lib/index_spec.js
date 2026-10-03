@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-02: test of publicRoute() in the stubbed admin api
+ *   E-02: the instance state on start and stop, RED.stop(reason)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -257,6 +258,124 @@ describe("runtime", function() {
             stopFlows.restore();
             closeContextsPlugin.restore();
             return done(err)
+        });
+    });
+    describe("instance state (E-02)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        let stubs;
+        let seen;
+        let off;
+        beforeEach(function() {
+            instanceState.reset();
+            seen = [];
+            off = instanceState.onChange(info => seen.push(info));
+            stubs = [
+                sinon.stub(storage,"init").callsFake(function() {return Promise.resolve();}),
+                sinon.stub(redNodes,"init").callsFake(function() {}),
+                sinon.stub(redNodes,"load").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"cleanModuleList").callsFake(function(){}),
+                sinon.stub(redNodes,"getNodeList").callsFake(function() {return []}),
+                sinon.stub(redNodes,"loadContextsPlugin").callsFake(function() {return Promise.resolve()})
+            ];
+            mockUtil();
+        });
+        afterEach(function() {
+            off();
+            stubs.forEach(s => s.restore());
+            unmockUtil();
+            instanceState.reset();
+        });
+        function stub(obj, name, fn) {
+            const s = sinon.stub(obj, name).callsFake(fn);
+            stubs.push(s);
+            return s;
+        }
+
+        it("state is init before start() and starting when start() resolves before the flows started", async function() {
+            instanceState.get().state.should.equal("init");
+            let finishStart;
+            stub(redNodes, "loadFlows", () => Promise.resolve());
+            stub(redNodes, "startFlows", () => new Promise(resolve => { finishStart = resolve }));
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start();
+            instanceState.get().state.should.equal("starting");
+            seen[0].should.containEql({state:"starting", previous:"init"});
+            finishStart({errors:[]});
+        });
+
+        it("loadFlows rejection sets failed (storage-error) and start() still resolves", async function() {
+            const err = new Error("cannot read flows");
+            stub(redNodes, "loadFlows", () => Promise.reject(err));
+            stub(redNodes, "startFlows", () => Promise.resolve({errors:[]}));
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start();
+            await new Promise(resolve => setTimeout(resolve, 10));
+            instanceState.get().should.containEql({state:"failed", reason:"storage-error"});
+        });
+
+        it("startFlows rejection sets failed (flow-start-failed) without an unhandled rejection", async function() {
+            stub(redNodes, "loadFlows", () => Promise.resolve());
+            stub(redNodes, "startFlows", () => Promise.reject(new Error("boom")));
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start();
+            await new Promise(resolve => setTimeout(resolve, 10));
+            instanceState.get().should.containEql({state:"failed", reason:"flow-start-failed"});
+        });
+
+        it("a rejected runtime start (storage.init) sets failed (startup-error) and rejects as before", async function() {
+            storage.init.restore();
+            stubs.shift();
+            stub(storage, "init", () => Promise.reject(new Error("no storage")));
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start().should.be.rejectedWith("no storage");
+            instanceState.get().should.containEql({state:"failed", reason:"startup-error"});
+        });
+
+        it("stop() sets stopping synchronously before stopFlows and stopped after closeContextsPlugin", async function() {
+            const order = [];
+            stub(redNodes, "stopFlows", () => { order.push("stopFlows:" + instanceState.get().state); return Promise.resolve() });
+            stub(redNodes, "closeContextsPlugin", () => { order.push("close:" + instanceState.get().state); return Promise.resolve() });
+            const p = runtime.stop();
+            instanceState.get().state.should.equal("stopping");
+            await p;
+            order.should.eql(["stopFlows:stopping", "close:stopping"]);
+            instanceState.get().should.containEql({state:"stopped", reason:"stop"});
+        });
+
+        it("stop() without a reason uses stop and logs nothing new", async function() {
+            stub(redNodes, "stopFlows", () => Promise.resolve());
+            stub(redNodes, "closeContextsPlugin", () => Promise.resolve());
+            await runtime.stop();
+            seen.map(i => i.reason).should.eql(["stop", "stop"]);
+            log.info.called.should.be.false();
+        });
+
+        it("stop(reason) passes the reason to instance:state and the log (R-23)", async function() {
+            const events = NR_TEST_UTILS.require("@node-red/util").events;
+            const emitted = [];
+            const onEvent = info => emitted.push(info);
+            events.on("instance:state", onEvent);
+            stub(redNodes, "stopFlows", () => Promise.resolve());
+            stub(redNodes, "closeContextsPlugin", () => Promise.resolve());
+            try {
+                await runtime.stop("SIGTERM");
+            } finally {
+                events.removeListener("instance:state", onEvent);
+            }
+            emitted[0].should.containEql({state:"stopping", reason:"SIGTERM"});
+            log.info.calledOnce.should.be.true();
+            log._.calledWithMatch("runtime.stopping", {reason:"SIGTERM"}).should.be.true();
+        });
+
+        it("a failing stop still ends in stopped", async function() {
+            stub(redNodes, "stopFlows", () => Promise.reject(new Error("stop failed")));
+            stub(redNodes, "closeContextsPlugin", () => Promise.resolve());
+            await runtime.stop().should.be.rejectedWith("stop failed");
+            instanceState.get().state.should.equal("stopped");
+        });
+
+        it("exposes the state on the internal runtime object", function() {
+            runtime._.state.should.equal(instanceState);
         });
     });
 });
