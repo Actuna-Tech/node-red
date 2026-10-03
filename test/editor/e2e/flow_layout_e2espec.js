@@ -876,6 +876,46 @@ function sendJSON(method, url, body) {
                 }
             });
 
+            it("does not offer to replace a locked flow and imports it as a copy", async function() {
+                await createFlowWithSubflow();
+                const exported = await exportJSON("flow");
+                await page.evaluate(() => {
+                    RED.nodes.workspace("tImp").layout = "LR";
+                    RED.nodes.workspace("tImp").locked = true;
+                });
+
+                await startImport(exported);
+                await page.click(".red-ui-notification button:has-text('View nodes')");
+                await page.waitForSelector("#red-ui-clipboard-dialog-import-conflict", { state: "visible" });
+                const control = await page.evaluate(() => {
+                    const cb = $('.red-ui-clipboard-dialog-import-conflicts-controls input[data-node-id="tImp"]');
+                    return { visible: cb.is(":visible"), disabled: cb.prop("disabled"), checked: cb.prop("checked") };
+                });
+                // The replace option is shown but cannot be selected for the locked flow
+                control.should.eql({ visible: true, disabled: true, checked: false });
+                await page.click("#red-ui-clipboard-dialog-import-conflict");
+                await page.waitForTimeout(500);
+                await page.mouse.move(900, 600);
+                await page.mouse.click(900, 600);
+                await page.waitForTimeout(300);
+
+                const result = await page.evaluate(() => {
+                    const flows = [];
+                    RED.nodes.eachWorkspace(ws => { if (ws.label === "Import test") { flows.push({ id: ws.id, layout: ws.layout, locked: !!ws.locked }); } });
+                    return flows;
+                });
+                // The locked flow is unchanged and the imported flow is a copy
+                result.find(f => f.id === "tImp").should.eql({ id: "tImp", layout: "LR", locked: true });
+                const copies = result.filter(f => f.id !== "tImp");
+                copies.should.have.length(1);
+                copies[0].layout.should.equal("TB");
+
+                await page.evaluate(() => {
+                    RED.nodes.workspace("tImp").locked = false;
+                    RED.nodes.eachWorkspace(ws => { if (ws.label === "Import test" && ws.id !== "tImp") { RED.workspaces.delete(ws); } });
+                });
+            });
+
             it("imports a copy of the flow and subflow with the imported layout and keeps the existing ones", async function() {
                 await createFlowWithSubflow();
                 const exported = await exportJSON("flow");

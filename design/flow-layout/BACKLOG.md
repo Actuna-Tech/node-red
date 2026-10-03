@@ -408,7 +408,9 @@ rozważenia w kolejnym pakiecie):
 - przemianowanie przy kolizji id działa w jedną stronę (`links` w innych zakładkach tego importu nie są aktualizowane);
 - pusty wpis `replace` w historii, gdy zastępowana zakładka nie istnieje; przywracanie po błędzie może samo rzucić;
 - instancja subflow zastępowanego razem z zakładką ma po cofnięciu `changed: true` (jak w wersji bazowej);
-- otwarte: W1 – zastępowanie zablokowanej zakładki (decyzja Zamawiającego).
+- W1 – zastępowanie zablokowanej zakładki: **rozstrzygnięte (R-44, wariant B)** – przełącznik „zastąp” nieaktywny z podpowiedzią,
+  flow importowany jako kopia; ochrona także w `RED.nodes.import` (import użytkownika z `markChanged`); cofnięcie/ponowienie bez zmian.
+  Przy okazji naprawiony błąd okna konfliktu: zablokowany przełącznik dawał „skip” zamiast kopii.
 
 ### FL-T-001 – Automatyczne rozmieszczanie węzłów
 

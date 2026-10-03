@@ -2,6 +2,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   FL-B-009: tests for exporting the effective editor default layout of flows
  *   FL-B-009: tests for matching an imported subflow exported with the editor default layout
+ *   FL-B-010: test that a locked flow is not replaced by a user import
  *   FL-B-010: tests for replacing a flow with the same id on import
  *   FL-B-010: tests for replacing a flow after the rest of the import, copies, change flags and failures
  * This notice is required by section 4(b) of the Apache License 2.0.
@@ -330,6 +331,27 @@ describe("editor-client/nodes", function() {
             RED.nodes.import(locked, { importMap: replaceMap(locked) });
             RED.nodes.workspace("t1").should.have.property("locked", true);
             idsOn("t1").should.eql(["li1", "n1", "n3"]);
+        });
+
+        it("does not replace a locked flow on a user import, but imports a copy", function() {
+            const existing = existingFlows();
+            existing[0].locked = true;
+            RED.nodes.import(existing);
+            const imported = importedFlow();
+            RED.nodes.import(imported, { importMap: replaceMap(imported), markChanged: true });
+
+            // The locked flow is unchanged
+            const flow = RED.nodes.workspace("t1");
+            flow.should.have.properties({ label: "Local", locked: true, layout: "LR" });
+            idsOn("t1").should.eql(["c1", "g1", "j1", "li1", "n1", "n2"]);
+            RED.nodes.node("n1").should.have.property("name", "local 1");
+            // The imported flow is added as a copy with new ids
+            const copies = [];
+            RED.nodes.eachWorkspace(function(ws) { if (ws.label === "Imported") { copies.push(ws); } });
+            copies.should.have.length(1);
+            copies[0].id.should.not.equal("t1");
+            copies[0].should.have.property("layout", "TB");
+            idsOn(copies[0].id).should.have.length(3);
         });
 
         it("emits a flow change event for the replaced flow", function() {
