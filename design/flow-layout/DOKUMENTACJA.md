@@ -57,6 +57,13 @@ Przy wyłączonym ustawieniu (decyzja R-01):
   ale nie są usuwane; eksport i deploy nie dopisują wartości domyślnych użytkownika (FL-B-009);
 - części runtime (`diffNodes`, API pojedynczego flow) działają zawsze (R-02).
 
+**Uwaga przy aktualizacji forka (migracja):** instalacje, które używały układów przed wprowadzeniem Z-14,
+muszą dodać do `settings.js` `editorTheme: { flowLayout: { enabled: true } }` (w szablonie `settings.js` wystarczy
+odkomentować przykład `//flowLayout: { enabled: true },`). Bez tego kontrolki są wyłączone, a domyślny układ
+użytkownika (`view-flow-layout`/`view-wire-style`) jest ignorowany – flow bez własnego `layout` rysują się `LR`
+(przewody `curved`), nawet jeśli użytkownik wybrał wcześniej `TB` lub `auto`. Flow z zapisanym
+`layout`/`wireStyle`/`o` nie są tym objęte. Ustawienia użytkownika nie są usuwane – po włączeniu znów obowiązują.
+
 Ustawienie trafia do edytora przez `editor-api/lib/editor/theme.js` (`RED.settings.theme("flowLayout.enabled")`);
 w edytorze sprawdza je `RED.viewLayout.isEnabled()` / `RED.view.layout.isEnabled()`.
 

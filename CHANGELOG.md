@@ -50,6 +50,13 @@ Runtime
 Developed by Actuna Sp. z o.o. (Wojciech Repiński), with AI-assisted development.
 See `design/flow-layout/` for the analysis, documentation and work log.
 
+**Migration note:** when updating an installation that already uses flow layouts, add
+`editorTheme: { flowLayout: { enabled: true } }` to `settings.js`. The controls are disabled
+by default, and while disabled the users' default layout settings are ignored - flows
+without their own `layout` are drawn left-to-right (`LR`) and wires `curved`, even if a
+user chose another default before. Flows with their own `layout`, `wireStyle` or `o` are
+not affected.
+
  - Settings: the flow layout controls are enabled with `editorTheme.flowLayout.enabled`
    (default `false`). When disabled the editor shows no layout controls (flow properties,
    node and subflow appearance, user settings, context menu, `core:*-node-ports*` actions)
@@ -85,6 +92,8 @@ See `design/flow-layout/` for the analysis, documentation and work log.
  - Editor: the links of a selected top-to-bottom link node to other flows leave from the
    bottom (link out) or top (link in) of the node with horizontal flow labels, instead of
    being drawn rotated with vertical text (FL-B-008)
+ - Editor: no console error at startup with `editorTheme.flowLayout.enabled` set - the
+   layout settings no longer redraw the view when the user settings are initialised (FL-B-012)
  - Tests: unit tests for the layout geometry, runtime diff and flow API, Playwright
    end-to-end tests including export/import (`npm run test:e2e`)
 
