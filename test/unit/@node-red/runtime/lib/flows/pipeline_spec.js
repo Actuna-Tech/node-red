@@ -18,6 +18,7 @@
  *   E-01: tests of the deploy pipeline contract
  *   E-01: the lock is held until the start completes (R-43); a failed storage read releases it
  *   E-02: the instance state in steps 4 and 8
+ *   Z-09: reload from storage (source "storage" with reread)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -295,6 +296,54 @@ describe("flows/pipeline", function() {
             finishStart();
             await lock.runExclusive(async () => {});
             instanceState.get().state.should.equal("ready");
+        });
+    });
+    describe("reload from storage (Z-09)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        beforeEach(function() {
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({ errors: [] });
+            flows.reloadFromStorage = sinon.spy(async function(loaded) {
+                calls.push({ fn: "reloadFromStorage", locked: lock.isLocked(), state: instanceState.get().state });
+                lock.holdUntil(Promise.resolve({ errors: [] }));
+                return loaded.rev;
+            });
+        });
+        afterEach(function() {
+            instanceState.reset();
+        });
+        it("skipped when not reloadPending (superseded) - reread not called", async function() {
+            let called = false;
+            const result = await pipeline.deploy({ type: "reload", source: "storage", reread: async () => { called = true } });
+            result.should.eql({ skipped: "superseded" });
+            called.should.be.false();
+        });
+        it("rereads under the lock and reloads in the state reloading - nothing saved", async function() {
+            instanceState.markReloadPending();
+            const result = await pipeline.deploy({ type: "reload", source: "storage", reread: async function() {
+                calls.push({ fn: "reread", locked: lock.isLocked() });
+                return { apply: { flows: [], rev: "B" }, reloadType: "diff", credentialsChanged: false };
+            } });
+            result.should.eql({ rev: "B" });
+            calls.should.eql([{ fn: "reread", locked: true }, { fn: "reloadFromStorage", locked: true, state: "reloading" }]);
+            flows.reloadFromStorage.firstCall.args[1].should.eql({ type: "diff", credentialsChanged: false });
+            flows.setFlows.called.should.be.false();
+            await new Promise(r => setImmediate(r));
+            instanceState.get().state.should.equal("ready");
+        });
+        it("a decision without apply is returned as skipped", async function() {
+            instanceState.markReloadPending();
+            const result = await pipeline.deploy({ type: "reload", source: "storage", reread: async () => ({ skip: "unchanged" }) });
+            result.should.eql({ skipped: { skip: "unchanged" } });
+            flows.reloadFromStorage.called.should.be.false();
+        });
+        it("a failed reload returns to the state before the pending reload", async function() {
+            instanceState.markReloadPending();
+            flows.reloadFromStorage = async function() { throw new Error("credentials") };
+            await pipeline.deploy({ type: "reload", source: "storage", reread: async () => ({ apply: { rev: "B" } }) }).should.be.rejectedWith("credentials");
+            instanceState.get().state.should.equal("ready");
+            lock.isLocked().should.be.false();
         });
     });
 });

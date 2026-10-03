@@ -20,6 +20,8 @@
  *   E-02: the instance state on start and stop, RED.stop(reason)
  *   Z-08: the health probes follow the start and stop of the runtime
  *   Z-11: readOnlyUserDir - effective settings and the log at start
+ *   Z-09: the observer of storage (watchFlows) registered before the flows are
+ *   read, a failed registration fails the start, unregistered on stop
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -258,6 +260,65 @@ describe("runtime", function() {
             } finally {
                 coordStart.restore();
             }
+        });
+
+        describe("reload from storage (Z-09)", function() {
+            let hasWatch;
+            let watch;
+            let unwatch;
+            beforeEach(function() {
+                redNodesGetNodeList = sinon.stub(redNodes,"getNodeList").callsFake(function() {return []});
+                unwatch = sinon.spy(async function() {});
+                hasWatch = sinon.stub(storage,"hasWatchFlows").callsFake(() => true);
+                watch = sinon.stub(storage,"watchFlows").callsFake(async function() { return unwatch });
+            });
+            afterEach(function() {
+                hasWatch.restore();
+                watch.restore();
+            });
+            it("watchFlows registered before first loadFlows", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: {reload: {watch: true}}, load:function() { return Promise.resolve();}});
+                await runtime.start();
+                await new Promise(resolve => setImmediate(resolve));
+                watch.calledOnce.should.be.true();
+                sinon.assert.callOrder(storageInit, watch, redNodesLoadFlows);
+            });
+            it("storage without watchFlows - no watcher", async function() {
+                hasWatch.restore();
+                hasWatch = sinon.stub(storage,"hasWatchFlows").callsFake(() => false);
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: {reload: {watch: true}}, load:function() { return Promise.resolve();}});
+                await runtime.start();
+                watch.called.should.be.false();
+            });
+            it("watch not enabled - watchFlows not called", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", load:function() { return Promise.resolve();}});
+                await runtime.start();
+                watch.called.should.be.false();
+            });
+            it("watchFlows registration failure fails the start (R-36)", async function() {
+                watch.restore();
+                watch = sinon.stub(storage,"watchFlows").callsFake(async function() { throw new Error("cannot watch") });
+                sinon.stub(log,"error").callsFake(function(){});
+                try {
+                    runtime.init({testSettings: true, httpAdminRoot:"/", deploy: {reload: {watch: true}}, load:function() { return Promise.resolve();}});
+                    await runtime.start().should.be.rejectedWith("cannot watch");
+                    redNodesLoadFlows.called.should.be.false();
+                } finally {
+                    log.error.restore();
+                }
+            });
+            it("unwatch called on stop", async function() {
+                const stopFlows = sinon.stub(redNodes,"stopFlows").callsFake(function() { return Promise.resolve();} );
+                try {
+                    runtime.init({testSettings: true, httpAdminRoot:"/", deploy: {reload: {watch: true}}, load:function() { return Promise.resolve();}});
+                    await runtime.start();
+                    await runtime.stop();
+                    unwatch.calledOnce.should.be.true();
+                    sinon.assert.callOrder(unwatch, stopFlows);
+                } finally {
+                    stopFlows.restore();
+                }
+            });
         });
 
         it("reports runtime metrics",function(done) {

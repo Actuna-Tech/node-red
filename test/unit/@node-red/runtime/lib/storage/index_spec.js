@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-09: tests of the optional watchFlows of the storage plugin
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 var should = require("should");
 var paff = require('path');
 
@@ -265,6 +270,42 @@ describe("red/storage/index", function() {
             storage.saveSessions({}).then(function() {
                 done();
             });
+        });
+    });
+
+    describe('watchFlows (Z-09)', function() {
+        it('hasWatchFlows false without it', async function() {
+            await storage.init({settings:{storageModule: {init: function() {}}}});
+            storage.hasWatchFlows().should.be.false();
+            await storage.watchFlows(function() {}).should.be.rejected();
+        });
+        it('exposes watchFlows when module provides it', async function() {
+            let registered;
+            const unwatch = function() {};
+            await storage.init({settings:{storageModule: {
+                init: function() {},
+                watchFlows: async function(cb) { registered = cb; return unwatch; }
+            }}});
+            storage.hasWatchFlows().should.be.true();
+            const result = await storage.watchFlows(function() {});
+            result.should.equal(unwatch);
+            registered.should.be.a.Function();
+        });
+        it('callback exceptions are contained', async function() {
+            let registered;
+            await storage.init({settings:{storageModule: {
+                init: function() {},
+                watchFlows: function(cb) { registered = cb; }
+            }}});
+            await storage.watchFlows(function() { throw new Error("listener failed") });
+            (function() { registered({rev: "x"}) }).should.not.throw();
+        });
+        it('a registration that throws is rejected', async function() {
+            await storage.init({settings:{storageModule: {
+                init: function() {},
+                watchFlows: function() { throw new Error("no watch") }
+            }}});
+            await storage.watchFlows(function() {}).should.be.rejectedWith("no watch");
         });
     });
 

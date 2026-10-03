@@ -22,6 +22,10 @@ describe("util/hooks", function() {
         hooks.add("preShutdown", function(payload) {});
         hooks.has("preShutdown").should.be.true();
     })
+    it("allows preReload hook", function() {
+        hooks.add("preReload", function(payload) {});
+        hooks.has("preReload").should.be.true();
+    })
     it("rejects invalid hook id", function(done) {
         try {
             hooks.add("foo", function(payload) {})

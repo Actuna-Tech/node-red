@@ -22,6 +22,7 @@
  *   R-45: the deploy lock is kept after deploy.startTimeout unless
  *   deploy.startTimeoutReleasesLock is set
  *   Z-04: tests of getFlowRevision and the single-flow configuration (create, globalConfigs)
+ *   Z-09: tests of reloadFromStorage (full, diff) and getChangedFlows
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1473,6 +1474,93 @@ describe('flows/index', function() {
             await flows.setFlows(clone(okConfig).concat([{id:"t1-2",z:"t1",type:"missing"}]), null, "full", false, false, null, {waitForStart:true}).catch(() => {});
             instanceState.get().state.should.equal("deploying");
             instanceState.end(token, {aborted:true});
+        });
+    });
+    describe('reload from storage (Z-09)', function() {
+        const base = [
+            {id:"t1",type:"tab"},
+            {id:"t1-1",z:"t1",type:"test",foo:"a",wires:[]},
+            {id:"t2",type:"tab"},
+            {id:"t2-1",z:"t2",type:"test",foo:"a",wires:[]}
+        ];
+        function changed(id, value) {
+            const config = clone(base);
+            config.forEach(n => { if (n.id === id) { n.foo = value } });
+            return config;
+        }
+        async function startWith(config, settings) {
+            storage.getFlows = function() {
+                return Promise.resolve({flows:clone(config), rev:"A"});
+            };
+            flows.init({log:mockLog, settings:settings||{}, storage:storage});
+            await flows.load();
+            await flows.startFlows();
+        }
+
+        it('getChangedFlows lists the changed tabs', async function() {
+            await startWith(base);
+            flows.getChangedFlows({flows: changed("t1-1","b")}).should.eql(["t1"]);
+            flows.getChangedFlows({flows: clone(base)}).should.eql([]);
+        });
+        it('getChangedFlows: a changed config node outside the flows - null (all flows)', async function() {
+            const withConfig = clone(base).concat([{id:"c1",type:"test-config",foo:"a"}]);
+            await startWith(withConfig);
+            const next = clone(withConfig);
+            next[next.length-1].foo = "b";
+            should(flows.getChangedFlows({flows: next})).be.null();
+        });
+        it('getChangedFlows: a changed global-config node - null (all flows)', async function() {
+            const withConfig = clone(base).concat([{id:"c1",type:"global-config",foo:"a"}]);
+            await startWith(withConfig);
+            const next = clone(withConfig);
+            next[next.length-1].foo = "b";
+            should(flows.getChangedFlows({flows: next})).be.null();
+        });
+        it('reloadFromStorage type diff restarts only changed flows', async function() {
+            await startWith(base);
+            const t2 = flowCreate.flows["t2"];
+            flowCreate.flows["t1"].stop = sinon.spy(async () => {});
+            const t1 = flowCreate.flows["t1"];
+            t2.stop = sinon.spy(async () => {});
+            const rev = await flows.reloadFromStorage({flows: changed("t1-1","b"), rev:"B", credentials:{}}, {type:"diff"});
+            rev.should.equal("B");
+            // stop() of a modified-flows reload: t1 with the changed nodes, t2 untouched
+            t1.stop.calledOnce.should.be.true();
+            t1.stop.firstCall.args[0].should.containEql("t1-1");
+            t2.stop.firstCall.args[0].should.not.containEql("t2-1");
+            storage.hasOwnProperty('conf').should.be.false();
+            flows.getFlows().rev.should.equal("B");
+            credentialsLoad.called.should.be.true();
+        });
+        it('reloadFromStorage full restarts all', async function() {
+            await startWith(base);
+            const before = Object.assign({}, flowCreate.flows);
+            await flows.reloadFromStorage({flows: changed("t1-1","b"), rev:"B", credentials:{}}, {type:"full"});
+            await new Promise(r => setTimeout(r, 10));
+            flowCreate.flows["t2"].should.not.equal(before["t2"]);
+            flowCreate.flows["t1"].should.not.equal(before["t1"]);
+            storage.hasOwnProperty('conf').should.be.false();
+        });
+        it('reloadFromStorage does not start stopped flows', async function() {
+            await startWith(base);
+            await flows.stopFlows();
+            const created = Object.keys(flowCreate.flows).length;
+            flowCreate.flows = {};
+            await flows.reloadFromStorage({flows: changed("t1-1","b"), rev:"B", credentials:{}}, {type:"full"});
+            await new Promise(r => setTimeout(r, 10));
+            Object.keys(flowCreate.flows).should.have.length(0);
+            created.should.be.above(0);
+            flows.getFlows().rev.should.equal("B");
+        });
+        it('globalConfigChanged forces full', async function() {
+            const withConfig = clone(base).concat([{id:"c1",type:"global-config",foo:"a"}]);
+            await startWith(withConfig);
+            const before = Object.assign({}, flowCreate.flows);
+            const next = clone(withConfig);
+            next[next.length-1].foo = "b";
+            await flows.reloadFromStorage({flows: next, rev:"B", credentials:{}}, {type:"diff"});
+            await new Promise(r => setTimeout(r, 10));
+            flowCreate.flows["t2"].should.not.equal(before["t2"]);
         });
     });
     describe('#updateFlow', function() {
