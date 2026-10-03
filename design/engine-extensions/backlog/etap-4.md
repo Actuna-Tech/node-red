@@ -1,4 +1,4 @@
-# Backlog – etap 4 (Z-12–Z-15, E-03, E-04)
+# Backlog – etap 4 (Z-12–Z-15, E-03, E-04, E-05)
 
 > **Autorstwo:** opracowała firma **Actuna Sp. z o.o.** w osobie **Wojciecha Repińskiego** (developer), z użyciem narzędzi AI.
 > Zasady, szablon karty i wspólne DoD: [../ZASADY.md](../ZASADY.md). Fakty z kodu: [../WERYFIKACJA.md](../WERYFIKACJA.md).
@@ -10,14 +10,15 @@
 
 | ID | Tytuł | Typ | Priorytet | Ryzyko | Zależności | Szacunek |
 |---|---|---|---|---|---|---|
-| [Z-12](#z-12--punkty-rozszerzeń-edytora-dla-pluginów) | Punkty rozszerzeń edytora dla pluginów (spike + szkielet) | funkcja | P3 | wysokie (publiczne API, brak załącznika B) | załącznik B (Zamawiający), E-03, P-02/Z-06 (Deploy) | M (spike) + S–M na każdy punkt |
+| [Z-12](#z-12--punkty-rozszerzeń-edytora-dla-pluginów) | Punkty rozszerzeń edytora dla pluginów (spike + szkielet) | funkcja | P3 | wysokie (publiczne API, brak załącznika B) | załącznik B (Zamawiający), E-03, P-02/Z-06 (Deploy) | M (spike + szkielet); każdy punkt z załącznika B – osobna karta z własnym szacunkiem S/M/L |
 | [Z-13](#z-13--polskie-tłumaczenie) | Polskie tłumaczenie | funkcja | P3 | średnie (wolumen, przegląd językowy) | tłumaczenie częściowe od Zamawiającego; klucze z P-02, Z-03, Z-14, Z-15 | L |
 | [Z-14](#z-14--układ-flow-dostosowanie-istniejącej-realizacji) | Układ flow – dostosowanie istniejącej realizacji | funkcja (propozycja Wykonawcy) | P3 | średnie | E-04, Z-04 (część runtime), E-03, D-03, D-06 | M |
 | [Z-15](#z-15--instancja-tylko-edycyjna) | Instancja tylko edycyjna | funkcja (propozycja Wykonawcy) | P2 | średnie | E-01, E-02; zgodność z P-01, Z-06, Z-08, Z-09; D-02, D-06 | M |
-| [E-03](#e-03--harness-testów-edytora) | Harness testów edytora | przerobienie (infrastruktura testów) | P1 (etap 0) | niskie | D-03 | S (+ M dla E2E) |
+| [E-03](#e-03--harness-testów-edytora) | Harness testów edytora | przerobienie (infrastruktura testów) | P1 (etap 0) | niskie | D-03 | M (helper S + E2E M przy D-03 = tak) |
 | [E-04](#e-04--dostosowanie-istniejącej-gałęzi) | Dostosowanie istniejącej gałęzi | przerobienie (proces) | P1 (etap 0) | niskie | D-01, D-04 | M |
+| [E-05](#e-05--środowisko-weryfikacji) | Środowisko weryfikacji (CI, raport pakietu, gałąź integracyjna) | przerobienie (infrastruktura weryfikacji) | P1 (etap 0) | niskie | D-03 (zadanie E2E), D-04 | M |
 
-Kolejność realizacji: **E-03 i E-04 w etapie 0** (ANALIZA §6.1 – karty w tym pliku, bo dotyczą głównie pakietów edytora i układu flow) →
+Kolejność realizacji: **E-03, E-04 i E-05 w etapie 0** (ANALIZA §6.1 – karty w tym pliku, bo dotyczą głównie pakietów edytora i układu flow) →
 Z-14 (krok 2.3, po Z-04) → Z-13 (krok 4, równolegle z kodem; klucze nowych tekstów doklejane na bieżąco) → Z-12 (po załączniku B) → Z-15
 (po Z-08/Z-09, bo dopina się do modelu stanu E-02).
 
@@ -405,7 +406,7 @@ Funkcja: Układ flow sterowany ustawieniem editorTheme.flowLayout.enabled
 - [ ] Bramkowanie kontrolek i ustawień użytkownika w edytorze + testy logiki – M
 - [ ] `settings.js`, CHANGELOG, JSDoc API układu – S
 - [ ] Podział na gałęzie Z-14a/b/c (z E-04) + `npm test` na każdej – M
-- [ ] FL-B-005 (+ FL-B-004 wg decyzji) – S/M
+- [ ] FL-B-005 (+ FL-B-004 wg decyzji) – M
 - [ ] E2E obu stanów ustawienia (wg D-03) – S
 
 ---
@@ -416,8 +417,8 @@ Funkcja: Układ flow sterowany ustawieniem editorTheme.flowLayout.enabled
 |---|---|
 | Etap / typ | 4 / funkcja – propozycja Wykonawcy (wymóg z rozmowy: „edytor produkcyjny służy tylko do edycji, nie jest workerem”) |
 | Priorytet / ryzyko | P2 / średnie (dotyka startu runtime i potoku wdrożenia) |
-| Ustawienie | **do decyzji D-02**: `editorOnly: true` (rekomendacja – semantyka ścisła: flow nigdy nie startują) albo `runtimeState.autoStart: false` (semantyka miękka: nie startują przy uruchomieniu, ale mogłyby być uruchomione API) |
-| Zależności | E-01 (punkt w potoku: „start” pomijany), E-02 (stan instancji), zgodność z P-01, Z-06, Z-08, Z-09, Z-10; D-06 |
+| Ustawienie | `editorOnly: false` (ZASADY §2.1; alternatywa: `runtimeState.autoStart` – semantyka miękka: nie startują przy uruchomieniu, ale mogłyby być uruchomione API); rekomendacja – semantyka ścisła: przy `editorOnly: true` flow nigdy nie startują; potwierdzenie D-02 |
+| Zależności | E-01 (punkt w potoku: „start” pomijany – ZASADY §2.3 A krok 7), E-02 (stan `loaded`, T14), zgodność z P-01, Z-06, Z-08, Z-09, Z-10; D-02, D-06, D-13 |
 | Pliki | `runtime/lib/flows/index.js:36-38` (`started`, `state`), `:104-110` (`load`, `safeMode`), `:118-133` (`setFlows`, `safeMode`), `:207-241` (gałąź `forceStart \|\| started`), `:272-345` (`start`: `safeMode` `:320-327`, `runtimeFlowState` `:329-338`); `runtime/lib/api/flows.js:66-100` (`setFlows`, `reload`), `:282-336` (`setState`, wymaga `runtimeState.enabled`); `editor-api/lib/admin/index.js:47-49` (`/flows/state`); `runtime/lib/api/settings.js:166-173` (`runtimeState` dla edytora); `editor-client/src/js/red.js:366-420` (powiadomienia `runtime-state`), `ui/deploy.js:77-80` (Start/Stop/Restart w menu Deploy); `node-red/settings.js:304-315` (`runtimeState`) |
 | Powiązania | K8S-T-002 (rola editor), K8S-T-003 (debug/status z workerów – wtyczka), K8S-T-006 (publikacja) |
 
@@ -451,10 +452,10 @@ Wynik: **brak funkcji; dwa istniejące mechanizmy częściowe, oba nieodpowiedni
 2. `load()`/`setFlows()`: przy `editorOnly` nie usuwać `safeMode` i nie przekazywać `forceStart` dalej niż do `start()` (który i tak kończy) – zachowana gałąź „zapis bez startu” (`:235-240`); `stop()` przy `started=false` już jest no-op (`:435`).
 3. `api/flows.js` `setState`: `editorOnly` → 409 `editor_only` dla `start` (przed `settings.set`).
 4. `api/settings.js`: `safeSettings.editorOnly = true` (dla edytora); edytor (`red.js`, `deploy.js`): powiadomienie i ukrycie Start/Stop.
-5. Model stanu (E-02): stan `ready` z flagą `flowsRunning:false` lub osobny stan `editor-only` – **do decyzji w E-02**.
+5. Model stanu (E-02): osobny stan `loaded` (flow wczytane, nieuruchomione; przejścia `starting` → `loaded` (T14), `loaded` → `deploying`/`reloadPending` → `loaded`; nigdy `ready`) – zgodnie z ANALIZA §4.2 i kartą E-02.
 6. Zgodność z pakietami:
-   - **Z-08:** `/ready` na instancji edycyjnej → **200 po wczytaniu flow** (propozycja), `/live` jak zwykle; `deploying` → 503 na czas zapisu;
-   - **Z-09:** instancja edycyjna obsługuje `watchFlows` przez przeładowanie konfiguracji **bez startu** (edytory dostają `runtime-deploy` → powiadomienie o zmianie na serwerze); `preReload` wywoływany (brak drenażu – nic nie działa) – propozycja;
+   - **Z-08:** `/ready` na instancji edycyjnej → **200 w stanie `loaded`** (D-13 – jedna propozycja, wspólna z E-02/Z-08; pytanie 3 w etapie 3), `/live` jak zwykle; `deploying` → 503 na czas zapisu;
+   - **Z-09:** instancja edycyjna (przy `deploy.reload.watch: true`) obsługuje `watchFlows` przez przeładowanie konfiguracji **bez startu** (`loaded` → `reloadPending` → `reloading` → `loaded`; edytory dostają `runtime-deploy` → powiadomienie o zmianie na serwerze); `preReload` wywoływany (brak drenażu – nic nie działa) – propozycja;
    - **P-01:** `deploy.response: "started"` na instancji edycyjnej = odpowiedź po zapisie (kroku startu brak), w odpowiedzi np. `{rev, started:false}` – **do potwierdzenia** (zmiana kształtu odpowiedzi tylko w trybie `started`);
    - **Z-06:** `preDeploy`/`postDeploy` wywoływane normalnie – instancja edycyjna to naturalne miejsce walidacji i wyzwalacza publikacji (K8S-T-006);
    - **Z-10:** koordynacja niepotrzebna (brak węzłów) – wtyczka koordynacji może nie być inicjowana (do potwierdzenia).
@@ -489,6 +490,12 @@ Funkcja: Instancja tylko edycyjna
     Kiedy wyślę POST /flows z Node-RED-Deployment-Type: reload
     Wtedy konfiguracja jest wczytana z magazynu, a flow nie startują
 
+  Scenariusz: Gotowość instancji edycyjnej (D-13)
+    Zakładając editorOnly = true i health.enabled = true (Z-08)
+    Kiedy flow zostaną wczytane
+    Wtedy stan instancji to "loaded", a GET /health/ready zwraca 200
+    I w trakcie wdrożenia GET /health/ready zwraca 503, a po nim znowu 200
+
   Scenariusz: Tryb bezpieczny nie wyłącza trybu edycyjnego
     Zakładając editorOnly = true i uruchomienie z --safe
     Kiedy wdrożę flow
@@ -516,6 +523,7 @@ Funkcja: Instancja tylko edycyjna
 - `test/unit/@node-red/runtime/lib/flows/index_spec.js`: `editorOnly: start does not start flows`, `editorOnly: emits runtime-state editor-only`, `editorOnly: does not read or write runtimeFlowState`, `editorOnly: setFlows saves without starting (full/nodes/flows)`, `editorOnly: load(true) does not start`, `editorOnly: safeMode is not cleared by deploy`, `default: unchanged start behaviour`.
 - `test/unit/@node-red/runtime/lib/api/flows_spec.js`: `setState start returns 409 editor_only`, `setState stop is no-op`, `reload in editorOnly does not start`.
 - `test/unit/@node-red/runtime/lib/api/settings_spec.js`: `exposes editorOnly to the editor`, `omits editorOnly when not set`.
+- `test/unit/@node-red/runtime/lib/state_spec.js` / `health_spec.js`: `editorOnly start ends in loaded`, `ready 200 in loaded`, `deploy in editorOnly returns to loaded`.
 - `test/unit/@node-red/editor-api/lib/admin/flows_spec.js`: kontrakt `POST /flows/state` 409 (jeśli mapowanie kodu w editor-api wymaga zmian – do sprawdzenia).
 - Integracyjny (jeśli wykonalny bez nowych zależności): runtime z atrapą magazynu – brak `saveSettings` z `runtimeFlowState`.
 - Edytor (wg E-03): logika powiadomienia/ukrycia pozycji Deploy; E2E (D-03) – komunikat widoczny.
@@ -718,6 +726,109 @@ Funkcja: Dostosowanie istniejącej gałęzi do wymagań zlecenia
 
 ---
 
+### E-05 – Środowisko weryfikacji
+
+| Pole | Wartość |
+|---|---|
+| Etap / typ | 0 (karta w etapie 4) / przerobienie – infrastruktura weryfikacji (CI, raport, gałąź integracyjna) |
+| Priorytet / ryzyko | P1 / niskie (bez zmian w kodzie produktu) |
+| Ustawienie | brak |
+| Zależności | D-03 (opcjonalne zadanie `test:e2e`), D-04 (DCO – kontrola trailerów), E-03 (helper E2E), E-04 (kontrola nazw) |
+| Pliki | `.github/workflows/tests.yml:1-31` (macierz Node 22, 24; `npm ci` + `npm run test`); nowy workflow (np. `.github/workflows/verify.yml` – nazwa do potwierdzenia) lub rozszerzenie `tests.yml`; `package.json:14-31` (skrypty `test`, `test:e2e`); `test/unit/@node-red/runtime/lib/storage/localfilesystem/projects/ssh/` (`index_spec.js`, `keygen_spec.js` – testy wymagające `ssh-keygen`); szablon raportu w `design/engine-extensions/` (poza gałęziami pakietów) |
+| Powiązania | ANALIZA §5 (3.5, 3.8), §6.3; ZASADY §3 (DoD: `npm test`, raport); FL-T-003 (E2E w CI); E-04 |
+
+#### Weryfikacja stanu (kod 5.0.7)
+Wynik: **POTWIERDZONE** – CI istnieje, brak raportu i gałęzi integracyjnej.
+- `.github/workflows/tests.yml`: wyzwalacz `push`/`pull_request` na `main`, `dev`; `ubuntu-latest`; macierz `node-version: [22, 24]`; kroki `npm ci` → `npm run test` (`run-s build verify-deps lint coverage`, `package.json:26`). Obraz `ubuntu-latest` zawiera `ssh-keygen` (OpenSSH) – testy projektów przechodzą tam bez zmian.
+- W kontenerze roboczym (Node 22.22.0) brak `ssh-keygen` → pada 5 testów `storage/localfilesystem/projects/ssh` (niezwiązane z pakietami; ANALIZA §5, 3.5).
+- `test:e2e` (`package.json:31`) poza `npm test`; Playwright nie jest zależnością (E-03, D-03).
+- Gałęzie pakietów spoza `main`/`dev` nie uruchamiają obecnego workflow (wyzwalacze tylko dla tych gałęzi).
+
+#### Specyfikacja
+- **Cel:** powtarzalna weryfikacja każdego pakietu i ich połączenia: pełne `npm test` w środowisku zgodnym z projektem, opcjonalne E2E, jednolity raport pakietu, gałąź integracyjna.
+- **Wejścia:** gałęzie pakietów (ANALIZA §5, 3.8 – warstwowo w torze A, od bazy w torze B), gałąź integracyjna, decyzje D-03, D-04.
+- **Wyjścia:**
+  - zadanie CI „test”: macierz Node jak w `.github/workflows/tests.yml` (22, 24), `ubuntu-latest` z `ssh-keygen` (krok kontrolny `ssh-keygen -V` lub `command -v ssh-keygen` – brak → błąd zadania, nie pominięcie testów), `npm ci` → `npm test`; wyzwalane dla gałęzi pakietów i integracyjnej;
+  - opcjonalne zadanie „test:e2e” (tylko przy D-03 = tak): instalacja przeglądarki Playwright, `npm run test:e2e`; osobne od `npm test`, niewymagane do scalenia (do decyzji);
+  - kontrole dostarczenia: trailery `Signed-off-by` (D-04) i brak nazw firmy/osoby w `packages/`, `test/`, `CHANGELOG.md`, `package.json`, `scripts/` po `npm run build` (wzorzec przekazany jako sekret/zmienna CI, nie w repozytorium – E-04);
+  - **szablon raportu pakietu** (ZASADY §3 „Raport”): co zmieniono (pliki, zakres), nowe ustawienia (nazwa, wartość domyślna, wpis w `settings.js`), wpływ na zgodność (zachowanie domyślne, kontrakty Admin API, kody błędów wg ZASADY §2.4), dowody weryfikacji (liczby testów: przechodzące/pominięte/nieudane dla `npm test` per wersja Node, pokrycie, wynik E2E, wynik kontroli nazw i DCO, odnośnik do przebiegu CI), czego nie zweryfikowano (z uzasadnieniem), zależności od innych pakietów;
+  - **gałąź integracyjna** (np. `integration/engine-extensions` – nazwa do potwierdzenia): scalenia pakietów w kolejności ANALIZA §6.2, po każdym scaleniu pełne `npm test`; konflikty w plikach wyłączonych z reguły (`settings.js`, `CHANGELOG.md`, `locales/*`) rozwiązywane na niej.
+- **Niezmienniki:** brak zmian w kodzie produktu i w istniejącym zachowaniu `tests.yml` dla `main`/`dev`; brak nowych zależności npm bez zgody (Playwright tylko przy D-03 = tak, `devDependencies`); `npm test` uruchamiane w całości (bez wyłączania testów środowiskowych).
+- **Przypadki błędów:** brak `ssh-keygen` w środowisku → zadanie kończy się błędem z czytelnym komunikatem (nie ciche pominięcie 5 testów); niestabilny test (flaky) → odnotowany w raporcie z numerem przebiegu, bez wyłączania; E2E nieudane przy D-03 = tak → raport, scalenie wg decyzji.
+- **Skutki uboczne:** dodatkowe przebiegi CI (czas, koszt) dla każdej gałęzi pakietu; workflow w repozytorium Wykonawcy/Zamawiającego – miejsce do potwierdzenia (pytanie 18).
+
+#### Projekt rozwiązania (minimalny)
+1. Workflow weryfikacji (osobny plik, by nie zmieniać `tests.yml` upstream): wyzwalacz dla gałęzi pakietów i integracyjnej, macierz Node 22/24, krok kontrolny `ssh-keygen`, `npm ci`, `npm test`, zapis podsumowania liczby testów jako artefakt.
+2. Zadanie `test:e2e` warunkowe (D-03): instalacja przeglądarki, `npm run test:e2e`, artefakty zrzutów (FL-T-003).
+3. Zadanie kontroli dostarczenia: `git log --format='%(trailers:key=Signed-off-by)'` dla zakresu gałęzi; kontrola nazw (E-04) po `npm run build`.
+4. Szablon raportu pakietu (Markdown w `design/engine-extensions/` – poza gałęziami pakietów) z sekcjami jak w Wyjściach.
+5. Gałąź integracyjna i procedura scaleń (kolejność ANALIZA §6.2, `npm test` po każdym scaleniu).
+
+#### Kryteria akceptacji (BDD)
+```gherkin
+Funkcja: Środowisko weryfikacji
+
+  Scenariusz: Pełne npm test w CI
+    Zakładając gałąź pakietu wypchniętą do repozytorium
+    Kiedy uruchomi się workflow weryfikacji
+    Wtedy npm test (build, verify-deps, lint, coverage) wykona się dla Node 22 i 24
+    I testy storage/localfilesystem/projects/ssh nie zostaną pominięte ani nie padną z powodu braku ssh-keygen
+
+  Scenariusz: Brak ssh-keygen jest błędem środowiska
+    Zakładając środowisko bez ssh-keygen
+    Kiedy uruchomi się zadanie test
+    Wtedy zadanie zakończy się błędem z komunikatem o brakującym ssh-keygen przed uruchomieniem testów
+
+  Scenariusz: Opcjonalne E2E (D-03 = tak)
+    Zakładając Playwright w devDependencies
+    Kiedy uruchomi się zadanie test:e2e
+    Wtedy testy E2E się wykonają, a wynik zadania test nie zależy od E2E
+
+  Scenariusz: Raport pakietu
+    Zakładając zakończony przebieg CI dla gałęzi pakietu
+    Kiedy przygotuję raport wg szablonu
+    Wtedy raport zawiera: co zmieniono, nowe ustawienia, wpływ na zgodność, liczby testów (per wersja Node) i czego nie zweryfikowano
+
+  Scenariusz: Gałąź integracyjna
+    Zakładając scalenie kolejnego pakietu do gałęzi integracyjnej w kolejności ANALIZA §6.2
+    Kiedy uruchomi się workflow weryfikacji
+    Wtedy pełne npm test przechodzi po każdym scaleniu
+
+  Scenariusz: Kontrola DCO i nazw
+    Zakładając gałąź pakietu
+    Kiedy uruchomi się zadanie kontroli dostarczenia
+    Wtedy każdy commit ma Signed-off-by, a w kodzie i testach nie ma nazw firmy i osoby Wykonawcy
+
+  Scenariusz: Workflow upstream bez zmian
+    Kiedy porównam .github/workflows/tests.yml z bazą
+    Wtedy plik jest niezmieniony
+```
+
+#### Testy
+- Brak nowych testów kodu. Weryfikacja: przebieg workflow na gałęzi próbnej (zielony dla Node 22 i 24; liczba testów zgodna z przebiegiem lokalnym w środowisku z `ssh-keygen`); przebieg kontrolny bez `ssh-keygen` (oczekiwany błąd kroku kontrolnego); przy D-03 = tak – przebieg `test:e2e` z `flow_layout_e2espec.js`.
+
+#### DoD specyficzne
+- [ ] Workflow weryfikacji działa dla gałęzi pakietów i integracyjnej; `tests.yml` bez zmian.
+- [ ] Krok kontrolny `ssh-keygen`; 5 testów projektów/ssh wykonywanych i zielonych.
+- [ ] Szablon raportu pakietu zatwierdzony i użyty w pierwszym pakiecie (P-04).
+- [ ] Gałąź integracyjna utworzona, procedura scaleń opisana.
+- [ ] Zadanie `test:e2e` wg D-03 (albo jawnie pominięte decyzją).
+
+#### Ryzyka i alternatywy
+- **Miejsce uruchamiania CI** (repozytorium Wykonawcy vs Zamawiającego) – wpływa na sekrety (wzorzec kontroli nazw) i dostęp do przebiegów – **pytanie**.
+- **Czas CI:** pełne `npm test` × 2 wersje Node × liczba gałęzi pakietów; alternatywa: jedna wersja Node dla gałęzi pakietów, pełna macierz dla integracyjnej – **do decyzji**.
+- **Alternatywa:** rozszerzenie `tests.yml` o gałęzie pakietów – prostsze, ale zmienia plik upstream (konflikt przy PR).
+- Kontener roboczy bez `ssh-keygen` – lokalne przebiegi raportują 5 znanych błędów środowiskowych; dowodem odbioru jest przebieg CI.
+
+#### Podzadania
+- [ ] Workflow weryfikacji (macierz Node, `ssh-keygen`, `npm test`, artefakt z liczbami testów) – S
+- [ ] Zadanie `test:e2e` (wg D-03) – S
+- [ ] Kontrole DCO i nazw (wspólnie z E-04) – S
+- [ ] Szablon raportu pakietu – S
+- [ ] Gałąź integracyjna + procedura scaleń – S
+
+---
+
 ## Pytania do Zamawiającego (etap 4)
 
 1. **Z-12 – załącznik B:** kiedy zostanie przekazana lista punktów? Czy propozycje `RED.header`, rozszerzenia Deploy (pozycje menu, hook/zdarzenie przed wdrożeniem w edytorze), `RED.dialog` i dokumentacja `RED.view.annotations` pokrywają Wasze potrzeby (przycisk „Publikuj”, oznaczenie środowiska)?
@@ -731,9 +842,21 @@ Funkcja: Dostosowanie istniejącej gałęzi do wymagań zlecenia
 9. **Z-14 – wyłączone ustawienie:** czy akceptujecie rekomendację „flow z zapisanym układem rysują się zgodnie z danymi, ukryte są tylko kontrolki, ustawienia użytkownika ignorowane”? Alternatywa: przy wyłączonym ignorować dane przy rysowaniu.
 10. **Z-14 – runtime bez bramkowania:** czy przenoszenie `layout`/`wireStyle` w API pojedynczego flow i pomijanie `o`/układu subflow w `diffNodes` może działać niezależnie od ustawienia (brak skutku dla flow bez tych pól)?
 11. **Z-14 – otwarte błędy:** zgoda na zakres FL-B-005 (wymagany) i FL-B-004 (zalecany); FL-B-007/008 opcjonalnie; FL-B-006 poza zakresem (zgłoszenie upstream)?
-12. **Z-15 – nazwa i semantyka (D-02):** `editorOnly: true` (flow nigdy nie startują) czy `runtimeState.autoStart: false` (możliwy ręczny start)? Czy `/ready` instancji edycyjnej ma zwracać 200 po wczytaniu flow, a odpowiedź P-01 `started` – `{rev, started:false}`?
+12. **Z-15 – nazwa i semantyka (D-02):** `editorOnly: true` (flow nigdy nie startują; ZASADY §2.1) czy `runtimeState.autoStart: false` (możliwy ręczny start)? Czy odpowiedź P-01 `started` na instancji edycyjnej ma mieć postać `{rev, started:false}`? (`/ready` instancji edycyjnej – jedno pytanie: etap 3, pytanie 3.)
 13. **Z-15 – przycisk `inject` i trasy admin węzłów:** wystarczy opis ograniczeń, czy przycisk ma być nieaktywny na instancji edycyjnej?
 14. **E-03 / D-03:** zgoda na Playwright w `devDependencies` (osobny skrypt `test:e2e`, poza `npm test`)? Jeśli nie – czy kryteria „test edytora” (P-02, Z-01, Z-12) mogą być spełnione testami logiki + scenariuszem ręcznym w raporcie?
 15. **E-04 / D-04:** kto z Wykonawcy podpisuje DCO i CLA OpenJS; jak oznaczać pracę wspomaganą AI (trailer w commicie czy opis PR)?
 16. **E-04 – nazwy narzędzi:** czy wymóg „bez nazw produktów” obejmuje nazwy narzędzi stron trzecich (np. narzędzia E2E) w CHANGELOG i komentarzach testów?
 17. **E-04 – CHANGELOG:** wpis w gałęzi pakietu (sekcja bez wersji) czy wyłącznie w opisie dostarczenia (upstream redaguje CHANGELOG przy wydaniu)?
+18. **E-05 – miejsce CI:** w którym repozytorium uruchamiamy workflow weryfikacji i gałąź integracyjną (Wykonawcy czy Zamawiającego)? Czy gałęzie pakietów wymagają pełnej macierzy Node (22, 24), czy wystarczy ona dla gałęzi integracyjnej? Czy zadanie `test:e2e` (przy D-03 = tak) ma blokować scalenie?
+
+---
+
+## Zmiany po przeglądzie
+
+Poprawki z listy w [../PRZEGLAD.md](../PRZEGLAD.md) („Lista poprawek do naniesienia”), zgodnie z ZASADY §2.1, §2.4 i ANALIZA §4.2, §6.1, §7:
+
+- **#11** – Z-15: jedna propozycja `/ready` – stan `loaded` (E-02) i 200 (D-13); scenariusz BDD „Gotowość instancji edycyjnej”, testy; pytanie 12 odsyła do jednego pytania w etapie 3 (pytanie 3); Projekt pkt 5 – stan `loaded` zamiast „do decyzji w E-02”.
+- **#13** – nowa karta **E-05 – Środowisko weryfikacji** (CI z pełnym `npm test` dla Node 22/24 wg `.github/workflows/tests.yml`, krok kontrolny `ssh-keygen`, opcjonalne zadanie `test:e2e` wg D-03, szablon raportu pakietu, gałąź integracyjna); wiersz w tabeli podsumowania, kolejność realizacji, pytanie 18.
+- **#29** – szacunki wyłącznie S/M/L: Z-12 „M (spike) + S–M na każdy punkt” → „M (spike + szkielet); każdy punkt z załącznika B – osobna karta”; E-03 „S (+ M dla E2E)” → „M”; dodatkowo podzadanie Z-14 „S/M” → „M”.
+- **Dodatkowo (nazwy, ZASADY §2.1)** – Z-15: ustawienie `editorOnly` (alternatywa `runtimeState.autoStart` w nawiasie), zależności uzupełnione o E-02 (T14), D-13, ZASADY §2.3 A krok 7; zgodność z Z-09 uwzględnia `deploy.reload.watch` i stan `reloadPending`.

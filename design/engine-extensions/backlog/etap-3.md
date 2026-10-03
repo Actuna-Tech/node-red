@@ -11,13 +11,13 @@
 
 | ID | Tytuł | Typ | Priorytet | Ryzyko | Zależności | Szacunek |
 |---|---|---|---|---|---|---|
-| [E-02](#e-02--model-stanu-instancji) | Model stanu instancji | przerobienie (nowy moduł wewnętrzny, bez zmiany zachowania) | P1 | średnie | E-01 (wynik `start()` z błędami, krok 4/8 potoku); warunek Z-08, Z-09, P-01 | M |
-| [Z-08](#z-08--sondy-zdrowia-live--ready) | Sondy zdrowia `/live` i `/ready` | funkcja + poprawka błędu (D-05: serwer HTTP przy SIGTERM) | P1 | średnie | E-02, E-01 | M |
-| [Z-09](#z-09--przeładowanie-flow-po-zmianie-w-magazynie) | Przeładowanie flow po zmianie w magazynie (`watchFlows`, `preReload`) | funkcja | P1 | wysokie | E-01, E-02, Z-08, Z-06 (rozszerzenie `VALID_HOOKS`, wzorzec limitu czasu hooka), P-01 (błędy startu) | L |
+| [E-02](#e-02--model-stanu-instancji) | Model stanu instancji | przerobienie (nowy moduł wewnętrzny, bez zmiany zachowania) | P1 | średnie | E-01 (wynik `start()` z błędami, krok 4/8 potoku); warunek Z-08, Z-09; wykorzystywany opcjonalnie przez P-01 | M |
+| [Z-08](#z-08--sondy-zdrowia-live--ready) | Sondy zdrowia `/live` i `/ready` | funkcja + poprawka błędu (D-05: serwer HTTP przy SIGTERM) | P1 | średnie | E-02, E-01 (stany `reloadPending`/`reloading` – punkt integracji wykorzystywany przez Z-09) | M |
+| [Z-09](#z-09--przeładowanie-flow-po-zmianie-w-magazynie) | Przeładowanie flow po zmianie w magazynie (`watchFlows`, `preReload`) | funkcja | P1 | wysokie | E-01, E-02, Z-08 (`/ready` – punkt integracji), Z-06 (`VALID_HOOKS`, wzorzec limitu czasu, `postDeploy` – punkt integracji), Z-10 (`deploy.reload.concurrency`), P-01 (błędy startu) | L |
 | [Z-10](#z-10--wykonanie-na-jednej-instancji-koordynacja) | Wykonanie na jednej instancji (koordynacja) | funkcja (nowe publiczne API) | P2 | wysokie | E-02 (stan `stopping` – oddanie przywództwa) | L |
 | [Z-11](#z-11--praca-z-katalogiem-użytkownika-tylko-do-odczytu) | Praca z katalogiem użytkownika tylko do odczytu | funkcja | P2 | średnie | – | M |
 
-Kolejność realizacji (ANALIZA §6.2): E-02 (etap 0, specyfikacja + testy; implementacja razem z Z-08) → para **Z-08 + Z-11** (rozłączne pliki) → para **Z-09 + Z-10** (Z-09 po Z-08 i Z-06). Z-10 i Z-09 mają wspólny punkt w `runtime/lib/index.js` (kolejność startu) – scalać w ustalonej kolejności (najpierw Z-10).
+Kolejność realizacji (ANALIZA §6.2, tor A – sekwencyjnie): E-02 (etap 0, specyfikacja + testy; implementacja razem z Z-08) → **Z-08** → **Z-10** → **Z-09** (po Z-06, Z-08 i Z-10 – limit równoległości przeładowań) → **Z-11**. Zależności jednokierunkowe: Z-06 i Z-08 udostępniają punkty integracji, z których korzysta Z-09 (nie odwrotnie).
 
 ---
 
@@ -28,14 +28,14 @@ Kolejność realizacji (ANALIZA §6.2): E-02 (etap 0, specyfikacja + testy; impl
 | Etap / typ | 0→3 / przerobienie (specyfikacja w etapie 0, implementacja w gałęzi Z-08) |
 | Priorytet / ryzyko | P1 / średnie |
 | Ustawienie | brak (moduł wewnętrzny, zawsze aktywny, pasywny – nie zmienia zachowania) |
-| Zależności | E-01 (`start()` zwraca `{errors}`, kroki 4 i 8 potoku); warunek Z-08, Z-09; wykorzystywany przez P-01 (opcjonalnie) i Z-10 (`stopping`) |
-| Pliki | nowy `@node-red/runtime/lib/state.js`; `@node-red/runtime/lib/index.js:135-248` (`start`), `:240-247` (start flow, pusty `.catch`), `:316-328` (`stop`), obiekt `runtime` (`:331+`); `@node-red/runtime/lib/flows/index.js:57-66` (`type-registered` → późny start), `:118-242` (`setFlows`), `:272-432` (`start`), `:434-515` (`stop`), `:873` (`state()`); `@node-red/runtime/lib/api/flows.js:66-100` (mutex, `reload`), `:283-330` (`setState`) |
+| Zależności | E-01 (`start()` zwraca `{errors}`, kroki 4 i 8 potoku); warunek Z-08, Z-09; wykorzystywany opcjonalnie przez P-01, przez Z-10 (`stopping`) i Z-15 (`loaded`) |
+| Pliki | nowy `@node-red/runtime/lib/state.js`; `@node-red/runtime/lib/index.js:135-248` (`start`), `:239-245` (start flow, pusty `.catch` `:245`), `:316-328` (`stop`), obiekt `runtime` (`:331+`); `@node-red/runtime/lib/flows/index.js:57-66` (`type-registered` → późny start), `:118-242` (`setFlows`), `:272-432` (`start`), `:434-515` (`stop`), `:873` (`state()`); `@node-red/runtime/lib/api/flows.js:66-100` (mutex, `reload`), `:283-330` (`setState`) |
 | Powiązania | K8S-T-005 (sondy), ARCHITEKTURA §3.5 (drenaż 20 min) |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE** (brak jednego, wiarygodnego stanu instancji).
 - Istnieje tylko stan flow: zmienna `state` w `flows/index.js` (`'start' | 'stop' | 'safe'`, ustawiana w `start()` `:279,:324,:336` i `stop()` `:458`), odczyt `flows.state()` (`:873`) i flaga `started` (`:872`); używa ich API `getState/setState` (`api/flows.js:267-330`).
-- `RED.start()` kończy się **przed** startem flow: `runtime/lib/index.js:240-243` ustawia `started = true`, wywołuje `loadFlows().then(startFlows)` **bez** `await`; błąd odczytu flow jest połykany (`.catch(function(err) {})`, `:247`) – instancja „wisi” bez sygnału błędu. Serwer HTTP zaczyna nasłuch w `node-red/red.js:505` po `RED.start()`, czyli również przed startem flow.
+- `RED.start()` kończy się **przed** startem flow: `runtime/lib/index.js:240-243` ustawia `started = true`, wywołuje `loadFlows().then(startFlows)` **bez** `await`; błąd odczytu flow jest połykany (`.catch(function(err) {})`, `:245`) – instancja „wisi” bez sygnału błędu. `.catch` obejmuje tylko `loadFlows()` (i synchroniczny wyjątek w `then`): obietnica `redNodes.startFlows()` nie jest zwracana z `then`, więc jej odrzucenie nie jest przechwytywane w ogóle. Serwer HTTP zaczyna nasłuch w `node-red/red.js:505` po `RED.start()`, czyli również przed startem flow.
 - Zdarzenia istniejące: `flows:starting` (`flows/index.js:349`), `flows:started` (`:414`, emitowane także wtedy, gdy `Flow.start` rzucił wyjątek – tylko `console.log`, `:409-411`), `flows:stopping` (`:467`), `flows:stopped` (`:508`), `runtime-event` `runtime-state` (`:64,:82,:90,:94,:301,:315,:325,:335,:421,:510`), `runtime-deploy` (`:229,:238`).
 - Nieudany start (brakujące typy `:301`, brakujące moduły `:315`, safe mode `:325`) kończy `start()` bez błędu – tylko zdarzenie i `return`. Brakujące typy mogą zostać doinstalowane później: `type-registered` → `start()` (`:57-66`) – stan „nieudany” nie jest więc końcowy.
 - `runtimeFlowState === 'stop'` (flow zatrzymane świadomie, `:333-340`) – `start()` kończy się bez startu flow.
@@ -51,8 +51,10 @@ Wynik: **POTWIERDZONE** (brak jednego, wiarygodnego stanu instancji).
 | `starting` | od `runtime.start()` do zakończenia pierwszego startu flow | 503 | 200 |
 | `ready` | flow uruchomione, ostatnia operacja bez błędów | **200** | 200 |
 | `deploying` | wdrożenie (E-01 krok 4 → krok 8) | 503 | 200 |
-| `reloading` | przeładowanie z magazynu (Z-09), od decyzji o przeładowaniu (przed `preReload`) do końca startu | 503 | 200 |
+| `reloadPending` | przeładowanie z magazynu (Z-09) oczekujące – **bez blokady i bez tokenu operacji** (ZASADY §2.3 B kroki 2–3): oczekiwanie na slot koordynacji (`deploy.reload.concurrency`), potem drenaż w `preReload` (flaga `draining`) | jak stan poprzedni (`previous`) do rozpoczęcia drenażu; **503 od wywołania `preReload`** (`draining: true`) | 200 |
+| `reloading` | przeładowanie z magazynu (Z-09) **pod blokadą wdrożeń**: ponowny odczyt magazynu, zatrzymanie i start (ZASADY §2.3 B kroki 4–5) | 503 | 200 |
 | `idle` | flow świadomie nieuruchomione: `runtimeFlowState: stop` (API `setState`) lub safe mode | 503 (propozycja – pytanie) | 200 |
+| `loaded` | instancja tylko edycyjna (Z-15, `editorOnly: true`): flow wczytane, nieuruchamiane z założenia | **200** (D-13 – instancja gotowa do edycji) | 200 |
 | `failed` | start flow nieudany: brakujące typy/moduły, błąd odczytu flow z magazynu, błąd startu z `start().errors` | 503 | 200 |
 | `stopping` | od wywołania `runtime.stop()` (SIGTERM/SIGINT/SIGHUP/… lub osadzenie) – **nieodwracalny** | 503 | 200 |
 | `stopped` | po zakończeniu `runtime.stop()` – końcowy | 503 | 200 (proces jeszcze żyje) |
@@ -60,30 +62,43 @@ Wynik: **POTWIERDZONE** (brak jednego, wiarygodnego stanu instancji).
 - **Diagram stanów:**
 
 ```
-                 runtime.start()
-                       │
-                       ▼
-                 ┌──────────┐ start bez błędów  ┌─────────┐
-                 │ starting │──────────────────▶│  ready  │◀──────────────┐
-                 └──────────┘                   └─────────┘               │
-                   │      │ runtimeFlowState=stop │  │  │  setState stop  │
-     błąd startu / │      │ lub safe mode         │  │  └──────────▶ ┌────────┐
-     brak typów /  │      └──────────────────────────┼─────────────▶ │  idle  │
-     błąd odczytu  ▼                              │  │  setState     └────────┘
-                 ┌──────────┐◀── błąd startu ─────┤  │  start ok ────────▲ │
-                 │  failed  │                     │  │                   │ │
-                 └──────────┘── type-registered ──┼─▶│ (ready)           │ │
-                   │    │      + start ok         │  │                   │ │
-         wdrożenie │    │ powiadomienie           ▼  ▼                   │ │
-                   │    │ magazynu        ┌───────────┐ ┌───────────┐    │ │
-                   └────┼────────────────▶│ deploying │ │ reloading │◀───┼─┘
-                        └────────────────▶└───────────┘ └───────────┘    │
-                                            │  koniec: ready | failed | idle
-                                            └────────────────────────────┘
+                       runtime.start()
+                             │
+                             ▼
+                       ┌──────────┐  start bez błędów (T2)            ┌─────────┐
+                       │ starting │──────────────────────────────────▶│  ready  │
+                       └──────────┘                                   └─────────┘
+                        │   │   │ editorOnly (T14)  ┌──────────┐          ▲  │ setState stop (T11)
+      błąd startu /     │   │   └──────────────────▶│  loaded  │          │  ▼
+      brak typów /      │   │ runtimeFlowState=stop └──────────┘      ┌────────┐
+      błąd odczytu (T3) │   └─ lub safe mode (T4) ───────────────────▶│  idle  │
+                        ▼                                             └────────┘
+                  ┌──────────┐ type-registered + start ok (T9) ──▶ ready
+                  │  failed  │
+                  └──────────┘
 
-   każdy stan oprócz stopping/stopped ── runtime.stop() ──▶ ┌──────────┐ ──▶ ┌─────────┐
-                                                            │ stopping │     │ stopped │
-                                                            └──────────┘     └─────────┘
+   Stany „spoczynku” S ∈ {ready, failed, idle, loaded}:
+
+        S ── wdrożenie (T5) ──────────────────────────────▶ ┌───────────┐
+        ▲                                                   │ deploying │── koniec (T6) ──▶ S'
+        │                         wdrożenie unieważnia ────▶└───────────┘
+        │                         przeładowanie (T5)               ▲
+        │                                                          │
+        S ── powiadomienie magazynu (T7) ──▶ ┌───────────────┐ ────┘
+        ◀── anulowanie: rev bez zmian /      │ reloadPending │  bez blokady: slot koordynacji,
+            błąd odczytu (T7b)               │  (draining)   │  potem preReload (T7a: /ready 503)
+                                             └───────────────┘
+                                                     │ wejście pod blokadę (T8)
+                                                     ▼
+                                             ┌───────────┐
+                                             │ reloading │── koniec (T8a) ──▶ S'
+                                             └───────────┘
+   S' = ready | failed | idle | loaded (loaded wyłącznie przy editorOnly – nigdy ready)
+
+   każdy stan oprócz stopping/stopped ── SIGTERM/SIGINT (CLI, przed drenażem Z-08) lub runtime.stop() (T12)
+                                         ──▶ ┌──────────┐ ── (T13) ──▶ ┌─────────┐
+                                             │ stopping │              │ stopped │
+                                             └──────────┘              └─────────┘
 ```
 
 - **Tabela przejść:**
@@ -92,42 +107,55 @@ Wynik: **POTWIERDZONE** (brak jednego, wiarygodnego stanu instancji).
 |---|---|---|---|---|
 | T1 | – (init) | `starting` | wywołanie `runtime.start()` | nowe: `state.markStarting()` na początku `runtime/lib/index.js` `start()` |
 | T2 | `starting` | `ready` | pierwszy `start()` flow zakończony, `errors=[]` | istniejące `flows:started` (`flows/index.js:414`) + nowe: wynik `start()` (E-01) |
-| T3 | `starting` | `failed` | `start().errors` niepuste (missing-types, missing-modules, flow-start-failed); odrzucenie `loadFlows()`; odrzucenie `runtime.start()` (np. błąd `storage.init`) | istniejące `runtime-state` (`:301,:315`); nowe: obsługa w `runtime/lib/index.js:247` zamiast pustego `.catch` (log bez zmian + `state.fail(err)`) |
+| T3 | `starting` | `failed` | `start().errors` niepuste (missing-types, missing-modules, flow-start-failed); odrzucenie `loadFlows()`; odrzucenie `runtime.start()` (np. błąd `storage.init`) | istniejące `runtime-state` (`:301,:315`); nowe: obsługa w `runtime/lib/index.js:245` zamiast pustego `.catch` (oraz zwrócenie obietnicy `startFlows()` z `then`, by objąć także błąd startu) (log bez zmian + `state.fail(err)`) |
 | T4 | `starting` | `idle` | `runtimeFlowState === 'stop'` lub safe mode | istniejące `runtime-state` `{state:'stop'}` (`:335`), `{state:'safe'}` (`:325`); nowe: jawne wywołanie modułu stanu w tych gałęziach |
-| T5 | `ready` / `failed` / `idle` | `deploying` | E-01 krok 4 (wszystkie wejścia potoku: `/flows` full/nodes/flows, `/flow`, `/flow/:id`, `reload` z Admin API, wywołania wewnętrzne z `deployOpts`) | nowe: `state.begin("deploy")` w potoku E-01 (wewnątrz mutexu) |
-| T6 | `deploying` | `ready` / `failed` / `idle` | E-01 krok 8: koniec startu (`errors=[]` → `ready`; błędy → `failed`; flow nie były uruchomione, bo `started=false` → `idle`) | nowe: `state.end(token, result)` |
-| T7 | `ready` / `failed` / `idle` | `reloading` | decyzja o przeładowaniu z magazynu (Z-09) | nowe: `state.begin("reload")` |
-| T8 | `reloading` | `ready` / `failed` / `idle` | koniec przeładowania (jak T6); błąd odczytu magazynu → powrót do stanu sprzed T7 (flow nie były zatrzymane) | nowe: `state.end(token, result)` |
+| T5 | `ready` / `failed` / `idle` / `loaded` / `reloadPending` | `deploying` | E-01 krok 4 (wszystkie wejścia potoku: `/flows` full/nodes/flows, `/flow`, `/flow/:id`, `reload` z Admin API, wywołania wewnętrzne z `deployOpts`); z `reloadPending` – wdrożenie **unieważnia** oczekujące przeładowanie (ZASADY §2.3 B; Z-09 przerywa `preReload` sygnałem, zwalnia slot) | nowe: `state.begin("deploy")` w potoku E-01 (wewnątrz mutexu) |
+| T6 | `deploying` | `ready` / `failed` / `idle` / `loaded` | E-01 krok 8: koniec startu (`errors=[]` → `ready`; błędy → `failed`; flow nie były uruchomione, bo `started=false` → `idle`; `editorOnly` → `loaded`) | nowe: `state.end(token, result)` |
+| T7 | `ready` / `failed` / `idle` / `loaded` | `reloadPending` | powiadomienie magazynu z rewizją różną od aktywnej lub `credentialsChanged` (Z-09, ZASADY §2.3 B krok 2) – **bez blokady, bez tokenu operacji** | nowe: `state.markReloadPending(info)` |
+| T7a | `reloadPending` | `reloadPending` (`draining: true`) | rozpoczęcie drenażu – wywołanie `preReload` po zajęciu slotu (krok 3); `/ready` → 503 | nowe: `state.markDraining()` (zdarzenie `instance:state` – zmiana flagi) |
+| T7b | `reloadPending` | stan poprzedni (`previous`) | anulowanie bez przeładowania: wstępny odczyt magazynu nieudany lub rewizja równa aktywnej | nowe: `state.cancelPending(reason)` |
+| T8 | `reloadPending` | `reloading` | wejście pod blokadę wdrożeń po zakończeniu `preReload` (krok 4: ponowny odczyt magazynu) | nowe: `state.begin("reload")` (wewnątrz mutexu) |
+| T8a | `reloading` | `ready` / `failed` / `idle` / `loaded` | koniec przeładowania (jak T6); błąd ponownego odczytu pod blokadą lub rewizja bez zmian → powrót do stanu sprzed T7 (flow nie były zatrzymane) | nowe: `state.end(token, result)` (`aborted: true` przy powrocie) |
 | T9 | `failed` | `ready` | późny start po zarejestrowaniu brakującego typu (`type-registered` → `start()`, `flows/index.js:57-66`) bez błędów | istniejące `flows:started` + nowe: wynik `start()` |
 | T10 | `idle` | `ready` | `setState start` (`api/flows.js:309-320`) zakończony bez błędów | istniejące `flows:started`; nowe: `state.begin("set-state")`/`end` w `setState` |
 | T11 | `ready` / `failed` | `idle` | `setState stop` (`api/flows.js:322-329`) | istniejące `flows:stopped`; nowe: jw. |
-| T12 | dowolny poza `stopping`/`stopped` | `stopping` | wywołanie `runtime.stop()` (CLI: SIGINT, SIGTERM, SIGHUP, SIGUSR2, SIGBREAK, PM2 `shutdown` – `node-red/red.js:543-558`) | nowe: `state.markStopping(reason)` jako **pierwsza, synchroniczna** instrukcja `runtime/lib/index.js` `stop()` |
+| T12 | dowolny poza `stopping`/`stopped` (także `reloadPending` – `preReload` przerywany) | `stopping` | sygnał w CLI (SIGINT, SIGTERM, SIGHUP, SIGUSR2, SIGBREAK, PM2 `shutdown` – `node-red/red.js:543-558`) **przed** drenażem Z-08 (`preShutdown`, ZASADY §2.3 C) albo wywołanie `runtime.stop()` (osadzenie, gdy stan nie jest jeszcze `stopping`) | nowe: `state.markStopping(reason)` – w CLI jako pierwsza instrukcja obsługi sygnału (przez `RED.health`/`runtime.state`), w `runtime/lib/index.js` `stop()` jako pierwsza, synchroniczna instrukcja (idempotentne) |
 | T13 | `stopping` | `stopped` | `stopFlows()` + `closeContextsPlugin()` zakończone (sukces lub błąd) | nowe: `state.markStopped(err?)` |
+| T14 | `starting` | `loaded` | `editorOnly: true` (Z-15): flow wczytane, start pominięty (ZASADY §2.3 A krok 7) | nowe: wynik `start()` z `flowsRunning:false, reason:"editor-only"` → `state.end` (wprowadza Z-15) |
 
 - **Wejścia:** wywołania API wewnętrznego (niżej) z `runtime/lib/index.js`, potoku E-01, `api/flows.js` (`setState`), Z-09; zdarzenia `flows:*` służą tylko do weryfikacji (testy charakteryzujące), stan ustawiają jawne wywołania – zdarzenia `flows:*` są emitowane także w trakcie wdrożenia i nie mogą same zmieniać stanu.
 - **Wyjścia – API wewnętrzne (`runtime/lib/state.js`, dostępne jako `runtime.state`):**
 
 ```js
 /**
- * @typedef {"starting"|"ready"|"deploying"|"reloading"|"idle"|"failed"|"stopping"|"stopped"} InstanceState
+ * @typedef {"starting"|"ready"|"deploying"|"reloadPending"|"reloading"|"idle"|"loaded"|"failed"|"stopping"|"stopped"} InstanceState
  * @typedef {Object} StateInfo
  * @property {InstanceState} state
  * @property {InstanceState|null} previous
  * @property {string} reason      - np. "startup", "deploy", "reload", "set-state", "missing-types",
  *                                  "missing-modules", "flow-start-failed", "storage-error", "safe-mode", "SIGTERM"
  * @property {number} since       - Date.now() wejścia w stan
+ * @property {boolean} [draining]  - tylko w "reloadPending": true od wywołania preReload (/ready 503)
  * @property {Array<{code:string,message:string}>} [errors] - tylko w "failed"
  */
 /** @returns {StateInfo} kopia bieżącego stanu (bez I/O, O(1)) */
 function get() {}
-/** @returns {boolean} true tylko w stanie "ready" */
+/** @returns {boolean} true w "ready" i "loaded" (D-13) oraz w "reloadPending" bez drenażu,
+ *  jeśli stan poprzedni był gotowy; w pozostałych false */
 function isReady() {}
 /** @param {(info: StateInfo) => void} listener @returns {() => void} funkcja wyrejestrowania */
 function onChange(listener) {}
 
 // --- tylko dla runtime (nie eksportowane do RED.* węzłów) ---
-/** @param {"deploy"|"reload"|"set-state"} operation @param {object} [info] @returns {symbol} token operacji */
+/** wywoływane wyłącznie pod blokadą wdrożeń (mutex E-01)
+ *  @param {"deploy"|"reload"|"set-state"} operation @param {object} [info] @returns {symbol} token operacji */
 function begin(operation, info) {}
+/** Z-09, bez blokady i bez tokenu: T7 */
+function markReloadPending(info) {}
+/** Z-09: T7a – początek preReload */
+function markDraining() {}
+/** Z-09: T7b – powrót do stanu poprzedniego @param {string} reason */
+function cancelPending(reason) {}
 /** @param {symbol} token @param {{errors?: Array, flowsRunning: boolean, aborted?: boolean}} result */
 function end(token, result) {}
 function markStarting() {}
@@ -144,20 +172,22 @@ function reset() {}
 - **Niezmienniki:**
   1. `ready` wyłącznie po zakończeniu startu flow ostatniej operacji (start, wdrożenie, przeładowanie, `setState start`, późny start) z pustą listą błędów – samo `flows:started` nie wystarcza (emitowane także po wyjątku `Flow.start`).
   2. `stopping` i `stopped` są nieodwracalne: z `stopping` jedynym przejściem jest `stopped`; wywołania `begin/end/fail` w tych stanach są ignorowane (log `debug`) – zdarzenia z zamykanych flow nie przywracają `ready`.
-  3. Najwyżej jedna operacja (`deploy` / `reload` / `set-state`) naraz; `begin` przy aktywnej operacji rzuca błąd programisty (`state_operation_in_progress`) – gwarancję daje wspólny mutex E-01 (`setState` zostaje objęty mutexem – zob. Ryzyka).
-  4. `deploying`/`reloading` ustawiane **przed** zatrzymaniem pierwszego węzła (E-01 krok 4 przed 6), `ready` dopiero **po** starcie ostatniego (krok 8).
+  3. Najwyżej jedna operacja **pod blokadą** (`deploy` / `reload` / `set-state`) naraz; `begin` wywoływane wyłącznie wewnątrz wspólnego mutexu E-01, przy aktywnej operacji rzuca błąd programisty (`state_operation_in_progress`) (`setState` zostaje objęty mutexem – zob. Ryzyka). `reloadPending` **nie jest operacją** (brak tokenu, brak blokady – ZASADY §2.3 B kroki 2–3): wdrożenie przyjęte w tym czasie przechodzi `reloadPending` → `deploying` (T5) i unieważnia oczekujące przeładowanie; kroki stop/start przeładowania wykonywane są dopiero pod blokadą (`reloading`, T8).
+  4. `deploying`/`reloading` ustawiane **przed** zatrzymaniem pierwszego węzła (E-01 krok 4 przed 6), `ready` dopiero **po** starcie ostatniego (krok 8); w `reloadPending` żaden węzeł nie jest zatrzymywany.
+  4a. `loaded` występuje wyłącznie przy `editorOnly: true` (Z-15); z `loaded` (i z operacji na instancji edycyjnej) nigdy nie ma przejścia do `ready`.
   5. `end(token)` z nieaktualnym tokenem (np. po `stopping`) nie zmienia stanu.
-  6. Brak zdarzenia, gdy stan i powód się nie zmieniają; kolejność zdarzeń = kolejność przejść.
+  6. Brak zdarzenia, gdy stan, powód i flaga `draining` się nie zmieniają; kolejność zdarzeń = kolejność przejść.
   7. Moduł jest pasywny: przy domyślnych ustawieniach nie zmienia żadnych odpowiedzi, logów, kolejności zdarzeń ani czasu wdrożenia (zgodność wstecz; konsumenci – Z-08, Z-09 – są wyłączeni domyślnie).
 - **Przypadki błędów:** wyjątek w słuchaczu `onChange` → `log.warn`, pozostali słuchacze wywołani, stan zmieniony; `end` bez `begin` → ignorowane + `log.debug`; odrzucenie `runtime.start()` → `failed` (reason `startup-error`), odrzucenie promise bez zmian (zgodność).
-- **Skutki uboczne:** zamiana pustego `.catch` w `runtime/lib/index.js:247` na obsługę ustawiającą `failed` (log jak w `flows/index.js:96-99` już wypisany wcześniej – bez nowych komunikatów); `setState` w mutexie (zmiana kolejkowania – zob. Ryzyka).
+- **Skutki uboczne:** zamiana pustego `.catch` w `runtime/lib/index.js:245` na obsługę ustawiającą `failed` (log jak w `flows/index.js:96-99` już wypisany wcześniej – bez nowych komunikatów); `setState` w mutexie (zmiana kolejkowania – zob. Ryzyka).
 
 #### Projekt rozwiązania (minimalny)
 1. Testy charakteryzujące (najpierw): kolejność `flows:*` i `runtime-state` dla startu, startu z brakującymi typami, safe mode, `runtimeFlowState: stop`, późnego startu po `type-registered`, `setState start/stop`, `runtime.stop()`.
 2. `runtime/lib/state.js` – maszyna stanów z tabelą dozwolonych przejść (obiekt `{from: [to...]}`), `events.emit("instance:state", info)`; bez zależności poza `@node-red/util`.
-3. `runtime/lib/index.js`: `markStarting()` na początku `start()`; po `loadFlows().then(startFlows)` – `state.end` na podstawie wyniku `startFlows` (E-01 `{errors}`) albo `state.fail(err)` w miejsce pustego `.catch` (`:247`); `markStopping("stop")` jako pierwsza instrukcja `stop()`, `markStopped()` w `finally`; `runtime.state` w obiekcie runtime.
+3. `runtime/lib/index.js`: `markStarting()` na początku `start()`; po `loadFlows().then(startFlows)` – `state.end` na podstawie wyniku `startFlows` (E-01 `{errors}`) albo `state.fail(err)` w miejsce pustego `.catch` (`:245`; obietnica `startFlows()` zwracana z `then`, bo dziś `.catch` obejmuje tylko `loadFlows`); `markStopping("stop")` jako pierwsza instrukcja `stop()`, `markStopped()` w `finally`; `runtime.state` w obiekcie runtime.
 4. `flows/index.js`: w gałęziach `runtimeFlowState === 'stop'` i safe mode zwrot w wyniku `start()` pola `flowsRunning:false, reason` (E-01 rozszerza wynik), późny start (`:64-65`) – `state.end/fail` przez wynik `start()`.
-5. Potok E-01: `begin("deploy")` w kroku 4, `end` w kroku 8 (także w ścieżce błędu – `finally`); `api/flows.js` `setState` w `mutex.runExclusive` + `begin("set-state")`.
+5. Potok E-01: `begin("deploy")` w kroku 4, `end` w kroku 8 (także w ścieżce błędu – `finally`); `api/flows.js` `setState` w `mutex.runExclusive` + `begin("set-state")`. `begin("deploy")` ze stanu `reloadPending` emituje przejście, na które reaguje obserwator Z-09 (przerwanie `preReload`).
+5a. `markReloadPending`/`markDraining`/`cancelPending` (bez tokenu) dla Z-09; stan `loaded` – przez wynik `start()` z `reason:"editor-only"` (wpinany w Z-15).
 6. Powód zatrzymania (sygnał) przekazywany opcjonalnie: `RED.stop({reason:"SIGTERM"})` → `runtime.stop(opts)` – **do potwierdzenia** (czy rozszerzać sygnaturę publicznego `RED.stop`; alternatywa: reason `"stop"` dla wszystkich).
 
 #### Kryteria akceptacji (BDD)
@@ -226,6 +256,25 @@ Funkcja: Model stanu instancji
     Wtedy stan będzie "stopping"
     I zakończenie wdrożenia nie zmieni stanu
 
+  Scenariusz: Oczekujące przeładowanie nie blokuje wdrożenia
+    Zakładając stan "ready" i powiadomienie magazynu o rewizji "B"
+    Kiedy stan przejdzie w "reloadPending" i rozpocznie się preReload
+    Wtedy flaga draining będzie true, a blokada wdrożeń nie będzie zajęta
+    Kiedy klient wyśle POST /flows
+    Wtedy stan przejdzie "reloadPending" → "deploying" → "ready"
+    I oczekujące przeładowanie zostanie unieważnione (bez kroku "reloading")
+
+  Scenariusz: Przeładowanie pod blokadą
+    Zakładając stan "reloadPending" z zakończonym preReload
+    Kiedy przeładowanie wejdzie pod blokadę wdrożeń
+    Wtedy stan przejdzie "reloading", a potem "ready"
+
+  Scenariusz: Instancja tylko edycyjna
+    Zakładając editorOnly = true (Z-15)
+    Kiedy uruchomię runtime i wykonam wdrożenie
+    Wtedy stan przejdzie "starting" → "loaded" → "deploying" → "loaded"
+    I stan nigdy nie będzie "ready"
+
   Scenariusz: Jedna operacja naraz
     Zakładając trwające wdrożenie
     Kiedy równolegle wywołam setState stop
@@ -245,7 +294,7 @@ Funkcja: Model stanu instancji
 ```
 
 #### Testy
-- Jednostkowe, nowy `test/unit/@node-red/runtime/lib/state_spec.js`: `starts in starting after markStarting`, `allows only transitions from the table` (szablon dla każdej pary niedozwolonej), `ready only after end with no errors`, `end with errors sets failed with errors`, `end with flowsRunning false sets idle`, `stopping is terminal – begin/end/fail ignored`, `stale token does not change state`, `begin during active operation throws state_operation_in_progress`, `emits instance:state once per transition`, `no event when state unchanged`, `listener exception is logged and others notified`, `onChange returns unsubscribe`.
+- Jednostkowe, nowy `test/unit/@node-red/runtime/lib/state_spec.js`: `starts in starting after markStarting`, `allows only transitions from the table` (szablon dla każdej pary niedozwolonej), `ready only after end with no errors`, `end with errors sets failed with errors`, `end with flowsRunning false sets idle`, `reloadPending has no token and does not block begin(deploy)`, `begin(deploy) from reloadPending cancels pending`, `markDraining sets draining and isReady false`, `cancelPending returns to previous`, `reloadPending → reloading only via begin(reload)`, `editor-only start ends in loaded and never ready`, `stopping is terminal – begin/end/fail ignored`, `stale token does not change state`, `begin during active operation throws state_operation_in_progress`, `emits instance:state once per transition`, `no event when state unchanged`, `listener exception is logged and others notified`, `onChange returns unsubscribe`.
 - `test/unit/@node-red/runtime/lib/index_spec.js`: `state is starting when start() resolves before flows started`, `state becomes ready after startFlows`, `loadFlows rejection sets failed (storage-error)`, `stop() sets stopping synchronously before stopFlows`, `stop() sets stopped after closeContextsPlugin`.
 - `test/unit/@node-red/runtime/lib/flows/index_spec.js`: `missing types → failed`, `missing modules → failed`, `safe mode → idle`, `runtimeFlowState stop → idle`, `type-registered late start → ready`, `deploy sets deploying before flows:stopping and ready after flows:started`.
 - `test/unit/@node-red/runtime/lib/api/flows_spec.js`: `setState runs in api mutex`, `setState start/stop transitions idle↔ready`.
@@ -257,10 +306,12 @@ Funkcja: Model stanu instancji
 - [ ] Nazwa zdarzenia `instance:state` i nazwy stanów zatwierdzone (D-02).
 
 #### Ryzyka i alternatywy
-- **Pusty `.catch` przy starcie** (`index.js:247`): zastąpienie obsługą zmienia tylko stan wewnętrzny (bez nowych logów, bez odrzucania `RED.start()`) – zgodność zachowana.
+- **Pusty `.catch` przy starcie** (`index.js:245`, obejmuje tylko `loadFlows`): zastąpienie obsługą zmienia tylko stan wewnętrzny (bez nowych logów, bez odrzucania `RED.start()`) – zgodność zachowana.
 - **`setState` w mutexie:** zmiana kolejkowania (dziś `setState` może przeplatać się z wdrożeniem – to błąd wyścigu). Alternatywa: zostawić bez mutexu i w module stanu odrzucać `begin` – gorsze (błąd zamiast kolejkowania). **Pytanie** – czy akceptują Państwo objęcie `setState` mutexem.
 - **`idle` vs `failed` dla safe mode:** zlecenie wymienia safe mode obok błędów startu; proponujemy `idle` (decyzja operatora `--safe`), z punktu widzenia `/ready` bez różnicy (503). **Pytanie**.
-- Stan jest lokalny dla procesu – instancja z edytorem bez wykonywania flow (Z-15) będzie stale w `idle`; `/ready` dla takiej roli – do ustalenia w Z-15.
+- Stan jest lokalny dla procesu. Instancja tylko edycyjna (Z-15) ma osobny stan `loaded` (nie `idle`) i `/ready` 200 (D-13) – `idle` zostaje dla flow świadomie zatrzymanych (`/ready` 503).
+- **Nazwa `idle`:** ANALIZA §4.2 używa `idle` jako stanu początkowego (przed `runtime.start()`), karta – jako „flow świadomie nieuruchomione”; stan początkowy w karcie to brak stanu przed T1. **Do decyzji** (D-02): ujednolicić nazewnictwo (np. `stopped-flows` dla świadomego zatrzymania albo `init` dla stanu początkowego).
+- **`reloadPending` bez tokenu:** oczekiwanie na slot i drenaż (do 20 min) nie zajmują blokady, więc nie blokują wdrożeń z edytora; ceną jest unieważnianie oczekującego przeładowania przez wdrożenie lokalne (wdrożenie samo ustala nową konfigurację, nowszy zapis w magazynie generuje kolejne powiadomienie).
 - Alternatywa odrzucona: wyprowadzanie stanu wyłącznie ze zdarzeń `flows:*` – zdarzenia nie odróżniają wdrożenia od startu i są emitowane mimo błędów `Flow.start`.
 
 #### Podzadania
@@ -278,9 +329,9 @@ Funkcja: Model stanu instancji
 |---|---|
 | Etap / typ | 3 / funkcja + poprawka błędu (D-05: serwer HTTP przy zatrzymaniu) |
 | Priorytet / ryzyko | P1 / średnie |
-| Ustawienie | `health: { enabled: false, path: "/health", port: <opcjonalnie> }` (zlecenie: `health: { enabled, path }`; ZASADY §2.1) |
-| Zależności | E-02 (stan), E-01 (kroki 4/8), Z-09 (stan `reloading`) |
-| Pliki | nowy `@node-red/runtime/lib/health.js`; `@node-red/runtime/lib/index.js` (init/start/stop modułu, `runtime.health`); `node-red/red.js:417-436` (kolejność montowania przed uwierzytelnieniem), `:484` (warunek nasłuchu), `:543-558` (sygnały); `node-red/lib/red.js:60-140` (eksport `RED.health` dla osadzających – do potwierdzenia); `node-red/settings.js` (sekcja Runtime Settings); `@node-red/runtime/locales/en-US/runtime.json` |
+| Ustawienie | `health: { enabled: false, path: "/health", port: <opcjonalnie>, host: <opcjonalnie>, shutdownTimeout: 30000 }` (zlecenie: `health: { enabled, path }`; ZASADY §2.1); hook `preShutdown`; API osadzających `RED.health` |
+| Zależności | E-02 (stan), E-01 (kroki 4/8). Stany `reloadPending`/`reloading` (E-02) to **punkt integracji wykorzystywany przez Z-09** – Z-08 nie zależy od Z-09 |
+| Pliki | nowy `@node-red/runtime/lib/health.js`; `@node-red/runtime/lib/index.js` (init/start/stop modułu, `runtime.health`); `node-red/red.js:417-436` (kolejność montowania przed uwierzytelnieniem), `:484` (warunek nasłuchu), `:543-558` (sygnały); `node-red/lib/red.js:60-140` (eksport `RED.health` dla osadzających, ZASADY §2.1); `@node-red/util/lib/hooks.js:3-17` (`preShutdown` w `VALID_HOOKS`); `node-red/settings.js` (sekcja Runtime Settings); `@node-red/runtime/locales/en-US/runtime.json` |
 | Powiązania | K8S-T-005 (sondy, workery z `httpAdminRoot: false`), ARCHITEKTURA §3.5 (drenaż 20 min) |
 
 #### Weryfikacja stanu (kod 5.0.7)
@@ -295,31 +346,32 @@ Wynik: **POTWIERDZONE**, z rozszerzeniem.
 - Testy: `runtime/lib/flows/Flow_spec.js:477` (nodeCloseTimeout), `flows/index_spec.js`, `runtime/lib/index_spec.js`; brak testów sygnałów i `node-red/red.js`.
 
 #### Specyfikacja
-- **Cel:** endpointy żywotności i gotowości dla orkiestratora i load balancera, wiarygodne także w trakcie startu, wdrożenia, przeładowania i zatrzymania.
-- **Wejścia:** `GET`/`HEAD` `<path>/live`, `<path>/ready`; ustawienia `health.enabled` (domyślnie `false`), `health.path` (domyślnie `"/health"`), `health.port` (opcjonalnie; brak → serwer główny).
+- **Cel:** endpointy żywotności i gotowości dla orkiestratora i load balancera, wiarygodne także w trakcie startu, wdrożenia, przeładowania i zatrzymania; drenaż pracy w toku przy SIGTERM przed zatrzymaniem flow (D-11, ZASADY §2.3 C).
+- **Wejścia:** `GET`/`HEAD` `<path>/live`, `<path>/ready`; ustawienia `health.enabled` (domyślnie `false`), `health.path` (domyślnie `"/health"`), `health.port` (opcjonalnie; brak → serwer główny), `health.host` (opcjonalnie; brak → `uiHost`), `health.shutdownTimeout` (domyślnie 30000 ms – limit drenażu przy zatrzymaniu); sygnały SIGTERM/SIGINT (CLI); handlery hooka `preShutdown`.
 - **Wyjścia:**
   - `/live` → `200` zawsze, gdy proces obsługuje pętlę zdarzeń (we wszystkich stanach E-02, także `stopping` – nie restartować instancji w trakcie drenażu).
-  - `/ready` → `200` tylko w stanie `ready`; `503` w `starting`, `deploying`, `reloading`, `idle` (propozycja), `failed`, `stopping`, `stopped`.
+  - `/ready` → `200` w stanie `ready`, w `loaded` (instancja tylko edycyjna – D-13; stan wprowadza Z-15, test w Z-15) oraz w `reloadPending` przed rozpoczęciem drenażu (oczekiwanie na slot, gdy stan poprzedni był gotowy); `503` w `starting`, `deploying`, `reloadPending` z `draining: true` (od wywołania `preReload`), `reloading`, `idle` (propozycja), `failed`, `stopping`, `stopped`.
   - Treść: `application/json`, `{"status":"ok"}` lub `{"status":"unavailable","state":"<stan E-02>"}`; nagłówek `Cache-Control: no-store`. Treść **nie zawiera** konfiguracji, ścieżek, wersji, listy flow ani błędów (nazwa stanu – do potwierdzenia, zob. pytania).
   - Inne metody → `405`; inne ścieżki pod `<path>` → `404`.
   - Ustawienie wyłączone → brak tras (`404` jak dziś), brak dodatkowego serwera.
 - **Niezmienniki:**
   - bez uwierzytelnienia i bez `httpAdminMiddleware`/`httpNodeMiddleware`, niezależnie od `adminAuth`, `httpAdminAuth`, `httpNodeAuth`;
   - działa przy `httpAdminRoot: false` i `httpNodeRoot: false` (z `port` – osobny serwer; bez `port` – serwer główny zaczyna nasłuch tylko dla sond);
-  - `/ready` przechodzi na `503` **synchronicznie** w chwili wywołania `runtime.stop()` (przed zatrzymaniem pierwszego węzła) i w kroku 4 E-01 (przed zatrzymaniem węzłów wdrożenia);
+  - `/ready` przechodzi na `503` **synchronicznie** w chwili odebrania SIGTERM/SIGINT (stan `stopping`, przed drenażem i przed zatrzymaniem pierwszego węzła), w chwili wywołania `runtime.stop()` przez osadzenie, w kroku 4 E-01 (przed zatrzymaniem węzłów wdrożenia) i przy rozpoczęciu `preReload` (Z-09);
+  - kolejność zatrzymania (ZASADY §2.3 C): sygnał → `stopping` (`/ready` 503, `/live` 200) → hook `preShutdown` / oczekiwanie najwyżej `health.shutdownTimeout` → `RED.stop()` → zamknięcie serwera HTTP → wyjście; bez zarejestrowanych handlerów `preShutdown` brak oczekiwania (zachowanie jak 5.0.7);
   - odpowiedź nie wykonuje I/O (odczyt `runtime.state.get()`), czas odpowiedzi stały;
   - przy `health.enabled: false` – zachowanie identyczne z 5.0.7 (w tym brak zamykania serwera HTTP – zob. Ryzyka).
 - **Przypadki błędów:** `health.port` zajęty → start runtime odrzucony z czytelnym komunikatem (`health.port-in-use`), stan `failed`; `health.port === uiPort` → montaż na serwerze głównym + `log.warn`; `health.path` bez wiodącego `/` lub równy `/` → błąd startu (`health.invalid-path`); `health.path` wewnątrz `httpAdminRoot`/`httpNodeRoot` → dozwolone, sondy mają pierwszeństwo + `log.info` przy starcie (trasa węzła o tej samej ścieżce zostanie przesłonięta).
-- **Skutki uboczne:** przy `port` – dodatkowy serwer `http` (moduł wbudowany Node.js, bez nowych zależności), nasłuch na `uiHost` (do potwierdzenia: osobne `health.host`); zamykany po `stopped`. Przy włączonych sondach i osobnym porcie – zamknięcie serwera głównego dla **nowych** połączeń w chwili `stopping` (`server.close()`, trwające połączenia i strumienie obsługiwane dalej) – poprawka D-05.
+- **Skutki uboczne:** przy `port` – dodatkowy serwer `http` (moduł wbudowany Node.js, bez nowych zależności), nasłuch na `health.host` (domyślnie `uiHost`); zamykany po `stopped`. W fazie drenażu serwer główny **przyjmuje** połączenia (trwające rozmowy mogą wymagać wywołań zwrotnych HTTP; nowy ruch odcina `/ready` 503), `/live` odpowiada. Po `RED.stop()` – zamknięcie serwera HTTP (`server.close()` + `closeIdleConnections()`, z limitem) przed wyjściem – poprawka D-05 (przy `health.enabled`; przy wyłączonych sondach – do decyzji, pytanie 6). Hook `preShutdown`: payload `{reason, deadline, signal}`; rozwiązanie = „drenaż zakończony”; przekroczenie limitu → `log.warn("health.shutdown-timeout")` i zatrzymanie mimo to; wyjątek/odrzucenie → `log.error` i zatrzymanie mimo to; drugi sygnał w trakcie drenażu → natychmiastowe `RED.stop()` (propozycja).
 
 #### Projekt rozwiązania (minimalny)
 1. `runtime/lib/health.js`: `init(runtime)`; `handler(req, res, next)` – zwykła funkcja `(req,res)` zgodna z Express i `http`, rozpoznaje `/live` i `/ready` względem `health.path`; `start()` – przy `health.port` tworzy `http.createServer(handler)` i `listen(port, uiHost)` (obietnica odrzucana przy `EADDRINUSE`); `stop()` – zamyka własny serwer po `stopped`.
 2. `runtime/lib/index.js`: `health.init` w `init()`, `health.start()` na początku `start()` (sondy dostępne od `starting` – `/ready` 503); `runtime.health` w obiekcie runtime.
 3. `node-red/red.js` (CLI): gdy `health.enabled` i brak osobnego portu – `app.use(health.path, RED.health.handler)` **przed** montowaniem `httpAdminAuth`/`httpNodeAuth` i aplikacji (`:417`); warunek nasłuchu (`:484`) rozszerzony o `health.enabled` bez portu.
-4. `node-red/lib/red.js`: getter `health` (`{ handler }`) dla aplikacji osadzających Node-RED – **do potwierdzenia** (nowe publiczne API).
-5. D-05: w `exitWhenStopped` (CLI) – przy `health.enabled` i osobnym porcie `server.close()` + `server.closeIdleConnections()` (Node ≥ 18.2) przed `RED.stop()`; przy sondach na serwerze głównym serwer nie jest zamykany (inaczej `/live` przestałby odpowiadać) – zob. Ryzyka.
-6. Szablon `settings.js`: blok `health` (zakomentowany) z opisem stanów, zaleceniem osobnego portu dla workerów i uwagą o drenażu.
-7. Teksty logów w `runtime.json` (`health.listening`, `health.port-in-use`, `health.invalid-path`, `health.path-shadows-route`).
+4. `node-red/lib/red.js`: getter `health` (`{ handler, shutdown }`) dla aplikacji osadzających Node-RED (nowe publiczne API, nazwa wg ZASADY §2.1).
+5. Drenaż i D-05 w `exitWhenStopped` (CLI, `node-red/red.js:543-558`): `runtime.state.markStopping(signal)` (przez `RED.health`) → `hooks.trigger("preShutdown", {reason, deadline, signal})` w `Promise.race` z `health.shutdownTimeout` (wzorzec limitu z Z-06) → `RED.stop()` → `server.close()` + `server.closeIdleConnections()` (Node ≥ 18.2) z limitem → `process.exit()`; `"preShutdown"` w `VALID_HOOKS`. Osadzający bez CLI: `RED.health.shutdown({reason})` wykonuje te same kroki bez zamykania cudzego serwera.
+6. Szablon `settings.js`: blok `health` (zakomentowany) z opisem stanów, zaleceniem osobnego portu dla workerów, opisem `shutdownTimeout`/`preShutdown` i relacji z `terminationGracePeriodSeconds` (limit orkiestratora > `shutdownTimeout` + zatrzymanie węzłów).
+7. Teksty logów w `runtime.json` (`health.listening`, `health.port-in-use`, `health.invalid-path`, `health.path-shadows-route`, `health.draining`, `health.shutdown-timeout`).
 
 #### Kryteria akceptacji (BDD)
 ```gherkin
@@ -354,9 +406,30 @@ Funkcja: Sondy zdrowia
       | SIGINT  |
 
   Scenariusz: Przeładowanie z magazynu
-    Zakładając health.enabled = true, magazyn z watchFlows i stan "ready"
+    Zakładając health.enabled = true, magazyn z watchFlows, deploy.reload.watch = true i stan "ready"
     Kiedy magazyn powiadomi o zmianie flow
-    Wtedy GET /health/ready zwraca 503 od decyzji o przeładowaniu do startu nowych flow
+    Wtedy GET /health/ready zwraca 503 od rozpoczęcia drenażu (wywołanie preReload) do startu nowych flow
+    I w trakcie oczekiwania na slot przeładowania (deploy.reload.concurrency) GET /health/ready zwraca 200
+
+  Scenariusz: Drenaż przy SIGTERM – 503 od sygnału
+    Zakładając health.enabled = true, stan "ready" i hook preShutdown, który kończy się po sygnale testu
+    Kiedy proces otrzyma SIGTERM
+    Wtedy GET /health/ready zwraca 503 natychmiast, a GET /health/live zwraca 200
+    I żaden węzeł nie jest zamykany, dopóki hook się nie zakończy
+    Kiedy hook się zakończy
+    Wtedy wywołane zostanie RED.stop(), a po zatrzymaniu flow serwer HTTP zostanie zamknięty i proces zakończy się
+
+  Scenariusz: Drenaż przy SIGTERM – limit health.shutdownTimeout
+    Zakładając health.shutdownTimeout = 200 ms i hook preShutdown, który się nie kończy
+    Kiedy proces otrzyma SIGTERM
+    Wtedy po 200 ms wywołane zostanie RED.stop() mimo to
+    I w logu pojawi się ostrzeżenie o przekroczeniu limitu drenażu
+    I po zatrzymaniu flow serwer HTTP zostanie zamknięty
+
+  Scenariusz: Zatrzymanie bez hooka preShutdown
+    Zakładając brak zarejestrowanych handlerów preShutdown
+    Kiedy proces otrzyma SIGTERM
+    Wtedy RED.stop() zostanie wywołane bez oczekiwania (jak w wersji bazowej)
 
   Szablon scenariusza: Nieudany lub świadomie wstrzymany start
     Zakładając health.enabled = true i <warunek>
@@ -404,10 +477,11 @@ Funkcja: Sondy zdrowia
     Kiedy runtime się uruchamia
     Wtedy start kończy się błędem z komunikatem wskazującym health.port
 
-  Scenariusz: Zamknięcie serwera dla nowych połączeń przy zatrzymaniu
-    Zakładając health = { enabled: true, port: 1881 } i trwające długie żądanie HTTP do flow
+  Scenariusz: Zamknięcie serwera HTTP po zatrzymaniu flow
+    Zakładając health.enabled = true i trwające długie żądanie HTTP do flow
     Kiedy proces otrzyma SIGTERM
-    Wtedy nowe połączenia na uiPort są odrzucane
+    Wtedy w fazie drenażu serwer przyjmuje połączenia, a GET /health/live zwraca 200
+    I po RED.stop() serwer HTTP jest zamykany dla nowych połączeń przed wyjściem procesu
     I trwające żądanie zostaje obsłużone do końca lub do zamknięcia węzła
 
   Scenariusz: Metody i ścieżki
@@ -419,24 +493,26 @@ Funkcja: Sondy zdrowia
 ```
 
 #### Testy
-- Jednostkowe, nowy `test/unit/@node-red/runtime/lib/health_spec.js` (supertest na `handler`, atrapa `runtime.state`): `live returns 200 in every state` (szablon po stanach), `ready returns 200 only in ready`, `ready returns 503 with state in starting|deploying|reloading|idle|failed|stopping|stopped`, `body contains only status and state`, `sets Cache-Control no-store`, `405 for POST`, `HEAD supported`, `404 for unknown subpath`, `disabled – no routes, no server`, `port – starts own server`, `port in use – start rejects with health.port-in-use`, `port equal uiPort – mounts on main server and warns`, `invalid path rejected`.
+- Jednostkowe, nowy `test/unit/@node-red/runtime/lib/health_spec.js` (supertest na `handler`, atrapa `runtime.state`): `live returns 200 in every state` (szablon po stanach), `ready returns 200 only in ready`, `ready returns 503 with state in starting|deploying|reloading|idle|failed|stopping|stopped`, `body contains only status and state`, `sets Cache-Control no-store`, `405 for POST`, `HEAD supported`, `404 for unknown subpath`, `disabled – no routes, no server`, `port – starts own server`, `port in use – start rejects with health.port-in-use`, `port equal uiPort – mounts on main server and warns`, `invalid path rejected`, `ready 200 in reloadPending before draining`, `ready 503 in reloadPending when draining`, `ready 200 in loaded`.
+- Nowy `test/unit/@node-red/runtime/lib/health_shutdown_spec.js` (fake timers, atrapa `RED.stop`): `shutdown sets stopping before preShutdown`, `waits for preShutdown before RED.stop`, `shutdownTimeout proceeds with warning`, `preShutdown error proceeds with error log`, `no hook – no wait`, `second signal stops immediately`, `server closed after RED.stop`; `test/unit/@node-red/util/lib/hooks_spec.js`: `allows preShutdown hook`.
 - `test/unit/@node-red/runtime/lib/index_spec.js`: `ready 503 when RED.start resolved before flows started`, `ready 503 synchronously after stop() called` (węzeł atrapa z wolnym `close`).
 - Integracyjny `test/unit/@node-red/runtime/lib/health_lifecycle_spec.js`: pełna sekwencja start → ready → deploy (węzeł z 2 s `close`) → ready → stop z odpytywaniem `/ready` co 50 ms; wariant missing-types; wariant `runtimeFlowState: stop`.
 - `test/unit/node-red/red_spec.js` lub nowy `test/unit/node-red/health_mount_spec.js`: `health mounted before httpNodeAuth`, `server listens when only health enabled` (wydzielenie funkcji montowania z `red.js` do testowalnego modułu – **do potwierdzenia**, CLI nie ma dziś testów).
-- Test sygnałów: proces potomny (`child_process.fork`) z minimalnymi ustawieniami, `process.kill(pid,'SIGTERM')`, odpytywanie `/ready` na porcie sond – bez nowych zależności.
+- Test sygnałów: proces potomny (`child_process.fork`) z minimalnymi ustawieniami, `process.kill(pid,'SIGTERM')`, odpytywanie `/ready` na porcie sond (503 od sygnału, `/live` 200 w drenażu, kolejność `preShutdown` → `RED.stop` → zamknięcie serwera) – bez nowych zależności.
 
 #### DoD specyficzne
 - [ ] Testy obu stanów `health.enabled` i obu wariantów (`port` / serwer główny).
 - [ ] Szablon `settings.js` z opisem, zaleceniem dla workerów (`httpAdminRoot:false` + `port`) i ostrzeżeniem, że sondy są publiczne na danym porcie.
 - [ ] Dokumentacja odpowiedzi (kody, treść) i tabela stan → kod (z E-02).
 - [ ] Zamknięcie serwera przy SIGTERM pokryte testem regresji (D-05) albo jawnie odłożone decyzją.
+- [ ] Drenaż przy SIGTERM (D-11): `/ready` 503 od sygnału, `preShutdown` z limitem `health.shutdownTimeout`, potem `RED.stop()` i zamknięcie serwera HTTP – test w procesie potomnym; bez handlerów `preShutdown` brak opóźnienia.
 
 #### Ryzyka i alternatywy
-- **Drenaż przy SIGTERM:** `RED.stop()` od razu zatrzymuje flow (zamyka węzły w ciągu `nodeCloseTimeout`), więc `terminationGracePeriodSeconds: 1200` sam nie chroni rozmów – sonda 503 tylko przestaje kierować **nowy** ruch. Opcje: (A) `preStop` w Kubernetes (uśpienie przed SIGTERM; pod usuwany z Endpoints od razu) – bez zmian w rdzeniu, rekomendacja na teraz; (B) `health.shutdownDelay` (ms między 503 a zatrzymaniem flow); (C) hook „przed zatrzymaniem” analogiczny do `preReload`, kończący drenaż wcześniej, gdy rozmowy się skończą. **Pytanie** – (B)/(C) poza opisem zlecenia.
-- **Globalny limit zatrzymania:** brak (tylko `nodeCloseTimeout` per węzeł); proces może kończyć się dłużej niż okres łaski orkiestratora → SIGKILL. Proponujemy nie dodawać w tym pakiecie (orkiestrator ma własny limit) – **pytanie**.
-- **Zamknięcie serwera przy sondach na serwerze głównym** wyłączyłoby `/live` (ryzyko restartu w trakcie zamykania – zachowanie kubeleta dla sond żywotności poda w stanie Terminating **do potwierdzenia**); stąd zamykanie tylko przy osobnym porcie. Poprawka D-05 dla `health.enabled:false` (domyślnie) zmieniłaby zachowanie 5.0.6 – proponujemy tylko przy włączonych sondach.
-- **`/ready` przy `idle`** (`runtimeState` stop, safe mode): 503 chroni przed kierowaniem ruchu do instancji bez flow; instancja edycyjna (Z-15) potrzebuje innej semantyki – **pytanie**.
-- **Wszystkie workery 503 jednocześnie** przy przeładowaniu (Z-09) – opisane w Z-09.
+- **Drenaż przy SIGTERM (D-11):** dziś `RED.stop()` od razu zatrzymuje flow (zamyka węzły w ciągu `nodeCloseTimeout`), więc `terminationGracePeriodSeconds: 1200` sam nie chroni rozmów. Rozwiązanie w rdzeniu (zgodnie z D-11 i ZASADY §2.3 C): `stopping` od sygnału, hook `preShutdown` (kończy drenaż wcześniej, gdy rozmowy się skończą) z limitem `health.shutdownTimeout`, potem `RED.stop()`. `preStop` orkiestratora (uśpienie przed SIGTERM) – **opcja dodatkowa**, niezależna od rdzenia (np. by Endpoints zdążyły się zaktualizować). Ryzyko: `health.shutdownTimeout` + czas zatrzymania węzłów musi być krótszy niż okres łaski orkiestratora (dokumentacja).
+- **Globalny limit zatrzymania:** `health.shutdownTimeout` ogranicza fazę drenażu; samo `RED.stop()` nadal ograniczone tylko `nodeCloseTimeout` per węzeł – proces może kończyć się dłużej niż okres łaski orkiestratora → SIGKILL. Proponujemy nie dodawać osobnego limitu dla `RED.stop()` w tym pakiecie – **pytanie**.
+- **Zamknięcie serwera:** zgodnie z ZASADY §2.3 C serwer zamykany jest dopiero **po** `RED.stop()` – w fazie drenażu `/live` odpowiada także przy sondach na serwerze głównym (wcześniejsze ryzyko wyłączenia `/live` usunięte). Poprawka D-05 przy `health.enabled:false` (domyślnie) – tylko uporządkowane zamknięcie tuż przed `process.exit()`; czy włączać ją także bez sond – **do decyzji** (pytanie 6).
+- **`/ready` przy `idle`** (`runtimeState` stop, safe mode): 503 chroni przed kierowaniem ruchu do instancji bez flow. Instancja edycyjna (Z-15) ma osobny stan `loaded` z `/ready` 200 (D-13) – jedna propozycja, jedno pytanie (pytanie 3).
+- **Wszystkie workery 503 jednocześnie** przy przeładowaniu – rozwiązane w Z-09 (`deploy.reload.concurrency` przez koordynację Z-10, `type: "diff"`).
 - Ścieżka sond pod `httpNodeRoot` przesłania trasy `http in` o tej samej ścieżce – ostrzeżenie w logu; zalecenie: osobny port.
 - Alternatywa: sondy w `editor-api` – odrzucona (niedostępne przy `httpAdminRoot:false`).
 
@@ -444,7 +520,7 @@ Funkcja: Sondy zdrowia
 - [ ] `runtime/lib/health.js` + testy jednostkowe handlera (M)
 - [ ] Osobny serwer (`port`) + obsługa błędów portu (S)
 - [ ] Montaż w CLI przed uwierzytelnieniem, warunek nasłuchu, `RED.health` (S)
-- [ ] D-05: zamykanie serwera przy SIGTERM (przy osobnym porcie) + test w procesie potomnym (M)
+- [ ] Drenaż przy SIGTERM (D-11): `stopping` od sygnału, hook `preShutdown`, `health.shutdownTimeout`, kolejność `RED.stop()` → zamknięcie serwera HTTP (D-05), `RED.health.shutdown` + test w procesie potomnym (M)
 - [ ] Test cyklu życia (integracyjny) (M)
 - [ ] Szablon `settings.js`, CHANGELOG, teksty logów (S)
 
@@ -456,9 +532,9 @@ Funkcja: Sondy zdrowia
 |---|---|
 | Etap / typ | 3 / funkcja |
 | Priorytet / ryzyko | P1 / wysokie |
-| Ustawienie | API wtyczki magazynu: opcjonalne `watchFlows(callback)` (bez zmian względem zlecenia); hook `preReload`. Parametry: propozycja `deploy.reload: { watch: true, type: "full" \| "flows", preReloadTimeout: 1200000, retry: { min: 1000, max: 60000 } }` – nazwa i wartości domyślne **do potwierdzenia** (D-02). Bez `watchFlows` w magazynie ustawienie nie ma efektu. |
-| Zależności | E-01 (wspólny mutex, potok bez kroku 5), E-02 (`reloading`), Z-08 (`/ready`), Z-06 (`VALID_HOOKS`, wzorzec limitu czasu), P-01 (błędy startu w wyniku `start()`) |
-| Pliki | `@node-red/runtime/lib/storage/index.js:51-120` (wykrycie `watchFlows`, `getFlows` – rewizja `:80`); `@node-red/runtime/lib/flows/index.js:104-110` (`load`), `:118-242` (`setFlows`, gałąź `load` `:141-148`), `:434-515`; `@node-red/runtime/lib/flows/util.js` (`diffConfigs`); `@node-red/runtime/lib/api/flows.js:37-38,66-100` (mutex, `reload`); nowy `@node-red/runtime/lib/flows/reload.js`; `@node-red/runtime/lib/index.js:239-247,316-328`; `@node-red/util/lib/hooks.js:3-17`; `node-red/settings.js`; `@node-red/runtime/locales/en-US/runtime.json` |
+| Ustawienie | API wtyczki magazynu: opcjonalne `watchFlows(callback)` (bez zmian względem zlecenia); hook `preReload`. Parametry (ZASADY §2.1): `deploy.reload: { watch: false, type: "full" \| "diff" (domyślnie "full"), preReloadTimeout: 1200000, concurrency: <opcjonalnie> }`; dodatkowo propozycja `retry: { min: 1000, max: 60000 }` – **do decyzji** (poza ZASADY §2.1). Bez `watchFlows` w magazynie ustawienie nie ma efektu. |
+| Zależności | E-01 (wspólny mutex, potok bez kroku 5), E-02 (`reloadPending`, `reloading`), Z-08 (`/ready` – punkt integracji), Z-06 (`VALID_HOOKS`, wzorzec limitu czasu, wywołanie `postDeploy` – punkt integracji), Z-10 (zajęcie slotu przy `concurrency`), P-01 (błędy startu w wyniku `start()`) |
+| Pliki | `@node-red/runtime/lib/storage/index.js:51-120` (wykrycie `watchFlows`, `getFlows` – rewizja `:80`); `@node-red/runtime/lib/flows/index.js:104-110` (`load`), `:118-242` (`setFlows`, gałąź `load` `:141-148`), `:434-515`; `@node-red/runtime/lib/flows/util.js` (`diffConfigs`); `@node-red/runtime/lib/api/flows.js:37-38,66-100` (mutex, `reload`); nowy `@node-red/runtime/lib/flows/reload.js`; `@node-red/runtime/lib/coordination/index.js` (Z-10, `claim` slotu); `@node-red/runtime/lib/index.js:239-245,316-328`; `@node-red/util/lib/hooks.js:3-17`; `node-red/settings.js`; `@node-red/runtime/locales/en-US/runtime.json` |
 | Powiązania | K8S-T-001 (nasza wtyczka magazynu implementuje `watchFlows` – PostgreSQL LISTEN/NOTIFY lub Redis), K8S-T-006 (wydania niezmienne – opcja operacyjna), ARCHITEKTURA §3.3, §3.5 (drenaż 20 min), ANALIZA §3 (Z-09 mechanizmem podstawowym) |
 
 #### Weryfikacja stanu (kod 5.0.7)
@@ -473,7 +549,7 @@ Wynik: **POTWIERDZONE**; mechanizm przeładowania już istnieje.
 - Hooki: `VALID_HOOKS` (`util/lib/hooks.js:3-17`) – `preReload` wymaga dopisania; `trigger()` bez limitu czasu (WERYFIKACJA Z-06).
 
 #### Specyfikacja
-- **Cel:** instancja dowiaduje się o zmianie flow zapisanej w magazynie przez inną instancję i przeładowuje się w miejscu, z drenażem pracy w toku przez `preReload` i sygnałem `/ready` 503 na czas przeładowania.
+- **Cel:** instancja dowiaduje się o zmianie flow zapisanej w magazynie przez inną instancję i przeładowuje się w miejscu, z drenażem pracy w toku przez `preReload` i sygnałem `/ready` 503 od rozpoczęcia drenażu do końca przeładowania (ZASADY §2.3 B); opcjonalny limit liczby instancji przeładowujących się jednocześnie.
 - **Kontrakt wtyczki magazynu (opcjonalny):**
 
 ```js
@@ -503,12 +579,13 @@ watchFlows(callback)
  * @typedef {Object} PreReloadEvent            – zamrożona kopia
  * @property {string}   rev            rewizja, która zostanie uruchomiona
  * @property {string}   activeRev      rewizja aktualnie działająca
- * @property {"full"|"flows"} type     rodzaj przeładowania
+ * @property {"full"|"diff"} type      rodzaj przeładowania
  * @property {string[]|null} changedFlows  id flow (zakładek i subflow) zatrzymywanych/zmienianych;
  *                                     null przy "full" (wszystkie)
  * @property {boolean}  credentialsChanged
  * @property {number}   deadline       Date.now() + preReloadTimeout
- * @property {AbortSignal} signal      przerwany przy runtime.stop() (SIGTERM w trakcie drenażu)
+ * @property {AbortSignal} signal      przerwany przy stopping (SIGTERM w trakcie drenażu) albo przy
+ *                                     unieważnieniu przez wdrożenie lokalne (signal.reason: "stopping" | "superseded")
  * @returns {Promise<void>|void}  rozwiązanie = „można przeładować”
  */
 ```
@@ -516,28 +593,35 @@ watchFlows(callback)
   - rozwiązanie → przeładowanie;
   - przekroczenie `preReloadTimeout` → `log.warn("reload.hook-timeout")` i **przeładowanie mimo to**;
   - wyjątek / odrzucenie / zwrot `false` → `log.error("reload.hook-failed")` i przeładowanie mimo to (hook nie ma prawa weta – instancja nie może zostać na nieaktualnej konfiguracji; **pytanie**);
-  - `signal` przerwany (SIGTERM) → przeładowanie anulowane, stan `stopping` (E-02).
+  - `signal` przerwany (SIGTERM) → przeładowanie anulowane, stan `stopping` (E-02);
+  - `signal` przerwany przez wdrożenie lokalne (`superseded`) → przeładowanie unieważnione, stan wg wdrożenia (E-02 T5).
+  Handler `preReload` wykonywany jest **bez** blokady wdrożeń; hook `preDeploy` przy przeładowaniu z magazynu **nie** jest wywoływany (zmianę zatwierdziła instancja, która ją zapisała), `postDeploy` – tak, z `source: "storage"` (ZASADY §2.3 B krok 6).
 - **Wejścia:** powiadomienia `callback`; ustawienia `deploy.reload.*`; aktywna konfiguracja (`flows.getFlows()`).
-- **Wyjścia:** przeładowana konfiguracja (pełna lub różnicowa), zdarzenie `runtime-deploy` z nową rewizją (edytory), stan E-02 `reloading` → `ready`/`failed`/`idle`, logi `reload.*`, wpis audytu `flows.reload` (`source:"storage"`).
-- **Algorytm (jeden cykl):**
+- **Wyjścia:** przeładowana konfiguracja (pełna lub różnicowa), zdarzenie `runtime-deploy` z nową rewizją (edytory), hook `postDeploy` z `source: "storage"` (Z-06, asynchronicznie), stan E-02 `reloadPending` → `reloading` → `ready`/`failed`/`idle`/`loaded`, logi `reload.*`, wpis audytu `flows.reload` (`source:"storage"`).
+- **Algorytm (jeden cykl, zgodnie z ZASADY §2.3 B):**
   1. powiadomienie → jeśli trwa cykl: ustaw `pending = true` i zakończ (koalescencja);
-  2. odczyt `storage.getFlows()`; jeśli `rev === activeRev` i nie `credentialsChanged` → pomiń (własny zapis lub duplikat; `log.debug`);
-  3. policz `diff = flowUtil.diffConfigs(active, new)` → `changedFlows` (dla `type:"full"` lub `diff.globalConfigChanged` – `null`/pełne);
-  4. `state.begin("reload")` → `/ready` 503;
-  5. `preReload` z limitem czasu (**poza** mutexem – nie blokuje wdrożeń z edytora przez 20 min);
-  6. wejście do wspólnego mutexu E-01; jeśli w międzyczasie aktywna rewizja zmieniła się lokalnie (wdrożenie z Admin API) → ponowne porównanie z treścią z kroku 2: równa → koniec; różna → przeładowanie treści z kroku 2 (magazyn jest źródłem prawdy – **do potwierdzenia**);
-  7. zatrzymanie i start wg `type` (E-01 kroki 6–8, bez kroku 5 – brak zapisu do magazynu, bez `forceStart`);
-  8. `state.end()`, `runtime-deploy`; jeśli `pending` → `pending=false`, nowy cykl od kroku 2.
+  2. wstępny odczyt `storage.getFlows()` (bez blokady); jeśli `rev === activeRev` i nie `credentialsChanged` → pomiń (własny zapis lub duplikat; `log.debug`); policz `diff = flowUtil.diffConfigs(active, new)` → `changedFlows` (dla `type:"full"` lub `diff.globalConfigChanged` – `null`/pełne);
+  3. `state.markReloadPending()` (E-02 T7, **bez blokady i bez tokenu operacji**); przy `deploy.reload.concurrency` – zajęcie slotu przeładowania przez koordynację Z-10 (`claim("reload:slot:<i>", ttl)` dla `i < concurrency`, ponawiane do skutku; `/ready` bez zmian w trakcie oczekiwania); bez ustawienia lub z wtyczką lokalną – slot zawsze dostępny;
+  4. `state.markDraining()` (T7a) → `/ready` 503 od tej chwili; `preReload` z limitem `preReloadTimeout` (**poza** blokadą – nie blokuje wdrożeń z edytora przez 20 min);
+     wdrożenie (ZASADY §2.3 A) przyjęte na tej instancji w krokach 3–4 **unieważnia** oczekujące przeładowanie: przejście `reloadPending` → `deploying` (T5), przerwanie `signal` (`superseded`), zwolnienie slotu, koniec cyklu (wdrożenie samo ustala nową konfigurację; nowszy zapis w magazynie wygeneruje kolejne powiadomienie);
+  5. wejście do wspólnego mutexu E-01 → `state.begin("reload")` (`reloading`, T8) → **ponowny odczyt magazynu** (najnowsza rewizja); rewizja równa aktywnej (bez `credentialsChanged`) lub błąd odczytu → `state.end(token, {aborted:true})` (T8a, powrót do stanu sprzed cyklu, węzły nie zatrzymywane); w przeciwnym razie ponowne policzenie `diff` dla treści odczytanej pod blokadą i zatrzymanie/start wg `type` (E-01 kroki 6–8, bez kroku 5 – brak zapisu do magazynu, bez `forceStart`, **bez `preDeploy`**);
+  6. koniec blokady; `state.end()`, zwolnienie slotu, `runtime-deploy`, hook `postDeploy` (`source: "storage"`, asynchronicznie); jeśli `pending` → `pending=false`, nowy cykl od kroku 2.
+  Jeśli treść odczytana pod blokadą (krok 5) zmienia flow spoza `changedFlows` przekazanych do `preReload` – `log.warn("reload.changed-during-drain")` i przeładowanie najnowszej rewizji (ZASADY §2.3 B krok 4); alternatywa: nowy cykl z drenażem dla dodatkowych flow – **do decyzji**.
 - **Niezmienniki:**
   - magazyn bez `watchFlows` → zachowanie identyczne z 5.0.7 (brak obserwatora, brak nowych logów);
   - najwyżej jeden cykl naraz; N powiadomień w trakcie cyklu → **jeden** kolejny cykl;
   - przeładowanie nigdy nie zapisuje do magazynu i nigdy nie uruchamia flow zatrzymanych świadomie (`idle` → przeładowanie aktualizuje konfigurację bez startu);
-  - zatrzymanie/start węzłów wyłącznie wewnątrz wspólnego mutexu (brak przeplotu z `/flows`, `/flow`, `reload`, `setState`);
-  - uruchamiana jest dokładnie treść przekazana do `preReload` (rev w hooku = rev po przeładowaniu);
+  - zatrzymanie/start węzłów wyłącznie wewnątrz wspólnego mutexu (brak przeplotu z `/flows`, `/flow`, `reload`, `setState`); oczekiwanie na slot i `preReload` – zawsze poza mutexem;
+  - uruchamiana jest najnowsza rewizja odczytana **pod blokadą** (krok 5), nie treść z kroku 2;
+  - `/ready` 503 od rozpoczęcia drenażu (`preReload`) do końca przeładowania (zgodnie z kryterium zlecenia i E-02); w oczekiwaniu na slot – bez zmian;
+  - przy `concurrency = N` i wtyczce koordynacji klastrowej najwyżej N instancji jednocześnie w drenażu lub przeładowaniu;
+  - wdrożenie lokalne w trakcie `reloadPending` unieważnia oczekujące przeładowanie;
+  - `preDeploy` nie jest wywoływany przy przeładowaniu z magazynu; `postDeploy` – zawsze z `source: "storage"`;
   - po `stopping` żaden cykl nie startuje, trwający jest anulowany przed zatrzymaniem węzłów.
 - **Przypadki błędów:**
-  - błąd odczytu magazynu → `log.warn("reload.read-failed")`, stan wraca do sprzed cyklu (działająca konfiguracja bez zmian, `/ready` jak przed cyklem – propozycja), ponowienie z wykładniczym opóźnieniem `retry.min`…`retry.max`, kolejne powiadomienie resetuje opóźnienie; **pytanie**: czy po N nieudanych próbach przejść w `failed` (instancja nieaktualna względem klastra);
+  - błąd odczytu magazynu (wstępnego – T7b, lub ponownego pod blokadą – T8a z `aborted`) → `log.warn("reload.read-failed")`, stan wraca do sprzed cyklu (działająca konfiguracja bez zmian, `/ready` jak przed cyklem – propozycja), ponowienie z wykładniczym opóźnieniem `retry.min`…`retry.max`, kolejne powiadomienie resetuje opóźnienie; **pytanie**: czy po N nieudanych próbach przejść w `failed` (instancja nieaktualna względem klastra);
   - błąd startu nowych flow → stan `failed` (E-02), `/ready` 503, log (jak wdrożenie);
+  - odrzucenie `claim` slotu (brak łączności z koordynatorem) → instancja pozostaje w `reloadPending` bez drenażu (stara konfiguracja, `/ready` bez zmian), ponowienie z opóźnieniem + `log.warn` (propozycja – lepiej opóźnić przeładowanie niż przekroczyć limit równoległości); `concurrency` bez wtyczki koordynacji klastrowej → brak efektu + `log.warn` przy starcie;
   - wyjątek w `callback` wtyczki / wywołanie po `stop()` → ignorowane z `log.debug`;
   - `watchFlows` odrzuca przy rejestracji → `log.error`, runtime startuje bez obserwacji (propozycja; alternatywa: błąd startu – **pytanie**).
 - **Skutki uboczne:** zdarzenie `runtime-deploy` → edytory połączone z instancją dostają powiadomienie o nowych flow (polityka P-02); wpis audytu; dodatkowy odczyt magazynu na powiadomienie (w tym własne zapisy – odrzucane po porównaniu rewizji).
@@ -545,9 +629,10 @@ watchFlows(callback)
 #### Projekt rozwiązania (minimalny)
 1. `storage/index.js`: `watchAvailable = typeof storageModule.watchFlows === "function"`; `storageModuleInterface.watchFlows(cb)` tylko gdy dostępne (opakowanie z `try/catch`), `storageModuleInterface.hasWatchFlows()`.
 2. Wspólny mutex: przeniesienie `mutex` z `api/flows.js:37-38` do modułu współdzielonego (np. `runtime/lib/flows/lock.js`, nazwa wg E-01), używanego przez API i przeładowanie.
-3. `flows/index.js`: nowa funkcja wewnętrzna `reloadFromStorage(loaded, {type})` – przyjmuje treść już wczytaną (krok 2), liczy `diff`, wykonuje `stop(type,diff)` → `context.clean` → `start(type,diff)` z `await` (E-01) bez zapisu i bez `forceStart`; dla `type:"full"` – jak gałąź `load`; credentials przez `credentials.load(loaded.credentials)`.
-4. `runtime/lib/flows/reload.js`: obserwator (stan `idle/running/pending`, bufor powiadomień do końca startu, porównanie rewizji, `preReload` z `Promise.race` + `AbortController`, ponowienia), `init(runtime)`, `start()` (po pierwszym starcie flow), `stop()` (abort + wyrejestrowanie).
-5. `runtime/lib/index.js`: rejestracja `watchFlows` po `storage.init`, przed `loadFlows()` (`:241`); `reload.stop()` na początku `stop()` (po `markStopping`).
+3. `flows/index.js`: nowa funkcja wewnętrzna `reloadFromStorage(loaded, {type})` – przyjmuje treść odczytaną **pod blokadą** (krok 5), liczy `diff`, wykonuje `stop(type,diff)` → `context.clean` → `start(type,diff)` z `await` (E-01) bez zapisu, bez `forceStart` i bez `preDeploy`; dla `type:"full"` – jak gałąź `load`; credentials przez `credentials.load(loaded.credentials)`. Mechanizm „odczyt z magazynu zamiast zapisu” wspólny z typem `reload` Admin API (E-01, scalenie z Z-06).
+4. `runtime/lib/flows/reload.js`: obserwator (fazy `idle/waitingSlot/draining/applying` + flaga `pending`, bufor powiadomień do końca startu, porównanie rewizji, zajęcie slotu przez `runtime.coordination.claim` przy `concurrency` – z `renew` na czas drenażu, `preReload` z `Promise.race` + `AbortController`, przerwanie przy przejściu `reloadPending` → `deploying` (słuchacz `state.onChange`) lub `stopping`, ponowienia), `init(runtime)`, `start()` (po pierwszym starcie flow), `stop()` (abort + wyrejestrowanie).
+4a. Po przeładowaniu: `runtime-deploy` i wywołanie `postDeploy` mechanizmem Z-06 z `source: "storage"` (bez `preDeploy`).
+5. `runtime/lib/index.js`: rejestracja `watchFlows` (gdy `deploy.reload.watch`) po `storage.init`, przed `loadFlows()` (`:241`); `reload.stop()` na początku `stop()` (po `markStopping`).
 6. `util/lib/hooks.js`: `"preReload"` w `VALID_HOOKS` (sekcja z Z-06) + JSDoc payloadu.
 7. Szablon `settings.js`: blok `deploy.reload` z opisem; CHANGELOG; dokumentacja kontraktu `watchFlows` dla autorów wtyczek magazynu (JSDoc + przykład atrapy w testach).
 
@@ -556,7 +641,7 @@ watchFlows(callback)
 Funkcja: Przeładowanie flow po zmianie w magazynie
 
   Scenariusz: Powiadomienie powoduje przeładowanie (kryterium zlecenia)
-    Zakładając atrapę magazynu z watchFlows i działające flow w rewizji "A"
+    Zakładając atrapę magazynu z watchFlows, deploy.reload.watch = true i działające flow w rewizji "A"
     Kiedy inna instancja zapisze rewizję "B" i atrapa wywoła callback
     Wtedy runtime wczyta flow z magazynu i uruchomi rewizję "B"
     I zdarzenie runtime-deploy zawiera rewizję "B"
@@ -566,9 +651,10 @@ Funkcja: Przeładowanie flow po zmianie w magazynie
     Zakładając hook preReload, który kończy się dopiero po sygnale testu
     Kiedy magazyn powiadomi o zmianie
     Wtedy węzły nie są zatrzymywane, dopóki hook się nie zakończy
-    I GET /health/ready zwraca 503 przez cały czas oczekiwania
+    I GET /health/ready zwraca 503 od wywołania hooka przez cały czas oczekiwania
+    I blokada wdrożeń nie jest zajęta
     Kiedy hook się zakończy
-    Wtedy flow zostaną przeładowane i GET /health/ready zwróci 200
+    Wtedy flow zostaną przeładowane pod blokadą i GET /health/ready zwróci 200
 
   Scenariusz: Limit czasu hooka (kryterium zlecenia)
     Zakładając deploy.reload.preReloadTimeout = 100 ms i hook preReload, który się nie kończy
@@ -604,13 +690,53 @@ Funkcja: Przeładowanie flow po zmianie w magazynie
     Wtedy wdrożenie zostanie wykonane dopiero po zakończeniu przeładowania
     I zatrzymanie i start węzłów obu operacji nie przeplatają się
 
-  Scenariusz: Oczekiwanie w preReload nie blokuje wdrożeń
+  Scenariusz: Wdrożenie w trakcie preReload unieważnia przeładowanie
     Zakładając hook preReload oczekujący na zakończenie rozmów
     Kiedy klient wyśle POST /flows
     Wtedy wdrożenie zostanie wykonane bez czekania na hook
+    I hook otrzyma przerwany signal z powodem "superseded"
+    I przeładowanie z magazynu nie zostanie wykonane, a stan przejdzie "reloadPending" → "deploying" → "ready"
+
+  Scenariusz: Ponowny odczyt magazynu pod blokadą
+    Zakładając preReload dla rewizji "B" i zapis rewizji "C" w magazynie w trakcie drenażu
+    Kiedy hook się zakończy
+    Wtedy pod blokadą wdrożeń magazyn zostanie odczytany ponownie
+    I uruchomiona zostanie rewizja "C"
+
+  Scenariusz: Przeładowanie wywołuje postDeploy, nie preDeploy
+    Zakładając zarejestrowane hooki preDeploy i postDeploy (Z-06)
+    Kiedy instancja przeładuje flow z magazynu
+    Wtedy preDeploy nie zostanie wywołany
+    I postDeploy zostanie wywołany z source "storage" po zdarzeniu runtime-deploy
+
+  Scenariusz: Limit równoległości przeładowań (atrapa koordynacji)
+    Zakładając trzy instancje ze wspólną atrapą koordynacji (Z-10) i deploy.reload.concurrency = 1
+    I hook preReload na każdej instancji, który kończy się po sygnale testu
+    Kiedy magazyn powiadomi wszystkie instancje o rewizji "B"
+    Wtedy w danej chwili najwyżej jedna instancja wywołuje preReload i zwraca /health/ready 503
+    I pozostałe instancje czekają na slot i zwracają /health/ready 200
+    Kiedy kolejne hooki będą kończone
+    Wtedy instancje przeładują się po kolei i wszystkie uruchomią rewizję "B"
+
+  Scenariusz: Limit równoległości bez wtyczki klastrowej
+    Zakładając deploy.reload.concurrency = 1 i wtyczkę koordynacji lokalną
+    Kiedy runtime się uruchomi
+    Wtedy w logu pojawi się ostrzeżenie, że limit nie ma efektu
+    I przeładowanie działa jak bez limitu
+
+  Scenariusz: Przeładowanie różnicowe nie przerywa niezmienionych flow
+    Zakładając deploy.reload.type = "diff" i rozmowę trwającą w flow "t2"
+    Kiedy w magazynie zmieni się tylko flow "t1"
+    Wtedy zatrzymane i uruchomione zostanie tylko flow "t1"
+    I rozmowa w flow "t2" nie zostanie przerwana
+
+  Scenariusz: Wartość domyślna type
+    Zakładając deploy.reload bez pola type
+    Kiedy magazyn powiadomi o zmianie
+    Wtedy wykonane zostanie przeładowanie pełne ("full")
 
   Scenariusz: Hook otrzymuje rewizję i listę zmienionych flow
-    Zakładając deploy.reload.type = "flows"
+    Zakładając deploy.reload.type = "diff"
     Kiedy w magazynie zmieni się tylko flow "t1"
     Wtedy preReload otrzyma rev nowej rewizji, activeRev działającej i changedFlows ["t1"]
     I flow "t2" nie zostanie zatrzymane
@@ -657,9 +783,10 @@ Funkcja: Przeładowanie flow po zmianie w magazynie
 ```
 
 #### Testy
-- Jednostkowe, nowy `test/unit/@node-red/runtime/lib/flows/reload_spec.js` (atrapa magazynu z `watchFlows`, sinon fake timers): `notification triggers reload from storage`, `no save on reload`, `skips when rev equals active`, `reloads on credentialsChanged with same rev`, `coalesces notifications during reload into one`, `buffers notifications during startup`, `preReload delays stop`, `preReload timeout proceeds with warning`, `preReload error proceeds with error log`, `preReload receives rev, activeRev, type, changedFlows, deadline, signal`, `payload is frozen`, `abort on stop cancels reload`, `read failure retries with backoff and keeps flows`, `idle state updates config without start`, `start errors set failed`.
+- Jednostkowe, nowy `test/unit/@node-red/runtime/lib/flows/reload_spec.js` (atrapa magazynu z `watchFlows`, sinon fake timers): `notification triggers reload from storage`, `no save on reload`, `skips when rev equals active`, `reloads on credentialsChanged with same rev`, `coalesces notifications during reload into one`, `buffers notifications during startup`, `preReload delays stop`, `preReload timeout proceeds with warning`, `preReload error proceeds with error log`, `preReload receives rev, activeRev, type, changedFlows, deadline, signal`, `payload is frozen`, `abort on stop cancels reload`, `local deploy during reloadPending supersedes reload`, `rereads storage under lock and applies newest rev`, `no preDeploy, postDeploy with source storage`, `concurrency waits for slot without draining`, `slot released after reload and on supersede`, `claim rejection keeps old config and retries`, `concurrency without cluster plugin warns`, `type defaults to full`, `watch false – no watcher`, `read failure retries with backoff and keeps flows`, `idle state updates config without start`, `start errors set failed`.
 - `test/unit/@node-red/runtime/lib/storage/index_spec.js`: `exposes watchFlows when module provides it`, `hasWatchFlows false without it`, `callback exceptions are contained`.
-- `test/unit/@node-red/runtime/lib/flows/index_spec.js`: `reloadFromStorage type flows restarts only changed flows`, `reloadFromStorage full restarts all`, `globalConfigChanged forces full`.
+- Integracyjny „limit równoległości”: `test/unit/@node-red/runtime/lib/flows/reload_concurrency_spec.js` – trzy obserwatory ze wspólną atrapą koordynatora w pamięci (jak `multi_instance_spec.js` Z-10), fake timers: `at most concurrency instances draining`, `others ready 200 while waiting`.
+- `test/unit/@node-red/runtime/lib/flows/index_spec.js`: `reloadFromStorage type diff restarts only changed flows`, `reloadFromStorage full restarts all`, `globalConfigChanged forces full`.
 - `test/unit/@node-red/runtime/lib/api/flows_spec.js`: `reload and api deploy share one mutex` (kolejność zdarzeń), `preReload wait does not hold mutex`.
 - `test/unit/@node-red/runtime/lib/index_spec.js`: `watchFlows registered before first loadFlows`, `unwatch called on stop`, `storage without watchFlows – no watcher`.
 - `test/unit/@node-red/util/lib/hooks_spec.js`: `allows preReload hook`.
@@ -669,14 +796,16 @@ Funkcja: Przeładowanie flow po zmianie w magazynie
 - [ ] Test „magazyn bez `watchFlows` = brak zmian” (logi, zdarzenia, wywołania).
 - [ ] Wszystkie cztery kryteria odbioru zlecenia jako testy z atrapą magazynu.
 - [ ] Limit `preReloadTimeout` konfigurowalny, wartość ≥ 20 min dozwolona i udokumentowana (przykład dla rozmów do ~15 min).
-- [ ] Przeładowanie przechodzi przez wspólny mutex E-01 (test kolejności).
+- [ ] Przeładowanie przechodzi przez wspólny mutex E-01 (test kolejności); `preReload` i oczekiwanie na slot – poza mutexem.
+- [ ] `deploy.reload.type` domyślnie `"full"`; `"diff"` udokumentowane jako zalecane dla długich rozmów.
+- [ ] `deploy.reload.concurrency` z testem na atrapie koordynacji (Z-10).
 
 #### Ryzyka i alternatywy
-- **Wszystkie workery jednocześnie 503:** powiadomienie dociera do wszystkich instancji naraz; przy `/ready` 503 od kroku 4 i drenażu do 20 min cały Deployment przestaje przyjmować ruch – **przerwa w obsłudze**. Opcje: (A) `/ready` 503 tylko na czas faktycznego zatrzymania/startu (krok 7), a w trakcie `preReload` instancja przyjmuje nowe rozmowy (hook decyduje, co z nimi – np. kieruje je do starej wersji flow); (B) przeładowanie po kolei: przed krokiem 4 zajęcie przez koordynację (Z-10) „miejsca przeładowania” z limitem równoległości (np. 1 lub 25% instancji); (C) losowe opóźnienie startu cyklu; (D) wydania niezmienne + rolling update (K8S-T-006) zamiast przeładowania na produkcji. Zlecenie wymaga 503 „na czas przeładowania” – **pytanie** (rekomendacja: A dla 503 + B jako opcja; B wiąże Z-09 z Z-10).
-- **Pełne vs różnicowe:** dziś `load(true)` = pełny restart – przerywa wszystkie rozmowy także w niezmienionych flow (przy rozmowach ~15 min istotne). Rekomendacja: zaimplementować oba (`type: "full" | "flows"`), domyślnie `"full"` (semantyka zlecenia i 5.0.6), dla workerów zalecane `"flows"`. Ograniczenia różnicowego: zmiana globalnych configów → pełny (jak `setFlows`); diff nie widzi zmian samych poświadczeń (poświadczenia nie są w konfiguracji węzłów przy `load`) → przy `credentialsChanged` pełny restart lub restart węzłów, których poświadczenia się zmieniły (**do potwierdzenia** w implementacji). **Pytanie**.
+- **Wszystkie workery jednocześnie 503:** powiadomienie dociera do wszystkich instancji naraz; przy `/ready` 503 od rozpoczęcia drenażu (wymóg zlecenia „503 na czas przeładowania”, E-02 T7a) i drenażu do 20 min cały Deployment mógłby przestać przyjmować ruch. Rozwiązanie (D-10): `deploy.reload.concurrency` – zajęcie slotu przez koordynację Z-10 **przed** drenażem (instancje czekające na slot zwracają 200), oraz `type: "diff"` – drenaż i restart tylko zmienionych flow. Bez wtyczki koordynacji klastrowej limit nie działa (ostrzeżenie); alternatywa operacyjna: wydania niezmienne + rolling update (K8S-T-006).
+- **Pełne vs różnicowe:** dziś `load(true)` = pełny restart – przerywa wszystkie rozmowy także w niezmienionych flow (przy rozmowach ~15 min istotne). Rozstrzygnięcie (ZASADY §2.1, D-10): oba tryby, `type: "full" | "diff"`, **domyślnie `"full"`** (semantyka 5.0.6), **zalecane `"diff"`** dla wdrożeń z długimi rozmowami. Ograniczenia różnicowego: zmiana globalnych configów → pełny (jak `setFlows`); diff nie widzi zmian samych poświadczeń (poświadczenia nie są w konfiguracji węzłów przy `load`) → przy `credentialsChanged` pełny restart lub restart węzłów, których poświadczenia się zmieniły (**do potwierdzenia** w implementacji).
 - **Rewizja bez poświadczeń** (`storage/index.js:80`): bez `credentialsChanged` od wtyczki zmiana hasła w węźle konfiguracyjnym nie zostanie przeładowana (pominięcie jako „własny zapis”). Wymaganie dla wtyczek magazynu (K8S-T-001).
-- **Wdrożenie lokalne w trakcie drenażu** (krok 6): rekomendacja „magazyn jest źródłem prawdy” – na instancji z edytorem może cofnąć świeże lokalne wdrożenie, jeśli powiadomienie dotyczy starszej rewizji; zapis lokalny i tak generuje kolejne powiadomienie z nowszą rewizją. **Do potwierdzenia**; alternatywa: odrzucić cykl, jeśli lokalna rewizja zmieniła się w trakcie `preReload`.
-- **Instancja z edytorem:** dostaje powiadomienia o własnych zapisach (pomijane po rewizji) i o zapisach innych klientów (np. MCP/CI przez inną instancję) – edytor pokaże powiadomienie o zmianie flow (`runtime-deploy`). W naszej architekturze publikacja idzie przez Admin API edytora – na edytorze można wyłączyć `deploy.reload.watch`.
+- **Wdrożenie lokalne w trakcie drenażu:** rozstrzygnięte w ZASADY §2.3 B – wdrożenie unieważnia oczekujące przeładowanie (brak ryzyka cofnięcia świeżego wdrożenia); kosztem jest przerwany drenaż na tej instancji (dotyczy głównie instancji z edytorem, gdzie `deploy.reload.watch` domyślnie wyłączone).
+- **Instancja z edytorem:** dostaje powiadomienia o własnych zapisach (pomijane po rewizji) i o zapisach innych klientów (np. MCP/CI przez inną instancję) – edytor pokaże powiadomienie o zmianie flow (`runtime-deploy`). W naszej architekturze publikacja idzie przez Admin API edytora – na edytorze `deploy.reload.watch` pozostaje wyłączone (domyślnie `false`).
 - **Hook bez prawa weta:** zwrot `false` w innych hookach oznacza zatrzymanie – tu przeładowanie mimo to (spójność klastra ważniejsza). **Pytanie**.
 - **Przełączenie projektu** (`projects/index.js:396`) nadal omija mutex – poza zakresem (Projekty i magazyn klastrowy się wykluczają), odnotowane.
 - Alternatywa: obserwator wywołujący `api.flows.setFlows({deploymentType:"reload"})` – prostsza, ale brak hooka, diffu, pominięcia własnych zapisów i 503; odrzucona jako niewystarczająca (zostaje jako krok przejściowy).
@@ -684,8 +813,10 @@ Funkcja: Przeładowanie flow po zmianie w magazynie
 #### Podzadania
 - [ ] Wspólny mutex (wydzielenie z `api/flows.js`) – S
 - [ ] `storage/index.js`: wykrycie i opakowanie `watchFlows` – S
-- [ ] `flows/index.js`: `reloadFromStorage` (full + flows, bez zapisu, bez `forceStart`) – M
-- [ ] `flows/reload.js`: koalescencja, bufor startowy, porównanie rewizji, ponowienia – M
+- [ ] `flows/index.js`: `reloadFromStorage` (full + diff, bez zapisu, bez `forceStart`, bez `preDeploy`) – M
+- [ ] `flows/reload.js`: koalescencja, bufor startowy, porównanie rewizji, `reloadPending` bez blokady, unieważnienie przez wdrożenie, ponowny odczyt pod blokadą, ponowienia – M
+- [ ] `deploy.reload.concurrency`: slot przez koordynację Z-10 + test z atrapą trzech instancji – M
+- [ ] `postDeploy` z `source: "storage"` (mechanizm Z-06) – S
 - [ ] `preReload`: `VALID_HOOKS`, limit czasu, `AbortSignal`, payload – M
 - [ ] Wpięcie w start/stop runtime i E-02 – S
 - [ ] Testy z atrapą magazynu (kryteria zlecenia + uzupełnienia) – L
@@ -896,7 +1027,7 @@ Funkcja: Wykonanie na jednej instancji
 - [ ] Kolejność startu/zatrzymania w `runtime/lib/index.js` – S
 - [ ] `RED.coordination` w `createNodeApi` – S
 - [ ] `inject`: `singleInstance` (cron – claim, interwał/once – lider), UI, teksty – M
-- [ ] Test dwóch instancji (atrapa koordynatora; opcjonalnie wieloprocesowy) – M/L
+- [ ] Test dwóch instancji (atrapa koordynatora; opcjonalnie wieloprocesowy) – L
 - [ ] Dokumentacja API, szablon `settings.js`, CHANGELOG – S
 
 ---
@@ -908,7 +1039,7 @@ Funkcja: Wykonanie na jednej instancji
 | Etap / typ | 3 / funkcja |
 | Priorytet / ryzyko | P2 / średnie |
 | Ustawienie | `readOnlyUserDir: false` (bez zmian względem zlecenia) |
-| Zależności | – (koordynacja z Z-03 – ujednolicone ustawienia uploadu) |
+| Zależności | Z-03 (ujednolicone ustawienia uploadu i **nowy kod `upload_not_allowed`** definiowany w Z-03 – ZASADY §2.4) |
 | Pliki | `node-red/red.js:121-157` (wybór/kopiowanie `settings.js`, `:151`); `@node-red/runtime/lib/index.js:135-248` (komunikaty startu, `:167-215,:268` autoinstalacja); `@node-red/registry/lib/installer.js:221,239,274,361,426-485,516,544,575-600`; `@node-red/registry/lib/externalModules.js:35,43,72-73,228-277`; `@node-red/runtime/lib/nodes/context/localfilesystem.js:70-95` (`getBasePath`), `:145-146,202,231,387,412,415`; `@node-red/runtime/lib/nodes/context/index.js:80-180`; `@node-red/runtime/lib/storage/localfilesystem/index.js:36-71`, `settings.js:75,83,117,127`, `sessions.js:47-50`, `library.js:148-172`, `projects/index.js:129-130,607,626,651,662`, `util.js:89-118`; `node-red/settings.js`; `@node-red/runtime/locales/en-US/runtime.json` |
 | Powiązania | K8S-T-005 (obraz, system plików tylko do odczytu), K8S-A-002 (węzły używające `fs`), K8S-T-004 |
 
@@ -918,7 +1049,7 @@ Wynik: **POTWIERDZONE** – 16 miejsc zapisu (tabela poniżej, z WERYFIKACJA Z-1
 | # | Miejsce | Co | Kiedy | Wyłączenie dziś | Przy `readOnlyUserDir: true` (propozycja) |
 |---|---|---|---|---|---|
 | 1 | `node-red/red.js:151` | kopia `settings.js` do `~/.node-red` | start CLI bez pliku ustawień – niezależnie od magazynu | `--settings` / `--userDir` z settings.js | **nie da się sterować z `settings.js`** (kopiowanie przed wczytaniem ustawień); błąd kopiowania → użycie domyślnego pliku + ostrzeżenie zamiast awarii; zalecenie `--settings` |
-| 2 | `registry/lib/installer.js:443` | `<userDir>/nodes/<name>-<ver>.tgz` | upload | `externalModules.palette.allowUpload:false` | wyłączone (`upload_not_allowed`) |
+| 2 | `registry/lib/installer.js:443` | `<userDir>/nodes/<name>-<ver>.tgz` | upload | `externalModules.palette.allowUpload:false` | wyłączone (kod `upload_not_allowed` – nowy kod z Z-03, ZASADY §2.4; dziś `Error` bez kodu) |
 | 3 | `installer.js:477-479` | `os.tmpdir()/nr-tarball-*` | upload | jw. | wyłączone razem z uploadem |
 | 4 | `installer.js:470` | usunięcie starego tgz | aktualizacja z uploadu | jw. | wyłączone |
 | 5 | `installer.js:239` | `npm install --save` | instalacja/aktualizacja z palety | `palette.allowInstall/allowUpdate:false`, listy, `preInstall`→`false` | wyłączone (`install_not_allowed`, `update_not_allowed`) |
@@ -947,7 +1078,7 @@ Wynik: **POTWIERDZONE** – 16 miejsc zapisu (tabela poniżej, z WERYFIKACJA Z-1
   - przy starcie jeden blok logu `readonly-userdir.enabled` z listą wyłączonych funkcji (instalacja/aktualizacja/usuwanie/upload z palety, autoinstalacja, instalacja modułów węzła Function, Projekty, zapis ustawień/sesji/biblioteki w magazynie plikowym, wdrożenie przy magazynie plikowym);
   - efektywne wartości: `externalModules.palette.allowInstall=false`, `allowUpload=false`, `allowUpdate=false`, `externalModules.modules.allowInstall=false`, `externalModules.autoInstall=false` (nadpisanie z ostrzeżeniem, jeśli ustawiono `true`), `editorTheme.projects.enabled=false`;
   - edytor: paleta bez instalacji (jak przy `allowInstall:false` – istniejące zachowanie UI);
-  - próba operacji w trakcie działania (Admin API) → istniejące kody `install_not_allowed`/`update_not_allowed`/`module_not_allowed`, dla zapisu biblioteki i wdrożenia przy magazynie plikowym – nowy kod `read_only_user_dir` (400).
+  - próba operacji w trakcie działania (Admin API) → istniejące kody `install_not_allowed`/`update_not_allowed`/`module_not_allowed`, dla uploadu – kod `upload_not_allowed` z Z-03 (nowy, ZASADY §2.4), dla zapisu biblioteki i wdrożenia przy magazynie plikowym – nowy kod `read_only_user_dir` (400).
 - **Niezmienniki:**
   - przy `true`: zero wywołań zapisu (`writeFile`, `outputFile`, `ensureDir`, `copy`, `rename`, `remove`, `npm install/remove`) w katalogach chronionych – w trakcie startu, wdrożenia, logowania, zapisu ustawień użytkownika i biblioteki;
   - przy `false`: zachowanie identyczne z 5.0.7 (w tym `readOnly`);
@@ -1002,6 +1133,7 @@ Funkcja: Katalog użytkownika tylko do odczytu
       | upload paczki .tgz                      | upload_not_allowed  |
       | usunięcie modułu                        | install_not_allowed |
       | wdrożenie Function z nowym modułem libs | module_not_allowed  |
+    # upload_not_allowed – nowy kod wprowadzany w Z-03 (ZASADY §2.4); scenariusz wykonywany po scaleniu Z-03
 
   Scenariusz: Ustawienia sprzeczne są nadpisywane
     Zakładając readOnlyUserDir = true i externalModules.palette.allowInstall = true
@@ -1093,20 +1225,39 @@ Funkcja: Katalog użytkownika tylko do odczytu
 
 ## Pytania do Zamawiającego (etap 3)
 
-1. **E-02 – nazwy:** czy akceptują Państwo nazwy stanów (`starting, ready, deploying, reloading, idle, failed, stopping, stopped`) i zdarzenia `instance:state` (D-02)? Czy rozszerzyć `RED.stop()` o powód zatrzymania (sygnał)?
+1. **E-02 – nazwy:** czy akceptują Państwo nazwy stanów (`starting, ready, deploying, reloadPending, reloading, idle, loaded, failed, stopping, stopped`) i zdarzenia `instance:state` (D-02)? Czy rozszerzyć `RED.stop()` o powód zatrzymania (sygnał)?
 2. **E-02 – `setState` w mutexie:** zgoda na objęcie API start/stop flow (`runtimeState`) wspólną blokadą wdrożeń (usunięcie wyścigu, zmiana kolejkowania)?
-3. **E-02/Z-08 – safe mode i flow zatrzymane świadomie:** stan `idle` i `/ready` 503 (propozycja) – czy dla instancji edycyjnej (Z-15) `/ready` ma oznaczać „edytor gotowy” (200 mimo braku flow)?
+3. **E-02/Z-08/Z-15 – `/ready` bez działających flow (jedno pytanie):** propozycja – instancja tylko edycyjna w stanie `loaded` → `/ready` 200 (D-13, „gotowa do edycji”); safe mode i `runtimeFlowState: stop` (`idle`) → 503. Czy potwierdzają Państwo? (Pytanie 12 w etapie 4 odsyła tutaj.) Przy okazji: czy ujednolicić nazwę `idle` z ANALIZA §4.2, gdzie oznacza stan początkowy?
 4. **Z-08 – treść odpowiedzi:** czy nazwa stanu w treści `503` jest dopuszczalna (nie jest konfiguracją), czy treść ma być stała?
-5. **Z-08 – drenaż przy SIGTERM:** dziś flow są zatrzymywane od razu po sygnale. Wystarczy `preStop` w orkiestratorze (rekomendacja), czy dodać `health.shutdownDelay` albo hook „przed zatrzymaniem” (jak `preReload`)? Czy potrzebny globalny limit czasu zatrzymania?
-6. **Z-08 – serwer HTTP przy SIGTERM (D-05):** zamykać serwer dla nowych połączeń tylko przy włączonych sondach na osobnym porcie (propozycja), czy zawsze (zmiana zachowania 5.0.6)? Czy potrzebne `health.host`?
-7. **Z-09 – jednoczesne 503 na wszystkich workerach:** powiadomienie trafia do wszystkich instancji naraz; przy 503 przez cały drenaż (do 20 min) Deployment traci całą przepustowość. Które rozwiązanie: (A) 503 tylko w oknie zatrzymania/startu, (B) przeładowanie po kolei przez koordynację Z-10, (C) losowe opóźnienie, (D) wydania niezmienne na produkcji?
-8. **Z-09 – przeładowanie różnicowe:** zgoda na `deploy.reload.type: "full" | "flows"` z domyślnym `"full"` (zalecane `"flows"` dla workerów, by nie przerywać rozmów w niezmienionych flow)?
+5. **Z-08 – drenaż przy SIGTERM (D-11):** potwierdzenie rozwiązania w rdzeniu: `/ready` 503 od sygnału, hook `preShutdown` z limitem `health.shutdownTimeout` (domyślnie 30 s), potem `RED.stop()` i zamknięcie serwera HTTP; `preStop` orkiestratora jako opcja dodatkowa. Czy drugi sygnał w trakcie drenażu ma zatrzymywać natychmiast? Czy potrzebny osobny limit czasu samego `RED.stop()`?
+6. **Z-08 – serwer HTTP przy SIGTERM (D-05):** zamknięcie serwera po `RED.stop()` tylko przy `health.enabled` (propozycja), czy zawsze (zmiana zachowania 5.0.6, w praktyce tuż przed `process.exit()`)?
+7. **Z-09 – limit równoległości (D-10):** potwierdzenie `deploy.reload.concurrency` (slot przez koordynację Z-10, instancje czekające na slot zwracają `/ready` 200, 503 od rozpoczęcia drenażu). Czy `concurrency` ma przyjmować także wartość procentową (np. `"25%"`)? Czy przy braku łączności z koordynatorem przeładowanie ma czekać (propozycja), czy wykonać się bez limitu?
+8. **Z-09 – przeładowanie różnicowe (D-10):** potwierdzenie `deploy.reload.type: "full" | "diff"` z domyślnym `"full"` i zaleceniem `"diff"` dla długich rozmów. Gdy treść odczytana pod blokadą zmienia flow spoza drenowanych w `preReload` – przeładować najnowszą rewizję z ostrzeżeniem (propozycja) czy wykonać dodatkowy drenaż?
 9. **Z-09 – `preReload` bez weta:** błąd/`false`/limit czasu → przeładowanie mimo to (propozycja), czy możliwość anulowania (instancja zostaje na starej konfiguracji)? Wartość domyślna limitu: 20 min (propozycja) czy krótsza z zaleceniem w dokumentacji?
 10. **Z-09 – błąd odczytu magazynu:** instancja dalej `ready` na starej konfiguracji z ponowieniami (propozycja), czy po N próbach `failed` (503)? Czy błąd `watchFlows` przy rejestracji ma blokować start?
-11. **Z-09 – nazwa i kształt ustawień** `deploy.reload: { watch, type, preReloadTimeout, retry }` (D-02); czy powiadomienie z rewizją równą lokalnemu, świeżemu wdrożeniu w trakcie drenażu ma być rozstrzygane na korzyść magazynu?
+11. **Z-09 – ustawienia** `deploy.reload: { watch, type, preReloadTimeout, concurrency }` (ZASADY §2.1): czy dodać `retry: { min, max }` (ponowienia odczytu), czy stałe wartości w kodzie?
 12. **Z-10 – semantyka `inject`:** cron przez zajęcie klucza `<nodeId>:<czas zaplanowany>`, interwał i „raz po starcie” przez przywództwo (rekomendacja) – akceptacja? Czy status „standby” w węźle jest pożądany?
 13. **Z-10 – wybór wtyczki:** tylko jawnie (`coordination.plugin`, rekomendacja) czy automatycznie jedyna zainstalowana? Czy inne węzły core (np. `mqtt in`) mają dostać opcję w tym pakiecie?
 14. **Z-10 – test dwóch runtime'ów:** czy wystarczy test dwóch instancji fasady koordynacji w jednym procesie, czy wymagany wariant wieloprocesowy w `npm test`?
 15. **Z-11 – kontekst `localfilesystem` w katalogu użytkownika:** błąd startu (rekomendacja) czy przełączenie na `memory` z ostrzeżeniem?
 16. **Z-11 – wdrożenie przy magazynie plikowym:** odrzucenie 400 `read_only_user_dir` (rekomendacja) czy ciche pominięcie jak istniejące `readOnly`? Czy `readOnly` ma zostać udokumentowane w szablonie?
 17. **Z-11 – CLI:** czy dodać zmienną środowiskową (np. `NODE_RED_READ_ONLY_USER_DIR`) działającą przed wyborem pliku ustawień, czy wystarczy fallback w ścieżce błędu i zalecenie `--settings`? Czy bezwzględny `flowFile` poza katalogiem użytkownika ma być chroniony?
+
+---
+
+## Zmiany po przeglądzie
+
+Poprawki z listy w [../PRZEGLAD.md](../PRZEGLAD.md) („Lista poprawek do naniesienia”), zgodnie z ZASADY §2.1, §2.3, §2.4 i ANALIZA §4.2, §6.2, §7:
+
+- **#2** – E-02: nowy stan `reloadPending` (bez blokady i bez tokenu operacji, flaga `draining` od `preReload`), `reloading` ograniczony do kroków pod blokadą; diagram stanów i tabela przejść (T5 z `reloadPending` – unieważnienie przez wdrożenie, T7/T7a/T7b/T8/T8a); niezmiennik 3 przeredagowany; nowe API `markReloadPending`/`markDraining`/`cancelPending`; scenariusze BDD i testy. Z-09: algorytm wg ZASADY §2.3 B (preReload poza blokadą, wdrożenie unieważnia oczekujące przeładowanie, stop/start pod blokadą).
+- **#2 / #11** – E-02: stan `loaded` dla instancji tylko edycyjnej (Z-15, T14), `/ready` 200 (D-13).
+- **#5** – Z-08: zależność od Z-09 zastąpiona „punktem integracji wykorzystywanym przez Z-09” (brak cyklu Z-08↔Z-09); tabela podsumowania i kolejność realizacji wg ANALIZA §6.2 (Z-08 → Z-10 → Z-09 → Z-11).
+- **#6** – Z-09: przeładowanie z magazynu bez `preDeploy`, z `postDeploy` (`source: "storage"`); ponowny odczyt magazynu pod blokadą (uruchamiana najnowsza rewizja).
+- **#10** – Z-09: `/ready` 503 od rozpoczęcia drenażu (`preReload`) do końca przeładowania – zgodnie z kryterium zlecenia i E-02; ryzyko „wszystkie workery naraz” rozwiązane przez `deploy.reload.concurrency` (koordynacja Z-10) i `type: "diff"`; scenariusze BDD dla limitu równoległości (atrapa koordynacji) i dla `diff`.
+- **#11** – jedna propozycja `/ready` dla instancji edycyjnej (`loaded` → 200, D-13) w E-02 i Z-08; jedno pytanie (pytanie 3).
+- **#12** – tabela podsumowania: E-02 „wykorzystywany opcjonalnie przez P-01”.
+- **#19** – Z-11: `upload_not_allowed` opisany jako nowy kod definiowany w Z-03 (ZASADY §2.4); zależność od Z-03.
+- **#20** – Z-08: drenaż przy SIGTERM wg D-11 i ZASADY §2.3 C (`stopping` od sygnału, hook `preShutdown`, `health.shutdownTimeout`, potem `RED.stop()` i zamknięcie serwera HTTP); scenariusze BDD, testy, DoD, podzadanie; `preStop` orkiestratora jako opcja dodatkowa; ustawienia `health.host`, `health.shutdownTimeout`, `RED.health`.
+- **#21** – Z-09: `type: "full" | "diff"`, domyślnie `"full"`, rekomendacja `"diff"` dla długich rozmów; `watch` domyślnie `false` (ZASADY §2.1).
+- **#26** – E-02: `runtime/lib/index.js:247` → `:245`; dopisano, że `.catch` obejmuje tylko `loadFlows` (obietnica `startFlows()` nie jest zwracana).
+- **Dodatkowo** – szacunek podzadania Z-10 „M/L” → „L” (skala S/M/L, ZASADY §4); pytania 3, 5–8, 11 zaktualizowane do rozstrzygnięć; nowe „do decyzji”: nazwa `idle` vs ANALIZA §4.2, zmiana flow spoza drenowanych w trakcie `preReload`, `retry` w `deploy.reload`.

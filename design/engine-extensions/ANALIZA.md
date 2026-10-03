@@ -100,13 +100,14 @@ osobna poprawka błędu dla trybu domyślnego → **D-05**: w trybie domyślnym 
 P-01, Z-08 i Z-09 potrzebują jednego, wiarygodnego stanu runtime:
 
 ```
-idle ──▶ starting ──▶ ready ──▶ deploying ──────────────▶ ready
+init ──▶ starting ──▶ ready ──▶ deploying ──────────────▶ ready
             │           │  └──▶ reloadPending ──▶ reloading ──▶ ready
             │           │        (preReload, drenaż;   (pod blokadą)
             │           │         unieważniane przez wdrożenie)
             │           └──────────▶ stopping (SIGTERM/SIGINT, nieodwracalny) ──▶ stopped
             └─▶ failed (start / odczyt flow się nie powiódł)
-instancja tylko edycyjna (Z-15): idle ──▶ loaded (flow wczytane, nie uruchomione)
+            idle – flow świadomie zatrzymane (runtimeState „stop”), zgodnie z kartą E-02
+instancja tylko edycyjna (Z-15): init ──▶ loaded (flow wczytane, nie uruchomione)
 ```
 Szczegóły przejść (T1–T13) i niezmienniki – karta E-02 w [backlog/etap-3.md](backlog/etap-3.md);
 kolejność kroków wdrożenia/przeładowania/zatrzymania – [ZASADY.md](ZASADY.md) §2.3.
@@ -184,6 +185,8 @@ Spójny zestaw: obiekt `deploy` (P-01, Z-04, Z-05), `editorTheme.deploy` (P-02),
 | `readOnly` istniejącego magazynu plikowego pomija zapis flow po cichu – wdrożenie „udaje się”, zmiany giną po restarcie | utrata zmian | Z-11: przy `readOnlyUserDir` z magazynem plikowym – wdrożenie zwraca błąd zamiast cichego pominięcia (decyzja) |
 | Błąd odczytu flow przy starcie połykany (`runtime/lib/index.js:245`, `.catch` obejmuje tylko `loadFlows`) | instancja „działa” bez flow | E-02: stan `failed` i `/ready` 503 |
 | Zmiana samych poświadczeń nie zmienia rewizji (`storage/index.js:80`) | przeładowanie pominięte jako „własny zapis” | Z-09: pole `credentialsChanged` w powiadomieniu |
+| Odrzucenie promise ze `startFlows()` nie jest przechwytywane (`runtime/lib/index.js:241-245`) | nieobsłużone odrzucenie przy starcie | E-02/Z-08: stan `failed`, log, `/ready` 503 |
+| Treść odczytana pod blokadą (krok B4) zmienia flow, które nie były drenowane w `preReload` | przerwanie rozmów w flow spoza drenażu | Z-09: ponowny `preReload` dla dodatkowych flow (z limitem) – D-17 |
 
 ## 5. Uwagi do wymagań ogólnych zlecenia
 
@@ -267,6 +270,8 @@ trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od dzia
 | D-14 | Z-10: semantyka „tylko jedna instancja” w `inject` | harmonogram cron: zajęcie klucza `<id>:<czas zaplanowany>` (dokładnie raz); interwał: lider |
 | D-15 | Z-11: kontekst `localfilesystem` przy `readOnlyUserDir` | błąd startu z czytelnym komunikatem (bez cichej zmiany na `memory`) |
 | D-16 | Z-13: zakres – `runtime.json` i pomoc HTML węzłów (~13,3 tys. słów) | `runtime.json` tak; pomoc HTML – osobna wycena |
+| D-17 | Z-09: flow zmienione po drenażu (odczyt pod blokadą) | ponowny `preReload` tylko dla dodatkowych flow, w ramach pozostałego limitu czasu |
+| D-18 | Z-09: ponawianie odczytu magazynu po błędzie (`deploy.reload.retry`) | tak – wykładniczo, z limitem; stan `failed` po wyczerpaniu |
 
 Pozostałe pytania z kart (ok. 35, pogrupowane i bez duplikatów) – [PRZEGLAD.md](PRZEGLAD.md) §7; każda karta
 ma też sekcję „Pytania do Zamawiającego”.
