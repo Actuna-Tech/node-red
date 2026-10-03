@@ -351,6 +351,20 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 
 _Miejsce na dodatkową listę do przeanalizowania – każdy punkt dostaje kartę `FL-A-nnn` i jest przenoszony do błędów / zadań po analizie._
 
+### FL-A-001 – Stan Node-RED w PostgreSQL pod Kubernetes
+
+| Pole | Wartość |
+|---|---|
+| Status | **Zamknięte (analiza wykonana)** – 2026-10-03 |
+| Wynik | [design/k8s-postgres/ANALIZA.md](../k8s-postgres/ANALIZA.md) |
+| Powstałe zadania | `K8S-T-001` … `K8S-T-008` (tabela w §8 analizy) – do przeniesienia do osobnego backlogu po decyzji o modelu wdrożenia |
+
+**Wniosek:** cały trwały stan (flow z układem, poświadczenia, ustawienia, sesje, biblioteka,
+kontekst) da się przenieść do PostgreSQL przez istniejące punkty rozszerzeń, bez zmian w rdzeniu.
+Węzły z palety, moduły zewnętrzne i Projekty należą do obrazu kontenera. Pełna bezstanowość
+przy kilku aktywnych replikach wymaga decyzji architektonicznej (modele A/B/C) – stan
+działających flow pozostaje w pamięci. Otwarte pytania – §9 analizy.
+
 ---
 
 ## 8. Zamknięte
