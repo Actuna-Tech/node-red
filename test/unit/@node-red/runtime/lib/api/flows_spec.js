@@ -988,6 +988,23 @@ describe("runtime-api/flows", function() {
             await flows.deleteFlow({id:"t1", rev:"rev-t1"});
             runtime.flows.removeFlow.calledOnce.should.be.true();
         });
+        it("the revisions of a v2 response are read under the deploy lock", async function() {
+            initRuntime();
+            const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
+            const reads = [];
+            runtime.flows.getFlowRevision = function(id) {
+                reads.push("rev:" + lock.isLocked());
+                return revisions[id] || null;
+            };
+            runtime.flows.getFlows = function() {
+                reads.push("all:" + lock.isLocked());
+                return {rev:"rev-all", flows:[]};
+            };
+            (await flows.updateFlow({id:"t1", flow:{nodes:[]}, apiVersion:"v2"})).should.eql({id:"t1", rev:"rev-t1-updated", revAll:"rev-all", created:false});
+            (await flows.addFlow({flow:{nodes:[]}, apiVersion:"v2"})).should.eql({id:"added", rev:"rev-added"});
+            reads.length.should.be.above(2);
+            reads.forEach(r => r.should.endWith(":true"));
+        });
         describe("revisions in deploy errors (W-3)", function() {
             function deployFailed(code) {
                 const err = new Error("deploy failed");
