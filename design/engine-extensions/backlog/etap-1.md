@@ -625,6 +625,8 @@ Funkcja: Telemetria blokowana przez administratora
 
 ### P-04 – Zabezpieczenie `tokens.get()` przed wywołaniem przed `init()`
 
+> **Zrealizowane (F1, 2026-10-03): `37269da`** – strażniki w `tokens.js` (`get()` przed `init()` → `null`; `create`/`revoke`/`exchangeCodeForToken` → odrzucenie `not_initialised`), `auth ok` bez `adminAuth` (R-05), `.catch` w `handleAuthPacket` (błąd → `auth fail` + audyt). Testy czerwone→zielone; reprodukcja na procesie: przed – `process.exit(1)`, po – proces działa. Otwarte: opis zgłoszenia wg `SECURITY.md` (po zniesieniu D-04 – R-04), przegląd modyfikacji Zamawiającego.
+
 | Pole | Wartość |
 |---|---|
 | Etap / typ | 1 / poprawka błędu (bezpieczeństwo – zdalne zakończenie procesu) |
@@ -721,6 +723,8 @@ Funkcja: tokens.get() przed init()
 ---
 
 ### Z-01 – Wyścig subskrypcji websocketu `/comms`
+
+> **Zrealizowane (F1, 2026-10-03): `08dbda3`** – `subscribe()` wysyła tylko przy `!pendingAuth`; eksport CommonJS w `comms.js` (R-32); test klienta `test/unit/@node-red/editor-client/comms_spec.js` + test charakteryzujący serwera.
 
 | Pole | Wartość |
 |---|---|

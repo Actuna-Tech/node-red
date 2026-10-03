@@ -94,6 +94,6 @@ Z-06/Z-08/Z-10 przed Z-09). Uzupełnienie zlecenia (zapowiedziane) może zmieni�
 | ID | Decyzja | Rekomendacja |
 |---|---|---|
 | B-01 | FL-B-009: jak utrwalać wygląd flow korzystających z ustawień domyślnych edytora | **przyjęte (2026-10-03, na obecnym etapie ustaleń)**: przy eksporcie i zapisie dopisywać efektywne `layout`/`wireStyle`, gdy ≠ `LR`/`curved` |
-| B-02 | Czy zaczynamy F1 przed otrzymaniem uzupełnienia zlecenia | **wstrzymane (2026-10-03)** – start po otrzymaniu uzupełnienia zlecenia |
+| B-02 | Czy zaczynamy F1 przed otrzymaniem uzupełnienia zlecenia | **start (2026-10-03)** – zgoda Zamawiającego po zamknięciu rejestru decyzji; F1 zrealizowane: FL-B-009 `cf95b28`, FL-B-004 `925b091`, FL-B-005 `1116d4f`, P-04 `37269da`, XSS R-08/R-41 `bac427e`, Z-01 `08dbda3` – do niezależnego przeglądu |
 | D-04 | Podpisy i zgłoszenia | dane Actuna / Wojciech Repiński; **PR i push do `node-red/node-red` zablokowane** |
 | D-11 | Drenaż przy SIGTERM | **przyjęte** |

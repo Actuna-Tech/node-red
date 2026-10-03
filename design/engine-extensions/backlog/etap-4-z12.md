@@ -721,6 +721,7 @@ Wynik: **POTWIERDZONE**.
   (`:253-258`) oraz po `login({updateMenu:true})` (`:105-107`) – dopisane pozycje znikają.
 - Menu tworzone tylko gdy `RED.settings.user` i `editorTheme.userMenu !== false` (`:280-290`).
 - **Uzupełnienie bezpieczeństwa:** nazwa użytkownika jako HTML (`:265`) – patrz Ustalenia przekrojowe p. 3; **R-08: osobna poprawka teraz** (poza Z-12; Z-12.06 bazuje na tej poprawce).
+  **Zrealizowane (F1, 2026-10-03): `bac427e`** – nazwa użytkownika escapowana (`RED.utils.sanitize`) w menu i w powiadomieniu „loggedInAs” (`:255`, ten sam błąd); `login({updateMenu:true})` odświeża `RED.settings.user` (`refreshSettings`) przed przebudową menu (R-41; naprawione w `user.js`, bo tam leżała przyczyna); testy `test/unit/@node-red/editor-client/user_spec.js`.
 - **Uzupełnienie:** po ponownym logowaniu po wygaśnięciu sesji (`ec/comms.js:96-105`) `RED.settings.user` nie jest
   odświeżane – menu i uprawnienia mogą dotyczyć poprzedniego użytkownika; **rozstrzygnięte (R-41):** naprawiane razem
   z poprawką R-08 (poza Z-12; test, który pada bez poprawki); Z-12.06 i Z-12.08 bazują na tej poprawce.
