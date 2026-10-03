@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-02: tests of the httpAdmin guard (httpAdminNodeRoutes) in the node api
+ *   Z-02: tests of the position of the permission marker
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -167,6 +168,19 @@ describe("red/nodes/registry/util",function() {
             fakeAuth.needsPermission.callCount.should.equal(1);
             await request(adminApp).get("/z02/perm").set("x-token","any").expect(401);
             await request(adminApp).get("/z02/perm").set("x-token","z02.read").expect(200);
+        });
+        it("guards a route whose permission marker follows a handler (D1)", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.get("/z02/order", ok, RED.auth.needsPermission("z02.read"));
+            await request(adminApp).get("/z02/order").expect(401);
+            fakeAuth.needsPermission.calledWith("").should.be.true();
+            await request(adminApp).get("/z02/order").set("x-token","any").expect(200);
+        });
+        it("accepts several markers before the first handler", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.get("/z02/two", [RED.auth.needsPermission("z02.read")], RED.auth.needsPermission("z02.read"), ok);
+            fakeAuth.needsPermission.callCount.should.equal(2);
+            await request(adminApp).get("/z02/two").set("x-token","z02.read").expect(200);
         });
         it("finds the marker in an array of handlers", async function() {
             const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
