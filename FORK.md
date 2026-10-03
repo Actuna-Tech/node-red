@@ -55,6 +55,17 @@ module.exports = {
 - Moduł geometrii `RED.viewLayout` (`ui/view-layout.js`); zmiana orientacji/układu nie restartuje węzłów.
 - Dokumentacja: [design/flow-layout/DOKUMENTACJA.md](design/flow-layout/DOKUMENTACJA.md).
 
+### Język polski – częściowo (Z-13)
+
+- Dodane `locales/pl/editor.json` (317 z 1151 kluczy en-US, ok. 28%, oraz 8 form liczby mnogiej) i `locales/pl/messages.json` (98 z 869, ok. 11%) –
+  tłumaczenie częściowe od Zamawiającego; brakujące klucze wracają do en-US (`fallbackLng`). Słownik: „węzeł”,
+  `flow`/`subflow` bez tłumaczenia, „Wdróż”; forma bezosobowa. Liczba mnoga: `_one/_few/_many/_other` (i18next 25).
+- Brak: `runtime.json`, `jsonata.json`, `infotips.json`, pliki pomocy HTML węzłów (D-16, R-29) i test pełnej zgodności
+  kluczy – do kolejnego etapu Z-13. Pomoc węzłów bez pliku `pl` wyświetla się po angielsku.
+- Język wykrywany z katalogu `locales/pl`; nazwa w selektorze z `languages.pl` (`"Polski"`, dodane w `en-US` i `es-ES`).
+  Przeglądarka z językiem `pl` bez wybranego języka w ustawieniach użytkownika pokaże teraz polski edytor.
+- Test: `test/unit/@node-red/editor-client/locales_pl_spec.js` (brak kluczy nadmiarowych, spójne placeholdery i znaczniki).
+
 ### Import elementów o istniejących identyfikatorach (FL-B-010)
 - Flow i subflow: wybór **„zastąp”** albo **„kopia”** w oknie konfliktu (domyślnie kopia); cofnięcie przywraca stan.
 - Zablokowany flow (`locked`) nie może zostać zastąpiony – tylko kopia (R-44).

@@ -1,6 +1,11 @@
 #### Unreleased: Instances and reload
 
 Features
+ - Polish (`pl`) translation of the editor (`editor.json`, 317 keys) and of the core nodes
+   (`messages.json`, 98 keys), partial: keys without a translation fall back to English.
+   Help files of the nodes, the runtime messages and the JSONata and info-tip catalogs are not
+   translated yet. The language is listed in the language selector of the user settings and is
+   used by a browser set to Polish when the user has not selected a language.
 
  - New API for the coordination of instances that run the same flows: `RED.coordination`
    for nodes (`isLeader()`, `onLeaderChange(node, listener)`, `claim(key, ttlMs)`,
