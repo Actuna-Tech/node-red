@@ -1387,6 +1387,94 @@ describe('flows/index', function() {
             });
         });
     });
+    describe('instance state (E-02)', function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const okConfig = [
+            {id:"t1-1",x:10,y:10,z:"t1",type:"test",wires:[]},
+            {id:"t1",type:"tab"}
+        ];
+        function loadAndStart(config, settings) {
+            storage.getFlows = function() {
+                return Promise.resolve({flows:clone(config), rev:"loadedRev"});
+            }
+            flows.init({log:mockLog, settings:settings||{}, storage:storage});
+            return flows.load().then(function() {
+                return flows.startFlows();
+            });
+        }
+        beforeEach(function() {
+            instanceState.reset();
+            instanceState.markStarting();
+        });
+        afterEach(async function() {
+            // Leave a configuration without missing types: a type registered by
+            // later tests must not start these flows
+            await flows.stopFlows();
+            storage.getFlows = function() { return Promise.resolve({flows:clone(okConfig), rev:"cleanRev"}) };
+            await flows.load();
+            instanceState.reset();
+        });
+
+        it('start without errors -> ready', async function() {
+            await loadAndStart(okConfig);
+            instanceState.get().should.containEql({state:"ready", reason:"startup"});
+        });
+        it('missing types -> failed', async function() {
+            await loadAndStart([{id:"t1-1",z:"t1",type:"missing"},{id:"t1",type:"tab"}]);
+            instanceState.get().should.containEql({state:"failed", reason:"missing-types"});
+        });
+        it('missing modules -> failed', async function() {
+            await loadAndStart([{id:"node-with-missing-modules",z:"t1",type:"test"},{id:"t1",type:"tab"}]);
+            instanceState.get().should.containEql({state:"failed", reason:"missing-modules"});
+        });
+        it('safe mode -> idle', async function() {
+            const result = await loadAndStart(okConfig, {safeMode:true});
+            result.should.have.property("flowsRunning", false);
+            result.errors[0].should.have.property("code", "safe_mode");
+            instanceState.get().should.containEql({state:"idle", reason:"safe-mode"});
+        });
+        it('runtimeFlowState stop -> idle', async function() {
+            const result = await loadAndStart(okConfig, {get: function(prop) { return prop === "runtimeFlowState" ? "stop" : undefined }});
+            result.should.eql({errors:[], flowsRunning:false, reason:"set-state"});
+            instanceState.get().should.containEql({state:"idle", reason:"set-state"});
+        });
+        it('Flow.start throws -> failed (flow-start-failed)', async function() {
+            flowCreate.restore();
+            // replaced stub - restored by the outer afterEach
+            flowCreate = sinon.stub(Flow,"create").callsFake(function() {
+                return {
+                    start: async function() { throw new Error("boom") },
+                    stop: sinon.spy(async () => {}),
+                    update: sinon.spy(),
+                    getActiveNodes: () => ({})
+                };
+            });
+            const consoleLog = sinon.stub(console, "log");
+            try {
+                await loadAndStart(okConfig);
+            } finally {
+                consoleLog.restore();
+            }
+            instanceState.get().should.containEql({state:"failed", reason:"flow-start-failed"});
+        });
+        it('type-registered late start -> ready', async function() {
+            await loadAndStart([{id:"t1-1",z:"t1",type:"missing"},{id:"t1",type:"tab"}]);
+            instanceState.get().state.should.equal("failed");
+            const ready = new Promise(resolve => {
+                const off = instanceState.onChange(info => { if (info.state === "ready") { off(); resolve(info) } });
+            });
+            events.emit("type-registered","missing");
+            const info = await ready;
+            info.should.containEql({state:"ready", previous:"failed"});
+        });
+        it('a deployment does not change the state through the start (the pipeline does)', async function() {
+            await loadAndStart(okConfig);
+            const token = instanceState.begin("deploy");
+            await flows.setFlows(clone(okConfig).concat([{id:"t1-2",z:"t1",type:"missing"}]), null, "full", false, false, null, {waitForStart:true}).catch(() => {});
+            instanceState.get().state.should.equal("deploying");
+            instanceState.end(token, {aborted:true});
+        });
+    });
     describe('#updateFlow', function() {
         it.skip("updateFlow");
     })

@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-11: saving an entry in the read-only user directory - 400 read_only_user_dir
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 
 var should = require("should");
@@ -130,6 +135,13 @@ describe("runtime-api/library", function() {
                             var p = Promise.reject(err);
                             p.catch(()=>{});
                             return p;
+                        } else if (type === "read_only") {
+                            var err = new Error("read-only");
+                            err.code = "read_only_user_dir";
+                            err.status = 400;
+                            var p = Promise.reject(err);
+                            p.catch(()=>{});
+                            return p;
                         }
                     }
                 }
@@ -153,6 +165,12 @@ describe("runtime-api/library", function() {
                 err.should.have.property("status",403);
                 done();
             }).catch(done)
+        })
+        it("rejects with 400 read_only_user_dir in a read-only user directory (Z-11)", async function() {
+            const err = await library.saveEntry({library: "local",type: "read_only", path: "/abc", meta: {}, body:"123"}).should.be.rejected();
+            err.should.have.property("code","read_only_user_dir");
+            err.should.have.property("status",400);
+            err.should.have.property("message","read-only");
         })
         it("rejects an unknown entry", function(done) {
             library.saveEntry({library: "local",type: "not_found", path: "/abc", meta: {a:1}, body:"123"}).then(function() {

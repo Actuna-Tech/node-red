@@ -331,12 +331,42 @@ Funkcja: Model stanu instancji
 - Alternatywa odrzucona: wyprowadzanie stanu wyłącznie ze zdarzeń `flows:*` – zdarzenia nie odróżniają wdrożenia od startu i są emitowane mimo błędów `Flow.start`.
 
 #### Podzadania
-- [ ] Testy charakteryzujące zdarzeń startu/wdrożenia/zatrzymania (S)
-- [ ] `runtime/lib/state.js` (z `init`) + testy przejść (M)
-- [ ] `RED.stop(reason)` → `runtime.stop(reason)` (R-23) (S)
-- [ ] Wpięcie w `runtime/lib/index.js` (start, pusty `.catch`, stop) (S)
-- [ ] Wpięcie w potok E-01 i `setState` (+ mutex) (S)
-- [ ] JSDoc + opis w dokumencie kontraktu E-01 (S)
+- [x] Testy charakteryzujące zdarzeń startu/wdrożenia/zatrzymania (S)
+- [x] `runtime/lib/state.js` (z `init`) + testy przejść (M)
+- [x] `RED.stop(reason)` → `runtime.stop(reason)` (R-23) (S)
+- [x] Wpięcie w `runtime/lib/index.js` (start, pusty `.catch`, stop) (S)
+- [x] Wpięcie w potok E-01 i `setState` (+ mutex) (S)
+- [x] JSDoc + opis w dokumencie kontraktu E-01 (S)
+
+#### Zrealizowane (gałąź `feature/p3-database`)
+- `runtime/lib/state.js` – tabela przejść `TRANSITIONS` (źródło prawdy, JSDoc z tabelą T1–T14), `get`, `isReady`,
+  `onChange`, `begin`/`end` (token), `markReloadPending`/`markDraining`/`cancelPending` (Z-09, jeszcze nieużywane),
+  `markStarting`, `markStopping`/`markStopped`, `fail`, `reset`; zdarzenie `instance:state` na `RED.events`;
+  `runtime.state` w obiekcie runtime.
+- Wpięcie: `runtime/lib/index.js` (`markStarting`, `fail` zamiast pustego `.catch` – `storage-error`,
+  `flow-start-failed`, `startup-error` przy odrzuceniu `start()`; `stop(reason)` – `stopping` synchronicznie,
+  `stopped` po `closeContextsPlugin` także przy błędzie; log `runtime.stopping` tylko z powodem);
+  `flows/pipeline.js` krok 4 (`begin("deploy")`) i krok 8 (`end` po zakończeniu startu, przed zwolnieniem blokady –
+  `lock.sectionHeld()` + `holdUntil` z tymi samymi opcjami); `api/flows.js` `setState` (`begin/end("set-state")`,
+  już pod blokadą E-01); `flows/index.js` `start()` – wynik raportowany do modułu stanu poza operacją (pierwszy start,
+  późny start po `type-registered`, przełączenie projektu) oraz `flowsRunning:false` + `reason` (`safe-mode`,
+  `set-state`); `node-red/lib/red.js` `RED.stop(reason)`.
+- Testy: `state_spec.js` (138, w tym przejścia generowane z tabeli), `index_spec.js` (+9), `flows/index_spec.js`
+  (+8), `flows/pipeline_spec.js` (+10), `flows/lock_spec.js` (+1), `api/flows_spec.js` (+6), `node-red/lib/red_spec.js` (+2);
+  istniejące testy bez zmian.
+- **Rozbieżności z kartą (świadome):**
+  - przejścia dodatkowe w tabeli: `starting → deploying` (wdrożenie w trakcie pierwszego startu – wynik startu jest
+    wtedy ignorowany, stan ustala koniec wdrożenia) oraz między stanami spoczynku `ready/failed/idle` bez operacji
+    (wynik startu przy przełączeniu projektu – Projekty nie przechodzą przez `deploying`);
+  - `begin("set-state")` nie zmienia stanu do `end` (karta nie nazywa stanu pośredniego);
+  - `begin(…, {supersede: true})` w potoku i `setState`: przy `deploy.startTimeoutReleasesLock: true` (R-45) blokada
+    może zostać zwolniona przed końcem startu – nowa operacja przejmuje stan zamiast błędu `state_operation_in_progress`
+    (błąd nadal rzucany bez `supersede`);
+  - nowa funkcja `report(result)` (wynik startu poza operacją – T2/T3/T4/T9/T14), niewymieniona w API karty;
+  - ignorowane przejścia logowane na poziomie `trace` (nie `debug`) – `debug` trafia do `log.log` i zmieniałby logi
+    istniejących testów (niezmiennik 7);
+  - błąd zapisu/zatrzymania w kroku 5–6: błąd przed startem → powrót do stanu sprzed wdrożenia (`aborted`), wyjątek
+    `deploy_stop_failed` → `failed` (`deploy-stop-failed`).
 
 ---
 
@@ -554,13 +584,43 @@ Funkcja: Sondy zdrowia
 - Alternatywa: sondy w `editor-api` – odrzucona (niedostępne przy `httpAdminRoot:false`).
 
 #### Podzadania
-- [ ] `runtime/lib/health.js` + testy jednostkowe handlera (M)
-- [ ] Osobny serwer (`port`) + obsługa błędów portu (S)
-- [ ] Montaż w CLI przed uwierzytelnieniem, warunek nasłuchu, `RED.health` (S)
-- [ ] Drenaż przy SIGTERM (D-11): `stopping` od sygnału, hook `preShutdown`, `shutdownTimeout`, kolejność `RED.stop()` → zamknięcie serwera HTTP (D-05), `RED.health.shutdown` + test w procesie potomnym (M)
-- [ ] Test cyklu życia (integracyjny) (M)
-- [ ] Szablon `settings.js`, CHANGELOG, teksty logów (S)
-- [ ] `deploy.startTimeout` – limit czasu startu w trybie `"started"`, kod `start_timeout`, start w tle (R-10, R-38) (S)
+- [x] `runtime/lib/health.js` + testy jednostkowe handlera (M)
+- [x] Osobny serwer (`port`) + obsługa błędów portu (S)
+- [x] Montaż w CLI przed uwierzytelnieniem, warunek nasłuchu, `RED.health` (S)
+- [x] Drenaż przy SIGTERM (D-11): `stopping` od sygnału, hook `preShutdown`, `shutdownTimeout`, kolejność `RED.stop()` → zamknięcie serwera HTTP (D-05), `RED.health.shutdown` + test w procesie potomnym (M)
+- [x] Test cyklu życia (integracyjny) (M)
+- [x] Szablon `settings.js`, CHANGELOG, teksty logów (S)
+- [x] `deploy.startTimeout` – limit czasu startu w trybie `"started"`, kod `start_timeout`, start w tle (R-10, R-38) (S) – zrealizowane wcześniej w P-01 (R-45)
+
+#### Zrealizowane (gałąź `feature/p3-database`)
+- `runtime/lib/health.js`: `init`, `isEnabled`, `getPath`, `usesMainServer`, `handler` (Express i `http`), `start`
+  (walidacja `health.invalid-path`, log `health.path-shadows-route`, ostrzeżenie `health.port-is-ui-port`, własny
+  serwer przy `health.port` – `health.port-in-use` odrzuca start i ustawia `failed`), `stop` (po `stopped`),
+  `closeServer(server, limit)` (`close` + `closeIdleConnections` z limitem), `shutdown({reason, signal, stop})`
+  (część C kontraktu: `stopping` synchronicznie → `preShutdown` tylko przy `shutdownTimeout` i zarejestrowanych
+  handlerach, limit z ostrzeżeniem, błąd z logiem → `stop(reason)`; drugie wywołanie przerywa drenaż).
+- `runtime/lib/index.js` (`health.init`, `health.start` po katalogu komunikatów – sondy od `starting`, `health.stop`
+  po `stopped`, `runtime.health`); `node-red/lib/red.js` (`RED.health`); `node-red/red.js` (montaż przed
+  `httpAdminAuth`/`httpNodeAuth`, warunek nasłuchu, `exitWhenStopped(signal)` → `RED.health.shutdown` → zamknięcie
+  serwera tylko przy `health.enabled` → `process.exit()`); `util/lib/hooks.js` (`preShutdown` w `VALID_HOOKS`);
+  szablon `settings.js` (`health`, `shutdownTimeout`); `runtime.json` (`health.*`).
+- Testy: `health_spec.js` (42), `health_shutdown_spec.js` (12), `index_spec.js` (+5), `node-red/lib/red_spec.js` (+2),
+  `hooks_spec.js` (+1), proces potomny `test/unit/node-red/health-probes_spec.js` (5: pełna sekwencja start → ready →
+  wdrożenie z wolnym zamykaniem węzła (503) → ready → SIGTERM (503 od razu, `/live` 200, serwer główny przyjmuje,
+  żaden węzeł niezamknięty do końca `preShutdown`) → wyjście; drugi SIGTERM; serwer główny z `httpNodeAuth`;
+  worker bez Admin API i `httpNodeRoot`; ustawienia domyślne – brak sond i brak drenażu mimo hooka).
+- **Rozbieżności z kartą / uwagi:**
+  - wydzielenie montażu z `node-red/red.js` do osobnego modułu nie zostało zrobione – montaż i sygnały sprawdzane
+    testem procesu potomnego (zamiast `health_mount_spec.js`);
+  - `health_lifecycle_spec.js` (w procesie, odpytywanie co 50 ms) zastąpiony testem procesu potomnego; warianty
+    missing-types i `runtimeFlowState: stop` sprawdzone jednostkowo (`health_spec.js` po stanach, `flows/index_spec.js`);
+  - przy wyłączonych sondach CLI też przechodzi przez `RED.health.shutdown` (bez drenażu i bez zamykania serwera);
+    jedyna widoczna różnica względem 5.0.7 to log `Stopping Node-RED (SIGTERM)` (powód zatrzymania, R-23); drugi
+    sygnał bez drenażu jest ignorowany jak dotąd;
+  - handler `preShutdown` musi przyjmować argument `payload` (konwencja hooków: funkcja bez parametrów jest
+    traktowana jak wariant z wywołaniem zwrotnym) – opis w `settings.js`;
+  - nieprawidłowe `shutdownTimeout` (≤ 0, nie liczba) = brak drenażu, bez ostrzeżenia;
+  - `RED.health.closeServer` zamyka serwer z limitem 5 s (stała), własny serwer sond – 1 s.
 
 ---
 
@@ -1319,15 +1379,46 @@ Funkcja: Katalog użytkownika tylko do odczytu
 - Test `chmod` nie działa jako root (typowe w kontenerach CI) – test pominięty z uzasadnieniem, atrapa `fs` jako dowód podstawowy.
 
 #### Podzadania
-- [ ] Moduł katalogów chronionych + testy – S
-- [ ] Efektywne flagi i komunikat startu – S
-- [ ] Instalatory i moduły zewnętrzne (obrona w głąb) – M
-- [ ] Magazyn plikowy (pomijanie/odrzucanie) – M
-- [ ] Kontekst `localfilesystem` – S
-- [ ] CLI: zmienna `NODE_RED_READ_ONLY_USER_DIR` (R-18) + fallback przy kopiowaniu `settings.js` – S
-- [ ] Testy integracyjne (`chmod` + atrapa `fs`, `userDir` nieustawiony) – M
-- [ ] Dokumentacja (tabela zapisów), szablon `settings.js` (w tym opis `readOnly` – R-40), CHANGELOG – S
-- [ ] Ochrona bezwzględnego `flowFile` + test (R-40) – S
+- [x] Moduł katalogów chronionych + testy – S
+- [x] Efektywne flagi i komunikat startu – S
+- [ ] Instalatory i moduły zewnętrzne (obrona w głąb) – M – **poza zakresem tej gałęzi** (zakaz zmian `registry/**`); działają efektywne flagi `externalModules.*`
+- [x] Magazyn plikowy (pomijanie/odrzucanie) – M
+- [x] Kontekst `localfilesystem` – S
+- [x] CLI: zmienna `NODE_RED_READ_ONLY_USER_DIR` (R-18) + fallback przy kopiowaniu `settings.js` – S
+- [~] Testy integracyjne (`chmod` + atrapa `fs`, `userDir` nieustawiony) – M – migawka drzewa katalogów zamiast atrapy `fs`; `chmod` pomijany jako root; `userDir` nieustawiony – tylko test modułu
+- [x] Dokumentacja (tabela zapisów), szablon `settings.js` (w tym opis `readOnly` – R-40), CHANGELOG – S (tabela 16 zapisów – w tej karcie; w `settings.js` skrót)
+- [x] Ochrona bezwzględnego `flowFile` + test (R-40) – S
+
+#### Zrealizowane (gałąź `feature/p3-database`)
+- Nowy moduł `runtime/lib/readOnlyUserDir.js` (zamiast `util/lib/readOnlyDir.js` – `util` poza zakresem plików):
+  `isEnabled`, `protectedDirs` (`userDir` albo `NODE_RED_HOME`, katalog bieżący, `~/.node-red`), `isProtected`,
+  `error` (400 `read_only_user_dir`), `assertWritable`, `applySettings` (efektywne flagi), `logStartup`.
+- `runtime/lib/index.js`: `applySettings` w `init()` **przed** `settings.init` (ustawienia runtime i edytora widzą
+  wartości efektywne), blok `readonly-userdir.enabled` + ostrzeżenia `readonly-userdir.setting-overridden` przy starcie.
+- Magazyn plikowy: #11 (`node_modules`, `package.json`), #13 (ustawienia, także migracja `.config.json`), #14 (sesje)
+  – pominięte jak `readOnly`; #12 `saveFlows`/`saveCredentials` i #15 `saveLibraryEntry` – odrzucenie
+  `read_only_user_dir` (niezależnie od ścieżki `flowFile` – R-40; ma pierwszeństwo przed cichym `readOnly`);
+  `api/library.js` przekazuje kod (400) zamiast `unexpected_error`. #16 Projekty – wyłączone flagą.
+- Kontekst: `nodes/context/index.js` – magazyn `localfilesystem` z katalogiem w katalogu chronionym → błąd ładowania
+  `read_only_user_dir` z nazwą magazynu i wskazaniem `contextStorage.<nazwa>.config.dir` (przed `open()`, bez
+  tworzenia katalogu) → start odrzucony, stan `failed`.
+- CLI `node-red/red.js`: `NODE_RED_READ_ONLY_USER_DIR` (dowolna wartość poza `false`) czytana przed wyborem pliku
+  ustawień – brak kopiowania `settings.js`, `readOnlyUserDir: true`; błąd kopiowania → `console.warn` i domyślny plik.
+- Szablon `settings.js`: `readOnlyUserDir` (skrót miejsc zapisu, zmienna, zalecenie `--settings`) i `readOnly` (R-40).
+- Testy: `readOnlyUserDir_spec.js` (9), `storage/localfilesystem/readonly_userdir_spec.js` (6 + 1 pominięty jako root;
+  migawka drzewa katalogów przed/po), `nodes/context/index_spec.js` (+4), `index_spec.js` (+3), `api/library_spec.js`
+  (+1), proces potomny `test/unit/node-red/readonly-userdir_spec.js` (4: zmienna środowiskowa – brak kopii i zapisów,
+  wdrożenie 400 i flow bez zmian; bez zmiennej – kopia jak dotąd; błąd kopiowania – ostrzeżenie; bezwzględny `flowFile`).
+- **Rozbieżności z kartą / niezweryfikowane:**
+  - obrona w głąb w `registry/lib/installer.js` i `externalModules.js` (`assertWritable`) – niezrobiona (zakaz zmian
+    `registry/**`); instalacje blokują wyłącznie istniejące flagi `externalModules.*` – kody `install_not_allowed`,
+    `update_not_allowed`, `module_not_allowed` nie były testowane w tej gałęzi; `upload_not_allowed` – zależny od Z-03;
+  - zapis ustawień i sesji jest pomijany po cichu (bez `log.warn` przy pierwszej próbie) – informację daje blok
+    przy starcie;
+  - brak testu „każde z 16 miejsc objęte kontrolą” i testu z atrapą `fs` przy nieustawionym `userDir` (dowód: migawka
+    katalogu przy magazynie plikowym, test modułu dla katalogów zastępczych);
+  - CLI: wariant „katalog domowy tylko do odczytu” sprawdzony przez `~/.node-red` będący plikiem (proces działa jako
+    root, `chmod` nie blokuje zapisu).
 
 ---
 

@@ -17,6 +17,51 @@ Features
    on the leader and the node shows the "standby" status on the other instances. The button
    of the node is not affected. Nodes without the option are exported as before.
 
+Runtime
+
+ - New internal module of the instance state (`runtime/lib/state.js`, available to the runtime as
+   `runtime.state`): states `init`, `starting`, `ready`, `deploying`, `reloadPending`, `reloading`,
+   `idle`, `loaded`, `failed`, `stopping`, `stopped`; every change emits the event `instance:state`
+   with `{state, previous, reason}` (plus `since`, `draining`, `errors`) on `RED.events`. The module
+   is passive - responses, logs and the order of the existing events do not change
+ - `RED.stop(reason)` / `runtime.stop(reason)`: an optional reason (for example `"SIGTERM"`) given
+   to `instance:state` and logged; without it nothing more is logged
+ - A failure to read the flows or to start them when the runtime starts is no longer swallowed
+   silently: the instance state is `failed` (the log messages and the result of `RED.start()` are
+   unchanged)
+ - The result of the start of the flows reports `flowsRunning: false` with a `reason` when the
+   flows were not started on purpose (safe mode, flows stopped through `POST /flows/state`)
+ - New setting `health: { enabled, path, port, host }` (disabled by default): health probes
+   `<path>/live` (200 while the process runs) and `<path>/ready` (200 when the flows run or, on an
+   editor-only instance, are loaded; otherwise 503 with the constant body `{"status":"unavailable"}`),
+   without authentication, `Cache-Control: no-store`, 405 for other methods, 404 for other paths.
+   Without `port` they are mounted on the main server before any authentication and the server
+   listens even with `httpAdminRoot: false` and `httpNodeRoot: false`; with `port` a separate
+   server is started (`host` defaults to `uiHost`); a port in use fails the start
+   (`health.port-in-use`)
+ - New setting `shutdownTimeout` (ms, not set by default): on a stop signal `/ready` answers 503 at
+   once, the new hook `preShutdown` (`{reason, deadline, signal}`) is called and waited for at most
+   `shutdownTimeout`, then the flows stop. Without the setting the hook is not called and the flows
+   stop at once as before. A second signal during the drain stops at once
+ - With `health.enabled` the HTTP server is closed (idle connections too) after the flows stopped
+   on a stop signal; without it the shutdown is unchanged
+ - New api for embedding applications `RED.health` (`enabled`, `path`, `usesMainServer`, `handler`,
+   `shutdown({reason, signal})`, `closeServer(server, limit)`)
+ - The CLI passes the signal as the stop reason (`RED.stop("SIGTERM")`), logged as
+   `Stopping Node-RED (SIGTERM)`
+ - New setting `readOnlyUserDir` (default `false`) and the CLI environment variable
+   `NODE_RED_READ_ONLY_USER_DIR`: the runtime does not write to the user directory. Palette
+   install/update/remove/upload, auto-install of missing modules, modules of the function node and
+   Projects are disabled (settings set to `true` are overridden with a warning); one log block at
+   start lists the disabled features. With the file storage a deployment and saving a library entry
+   are rejected with 400 `read_only_user_dir` (also for an absolute `flowFile` outside the user
+   directory), settings and sessions are kept in memory only; a `localfilesystem` context store in
+   the user directory fails the start. With the environment variable the CLI does not copy the
+   default settings file to `~/.node-red`
+ - The CLI no longer fails with an exception when the default settings file cannot be copied to the
+   user directory: it warns and uses the default settings file
+ - The existing `readOnly` setting is described in the settings template
+
 #### Unreleased: Security and fixes
 
 Security

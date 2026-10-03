@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   E-01: tests of the deploy pipeline and the shared deploy lock
  *   E-01: setState and deployments wait for the start of a deployment (R-43)
+ *   E-02: setState moves the instance state between idle and ready
  *   P-01: tests of deploy.response "started" (waitForStart, deploy errors with status 500)
  *   Z-04: tests of the single-flow api (rev, globalRev, globalConfigs, putCreatesFlow)
  *   Z-05: tests of deploy.requireRevision in both states
@@ -556,6 +557,60 @@ describe("runtime-api/flows", function() {
             startFlows.called.should.not.be.true();
             should(err).have.property("code", "invalid_run_state")
             should(err).have.property("status", 400)
+        });
+        describe("instance state (E-02)", function() {
+            const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+            beforeEach(function() {
+                instanceState.reset();
+                instanceState.markStarting();
+                instanceState.report({errors:[]});
+            });
+            afterEach(function() {
+                instanceState.reset();
+            });
+            it("setState stop/start transitions ready -> idle -> ready", async function() {
+                flows.init(runtime);
+                const seen = [];
+                const off = instanceState.onChange(info => seen.push(info.state + "/" + info.reason));
+                await flows.setState({state:"stop"});
+                instanceState.get().should.containEql({state:"idle", reason:"set-state"});
+                await flows.setState({state:"start"});
+                off();
+                instanceState.get().should.containEql({state:"ready", previous:"idle", reason:"set-state"});
+                seen.should.eql(["idle/set-state", "ready/set-state"]);
+            });
+            it("setState start with start errors sets failed", async function() {
+                runtime.flows.startFlows = sinon.spy(async () => ({errors:[{code:"missing_types", message:"m"}]}));
+                flows.init(runtime);
+                await flows.setState({state:"start"});
+                instanceState.get().should.containEql({state:"failed", reason:"missing-types"});
+            });
+            it("setState start with flows not started on purpose (safe mode) sets idle", async function() {
+                runtime.flows.startFlows = sinon.spy(async () => ({errors:[{code:"safe_mode"}], flowsRunning:false, reason:"safe-mode"}));
+                flows.init(runtime);
+                await flows.setState({state:"start"});
+                instanceState.get().should.containEql({state:"idle", reason:"safe-mode"});
+            });
+            it("a rejected start sets failed", async function() {
+                runtime.flows.startFlows = sinon.spy(async () => { throw new Error("boom") });
+                flows.init(runtime);
+                await flows.setState({state:"start"}).should.be.rejected();
+                instanceState.get().should.containEql({state:"failed", reason:"flow-start-failed"});
+            });
+            it("a rejected stop keeps the state", async function() {
+                runtime.flows.stopFlows = sinon.spy(async () => { throw new Error("boom") });
+                flows.init(runtime);
+                await flows.setState({state:"stop"}).should.be.rejected();
+                instanceState.get().state.should.equal("ready");
+            });
+            it("an invalid state does not change the instance state", async function() {
+                flows.init(runtime);
+                const seen = [];
+                const off = instanceState.onChange(info => seen.push(info.state));
+                await flows.setState({state:"bad-state"}).should.be.rejected();
+                off();
+                seen.should.eql([]);
+            });
         });
     });
 
