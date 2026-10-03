@@ -227,6 +227,16 @@ trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od dzia
 | Błąd startu zapisuje konfigurację – odpowiedź z błędem musi zawierać `rev`, inaczej kolejne wdrożenie edytora dostanie 409 | `runtime/lib/flows/index.js` | P-01 | w specyfikacji P-01 |
 | Hook `preDeploy` wykonywany pod blokadą API – długi hook blokuje wszystkie wdrożenia | `runtime/lib/api/flows.js:67` | Z-06 | limit czasu hooka |
 
+### 4.10 Przeładowanie i zatrzymanie w wielu replikach (ryzyko z karty Z-09/Z-08)
+
+| Problem | Skutek | Propozycja |
+|---|---|---|
+| Powiadomienie `watchFlows` trafia **jednocześnie do wszystkich workerów**; każdy w drenażu zwraca `/ready` 503 | przy rozmowach do ~15–20 min **cały Deployment wypada z load balancera** | (1) **przeładowanie rozłożone w czasie** – runtime przed przeładowaniem zajmuje „slot przeładowania” przez koordynację Z-10 (`claim("reload:<rev>", T)` z limitem równoległości, np. 1 lub 25% replik); domyślna wtyczka lokalna = brak ograniczeń (jak dziś); (2) **przeładowanie różnicowe** – restart tylko zmienionych flow, `/ready` 503 tylko gdy przeładowanie dotyczy flow obsługujących ruch (do decyzji); (3) alternatywa operacyjna: wydania niezmienne + rolling update (K8S-T-006) |
+| SIGTERM natychmiast zatrzymuje flow (`node-red/red.js:543-558` → `RED.stop()`) | `terminationGracePeriodSeconds` nie chroni rozmów – flow giną na początku okresu | Z-08: po SIGTERM najpierw `/ready` 503 i **drenaż** (hook `preShutdown` lub ten sam mechanizm co `preReload`, z limitem), dopiero potem `RED.stop()`; zamknięcie serwera HTTP; globalny limit czasu |
+| `readOnly` istniejącego magazynu plikowego pomija zapis flow po cichu – wdrożenie „udaje się”, zmiany giną po restarcie | utrata zmian | Z-11: przy `readOnlyUserDir` z magazynem plikowym – wdrożenie zwraca błąd zamiast cichego pominięcia (decyzja) |
+| Błąd odczytu flow przy starcie połykany (`runtime/lib/index.js:247`) | instancja „działa” bez flow | E-02: stan `failed` i `/ready` 503 |
+| Zmiana samych poświadczeń nie zmienia rewizji (`storage/index.js:80`) | przeładowanie pominięte jako „własny zapis” | Z-09: pole `credentialsChanged` w powiadomieniu |
+
 ## 7. Decyzje do podjęcia przez Zamawiającego
 
 | ID | Decyzja | Rekomendacja |
@@ -240,6 +250,8 @@ trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od dzia
 | D-07 | kontrola nagłówka `Origin` dla `/comms` (ochrona przed obcymi stronami) | tak, jako ustawienie z bezpieczną listą domyślną (do uzgodnienia w zgłoszeniu bezpieczeństwa) |
 | D-08 | Z-04: kolizja pola `configs` (dziś z zasięgiem flow) – nowe pole `globalConfigs[]` vs zmiana znaczenia | `globalConfigs[]` (zgodność wstecz) |
 | D-09 | Z-04: `rev` w `GET /flow/:id` tylko dla `Node-RED-API-Version: v2` (klienci v1 robiący GET→PUT nie dostaną nagle 409) | tak |
+| D-10 | Z-09: przeładowanie rozłożone w czasie przez koordynację (Z-10) i/lub różnicowe | oba: różnicowe domyślnie przy włączonym Z-09, limit równoległości przez koordynację |
+| D-11 | Z-08: drenaż przy SIGTERM przed zatrzymaniem flow (hook `preShutdown`, limit czasu) | tak – warunek ochrony rozmów w K8s |
 
 ## 8. Backlog
 
