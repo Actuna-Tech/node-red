@@ -338,7 +338,7 @@ Funkcja: Model stanu instancji
 - [x] Wpięcie w potok E-01 i `setState` (+ mutex) (S)
 - [x] JSDoc + opis w dokumencie kontraktu E-01 (S)
 
-#### Zrealizowane (gałąź `feature/p3-database`)
+#### Zrealizowane (scalone do `main`)
 - `runtime/lib/state.js` – tabela przejść `TRANSITIONS` (źródło prawdy, JSDoc z tabelą T1–T14), `get`, `isReady`,
   `onChange`, `begin`/`end` (token), `markReloadPending`/`markDraining`/`cancelPending` (Z-09, jeszcze nieużywane),
   `markStarting`, `markStopping`/`markStopped`, `fail`, `reset`; zdarzenie `instance:state` na `RED.events`;
@@ -592,7 +592,7 @@ Funkcja: Sondy zdrowia
 - [x] Szablon `settings.js`, CHANGELOG, teksty logów (S)
 - [x] `deploy.startTimeout` – limit czasu startu w trybie `"started"`, kod `start_timeout`, start w tle (R-10, R-38) (S) – zrealizowane wcześniej w P-01 (R-45)
 
-#### Zrealizowane (gałąź `feature/p3-database`)
+#### Zrealizowane (scalone do `main`)
 - `runtime/lib/health.js`: `init`, `isEnabled`, `getPath`, `usesMainServer`, `handler` (Express i `http`), `start`
   (walidacja `health.invalid-path`, log `health.path-shadows-route`, ostrzeżenie `health.port-is-ui-port`, własny
   serwer przy `health.port` – `health.port-in-use` odrzuca start i ustawia `failed`), `stop` (po `stopped`),
@@ -957,7 +957,7 @@ Funkcja: Przeładowanie flow po zmianie w magazynie
 - [ ] Testy z atrapą magazynu (kryteria zlecenia + uzupełnienia) – L
 - [ ] Szablon `settings.js`, kontrakt dla autorów wtyczek, CHANGELOG – S
 
-#### Realizacja (2026-10-03, gałąź `feature/p3-database`)
+#### Realizacja (2026-10-03, scalone do `main`)
 - Kod: `runtime/lib/flows/reload.js` (obserwator), `flows/pipeline.js` (część B: `source: "storage"` z `reread` pod
   blokadą), `flows/index.js` (`reloadFromStorage`, `getChangedFlows`), `storage/index.js` (`hasWatchFlows`,
   `watchFlows`), `storage/localfilesystem/watch.js` + `projects/index.js` (`watchFlows` magazynu plikowego),
@@ -1210,7 +1210,7 @@ Funkcja: Wykonanie na jednej instancji
 - [ ] Test dwóch instancji w jednym procesie (atrapa koordynatora) w `npm test`; wariant wieloprocesowy w osobnym podzbiorze (R-21) – L
 - [ ] Dokumentacja API, szablon `settings.js`, CHANGELOG – S
 
-#### Realizacja (2026-10-03, gałąź `feature/p3-database`)
+#### Realizacja (2026-10-03, scalone do `main`)
 - Commity: `7efceb5` (API koordynacji, wtyczka lokalna, kolejność start/stop, `RED.coordination` w `createNodeApi`), `34c5e67` (`inject` – `singleInstance`, test dwóch instancji w jednym procesie), commit dokumentacji (`settings.js`, CHANGELOG, MODIFICATIONS, ta notka).
 - Weryfikacja stanu: callback `cronosjs.scheduleTask` dostaje **czas zaplanowany** (`dist-node/index.js` – `_runTask()` emituje `_timestamp`) – potwierdzone.
 - Rozstrzygnięcia „do potwierdzenia” przyjęte w implementacji (do akceptacji):
@@ -1427,7 +1427,7 @@ Funkcja: Katalog użytkownika tylko do odczytu
 - [x] Dokumentacja (tabela zapisów), szablon `settings.js` (w tym opis `readOnly` – R-40), CHANGELOG – S (tabela 16 zapisów – w tej karcie; w `settings.js` skrót)
 - [x] Ochrona bezwzględnego `flowFile` + test (R-40) – S
 
-#### Zrealizowane (gałąź `feature/p3-database`)
+#### Zrealizowane (scalone do `main`)
 - Nowy moduł `runtime/lib/readOnlyUserDir.js` (zamiast `util/lib/readOnlyDir.js` – `util` poza zakresem plików):
   `isEnabled`, `protectedDirs` (`userDir` albo `NODE_RED_HOME`, katalog bieżący, `~/.node-red`), `isProtected`,
   `error` (400 `read_only_user_dir`), `assertWritable`, `applySettings` (efektywne flagi), `logStartup`.

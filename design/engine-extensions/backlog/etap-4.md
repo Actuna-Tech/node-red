@@ -600,7 +600,7 @@ Funkcja: Instancja tylko edycyjna
 - [ ] `settings.js`, JSDoc, CHANGELOG, dokumentacja ograniczeń – S
 - [ ] Uzgodnienie z kartami P-01, Z-08, Z-09 (zachowanie instancji edycyjnej) – S
 
-#### Realizacja (2026-10-03, gałąź `feature/p3-database`)
+#### Realizacja (2026-10-03, scalone do `main`)
 - Kod: `runtime/lib/flows/index.js` (`isEditorOnly`, gałąź w `startActiveFlows`, `setFlows`/`load` bez startu i bez
   wyłączania safe mode), `runtime/lib/api/flows.js` (409 `editor_only`, `started: false`), `runtime/lib/api/settings.js`,
   `editor-api/lib/admin/flow.js` (`started` w `PUT /flow/:id` v2), edytor: `ui/deploy.js`, `red.js`, `ui/view.js`,

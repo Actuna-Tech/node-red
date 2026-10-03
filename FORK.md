@@ -13,6 +13,10 @@
 | `main` | jedyna gałąź; F1–F3 (kamień milowy F3) i priorytet 3 (wiele instancji) – stan `5c2608b` |
 | Zgłoszenia do Node-RED | **zablokowane** (D-04): brak PR/issues/push do `node-red/node-red`; hook `design/git-hooks/pre-push` |
 
+> Wzmianki o gałęziach `claude/loving-fermat-ftfo9h` i `feature/p3-database` w `design/` są historyczne –
+> obie zostały scalone do `main` i usunięte. Znaczniki „do potwierdzenia”/„do decyzji” w kartach etapów opisują
+> stan z chwili ich pisania; rozstrzygnięcia są w rejestrze decyzji i sekcjach „Realizacja” kart.
+
 **Zasada nadrzędna:** każda nowa funkcja jest **domyślnie wyłączona** – bez nowych ustawień fork zachowuje się
 jak Node-RED 5.0.7 (wyjątki – poprawki błędów, sekcja 6). API v1 bez zmian.
 

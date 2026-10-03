@@ -221,7 +221,7 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 
 ### 5.2 Kontrakt dla autorów wtyczek magazynu: `watchFlows` i `preReload` (Z-09)
 
-Zrealizowane na gałęzi `feature/p3-database` (`runtime/lib/flows/reload.js`, `runtime/lib/storage/index.js`).
+Zrealizowane (scalone do `main`) (`runtime/lib/flows/reload.js`, `runtime/lib/storage/index.js`).
 
 **`watchFlows(callback)`** – opcjonalna funkcja modułu magazynu (`storageModule`):
 
