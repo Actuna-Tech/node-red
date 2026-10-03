@@ -113,6 +113,10 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 | `readOnlyUserDir`, zmienna `NODE_RED_READ_ONLY_USER_DIR` | `false` | brak zapisu do katalogu użytkownika; wdrożenie przy magazynie plikowym → 400 `read_only_user_dir` | Z-11 |
 | `coordination: {plugin, options}`, `RED.coordination` (węzły), typ wtyczki `node-red-coordination` | wtyczka lokalna | przywództwo i zajęcia z TTL; własna wtyczka wybierana jawnie | Z-10 |
 | `inject` – „Run only on one instance” (`singleInstance`) | wyłączone | cron raz w klastrze, interwał tylko na liderze, status „standby” | Z-10 |
+| `deploy.reload: {watch, type, preReloadTimeout, concurrency, retry}` | `watch: false`, `type: "full"`, 20 min, brak limitu, `{1000, 60000, 10}` | przeładowanie flow w procesie po zmianie w magazynie: drenaż (`/ready` 503), ponowny odczyt pod blokadą, najnowsza rewizja, bez zapisu i bez restartu procesu; powiadomienia łączone, w trakcie startu buforowane; wdrożenie lokalne unieważnia oczekujące przeładowanie; `diff` – tylko zmienione flow; `concurrency` – sloty koordynacji; po wyczerpaniu ponowień odczytu `failed` | Z-09 |
+| `watchFlows(callback)` wtyczki magazynu | opcjonalne | bez niego `deploy.reload` bez efektu (ostrzeżenie); magazyn plikowy obserwuje `flowFile` i plik poświadczeń (także wspólny wolumen, `readOnly`, `readOnlyUserDir`; nie z Projektami); błąd rejestracji przy `watch: true` → błąd startu | Z-09 |
+| hook `preReload` | brak | `{rev, activeRev, type, changedFlows, credentialsChanged, deadline, signal}` – drenaż pracy w toku z limitem `preReloadTimeout`, bez prawa weta; dodatkowa runda dla flow zmienionych w trakcie drenażu (najwyżej jedna) | Z-09 |
+| `editorOnly` | `false` | instancja tylko do edycji: flow wczytane, nigdy nie startują (stan `loaded`, `/ready` 200); wdrożenie tylko zapisuje (`{rev, started: false}` przy `deploy.response: "started"`); `POST /flows/state` start → 409 `editor_only`; w edytorze bez Start/Stop, „Restart Flows” i przyciski węzłów (inject) nieaktywne z podpowiedzią | Z-15 |
 
 ## 6. Zmiany zachowania względem 5.0.7 (poprawki błędów)
 
@@ -138,10 +142,9 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 ## 8. W toku (gałąź `feature/p3-database`)
 
 Ogólne API rdzenia do pracy wielu instancji (edytor + instancje wykonawcze); prywatne wtyczki magazynu
-i koordynacji podpina się poza tym repozytorium:
-- zrealizowane (sekcja 5, „Wiele instancji”): E-02, Z-08, Z-10, Z-11;
-- Z-09 – przeładowanie flow po zmianie w magazynie (`watchFlows`, hook `preReload` z limitem – drenaż pracy w toku,
-  łączenie powiadomień), także dla `flows.json` na wspólnym wolumenie;
-- Z-15 – instancja tylko do edycji (`editorOnly`).
+i koordynacji podpina się poza tym repozytorium. Priorytet 3 zrealizowany w zakresie budżetu
+(sekcja 5, „Wiele instancji”: E-02, Z-08, Z-09, Z-10, Z-11, Z-15) – gałąź czeka na przegląd i akceptację.
+Kontrakt `watchFlows`/`preReload` dla autorów wtyczek magazynu:
+[design/engine-extensions/MIGRACJA.md](design/engine-extensions/MIGRACJA.md) §5.2.
 
 Opis zostanie przeniesiony do sekcji 3–6 po scaleniu z `main`.

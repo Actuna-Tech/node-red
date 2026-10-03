@@ -600,6 +600,25 @@ Funkcja: Instancja tylko edycyjna
 - [ ] `settings.js`, JSDoc, CHANGELOG, dokumentacja ograniczeń – S
 - [ ] Uzgodnienie z kartami P-01, Z-08, Z-09 (zachowanie instancji edycyjnej) – S
 
+#### Realizacja (2026-10-03, gałąź `feature/p3-database`)
+- Kod: `runtime/lib/flows/index.js` (`isEditorOnly`, gałąź w `startActiveFlows`, `setFlows`/`load` bez startu i bez
+  wyłączania safe mode), `runtime/lib/api/flows.js` (409 `editor_only`, `started: false`), `runtime/lib/api/settings.js`,
+  `editor-api/lib/admin/flow.js` (`started` w `PUT /flow/:id` v2), edytor: `ui/deploy.js`, `red.js`, `ui/view.js`,
+  `nodes/core/common/20-inject.html`, teksty en-US. Testy jednostkowe (`flows/index_spec`, `api/flows_spec`,
+  `api/settings_spec`, `editor-api admin flow(s)_spec`, `editor-client ui/deploy_spec`) i E2E
+  `test/editor/e2e/editor_only_e2espec.js` (komunikat, menu Deploy, przycisk inject z podpowiedzią, wdrożenie
+  `{rev, started: false}`, 409).
+- Różnice / doprecyzowania:
+  - kolejność wg karty: kontrola brakujących typów/modułów **przed** gałęzią `editorOnly` → brakujące typy na instancji
+    edycyjnej dają stan `failed` (`/ready` 503) – instalować te same moduły co na instancjach wykonawczych (ryzyko
+    opisane w MIGRACJA §4.5);
+  - „Restart flows” – **nieaktywne** z podpowiedzią (nie ukryte); akcja pokazuje podpowiedź bez wywołania serwera;
+  - przyciski węzłów – mechanizm **ogólny** w `view.js` (wszystkie przyciski węzłów nieaktywne, podpowiedź SVG
+    `<title>`), dodatkowo „Inject now” w oknie węzła `inject`;
+  - `started: false` także w `POST /flow` i `PUT /flow/:id` (v2) przy `deploy.response: "started"`;
+  - trasy admin węzłów (np. `POST /inject/:id`) – bez zmian (404), opisane jako ograniczenie w `settings.js`;
+  - nie-boolean → ostrzeżenie i traktowane jak `false`; koordynacja (Z-10) inicjowana jak zwykle.
+
 ---
 
 ### E-03 – Harness testów edytora

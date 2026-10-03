@@ -957,6 +957,30 @@ Funkcja: Przeładowanie flow po zmianie w magazynie
 - [ ] Testy z atrapą magazynu (kryteria zlecenia + uzupełnienia) – L
 - [ ] Szablon `settings.js`, kontrakt dla autorów wtyczek, CHANGELOG – S
 
+#### Realizacja (2026-10-03, gałąź `feature/p3-database`)
+- Kod: `runtime/lib/flows/reload.js` (obserwator), `flows/pipeline.js` (część B: `source: "storage"` z `reread` pod
+  blokadą), `flows/index.js` (`reloadFromStorage`, `getChangedFlows`), `storage/index.js` (`hasWatchFlows`,
+  `watchFlows`), `storage/localfilesystem/watch.js` + `projects/index.js` (`watchFlows` magazynu plikowego),
+  `runtime/lib/index.js` (rejestracja po starcie koordynacji, przed pierwszym odczytem flow; `stop()` na początku
+  zatrzymania), `util/lib/hooks.js` (`preReload`). Testy: `flows/reload_spec.js` (41), `flows/reload_concurrency_spec.js`
+  (3 instancje, wspólny koordynator), `storage/localfilesystem/watch_spec.js` (13), uzupełnienia w `index_spec`,
+  `pipeline_spec`, `storage/index_spec`, `hooks_spec`; odbiór w procesach potomnych
+  `test/unit/node-red/reload-shared-flows_spec.js` (dwie instancje, wspólny `flows.json`, `readOnlyUserDir`).
+- Różnice względem karty:
+  - `postDeploy` z `source: "storage"` – **pominięte** (Z-06 odłożone); kotwica w potoku bez zmian;
+  - stan `reloading` (T8) ustawiany **po** ponownym odczycie pod blokadą; gdy odczyt nie wymaga przeładowania lub się
+    nie udał – `cancelPending` (T7b) zamiast `end(aborted)` (T8a) – ten sam skutek (stan sprzed cyklu);
+  - koalescencja: cykl w toku i tak czyta magazyn ponownie pod blokadą, więc uruchamia najnowszą rewizję („F”) od razu;
+    kolejny cykl wykonuje się tylko dla zmiany zapisanej po tym odczycie (oba przypadki w testach);
+  - `type: "diff"` przy `credentialsChanged` → przeładowanie pełne (rozstrzygnięcie „do potwierdzenia” z karty);
+    `changedFlows: null` także przy zmianie węzła konfiguracyjnego poza flow;
+  - handler `preReload` musi deklarować parametr (semantyka `hooks.trigger`; MIGRACJA §5.2);
+  - slot: `coordination.claimSlot("reload", concurrency, 60000)` z odnawianiem co 20 s; zajęte sloty – ponowienie co
+    `retry.min`, błąd koordynatora – opóźnienie wykładnicze `retry.min…max`;
+  - gdy trwa inna operacja pod blokadą (wdrożenie, `setState`), cykl czeka na zwolnienie blokady i powtarza się;
+  - magazyn plikowy: `fs.watch` katalogów + `fs.watchFile` (1 s), debounce 200 ms – stałe, bez nowych ustawień;
+    z Projektami `watchFlows` odrzuca rejestrację (przy `watch: true` → błąd startu).
+
 ---
 
 ### Z-10 – Wykonanie na jednej instancji (koordynacja)

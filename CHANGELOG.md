@@ -16,6 +16,49 @@ Features
    times") fires on the instance that claims it, an "interval" and "inject once" fire only
    on the leader and the node shows the "standby" status on the other instances. The button
    of the node is not affected. Nodes without the option are exported as before.
+ - Reload of the flows after a change in storage made by another instance: new setting
+   `deploy.reload: { watch, type, preReloadTimeout, concurrency, retry }` (`watch: false` by
+   default - nothing changes without it) and the optional function `watchFlows(callback)` of
+   storage plugins (without it the setting only logs a warning). The flows are reloaded in the
+   process - storage is read again under the deploy lock and the newest revision is started,
+   nothing is saved, stopped flows are not started, the process and its HTTP server keep running.
+   `type: "full"` (default) restarts all flows, `"diff"` only the changed ones (a changed global
+   configuration or credentials restart all). Own writes and duplicate notifications are skipped
+   by comparing the revisions; notifications during a reload are coalesced into one more reload,
+   those during the start are handled after it; a deployment on this instance supersedes a pending
+   reload. The instance state is `reloadPending` → `reloading`; `/ready` answers 503 from the
+   start of the drain until the reload has completed
+ - New hook `preReload` (`{rev, activeRev, type, changedFlows, credentialsChanged, deadline,
+   signal}`, frozen): drains the work in progress before the reload, at most
+   `deploy.reload.preReloadTimeout` (default 20 minutes). It can only delay the reload - a
+   failure, `false` or the timeout are logged and the flows are reloaded anyway. `signal` is
+   aborted on shutdown (`"stopping"`) or when a deployment supersedes the reload
+   (`"superseded"`). Flows changed during the drain outside `changedFlows` get one more
+   `preReload` (at most one round)
+ - `deploy.reload.concurrency` (an integer): at most this many instances drain and reload at the
+   same time, through reload slots of a coordination plugin; waiting instances keep the old
+   configuration and stay ready, also without a connection to the coordinator. No effect with the
+   local coordination (warning)
+ - `deploy.reload.retry: { min, max, attempts }` (default `1000`, `60000` ms, `10`): a failed
+   read of storage is retried with an exponential delay; after `attempts` failures the instance
+   state is `failed` (`/ready` 503) and the running flows are not stopped. With `watch: true` a
+   rejected registration of `watchFlows` fails the start
+ - The file storage provides `watchFlows`: `flowFile` and its credentials file are watched (file
+   system events and polling - also on a shared volume, with `readOnly` and `readOnlyUserDir`);
+   own writes and rewrites with the same content are not reported. Not available with projects
+ - New setting `editorOnly` (default `false`): an editor-only instance loads the flows and saves
+   deployments but never starts the flows. The instance state is `loaded` (`/health/ready` 200),
+   `runtimeFlowState` is neither read nor saved and safe mode is not ended by a deployment. With
+   `deploy.response: "started"` deployments answer `{rev, started: false}` (`POST /flows`, and
+   `POST /flow`, `PUT /flow/:id` with the v2 api). `POST /flows/state` start answers 409
+   `editor_only`, stop has no effect. Debug messages, node status and admin routes of node
+   instances are not available on such an instance
+
+Editor
+
+ - On an editor-only instance the editor shows that the flows are not run on this instance, offers
+   no Start/Stop flows, and disables "Restart Flows", the node buttons (for example inject) and
+   the "Inject now" button of the inject dialog with a tooltip
 
 Runtime
 
