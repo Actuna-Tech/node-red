@@ -1,3 +1,22 @@
+#### Unreleased: Flow layouts
+
+Developed by Actuna Sp. z o.o. (Wojciech Repiński), with AI-assisted development.
+See `design/flow-layout/` for the analysis, documentation and work log.
+
+ - Editor: flows can be drawn top-to-bottom (`layout: "TB"`) or with an automatic,
+   mixed layout (`layout: "auto"`) as well as left-to-right; set per flow, per
+   subflow, or as the editor default in the user settings
+ - Editor: nodes can override their port orientation (`o: "LR"|"TB"`) from the
+   appearance tab, the context menu or the new `core:set-selected-node-ports-*` actions
+ - Editor: wires are routed between any combination of port directions and around
+   the end nodes when going backwards; new right-angle wire style (`wireStyle: "orthogonal"`)
+ - Editor: node status is shown to the right of nodes in top-to-bottom layout
+ - Editor: flow layout geometry moved to `ui/view-layout.js` (`RED.viewLayout`)
+ - Runtime: changes to node port orientation or subflow layout do not restart nodes
+   on a modified-nodes deploy
+ - Tests: unit tests for the layout geometry and runtime diff, Playwright
+   end-to-end tests (`npm run test:e2e`)
+
 #### 5.0.7: Maintenance Release
 
  - Fix incorrect rendering of typedInput with a single type (#5934) @GogoVega
