@@ -398,6 +398,18 @@ w `view.js`: nieaktualny obiekt w `users`).
 
 ## 6. Karty – zadania i funkcjonalności (`FL-T`)
 
+**Drugi przegląd (2026-10-03, `d9527e2..ea6d8a2`):** brak blokujących; scalone do `main`. Znane ograniczenia (do
+rozważenia w kolejnym pakiecie):
+- błąd walidacji w zawartości zastępowanej zakładki po głównym imporcie: zakładka przywracana, ale pozostałe elementy
+  tego importu (nowe zakładki/subflow/konfiguracje, wcześniej zastąpione zakładki) zostają bez wpisu w historii;
+- cofnięcie rozpoznawane po braku `markChanged` przy `importMap` z `"replace"` (rdzeń: tylko `view.js` i `history.js`);
+  zewnętrzny kod wołający `RED.nodes.import` z `"replace"` bez `markChanged` dostanie flagi z migawki;
+- węzeł nieznanego typu w zastępowanym flow – odwołania do konfiguracji nie są przemapowywane przy kolizji id;
+- przemianowanie przy kolizji id działa w jedną stronę (`links` w innych zakładkach tego importu nie są aktualizowane);
+- pusty wpis `replace` w historii, gdy zastępowana zakładka nie istnieje; przywracanie po błędzie może samo rzucić;
+- instancja subflow zastępowanego razem z zakładką ma po cofnięciu `changed: true` (jak w wersji bazowej);
+- otwarte: W1 – zastępowanie zablokowanej zakładki (decyzja Zamawiającego).
+
 ### FL-T-001 – Automatyczne rozmieszczanie węzłów
 
 | Pole | Wartość |
