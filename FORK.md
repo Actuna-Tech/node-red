@@ -10,8 +10,7 @@
 | Element | Wartość |
 |---|---|
 | Wersja bazowa | Node-RED **5.0.7** (commit `cd05a9a`, decyzja D-01) |
-| `main` | wydanie forka; kamień milowy F3 (`e0017f9`) + porządki dokumentacji |
-| `feature/p3-database` | prace w toku: przeładowanie flow i wiele instancji (priorytet 3, sekcja 8) |
+| `main` | jedyna gałąź; F1–F3 (kamień milowy F3) i priorytet 3 (wiele instancji) – stan `5c2608b` |
 | Zgłoszenia do Node-RED | **zablokowane** (D-04): brak PR/issues/push do `node-red/node-red`; hook `design/git-hooks/pre-push` |
 
 **Zasada nadrzędna:** każda nowa funkcja jest **domyślnie wyłączona** – bez nowych ustawień fork zachowuje się
@@ -103,7 +102,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   Projektów (zmiana gałęzi, pull, revert, scalanie); druga operacja czeka. Blokada trwa do końca startu flow (R-43).
 - Potok `runtime/lib/flows/pipeline.js` – kroki i punkty rozszerzeń: ZASADY §2.3.
 
-### Wiele instancji (gałąź `feature/p3-database`, w toku do scalenia z `main`)
+### Wiele instancji (priorytet 3)
 
 | Ustawienie / API | Domyślnie | Działanie | Pakiet |
 |---|---|---|---|
@@ -142,12 +141,29 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 | Decyzje | [design/engine-extensions/REJESTR-DECYZJI.md](design/engine-extensions/REJESTR-DECYZJI.md) (R-01…) |
 | Plan i budżet | [design/PRIORYTETY.md](design/PRIORYTETY.md) |
 
-## 8. W toku (gałąź `feature/p3-database`)
+## 8. Stan i dalsze prace
 
-Ogólne API rdzenia do pracy wielu instancji (edytor + instancje wykonawcze); prywatne wtyczki magazynu
-i koordynacji podpina się poza tym repozytorium. Priorytet 3 zrealizowany w zakresie budżetu
-(sekcja 5, „Wiele instancji”: E-02, Z-08, Z-09, Z-10, Z-11, Z-15) – gałąź czeka na przegląd i akceptację.
-Kontrakt `watchFlows`/`preReload` dla autorów wtyczek magazynu:
-[design/engine-extensions/MIGRACJA.md](design/engine-extensions/MIGRACJA.md) §5.2.
+**Zrealizowane (na `main`):** priorytet 1 (układ flow, FL-B-004…012), priorytet 2 (P-01…P-04, Z-01, Z-02,
+Z-04, Z-05, E-01), priorytet 3 w zakresie budżetu (E-02, Z-08, Z-09, Z-10, Z-11, Z-15). Każda faza przeszła
+niezależny przegląd; poprawki po przeglądzie priorytetu 3 zweryfikowane testami (bez drugiego przeglądu – budżet).
 
-Opis zostanie przeniesiony do sekcji 3–6 po scaleniu z `main`.
+**Weryfikacja (`5c2608b`):** build, lint, `verify-deps` czyste; testy jednostkowe 2253 ✔ / 5 ✘ (projects/ssh –
+brak `ssh-keygen`); testy węzłów: 4 ✘ środowiskowe (proxy, IPv6 – tak samo na wersji bazowej); E2E 52/52.
+
+**Wtyczki zewnętrzne:** magazyn i koordynację dla wielu instancji dostarcza się jako prywatne wtyczki poza tym
+repozytorium. Kontrakt: [MIGRACJA.md](design/engine-extensions/MIGRACJA.md) §5.2 (`watchFlows`,
+`getFlows({strict})`, `preReload`) oraz `node-red-coordination` (sekcja 5). Bez wtyczek działa wariant z
+`flows.json` na wspólnym wolumenie (`deploy.reload.watch`, `readOnlyUserDir`).
+
+**Znane ograniczenia:** FL-B-011 (dopasowanie subflow po kolejności węzłów); ograniczenia FL-B-010 (karta);
+Z-02 nie jest piaskownicą; Z-09 – pełna ochrona przed pustą konfiguracją wymaga obsługi `{strict: true}` we
+wtyczce magazynu; wspólny wolumen sieciowy (NFS) i klastrowa wtyczka koordynacji nie testowane na żywo;
+różne strefy czasowe instancji – podwójne wyzwolenie crona w `inject` „tylko jedna instancja”; ostrzeżenie o
+brakujących typach na instancji `editorOnly` tylko w logu.
+
+**Poza zakresem (kolejny etap):** Z-06 (hooki `preDeploy`/`postDeploy`), Z-03, Z-07, Z-12 (rozszerzenia
+edytora), Z-13 (język polski), FL-B-011.
+
+**Do wykonania przez właściciela repozytorium:** przepisanie historii (usunięcie `design/k8s-postgres/` z
+historii i force push), przeniesienie do repozytorium prywatnego (forka publicznego repozytorium nie można
+przełączyć na prywatne), tag kamienia milowego F3 na commicie „Docs: milestone F3 summary”.

@@ -87,7 +87,13 @@ tym repozytorium.
 Zależności techniczne zachowane z [ANALIZA.md](engine-extensions/ANALIZA.md) §6.2 (np. Z-04 przed Z-05, E-01 przed P-01,
 Z-06/Z-08/Z-10 przed Z-09). Uzupełnienie zlecenia (zapowiedziane) może zmienić zakres – plan zostanie zaktualizowany.
 
-## Kamień milowy F3 (2026-10-03) – do akceptacji
+## Stan końcowy (2026-10-03)
+
+Wszystkie prace w budżecie zakończone i scalone do `main` (`5c2608b`): F1–F3 oraz priorytet 3 (E-02, Z-08,
+Z-09, Z-10, Z-11, Z-15). Budżet: 9/250 jednostek pozostało (poniżej zapasu 5% – zużyty na poprawki po
+przeglądzie priorytetu 3). Szczegóły, ograniczenia i dalsze prace: [../FORK.md](../FORK.md) §8.
+
+## Kamień milowy F3 (2026-10-03) – zaakceptowany
 
 Stan gałęzi `claude/loving-fermat-ftfo9h` przed scaleniem do `main` i startem F4 (osobna gałąź `feature/p3-database`).
 
