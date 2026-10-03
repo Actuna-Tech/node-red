@@ -23,6 +23,7 @@ Godziny kroków przed pierwszym commitem są orientacyjne; godziny commitów poc
 | 08:52 | Znaleziony problem: deploy „Modified nodes” restartowałby węzły po zmianie `o` lub układu subflow | poprawka `diffNodes` + testy runtime (sprawdzone, że bez poprawki padają); commit `036dd6a` |
 | 08:58 | Testy E2E w Playwright (17) + `npm run test:e2e` | commit `9cb0ae8` |
 | 09:05 | Dokumentacja (`design/flow-layout/` – katalog `docs/` jest ignorowany przez git), log pracy, CHANGELOG, oznaczenie autorstwa | ten commit |
+| 09:22 | Nagranie demonstracyjne (Playwright + ffmpeg, podpisy i widoczny kursor) | `node-red-flow-layout-demo.mp4`, skrypt `demo/record-demo.js` |
 
 ## Wyniki testów (ostatnie uruchomienie)
 

@@ -25,6 +25,16 @@ oraz styl linii:
 | **Automatyczny** | **Orientacja ustawiona dla pojedynczych węzłów** |
 | ![auto](images/layout-auto.png) | ![mixed](images/layout-mixed.png) |
 
+## Nagranie demonstracyjne
+
+[`node-red-flow-layout-demo.mp4`](node-red-flow-layout-demo.mp4) (ok. 60 s) pokazuje:
+zmianę układu flow na góra → dół, linię wstecz omijającą węzły, styl „kąty proste”,
+przeciąganie nowej linii, zmianę orientacji pojedynczego węzła z menu kontekstowego,
+tryb automatyczny przy przesuwaniu węzła oraz ustawienia domyślne edytora.
+
+Nagranie można odtworzyć skryptem [`demo/record-demo.js`](demo/record-demo.js)
+na flow [`demo/demo-flows.json`](demo/demo-flows.json) (instrukcja w nagłówku skryptu).
+
 ## Gdzie ustawić
 
 Ustawienia działają hierarchicznie – bardziej szczegółowe wygrywa:
