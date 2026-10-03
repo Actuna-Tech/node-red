@@ -14,7 +14,6 @@ Ten plik i katalog `design/` **nie trafiają do zgłoszeń upstream** – gałę
 | Fakty z kodu (plik:linia) dla każdego pakietu | `design/engine-extensions/WERYFIKACJA.md` |
 | Karty pakietów (specyfikacja, BDD, testy, DoD) | `design/engine-extensions/backlog/etap-*.md` |
 | Układ flow (Z-14): dokumentacja, backlog FL-* | `design/flow-layout/` |
-| Kubernetes / PostgreSQL / Redis: architektura, backlog K8S-* | `design/k8s-postgres/` |
 
 ## Architektura repozytorium (skrót)
 

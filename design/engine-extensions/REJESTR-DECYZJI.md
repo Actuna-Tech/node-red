@@ -46,7 +46,7 @@ kod `invalid_node_type` w katalogu.
 | R-16 | Z-07: przełącznik awaryjny `http in`, `rawBodyCapture` osobno | etap-2 p.14 | bez przełącznika; osobno || **bez przełącznika awaryjnego; `rawBodyCapture` osobnym ustawieniem** (2026-10-03) |
 | R-17 | Z-03: zakres skorygowany, potwierdzenie przed instalacją (`dryRun`), aliasy ustawień uploadu | etap-2 p.1, 3, 4 | zakres skorygowany; bez `dryRun`; kanoniczne `allowUpload` + aliasy || **zgodnie z rekomendacją** – zakres skorygowany (`upload_not_allowed`, `module_downgrade_not_allowed` przy `allowDowngrade: true` domyślnie, walidacja typu); bez `dryRun`; kanoniczne `externalModules.palette.allowUpload` + aliasy z ostrzeżeniem w logu (2026-10-03) |
 
-## Priorytet 3 – baza danych, wiele instancji
+## Priorytet 3 – przeładowanie flow, wiele instancji
 
 | ID | Temat | Źródło | Rekomendacja | Decyzja |
 |---|---|---|---|---|

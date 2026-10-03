@@ -37,7 +37,7 @@ Z-14 (krok 2.3, po Z-04) → Z-13 (krok 4, równolegle z kodem; klucze nowych te
 | Ustawienie | brak (API dostępne zawsze; bez użycia przez plugin brak zmian w UI) |
 | Zależności | **załącznik B** (lista punktów – jeszcze nie przekazany); E-03 (testy edytora); P-02 i Z-06 (rozszerzenia Deploy muszą respektować ich przepływ) |
 | Pliki | `editor-client/src/js/plugins.js:6-75` (`registerPlugin`, `onadd` `:29-30`), `ui/deploy.js:60-115,696-702`, `ui/notifications.js:330`, `ui/view-annotations.js:101`, `hooks.js:1-15`, `ui/common/menu.js:547`, `ui/sidebar.js:120`, `ui/statusBar.js:31`, `ui/tray.js:243`, `ui/notifications.js:66`; `editor-api/lib/editor/theme.js:350-357` (`editorTheme.deployButton`) |
-| Powiązania | K8S-T-006 (przycisk „Publikuj”), K8S-T-003 (oznaczenie środowiska / zdarzenia z workerów), Z-15 (komunikat „instancja edycyjna”) |
+| Powiązania | przycisk „Publikuj”, oznaczenie środowiska / zdarzenia z workerów, Z-15 (komunikat „instancja edycyjna”) |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE** (WERYFIKACJA §Z-12) + uzupełnienia z tej karty.
@@ -170,7 +170,7 @@ Funkcja: Punkty rozszerzeń edytora dla pluginów
 | Ustawienie | brak (język wykrywany z katalogu `locales/pl`; wybór w ustawieniach użytkownika lub z przeglądarki) |
 | Zależności | tłumaczenie częściowe od Zamawiającego; teksty nowych pakietów (P-02 `deploy.confirm.*`, Z-03, Z-12, Z-14 `layout.*`, Z-15) – doklejane przed zamknięciem |
 | Pliki | nowe: `editor-client/locales/pl/{editor,jsonata,infotips}.json`, `nodes/locales/pl/messages.json`, `runtime/locales/pl/runtime.json` (zakres – **R-29**); pliki pomocy `nodes/locales/pl/<kategoria>/*.html` – **osobny etap** (D-16, R-29); zmiana: `"pl": "Polski"` w `languages` wszystkich `editor-client/locales/*/editor.json`; mechanizm: `util/lib/i18n.js:49-67,165-185,221`, `editor-client/src/js/i18n.js:30-57`, `ui/userSettings.js:105,186`, `registry/lib/loader.js:546-575` |
-| Powiązania | FL-T-004 (klucze `layout.*`), K8S (on-premise dla polskich klientów) |
+| Powiązania | FL-T-004 (klucze `layout.*`), on-premise dla polskich klientów |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **CZĘŚCIOWO** (WERYFIKACJA §Z-13) + uzupełnienia:
@@ -455,7 +455,7 @@ Funkcja: Układ flow sterowany ustawieniem editorTheme.flowLayout.enabled
 | Ustawienie | `editorOnly: false` (ZASADY §2.1; alternatywa: `runtimeState.autoStart` – semantyka miękka: nie startują przy uruchomieniu, ale mogłyby być uruchomione API); semantyka ścisła: przy `editorOnly: true` flow nigdy nie startują – **rozstrzygnięte (R-19)** |
 | Zależności | E-01 (punkt w potoku: „start” pomijany – ZASADY §2.3 A krok 7), E-02 (stan `loaded`, T14), zgodność z P-01, Z-06, Z-08, Z-09, Z-10; D-02, D-06, D-13 |
 | Pliki | `runtime/lib/flows/index.js:36-38` (`started`, `state`), `:104-110` (`load`, `safeMode`), `:118-133` (`setFlows`, `safeMode`), `:207-241` (gałąź `forceStart \|\| started`), `:272-345` (`start`: `safeMode` `:320-327`, `runtimeFlowState` `:329-338`); `runtime/lib/api/flows.js:66-100` (`setFlows`, `reload`), `:282-336` (`setState`, wymaga `runtimeState.enabled`); `editor-api/lib/admin/index.js:47-49` (`/flows/state`); `runtime/lib/api/settings.js:166-173` (`runtimeState` dla edytora); `editor-client/src/js/red.js:366-420` (powiadomienia `runtime-state`), `ui/deploy.js:77-80` (Start/Stop/Restart w menu Deploy); `node-red/settings.js:304-315` (`runtimeState`) |
-| Powiązania | K8S-T-002 (rola editor), K8S-T-003 (debug/status z workerów – wtyczka), K8S-T-006 (publikacja) |
+| Powiązania | rola editor, debug/status z workerów – wtyczka, publikacja |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **brak funkcji; dwa istniejące mechanizmy częściowe, oba nieodpowiednie**:
@@ -475,7 +475,7 @@ Wynik: **brak funkcji; dwa istniejące mechanizmy częściowe, oba nieodpowiedni
 - **Niezmienniki:** przy braku ustawienia zachowanie identyczne z 5.0.7 (w tym `runtimeFlowState` i `safeMode`); instancja edycyjna **nie wywołuje** `settings.set('runtimeFlowState', …)`; nie odczytuje `runtimeFlowState` (stan workerów jej nie dotyczy); węzły nie są konstruowane (brak tras HTTP `http in`, timerów `inject`, połączeń MQTT itp.).
 - **Przypadki błędów:** `editorOnly` razem z `safeMode` → `editorOnly` wygrywa (wdrożenie nie wyłącza trybu); błąd zapisu do magazynu → błąd jak dziś (500/400); próba uruchomienia przez API → 409; błędna wartość ustawienia (nie-boolean) → traktowana jak `false` + ostrzeżenie w logu (do potwierdzenia: czy raczej odmowa startu).
 - **Skutki uboczne / ograniczenia (do opisu w dokumentacji):**
-  - **debug** – brak komunikatów (węzły nie działają); przekazywanie z workerów – wtyczka (K8S-T-003, poza zakresem);
+  - **debug** – brak komunikatów (węzły nie działają); przekazywanie z workerów – wtyczka (poza zakresem);
   - **status węzłów** – brak;
   - **przycisk `inject`** – **nieaktywny z podpowiedzią** na instancji edycyjnej (**R-19**; podpowiedź z kluczem en-US, np. „Flow nie są wykonywane na tej instancji”); mechanizm (zmiana w `20-inject.html` vs ogólny) – do ustalenia w implementacji; bez tego `POST /inject/:id` zwróciłoby 404;
   - **panel kontekstu** – działa, jeśli magazyn kontekstu jest wspólny (np. własny `contextStorage`); przy `memory` pusty;
@@ -492,7 +492,7 @@ Wynik: **brak funkcji; dwa istniejące mechanizmy częściowe, oba nieodpowiedni
    - **Z-08:** `/ready` na instancji edycyjnej → **200 w stanie `loaded`** (D-13, **R-19**), `/live` jak zwykle; `deploying` → 503 na czas zapisu;
    - **Z-09:** instancja edycyjna (przy `deploy.reload.watch: true`) obsługuje `watchFlows` przez przeładowanie konfiguracji **bez startu** (`loaded` → `reloadPending` → `reloading` → `loaded`; edytory dostają `runtime-deploy` → powiadomienie o zmianie na serwerze); `preReload` wywoływany (brak drenażu – nic nie działa) – propozycja;
    - **P-01:** `deploy.response: "started"` na instancji edycyjnej = odpowiedź po zapisie (kroku startu brak) w postaci `{rev, started: false}`, bez błędu (**R-39**; zmiana kształtu odpowiedzi tylko w trybie `started`);
-   - **Z-06:** `preDeploy`/`postDeploy` wywoływane normalnie – instancja edycyjna to naturalne miejsce walidacji i wyzwalacza publikacji (K8S-T-006);
+   - **Z-06:** `preDeploy`/`postDeploy` wywoływane normalnie – instancja edycyjna to naturalne miejsce walidacji i wyzwalacza publikacji;
    - **Z-10:** koordynacja niepotrzebna (brak węzłów) – wtyczka koordynacji może nie być inicjowana (do potwierdzenia).
 7. `settings.js`: opis ustawienia z listą ograniczeń.
 

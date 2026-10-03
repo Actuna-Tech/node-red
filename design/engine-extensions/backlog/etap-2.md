@@ -189,7 +189,7 @@ Funkcja: Wgrywanie paczki .tgz modułu już zainstalowanego
 | Ustawienie | `deploy.putCreatesFlow: false` (propozycja zlecenia: `flows.putCreates`) |
 | Zależności | E-01 (wspólny potok wdrożenia, wydzielone `build*FlowConfig`, wspólny mutex); FL-B-001 – zachować `copyFlowLayoutProperties` |
 | Pliki | `runtime/lib/flows/index.js:564-570` (FL-B-001), `:572-630` (`addFlow`), `:632-734` (`getFlow`), `:736-803` (`updateFlow`), `:805-822` (`removeFlow`); `runtime/lib/api/flows.js:60-200`; `runtime/lib/storage/index.js:73-99`; `editor-api/lib/admin/flow.js:24-75`; `editor-api/lib/admin/index.js:53-56`; `node-red/settings.js` |
-| Powiązania | FL-B-001 (layout/wireStyle w API pojedynczego flow); K8S – publikacja przez edytor, MCP i CI/CD (`design/k8s-postgres/ARCHITEKTURA.md` §3.6) |
+| Powiązania | FL-B-001 (layout/wireStyle w API pojedynczego flow); publikacja przez edytor, MCP i CI/CD |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE (z korektą do punktu o globalnych configach).**
@@ -419,7 +419,7 @@ Funkcja: Pełne API pojedynczego flow
 | Ustawienie | `deploy.requireRevision: false` (propozycja zlecenia: `flows.requireRevision`) |
 | Zależności | E-01 (krok 2), Z-04 (rewizja flow, `globalRev`, `rev:null`, `invalid_revision`) – Z-05 realizowany **po** Z-04; integracja edytora (`deploy.js`: wymuszone nadpisanie wg D-12, `version_required`) dotyka `deploy.js` **po scaleniu P-02** (etap 1). P-02 zależy od Z-05 tylko miękko – brak cyklu |
 | Pliki | `runtime/lib/api/flows.js:66-98,100-200`; `editor-api/lib/admin/flows.js:38-68`; `editor-api/lib/admin/flow.js`; `editor-client/src/js/ui/deploy.js:262-279,367-400,536-560,675-690`; `runtime/lib/api/settings.js` (przekazanie ustawienia do edytora); `node-red/settings.js` |
-| Powiązania | K8S – publikacja przez edytor, MCP i CI/CD (`ARCHITEKTURA.md` §3.6: „każdy klient wysyła rewizję”) |
+| Powiązania | publikacja przez edytor, MCP i CI/CD („każdy klient wysyła rewizję”) |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE.**
@@ -572,7 +572,7 @@ Funkcja: Wymóg rewizji przy wdrożeniu
 | Ustawienie | brak przełącznika (funkcja addytywna: bez zarejestrowanych hooków zachowanie jak dotąd); `deploy.hookTimeout: 30000` (ms, ZASADY §2.1 – limit `preDeploy`) |
 | Zależności | E-01 (funkcja potoku `deploy(opts)`, kotwice kroków 3 i 11, mechanizm `loaded` dla `reload`), P-01 (moment odpowiedzi), Z-04, Z-05 (kontrola rewizji przed `preDeploy`). **Punkt integracji wykorzystywany przez Z-09**: wywołanie `postDeploy` z `source:"storage"` po przeładowaniu z magazynu (Z-09 zależy od Z-06, nie odwrotnie) |
 | Pliki | `util/lib/hooks.js:3-17,40-65,162-235`; `runtime/lib/api/flows.js:66-200`; `runtime/lib/flows/index.js:118-242,572-822`; `editor-api/lib/admin/flows.js`, `flow.js` (źródło, użytkownik); `editor-client/src/js/ui/deploy.js:675-690` (komunikat odrzucenia); `runtime/locales/en-US/runtime.json` |
-| Powiązania | K8S – publikacja przez edytor, MCP i CI/CD (`ARCHITEKTURA.md` §3.6: „walidacja przed wdrożeniem – hook w runtime”); K8S-T-006 (wydania) – `postDeploy` |
+| Powiązania | publikacja przez edytor, MCP i CI/CD („walidacja przed wdrożeniem – hook w runtime”); wydania – `postDeploy` |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE.**
@@ -754,7 +754,7 @@ Funkcja: Hooki wdrożenia
 | Ustawienie | brak (API addytywne; zmiana `http in` bez zmiany kontraktu); **bez przełącznika awaryjnego** (R-16); `rawBodyCapture` – osobnym ustawieniem poza tym pakietem (R-16) |
 | Zależności | – |
 | Pliki | `runtime/lib/nodes/Node.js:42,152-161,314-372`; `runtime/lib/nodes/index.js:133-140`; nowy `runtime/lib/nodes/httpRoutes.js`; `runtime/lib/index.js:94-101,349`; `registry/lib/util.js:102` (`httpNode: runtime.nodeApp`); `nodes/core/network/21-httpin.js:129-141,242-245,343-365`; `node-red/red.js:426-435` (montowanie `httpNode`) |
-| Powiązania | K8S-T-007 (strumieniowanie HTTP – własne węzły tras korzystają z nowego API) |
+| Powiązania | strumieniowanie HTTP – własne węzły tras korzystają z nowego API |
 
 #### Weryfikacja stanu (kod 5.0.7)
 Wynik: **POTWIERDZONE + błąd.**

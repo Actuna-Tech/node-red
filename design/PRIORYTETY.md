@@ -4,7 +4,7 @@
 
 Data: 2026-10-03 · źródło priorytetów: Zamawiający · dokument nadrzędny wobec kolejności w
 [engine-extensions/ANALIZA.md](engine-extensions/ANALIZA.md) §6.2 (tam: zależności techniczne i tory),
-[flow-layout/BACKLOG.md](flow-layout/BACKLOG.md), [k8s-postgres/BACKLOG.md](k8s-postgres/BACKLOG.md).
+[flow-layout/BACKLOG.md](flow-layout/BACKLOG.md).
 
 > **Rejestr decyzji zamknięty (2026-10-03):** wszystkie punkty R-01…R-32 rozstrzygnięte –
 > [engine-extensions/REJESTR-DECYZJI.md](engine-extensions/REJESTR-DECYZJI.md) (skrót: ANALIZA §7.0). Skutki dla tego planu:
@@ -17,7 +17,7 @@ Data: 2026-10-03 · źródło priorytetów: Zamawiający · dokument nadrzędny 
 |---|---|---|
 | **1** | **Pionowy i hybrydowy układ bloczków** z poprawnym eksportem i importem wyglądu flow ze wszystkimi parametrami | flow wyeksportowany z jednej instancji/od jednego użytkownika wygląda **identycznie** po imporcie na innej instancji i u innego użytkownika (układ, styl linii, orientacja bloczków, subflow) |
 | **2** | **Poprawki bezpieczeństwa i API** | brak znanych dróg zdalnego zatrzymania procesu i nieuwierzytelnionego dostępu do tras administracyjnych; Admin API przewidywalne dla edytora, MCP i CI/CD (rewizje, odpowiedź po starcie, walidacja) |
-| **3** | **Niezależność od lokalnych plików** – konfiguracja, ustawienia flow i bloczków oraz dane zbierane przez bloczki w bazie | pod Node-RED działa z systemem plików tylko do odczytu; restart/przeniesienie poda nie traci flow, ustawień, sesji, kontekstu ani plików zapisanych przez bloczki |
+| **3** | **Przeładowanie flow i praca wielu instancji w rdzeniu (ogólne API)** – punkty rozszerzeń, pod które zewnętrzne wtyczki (magazynu, koordynacji) podpina się poza tym repozytorium | instancja działa z katalogiem użytkownika tylko do odczytu; wiele instancji przeładowuje flow po zmianie we wspólnym magazynie, z drenażem i koordynacją; poprawne sondy i zamykanie |
 
 ## Priorytet 1 – układ flow i przenoszalność wyglądu
 
@@ -57,23 +57,21 @@ instancji B → identyczne `layout`/`wireStyle`/`o` i identyczna geometria port�
 | 7 | **Z-06** | hooki `preDeploy`/`postDeploy` (walidacja wdrożeń z MCP/CI) | API |
 | 8 | **P-02** | ochrona przed nadpisaniem przez nieaktualny edytor (+ poprawka `deploy.js:390`) | API/edytor |
 | 9 | **Z-07** | trasy HTTP bloczka (+ błąd usuwania cudzych tras w `http in`) | API/poprawka błędu |
-| – | Z-03 | aktualizacja `.tgz` (zakres skorygowany) | niższy priorytet – w docelowym K8s upload wyłączony |
+| – | Z-03 | aktualizacja `.tgz` (zakres skorygowany) | niższy priorytet |
 
-## Priorytet 3 – niezależność od lokalnych plików (baza danych)
+## Priorytet 3 – przeładowanie flow i praca wielu instancji w rdzeniu (ogólne API)
 
-| Obszar | Co dziś w plikach | Rozwiązanie | Pozycje |
-|---|---|---|---|
-| Flow, poświadczenia, sesje, biblioteka | `flows.json`, `flows_cred.json`, `.sessions.json`, `lib/` | wtyczka magazynu PostgreSQL | **K8S-T-001** (+ `watchFlows` dla Z-09) |
-| Ustawienia runtime, rejestr bloczków, ustawienia użytkowników (w tym domyślny układ) | `.config.*.json` | ustawienia w bazie z rolą editor/worker | **K8S-T-002**, **Z-15** (instancja tylko edycyjna) |
-| Dane zbierane przez bloczki – kontekst | `context/**.json` (gdy `localfilesystem`) | magazyn kontekstu PostgreSQL + cache Redis | **K8S-T-004** |
-| Dane zbierane przez bloczki – pliki (`file`, `file in`, …) | katalog roboczy | zamienniki węzłów plikowych z magazynem w bazie/S3 | **K8S-T-009** (+ K8S-A-002 – inwentaryzacja bloczków piszących na dysk) |
-| Własne bloczki | – | wspólny węzeł konfiguracyjny bazy tenanta | **K8S-T-008** |
-| Bloczki z palety (kod) | `node_modules` | w obrazie, paleta tylko do odczytu | **K8S-T-004** (obraz), Z-11 |
-| Gwarancja braku zapisów lokalnych | 16 miejsc zapisu (WERYFIKACJA Z-11) | `readOnlyUserDir` | **Z-11** |
-| Wiele instancji | – | przeładowanie z bazy, koordynacja, sondy, drenaż | **Z-09, Z-10, Z-08** (D-11) |
+Rdzeń Node-RED dostaje wyłącznie ogólne punkty rozszerzeń; implementacje wtyczek (magazyn, koordynacja) powstają poza
+tym repozytorium.
 
-Uwaga: w zleceniu implementacje wtyczek (magazyn, koordynacja) są po stronie Zamawiającego – zlecenie dostarcza
-punkty rozszerzeń (Z-09, Z-10, Z-11, Z-15). Nasze K8S-T-* to te implementacje.
+| Obszar | Rozwiązanie w rdzeniu | Pozycje |
+|---|---|---|
+| Wiele instancji – start i gotowość | model stanu instancji (`runtime/lib/state.js`, zdarzenie `instance:state`) | **E-02** |
+| Sondy zdrowia, drenaż przy SIGTERM | `health`, `shutdownTimeout` | **Z-08** (D-11) |
+| Przeładowanie flow po zmianie w magazynie | `watchFlows` w API magazynu + hook `preReload`; dla magazynu plikowego `watchFlows` na wspólnym wolumenie | **Z-09** |
+| Koordynacja instancji (przywództwo, sloty) | `RED.coordination` z domyślną wtyczką lokalną; wtyczka koordynacji podpinana z zewnątrz | **Z-10** |
+| Gwarancja braku zapisów lokalnych | `readOnlyUserDir` (16 miejsc zapisu – WERYFIKACJA Z-11) | **Z-11** |
+| Instancja tylko edycyjna | flow nie startują na instancji edycyjnej | **Z-15** |
 
 ## Plan – kolejność według priorytetów (maks. 2 równolegle, bez wspólnych plików)
 
@@ -82,9 +80,9 @@ punkty rozszerzeń (Z-09, Z-10, Z-11, Z-15). Nasze K8S-T-* to te implementacje.
 | **F1** | FL-B-009 → FL-B-004 → FL-B-005 | **P-04** → poprawka XSS `user.js:265` (R-08) → **Z-01** (inne pliki niż tor 1: `editor-api` auth/comms, `editor-client/src/js/{user,comms}.js`) | priorytet 1 domknięty funkcjonalnie; krytyczna luka bezpieczeństwa zamknięta |
 | **F2** | E-04/Z-14 (ustawienie, nagłówki 4(b), podział na PR) → FL-B-006 → FL-B-007/008 | **Z-02** → **P-03** → E-01 (kontrakt potoku) | priorytet 1 gotowy do odbioru; bezpieczeństwo domknięte |
 | **F3** | **P-02** (edytor `deploy.js`) | **P-01** → **Z-04** → **Z-05** → **Z-06** | priorytet 2 – API |
-| **F4** | **Z-07** | K8S-T-001 (magazyn + `watchFlows`) → K8S-T-002 / **Z-15** | start priorytetu 3 |
-| **F5** | K8S-T-004 (kontekst), K8S-T-009 (pliki bloczków) | **Z-11** → **Z-08** → **Z-10** → **Z-09** | priorytet 3 – pełna niezależność od plików, wiele instancji |
-| później | Z-03, Z-12 (po załączniku B), Z-13 (język polski) | K8S-T-005…015 | |
+| **F4** | – | **E-02** + **Z-08** → **Z-11** | start priorytetu 3 – stan instancji, sondy, katalog tylko do odczytu |
+| **F5** | – | **Z-10** → **Z-09** → **Z-15** | priorytet 3 – wiele instancji |
+| później | Z-03, Z-12 (po załączniku B), Z-13 (język polski) | | |
 
 Zależności techniczne zachowane z [ANALIZA.md](engine-extensions/ANALIZA.md) §6.2 (np. Z-04 przed Z-05, E-01 przed P-01,
 Z-06/Z-08/Z-10 przed Z-09). Uzupełnienie zlecenia (zapowiedziane) może zmienić zakres – plan zostanie zaktualizowany.
@@ -111,7 +109,7 @@ E2E 47/47. Każda faza przeszła niezależny przegląd; uwagi naprawione lub opi
 **Znane ograniczenia / otwarte:** FL-B-011 (dopasowanie subflow po kolejności węzłów); ograniczenia FL-B-010 (karta);
 Z-02 – ochrona nie jest piaskownicą (opis w `settings.js`); edytor nie testowany w przeglądarce dla 409
 `version_required` (tylko testy jednostkowe); brak `id` nowego flow w błędzie `addFlow` (P-01); Z-06, Z-03, Z-07…Z-13,
-Z-15 i K8S-* – poza tym etapem. **Aktualizacja instalacji:** ustawić `editorTheme: { flowLayout: { enabled: true } }`.
+Z-15 – poza tym etapem. **Aktualizacja instalacji:** ustawić `editorTheme: { flowLayout: { enabled: true } }`.
 
 ## Budżet i zakres po F3 (2026-10-03)
 
@@ -122,19 +120,22 @@ zapas 5% całego budżetu ≈ 12,5. F3 ≈ 33 (bez Z-06) → **na F4/F5 ≈ 44**
 - Z-06 (hooki `preDeploy`/`postDeploy`) – **odłożone** poza F3.
 - `main` = zakończony etap F3 (kamień milowy). **F4/F5 prowadzone w osobnej gałęzi** (`feature/p3-database`, od `main`
   po kamieniu milowym F3); scalenie do `main` dopiero po akceptacji.
-- Zakres priorytetu 3 w budżecie – „jedna instancja na tenanta, wszystko w bazie”:
+- Zakres priorytetu 3 w budżecie (zaakceptowany): **A** (E-02, Z-08, Z-09 z `watchFlows` dla magazynu plikowego na
+  wspólnym wolumenie, Z-15) + **B** (Z-10) + Z-11, łącznie **~45 jednostek**:
 
-| # | Pakiet | Szac. | Zysk |
+| # | Pakiet | Zakres | Zysk |
 |---|---|---|---|
-| 1 | K8S-T-001 – magazyn PostgreSQL (flow, poświadczenia, ustawienia, sesje, biblioteka) | 15 | rdzeń priorytetu 3 |
-| 2 | K8S-T-004 – kontekst węzłów w PostgreSQL (Redis opcjonalnie) | 12 | dane zbierane przez węzły w bazie |
-| 3 | Z-11 – katalog użytkownika tylko do odczytu | 6 | kontener bez zapisywalnego dysku |
-| 4 | Z-08 – sondy zdrowia, poprawne zamykanie | 7 | gotowość i restart w Kubernetes |
-| – | jeśli zostanie budżet: Z-15 (~7), K8S-T-009 (~10) | | |
+| A | E-02, Z-08, Z-09, Z-15 | stan runtime, sondy i drenaż, przeładowanie z `watchFlows` (magazyn plikowy na wspólnym wolumenie) i `preReload`, instancja tylko edycyjna | wiele instancji na wspólnym magazynie; gotowość i restart w Kubernetes |
+| B | Z-10 | `RED.coordination` (domyślna wtyczka lokalna, API dla wtyczek koordynacji) | singletony i rozłożone przeładowanie przy wielu instancjach |
+| – | Z-11 | katalog użytkownika tylko do odczytu | kontener bez zapisywalnego dysku |
 
-Poza budżetem (osobny etap): Z-10, Z-09 (wiele workerów na tenanta), Z-07, Z-06, Z-03, Z-12, Z-13, K8S-T-005…015,
-FL-B-011. Zasady oszczędności: jedna runda przeglądu na fazę (druga tylko przy zmianach bezpieczeństwa), dokumentacja
-w kartach i CHANGELOG, pełna propagacja przy kamieniu milowym; przeliczenie planu po F3 na podstawie rzeczywistego zużycia.
+Poza budżetem (osobny etap): Z-07, Z-06, Z-03, Z-12, Z-13, FL-B-011. Zasady oszczędności: jedna runda przeglądu na fazę
+(druga tylko przy zmianach bezpieczeństwa), dokumentacja w kartach i CHANGELOG, pełna propagacja przy kamieniu milowym.
+
+**Przeliczenie po F3 (2026-10-03):** pozostało 65/250; F3 kosztowało 25 (szacunek 33 → współczynnik 0,76). Po zapasie
+12,5 → ~52 na F4/F5; zakres A + B + Z-11 ≈ 45. Implementacje wtyczek magazynu i koordynacji – poza tym repozytorium.
+Tag `milestone-f3` nie wypchnięty – proxy sesji odrzuca wypychanie tagów (403); do założenia na GitHubie na commicie
+`e0017f9`.
 
 ## Decyzje
 

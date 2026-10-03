@@ -132,7 +132,7 @@ Różnice/uzupełnienia względem D-02 (nie zmieniają nazw, zmieniają zapis):
 | U3 | Dokumentacja Z-09: jedno zdanie „`deploy.reload.*` steruje przeładowaniem po zmianie w magazynie – tym samym, które Admin API wykonuje na żądanie typem wdrożenia `reload`”. | karta Z-09, `settings.js` |
 | U4 | Z-05/§2.4: zdanie „`version` w kodach błędów oznacza rewizję flow (`rev`), nie wersję API” (już rekomendowane w ZALACZNIK-A-ANALIZA) i rozstrzygnięcie `rev: ""` (Pytanie 1). | ZASADY §2.4 |
 | U5 | `waitForDeployStart()` **nie** jest kontraktem – nie rezerwować nazwy; jeśli Zamawiający potwierdzi użycie poza runtime (Pytanie 2), wprowadzić ją jako cienki alias do mechanizmu z karty P-01, z JSDoc `@deprecated`. | karta P-01 |
-| U6 | Z-08: w dokumentacji wdrożeniowej (K8S backlog) tabela „ustawienie ↔ pole manifestu” (`health.port` ↔ `readinessProbe.httpGet.port`, `shutdownTimeout` ↔ `terminationGracePeriodSeconds` – limit krótszy niż grace period). | karta Z-08, `k8s-postgres/BACKLOG.md` |
+| U6 | Z-08: w dokumentacji wdrożeniowej tabela „ustawienie ↔ pole manifestu” (`health.port` ↔ `readinessProbe.httpGet.port`, `shutdownTimeout` ↔ `terminationGracePeriodSeconds` – limit krótszy niż grace period). | karta Z-08, MIGRACJA.md §3.3 |
 | U7 | **Bez aliasów starych nazw w kodzie i bez ostrzeżeń w logu** o kluczach `flows.*`/`editor.*` – te klucze nigdy nie działały, więc ostrzeżenie chroniłoby tylko przed przepisaniem nazwy z tekstu zlecenia; to zadanie dla walidacji konfiguracji po stronie Zamawiającego (schemat `values.yaml`/`settings.js` w CI), nie dla silnika (szum i rozbieżność z upstream). Wyjątek – kryterium 1: gdyby okazało się, że jakieś środowisko ma już `flows.*` w `settings.js` (do potwierdzenia, §6.2 pkt 1). | – |
 
 ## 6. Ryzyka i migracja

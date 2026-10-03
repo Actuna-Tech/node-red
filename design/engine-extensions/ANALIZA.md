@@ -8,9 +8,9 @@ dokumenty powiązane: [ZASADY.md](ZASADY.md) (nazwy, kontrakt potoku wdrożenia,
 
 ## 0. Wnioski w skrócie
 
-1. **Zlecenie jest spójne z naszym kierunkiem** (edytor + workery w Kubernetes, magazyn w bazie,
+1. **Zlecenie jest spójne z naszym kierunkiem** (edytor + workery w Kubernetes, zewnętrzna wtyczka magazynu,
    publikacja przez edytor/MCP/CI-CD). Większość pakietów to brakujące w rdzeniu „punkty zaczepienia”,
-   które w naszym planie K8S zakładaliśmy jako obejścia (sekcja 3).
+   które w naszym planie wdrożenia wielu instancji zakładaliśmy jako obejścia (sekcja 3).
 2. **Weryfikacja kodu koryguje 6 opisów stanu** – najważniejsze:
    - **P-04 jest poważniejszy:** przy wyłączonym `adminAuth` dowolny klient websocket może prawdopodobnie
      zatrzymać proces (`process.exit(1)`) – do obsłużenia trybem zgłoszeń bezpieczeństwa;
@@ -31,7 +31,7 @@ dokumenty powiązane: [ZASADY.md](ZASADY.md) (nazwy, kontrakt potoku wdrożenia,
 
 Zgodnie z praktyką *Explore → Specify → Plan*:
 1. Cztery niezależne przeglądy kodu tylko do odczytu (każdy z zakresem i formatem wyniku) – wynik w [WERYFIKACJA.md](WERYFIKACJA.md).
-2. Porównanie z dotychczasowym planem: [układ flow](../flow-layout/BACKLOG.md), [K8s/PostgreSQL](../k8s-postgres/ARCHITEKTURA.md) (wersja 3, z odpowiedziami zespołu).
+2. Porównanie z dotychczasowym planem: [układ flow](../flow-layout/BACKLOG.md) oraz wymagania wdrożenia wielu instancji (z odpowiedziami zespołu).
 3. Analiza przekrojowa (miejsca w kodzie zmieniane przez wiele pakietów).
 4. Karty backlogu wg wspólnego szablonu ([ZASADY.md](ZASADY.md) §4) – czterech autorów (agentów), w parach (maks. 2 jednocześnie), na wspólnych faktach z weryfikacji.
 5. Niezależny przegląd spójności ([PRZEGLAD.md](PRZEGLAD.md)): 33 uwagi (5 krytycznych), 15 z 17 twierdzeń o kodzie potwierdzonych; poprawki naniesione (rozstrzygnięcia K-1…K-3 w [ZASADY.md](ZASADY.md) §2.3, katalog kodów §2.4).
@@ -53,27 +53,27 @@ Legenda: **=** zgodne (ten sam cel) · **+** uzupełnia (zlecenie dostarcza fund
 
 | Pakiet | Nasze pozycje | Relacja | Komentarz / działanie |
 |---|---|---|---|
-| P-01 odpowiedź po starcie | K8S §3.6 (publikacja CI/CD, MCP) | **+** | automaty dostają odpowiedź, gdy flow faktycznie działa – warunek wiarygodnych testów po wdrożeniu w CI/CD |
+| P-01 odpowiedź po starcie | publikacja przez CI/CD, MCP | **+** | automaty dostają odpowiedź, gdy flow faktycznie działa – warunek wiarygodnych testów po wdrożeniu w CI/CD |
 | P-02 nieaktualny edytor | FL-B-004 (okno różnic) | **=** / **≠** | w trybie `reload-only` scalanie znika; FL-B-004 nadal potrzebne w trybie `prompt` |
-| P-03 telemetria | on-premise (K8S v3) | **+** | on-premise: zalecane `locked: true` |
-| P-04 tokens przed init | K8S-T-005 (workery) | **+** | dotyczy instancji z edytorem (`/comms` nie startuje przy `disableEditor`); workery z `disableEditor` nadal wystawiają **Admin API** (`editor-api/lib/index.js:83-95`) |
+| P-03 telemetria | on-premise | **+** | on-premise: zalecane `locked: true` |
+| P-04 tokens przed init | workery | **+** | dotyczy instancji z edytorem (`/comms` nie startuje przy `disableEditor`); workery z `disableEditor` nadal wystawiają **Admin API** (`editor-api/lib/index.js:83-95`) |
 | Z-01 wyścig /comms | – | = | edytor; brak kolizji |
-| Z-02 trasy admin bloczków | K8S-T-005 (bezpieczeństwo) | **+** | dodatkowo zalecenie dla workerów: `httpAdminRoot: false` + sondy na osobnym porcie (Z-08) |
-| Z-03 aktualizacja .tgz | K8S-T-004 (obraz, paleta tylko do odczytu) | = | w docelowym K8s upload wyłączony; pakiet nadal uniwersalnie przydatny – niższy priorytet dla nas |
-| Z-04 API pojedynczego flow | **FL-B-001** (layout w API flow), K8S §3.6 | **+ / ≠** | te same funkcje (`addFlow/getFlow/updateFlow`) – Z-04 musi zachować `copyFlowLayoutProperties`; MCP/CI pracują per flow |
-| Z-05 wymóg rewizji | K8S §3.6 (409 przy konflikcie) | **=** | dokładnie nasz wymóg dla edytor/MCP/CI |
-| Z-06 hooki wdrożenia | K8S §3.6 (walidacja w jednym miejscu), K8S-T-006 | **+** | `preDeploy` = nasza walidacja; `postDeploy` = wyzwalacz publikacji rewizji / rolling update |
-| Z-07 trasy węzła | K8S-T-007 (strumieniowanie HTTP) | **+** | nasze węzły strumieniowe użyją `registerHttpRoute` |
-| Z-08 sondy | K8S-T-005, ARCHITEKTURA §3.5 (drenaż) | **=** | wymagamy: 503 od SIGTERM, osobny port, zamykanie serwera HTTP |
-| Z-09 przeładowanie z magazynu | ARCHITEKTURA §3.2–3.3, K8S-T-001 | **→** | Zamawiający wybiera **przeładowanie w miejscu z drenażem przez `preReload`**. Zmiana planu: Z-09 jako mechanizm podstawowy, wydania niezmienne (K8S-T-006) jako opcja operacyjna; nasza wtyczka magazynu (K8S-T-001) implementuje `watchFlows` (PostgreSQL LISTEN/NOTIFY lub Redis). Przy rozmowach do ~15 min limit `preReload` ≥ 20 min |
-| Z-10 koordynacja | K8S-T-013 (singletony), K8S-T-014 (kolejki) | **→ / +** | koordynacja w rdzeniu zastępuje nasze obejście z K8S-T-013; implementacja wtyczki (PostgreSQL advisory lock / Redis) po naszej stronie; kolejki pozostają uzupełnieniem |
-| Z-11 userDir tylko do odczytu | K8S-T-004, K8S-A-002, ANALIZA K8s §1.2 | **=** | lista zapisów z weryfikacji (16 miejsc) = podstawa dokumentacji |
-| Z-12 punkty rozszerzeń edytora | K8S-T-006 (przycisk publikacji), K8S-T-003 | **+** | API nagłówka/Deploy umożliwi przycisk „Publikuj” i oznaczenie środowiska bez wstrzykiwania skryptów |
+| Z-02 trasy admin bloczków | bezpieczeństwo workerów | **+** | dodatkowo zalecenie dla workerów: `httpAdminRoot: false` + sondy na osobnym porcie (Z-08) |
+| Z-03 aktualizacja .tgz | obraz, paleta tylko do odczytu | = | przy palecie tylko do odczytu upload wyłączony; pakiet nadal uniwersalnie przydatny – niższy priorytet dla nas |
+| Z-04 API pojedynczego flow | **FL-B-001** (layout w API flow), publikacja per flow | **+ / ≠** | te same funkcje (`addFlow/getFlow/updateFlow`) – Z-04 musi zachować `copyFlowLayoutProperties`; MCP/CI pracują per flow |
+| Z-05 wymóg rewizji | 409 przy konflikcie | **=** | dokładnie nasz wymóg dla edytor/MCP/CI |
+| Z-06 hooki wdrożenia | walidacja w jednym miejscu, wydania | **+** | `preDeploy` = nasza walidacja; `postDeploy` = wyzwalacz publikacji rewizji / rolling update |
+| Z-07 trasy węzła | strumieniowanie HTTP | **+** | nasze węzły strumieniowe użyją `registerHttpRoute` |
+| Z-08 sondy | sondy, drenaż | **=** | wymagamy: 503 od SIGTERM, osobny port, zamykanie serwera HTTP |
+| Z-09 przeładowanie z magazynu | przeładowanie po zmianie w magazynie | **→** | Zamawiający wybiera **przeładowanie w miejscu z drenażem przez `preReload`**. Zmiana planu: Z-09 jako mechanizm podstawowy, wydania niezmienne jako opcja operacyjna; zewnętrzna wtyczka magazynu (poza repozytorium) implementuje `watchFlows`. Przy rozmowach do ~15 min limit `preReload` ≥ 20 min |
+| Z-10 koordynacja | singletony, kolejki | **→ / +** | koordynacja w rdzeniu zastępuje obejście dla flow singletonowych; implementacja wtyczki koordynacji poza repozytorium; kolejki pozostają uzupełnieniem |
+| Z-11 userDir tylko do odczytu | obraz tylko do odczytu, inwentaryzacja zapisów | **=** | lista zapisów z weryfikacji (16 miejsc) = podstawa dokumentacji |
+| Z-12 punkty rozszerzeń edytora | przycisk publikacji, oznaczenie środowiska | **+** | API nagłówka/Deploy umożliwi przycisk „Publikuj” i oznaczenie środowiska bez wstrzykiwania skryptów |
 | Z-13 język polski | FL-T-004 | **=** | klucze `layout.*` (Z-14) w zakresie tłumaczenia |
 | – | **Z-14** układ flow (zrealizowany) | **propozycja** | dostosować do wymagań zlecenia (sekcja 6.4) |
-| – | **K8S-T-002** rola editor (flow nie startują) | **luka → Z-15** | wymóg rozmowy: edytor produkcyjny nie jest workerem; dziś tylko obejście przez magazyn (`runtimeFlowState`), które zapisuje stan we wspólnych ustawieniach |
-| – | K8S-T-003 debug/status z workerów | luka (bez zmian w rdzeniu) | realizowalne wtyczką (`RED.events`/`RED.comms` dostępne dla wtyczek); poza zakresem zlecenia – zostaje w naszym backlogu |
-| – | K8S-T-007 strumieniowanie HTTP | luka (paleta) | pakiet węzłów, nie zmiana rdzenia |
+| – | rola editor (flow nie startują) | **luka → Z-15** | wymóg rozmowy: edytor produkcyjny nie jest workerem; dziś tylko obejście przez magazyn (`runtimeFlowState`), które zapisuje stan we wspólnych ustawieniach |
+| – | debug/status z workerów | luka (bez zmian w rdzeniu) | realizowalne wtyczką (`RED.events`/`RED.comms` dostępne dla wtyczek); poza zakresem zlecenia – zostaje w naszym backlogu |
+| – | strumieniowanie HTTP | luka (paleta) | pakiet węzłów, nie zmiana rdzenia |
 
 **Wniosek:** brak sprzeczności blokujących; jedna zmiana kierunku (Z-09 zamiast wydań niezmiennych jako
 mechanizm podstawowy – akceptujemy, z warunkiem długiego limitu `preReload`) i dwie luki (Z-15, Z-14).
@@ -190,7 +190,7 @@ Spójny zestaw: obiekt `deploy` (P-01, Z-04, Z-05), `editorTheme.deploy` (P-02),
 
 | Problem | Skutek | Propozycja |
 |---|---|---|
-| Powiadomienie `watchFlows` trafia **jednocześnie do wszystkich workerów**; każdy w drenażu zwraca `/ready` 503 | przy rozmowach do ~15–20 min **cały Deployment wypada z load balancera** | (1) **przeładowanie rozłożone w czasie** – runtime przed przeładowaniem zajmuje „slot przeładowania” przez koordynację Z-10 (`claim("reload:<rev>", T)` z limitem równoległości, np. 1 lub 25% replik); domyślna wtyczka lokalna = brak ograniczeń (jak dziś); (2) **przeładowanie różnicowe** – restart tylko zmienionych flow, `/ready` 503 tylko gdy przeładowanie dotyczy flow obsługujących ruch (do decyzji); (3) alternatywa operacyjna: wydania niezmienne + rolling update (K8S-T-006) |
+| Powiadomienie `watchFlows` trafia **jednocześnie do wszystkich workerów**; każdy w drenażu zwraca `/ready` 503 | przy rozmowach do ~15–20 min **cały Deployment wypada z load balancera** | (1) **przeładowanie rozłożone w czasie** – runtime przed przeładowaniem zajmuje „slot przeładowania” przez koordynację Z-10 (`claim("reload:<rev>", T)` z limitem równoległości, np. 1 lub 25% replik); domyślna wtyczka lokalna = brak ograniczeń (jak dziś); (2) **przeładowanie różnicowe** – restart tylko zmienionych flow, `/ready` 503 tylko gdy przeładowanie dotyczy flow obsługujących ruch (do decyzji); (3) alternatywa operacyjna: wydania niezmienne + rolling update |
 | SIGTERM natychmiast zatrzymuje flow (`node-red/red.js:543-558` → `RED.stop()`) | `terminationGracePeriodSeconds` nie chroni rozmów – flow giną na początku okresu | Z-08: po SIGTERM najpierw `/ready` 503 i **drenaż** (hook `preShutdown` lub ten sam mechanizm co `preReload`, z limitem), dopiero potem `RED.stop()`; zamknięcie serwera HTTP; globalny limit czasu |
 | `readOnly` istniejącego magazynu plikowego pomija zapis flow po cichu – wdrożenie „udaje się”, zmiany giną po restarcie | utrata zmian | Z-11: przy `readOnlyUserDir` z magazynem plikowym – wdrożenie zwraca błąd zamiast cichego pominięcia (decyzja) |
 | Błąd odczytu flow przy starcie połykany (`runtime/lib/index.js:245`, `.catch` obejmuje tylko `loadFlows`) | instancja „działa” bez flow | E-02: stan `failed` i `/ready` 503 |
@@ -209,7 +209,7 @@ Spójny zestaw: obiekt `deploy` (P-01, Z-04, Z-05), `editorTheme.deploy` (P-02),
 | 3.5 | testy edytora | brak harnessu jednostkowego edytora | E-03, D-03 |
 | 3.8 | DCO `Signed-off-by` | projekt Node-RED wymaga podpisania **CLA OpenJS** (`CONTRIBUTING.md:48`); podpis DCO musi złożyć osoba odpowiedzialna za wkład (praca z AI – osoba z Wykonawcy przegląda i podpisuje) | D-04: kto podpisuje CLA/DCO; polityka oznaczania pracy wspomaganej AI |
 | 3.8 | jeden pakiet = jedna gałąź | pakiety potoku wdrożenia zależą od siebie | gałęzie pakietów toru A **warstwowo** (E-01 → P-04 → P-01 → Z-04 → Z-05 → Z-06 → Z-08 → Z-10 → Z-09 → Z-11 → Z-15), tor B od bazy; gałąź integracyjna z pełnym `npm test` |
-| 7 | poza zakresem: wiele replik edytora | zgodne z naszą architekturą (1 pod edytora na tenanta) | – |
+| 7 | poza zakresem: wiele replik edytora | zgodne z naszym wdrożeniem (jedna instancja edytora) | – |
 
 ## 6. Plan
 
@@ -260,7 +260,7 @@ otwarte błędy FL-B-004…008 (+009) – pełny zakres (R-03).
 **Z-15 – Instancja tylko edycyjna** – ustawienie `editorOnly: true` (R-19),
 przy którym runtime wczytuje flow, ale ich nie uruchamia, **bez zapisu stanu do magazynu** (dziś `runtimeFlowState`
 trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od działającego runtime (debug, status, przycisk
-`inject`) – opis ograniczeń; przekazywanie zdarzeń z workerów pozostaje wtyczką (K8S-T-003).
+`inject`) – opis ograniczeń; przekazywanie zdarzeń z workerów pozostaje wtyczką.
 
 ## 7. Decyzje Zamawiającego
 
