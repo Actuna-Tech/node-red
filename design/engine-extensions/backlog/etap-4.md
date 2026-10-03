@@ -440,7 +440,7 @@ Funkcja: Układ flow sterowany ustawieniem editorTheme.flowLayout.enabled
 - Edytor: `RED.viewLayout.isEnabled()` (`RED.settings.theme("flowLayout.enabled", false) === true`, wyjątek/nie-obiekt/nie-boolean → `false`), `RED.view.layout.isEnabled()`, `RED.viewLayout.getUserViewSettings()` (`{}` przy wyłączonym – R-01), `RED.viewLayout.getFlowOptions(flow, viewSettings)` (logika wydzielona z `view.js` `getFlowLayoutOptions` 1:1).
 - Bramkowanie: `flowLayout.create/apply` (no-op), `appearance.js` (wiersz „Ports”), `flowProperties.js` (wysokość pola opisu jak w 5.0.7), `userSettings.js` (sekcja dodawana w `init()` – przy wyłączonym nie zapisuje też wartości domyślnych `LR`/`curved` w profilu), `contextMenu.js`, `view-tools.js` (akcje nierejestrowane), `nodes.js` `exportFlowLayoutOptions` (puste ustawienia użytkownika w `getPersistedFlowOptions`).
 - `settings.js` – zakomentowany przykład w `editorTheme`; plik bez nagłówka licencji → wpis w `MODIFICATIONS.md` (R-30). CHANGELOG – wpis w „Unreleased: Flow layouts”.
-- Testy jednostkowe (czerwone przed implementacją: 2 w `theme_spec.js`, 22 w editor-client): `theme_spec.js` (+3), `view-layout_spec.js` (+18: `isEnabled`, `getUserViewSettings`, `getFlowOptions` z „disabled ignores user settings”, „disabled uses flow layout data”, „invalid setting treated as disabled”, „invalid layout value treated as unset”), `nodes_spec.js` (+7, oba stany), `flowLayout_spec.js` (+4).
+- Testy jednostkowe (czerwone przed implementacją: 2 w `theme_spec.js`, 22 w editor-client): `theme_spec.js` (+3), `view-layout_spec.js` (+15: `isEnabled`, `getUserViewSettings`, `getFlowOptions` z „disabled ignores user settings”, „disabled uses flow layout data”, „invalid setting treated as disabled”, „invalid layout value treated as unset”), `nodes_spec.js` (+7, oba stany), `flowLayout_spec.js` (+4).
 - E2E: główny zestaw uruchamia Node-RED z `flowLayout.enabled: true` (+1 test menu kontekstowego); nowy zestaw bez ustawienia (5 testów: brak kontrolek, rysowanie wg danych, krzywa LR jak `generateLinkPath`, ignorowanie i zachowanie ustawień użytkownika, zachowanie danych przy edycji i deployu). Bez zmian w kodzie 2 z 5 nowych testów E2E padały.
 - Niezweryfikowane: zrzuty „przed (5.0.7) / po (enabled:false)” (DoD) – nie wykonane; podział na gałęzie Z-14a/b/c – nie wykonany (E-04, D-04).
 
@@ -785,11 +785,18 @@ Funkcja: Dostosowanie istniejącej gałęzi do wymagań zlecenia
 - **Alternatywa:** `git rebase` z przepisaniem historii obecnej gałęzi – odrzucona (utrata śladu prac i odsyłaczy).
 
 #### Podzadania
-- [ ] Nagłówki wg R-30 (szablon z łatek, `MODIFICATIONS.md`, uzupełnienie 0004), komentarze „upstream” → „wersja bazowa 5.0.7”, CHANGELOG „Unreleased” – S
+- [ ] Nagłówki wg R-30 (szablon z łatek, `MODIFICATIONS.md`, uzupełnienie 0004), komentarze „upstream” → „wersja bazowa 5.0.7”, CHANGELOG „Unreleased” – S (częściowo: `MODIFICATIONS.md` – `2e961c9`; zob. „Realizacja”)
 - [ ] Gałęzie pakietów Z-14a/b/c od bazy (z Z-14) – M
 - [ ] Gałąź dokumentacji `design/` – S
 - [ ] `npm test` na każdej gałęzi + raport – S
 - [ ] Kontrola nazw i DCO (skrypt/krok CI z E-05) – S
+
+#### Realizacja – `MODIFICATIONS.md` (2026-10-03, commit `2e961c9`) – **Do weryfikacji**
+- `MODIFICATIONS.md` w katalogu głównym: szablon nagłówka z łatek (`Modified by Actuna Sp. z o.o.:` + `<ID>: <opis>` + zdanie o 4(b)), zasady (kolejna linia w istniejącym bloku, nowe pliki – nagłówek projektu + blok), tabela plików bez nagłówka: `editor-client/locales/en-US/editor.json` (JSON), `node-red/settings.js` (szablon bez nagłówka licencji – nagłówek trafiałby do plików ustawień użytkowników), `package.json` (JSON, skrypt `test:e2e`), `CHANGELOG.md`; polecenie kontrolne.
+- Lista wyznaczona: `git diff --name-only cd05a9a..HEAD -- packages test scripts` – 35 plików, 33 z nagłówkiem, 2 bez (`editor.json`, `settings.js`) – oba w tabeli; poza tymi katalogami: `package.json`, `CHANGELOG.md`, `AGENTS.md` (plik forka).
+- Komentarze „upstream” w liniach dodanych względem `cd05a9a` (`packages`, `test`, `scripts`): brak.
+- Poza zakresem tego kroku: uzupełnienie nagłówków z łatki 0004 (pliki runtime toru 2 – `runtime/lib/api/flows.js`), gałęzie pakietów Z-14a/b/c i gałąź dokumentacji (D-04 – nie ruszane), `npm test` na gałęziach.
+- Uwaga dla toru równoległego: zmiany w `settings.js` w innych sekcjach – dopisać do wiersza `settings.js` w `MODIFICATIONS.md`.
 
 ---
 
