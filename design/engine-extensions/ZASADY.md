@@ -145,7 +145,7 @@ Konwencja: `snake_case` we wszystkich polach `code` (także `errors[].code` z E-
 - [ ] **Testy najpierw:** test odtwarzający problem / wymaganie (czerwony) przed implementacją; dla poprawek błędów – test, który pada bez poprawki.
 - [ ] **Testy obu stanów ustawienia** i ścieżek błędów, w strukturze `test/unit/...` (mocha/should).
 - [ ] **`npm test` przechodzi** (build, verify-deps, lint, coverage). Uruchamiane w środowisku z `ssh-keygen` (testy projektów); każdy pominięty/środowiskowy błąd wymieniony z uzasadnieniem.
-- [ ] **Brak nazw produktów** w kodzie, komunikatach, ustawieniach, testach i nagłówkach plików; brak nowych zależności npm bez zgody.
+- [ ] **Brak nazw produktów** w kodzie, komunikatach, ustawieniach i testach; **nagłówki o modyfikacji** „Modified by Actuna Sp. z o.o.: <opis>” w każdym zmienionym pliku forka (pkt 4(b) licencji Apache 2.0 – D-19; gałęzie do ewentualnego zgłoszenia upstream bez nich); brak nowych zależności npm bez zgody.
 - [ ] **Dokumentacja:** ustawienie w szablonie `packages/node_modules/node-red/settings.js` (zakomentowane, z opisem); JSDoc dla nowego API; wpis do CHANGELOG (bez nazw produktów); teksty UI w `locales/en-US` (+ `pl` po Z-13).
 - [ ] **Kontrakty:** zmiany Admin API opisane i pokryte testami kontraktu (stare wywołania bez zmian).
 - [ ] **Dostarczenie:** osobna gałąź pakietu względem wersji bazowej (5.0.7) w forku `Actuna-Tech/node-red`; commity w stylu projektu, autor i `Signed-off-by`: Wojciech Repiński (Actuna Sp. z o.o.) – D-04; **bez PR/push do `node-red/node-red`**; zależności między pakietami jawnie opisane.
@@ -166,6 +166,8 @@ evals:
     requirement: unchanged_unless_documented
   - name: product_names
     requirement: none_in_code_tests_messages
+  - name: modification_notices          # D-19
+    requirement: present_in_every_modified_file_of_the_fork
   - name: new_dependencies
     requirement: none_without_approval
   - name: settings_template_documented
