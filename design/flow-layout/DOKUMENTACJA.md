@@ -50,7 +50,9 @@ Menu → *Settings* → zakładka *View* → sekcja **Flow layout**:
 - **Wires** – domyślny styl linii.
 
 Ustawienie jest zapisywane per użytkownik (`editor.view["view-flow-layout"]`,
-`editor.view["view-wire-style"]`) i nie zmienia samych flow.
+`editor.view["view-wire-style"]`). Samo ustawienie nie zmienia flow, ale przy eksporcie
+i deployu flow bez własnych wartości dostaje wartość efektywną, jeśli różni się od
+domyślnej (`LR`, `curved`) – zob. „Eksport, import i przenoszalność” (FL-B-009).
 
 ### Dla jednego flow (zakładki)
 
@@ -119,9 +121,13 @@ Układ jest częścią flow, więc przenosi się razem z nim:
 Uwagi:
 - przy imporcie subflow identycznego z już istniejącym Node-RED używa istniejącego;
   subflow różniący się tylko układem jest traktowany jako inny subflow,
-- ustawienie domyślne użytkownika (Settings → View) **nie** jest częścią flow – po
-  przeniesieniu flow bez własnego `layout` do innej instancji zostanie on narysowany
-  według ustawień tamtego użytkownika,
+- flow (zakładka, subflow) bez własnego `layout`/`wireStyle` jest eksportowany i wdrażany
+  z wartością efektywną z ustawień użytkownika (Settings → View), jeśli różni się ona od
+  domyślnej (`LR`, `curved`) – dzięki temu wygląda tak samo u innego użytkownika i na innej
+  instancji (FL-B-009, decyzja B-01). Flow korzystające z wartości domyślnych eksportują się
+  bez nowych pól. Po deployu zapisana wartość staje się własną wartością flow (tak jak po
+  ponownym wczytaniu edytora). Kopiowanie węzłów (Ctrl+C) i porównanie zmian (*Review changes*)
+  nie dopisują wartości domyślnych,
 - starsze wersje Node-RED wczytają taki flow poprawnie (w układzie lewo → prawo),
   ale przy ponownym eksporcie z nich właściwości układu zostaną pominięte.
 
@@ -167,6 +173,11 @@ Czysta geometria bez zależności od DOM (testowana jednostkowo):
 | `generateLinkPath(...)` | oryginalna pozioma krzywa Node-RED |
 | `transposePath(path)` | zamiana osi x/y ścieżki SVG |
 | `computeAutoOrientations(links)` | mapa `id → "TB"` dla trybu automatycznego |
+| `getPersistedFlowOptions(flow, viewSettings)` | `{layout?, wireStyle?}` zapisywane z flow przy eksporcie i deployu (własne wartości flow albo niedomyślne ustawienia użytkownika) |
+
+`RED.nodes.createExportableNodeSet(set, {flowLayoutDefaults})` i
+`RED.nodes.createCompleteNodeSet({flowLayoutDefaults})` – opcja `flowLayoutDefaults: true`
+dopisuje do flow bez własnych wartości efektywny układ (używane przez eksport i deploy).
 
 ### `RED.editor.flowLayout`
 

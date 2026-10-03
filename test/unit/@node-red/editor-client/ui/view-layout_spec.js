@@ -1,3 +1,8 @@
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   FL-B-009: tests for the layout properties stored with a flow on export and deploy
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 const should = require("should");
 
 const NR_TEST_UTILS = require("nr-test-utils");
@@ -392,6 +397,43 @@ describe("editor-client/ui/view-layout", function() {
         });
         it("ignores virtual link node wires", function() {
             layout.computeAutoOrientations([{ source: a, target: b, link: true }]).should.eql({});
+        });
+    });
+    describe("getPersistedFlowOptions", function() {
+        it("stores nothing for a flow using the default layout and wire style", function() {
+            layout.getPersistedFlowOptions({ id: "f1" }, {}).should.eql({});
+            layout.getPersistedFlowOptions({ id: "f1" }).should.eql({});
+            layout.getPersistedFlowOptions({ id: "f1" }, { "view-flow-layout": "LR", "view-wire-style": "curved" }).should.eql({});
+        });
+        it("stores the editor default layout when it is not the default", function() {
+            layout.getPersistedFlowOptions({ id: "f1" }, { "view-flow-layout": "TB" }).should.eql({ layout: "TB" });
+            layout.getPersistedFlowOptions({ id: "f1" }, { "view-flow-layout": "auto" }).should.eql({ layout: "auto" });
+        });
+        it("stores the editor default wire style when it is not the default", function() {
+            layout.getPersistedFlowOptions({ id: "f1" }, { "view-wire-style": "orthogonal" }).should.eql({ wireStyle: "orthogonal" });
+            layout.getPersistedFlowOptions({ id: "f1" }, { "view-flow-layout": "TB", "view-wire-style": "orthogonal" })
+                .should.eql({ layout: "TB", wireStyle: "orthogonal" });
+        });
+        it("keeps the values set on the flow", function() {
+            const settings = { "view-flow-layout": "TB", "view-wire-style": "orthogonal" };
+            layout.getPersistedFlowOptions({ id: "f1", layout: "LR", wireStyle: "curved" }, settings)
+                .should.eql({ layout: "LR", wireStyle: "curved" });
+            layout.getPersistedFlowOptions({ id: "f1", layout: "auto" }, settings)
+                .should.eql({ layout: "auto", wireStyle: "orthogonal" });
+            layout.getPersistedFlowOptions({ id: "f1", layout: "TB", wireStyle: "orthogonal" }, {})
+                .should.eql({ layout: "TB", wireStyle: "orthogonal" });
+        });
+        it("keeps an unknown value set on the flow", function() {
+            layout.getPersistedFlowOptions({ id: "f1", layout: "XY", wireStyle: "zigzag" }, { "view-flow-layout": "TB" })
+                .should.eql({ layout: "XY", wireStyle: "zigzag" });
+        });
+        it("ignores unknown editor default values", function() {
+            layout.getPersistedFlowOptions({ id: "f1" }, { "view-flow-layout": "XY", "view-wire-style": "zigzag" }).should.eql({});
+        });
+        it("does not modify the flow", function() {
+            const flow = { id: "f1" };
+            layout.getPersistedFlowOptions(flow, { "view-flow-layout": "TB" });
+            flow.should.eql({ id: "f1" });
         });
     });
 });
