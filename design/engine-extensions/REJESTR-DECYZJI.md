@@ -48,10 +48,10 @@ kod `invalid_node_type` w katalogu.
 | ID | Temat | Źródło | Rekomendacja | Decyzja |
 |---|---|---|---|---|
 | R-18 | Z-11: kontekst plikowy (D-15), wdrożenie przy magazynie plikowym, zmienna środowiskowa CLI | etap-3 p.15–17 | błąd startu; 400 `read_only_user_dir`; zmienna środowiskowa || **zgodnie z rekomendacją** – kontekst plikowy przy `readOnlyUserDir` → błąd startu (D-15); wdrożenie przy magazynie plikowym → 400 `read_only_user_dir`; dodatkowo zmienna środowiskowa (2026-10-03) |
-| R-19 | Z-15: `editorOnly` vs `runtimeState.autoStart`, przycisk `inject`, `/ready` (D-13) | etap-4 p.12–13; etap-3 p.3 | `editorOnly`; przycisk nieaktywny; 200 w `loaded` | |
-| R-20 | Z-09: `concurrency`, `preReload` bez weta, błąd odczytu magazynu (D-18), `retry`, D-17 | etap-3 p.7–11 | jak w kartach | |
-| R-21 | Z-10: semantyka `inject` (D-14), jawny wybór wtyczki, `mqtt in` w pakiecie?, test dwóch runtime'ów | etap-3 p.12–14 | D-14; jawnie; `mqtt in` osobno; jeden proces | |
-| R-22 | Z-08: stan w treści 503, zamykanie serwera HTTP, domyślny `shutdownTimeout` | etap-3 p.4–6 | stała treść; zamykanie tylko przy `health.enabled`; drenaż wyłączony domyślnie | |
+| R-19 | Z-15: `editorOnly` vs `runtimeState.autoStart`, przycisk `inject`, `/ready` (D-13) | etap-4 p.12–13; etap-3 p.3 | `editorOnly`; przycisk nieaktywny; 200 w `loaded` || **zgodnie z rekomendacją** – `editorOnly: true`; przycisk `inject` nieaktywny z podpowiedzią; `/health/ready` 200 w stanie `loaded` (D-13), safe mode i zatrzymane flow → 503 (2026-10-03) |
+| R-20 | Z-09: `concurrency`, `preReload` bez weta, błąd odczytu magazynu (D-18), `retry`, D-17 | etap-3 p.7–11 | jak w kartach || **zgodnie z rekomendacją** – `concurrency` tylko liczbowo, bez łączności z koordynatorem czeka (stara konfiguracja działa); `preReload` bez weta, domyślnie 20 min; błąd odczytu → ponowienia, po wyczerpaniu `failed` i 503 (D-18); `deploy.reload.retry: { min: 1000, max: 60000, attempts }`; D-17 – dodatkowy `preReload` dla zmienionych flow (2026-10-03) |
+| R-21 | Z-10: semantyka `inject` (D-14), jawny wybór wtyczki, `mqtt in` w pakiecie?, test dwóch runtime'ów | etap-3 p.12–14 | D-14; jawnie; `mqtt in` osobno; jeden proces || **zgodnie z rekomendacją** – D-14 + status „standby”; wtyczka tylko jawnie (`coordination.plugin`); `mqtt in` w osobnym pakiecie; test dwóch instancji w jednym procesie, wieloprocesowy w osobnym podzbiorze (2026-10-03) |
+| R-22 | Z-08: stan w treści 503, zamykanie serwera HTTP, domyślny `shutdownTimeout` | etap-3 p.4–6 | stała treść; zamykanie tylko przy `health.enabled`; drenaż wyłączony domyślnie || **zgodnie z rekomendacją** – stała treść 503 `{"status":"unavailable"}`; zamykanie serwera HTTP tylko przy `health.enabled`; drenaż domyślnie wyłączony (bez `shutdownTimeout` jak dotąd); drugi SIGTERM → natychmiast (2026-10-03) |
 | R-23 | E-02: nazwy stanów i zdarzenia `instance:state` | etap-3 p.1 | jak w karcie | |
 
 ## Edytor – Z-12 (załącznik B)
