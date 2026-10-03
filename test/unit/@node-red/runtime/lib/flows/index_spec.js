@@ -1001,6 +1001,34 @@ describe('flows/index', function() {
             const rev = await flows.setFlows(clone(baseConfig), "full");
             should.not.exist(rev);
         });
+        it('setFlows holds the deploy lock until the start completes (R-43)', async function() {
+            const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
+            await loadAndStart();
+            let finishStart;
+            const pendingStart = new Promise(resolve => { finishStart = resolve });
+            flowCreate.restore();
+            // replaced stub - restored by the outer afterEach
+            flowCreate = sinon.stub(Flow,"create").callsFake(function(parent, global, flow) {
+                return {
+                    start: function() { return pendingStart },
+                    stop: sinon.spy(async () => {}),
+                    update: sinon.spy(),
+                    getActiveNodes: () => ({})
+                };
+            });
+            startRecording();
+            const rev = await lock.runExclusive(function() {
+                return flows.setFlows(clone(baseConfig), "full");
+            });
+            // The result is returned before the start completes (default behaviour)
+            should.not.exist(rev);
+            recorded.should.not.containEql("runtime-deploy");
+            lock.isLocked().should.be.true();
+            finishStart();
+            await waitFor("runtime-deploy");
+            await lock.runExclusive(async () => {});
+            lock.isLocked().should.be.false();
+        });
         it('setFlows accepts deployOpts without changing the default behaviour', async function() {
             await loadAndStart();
             startRecording();

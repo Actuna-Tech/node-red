@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   E-01: tests of the deploy pipeline contract
+ *   E-01: the lock is held until the start completes (R-43)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -135,6 +136,43 @@ describe("flows/pipeline", function() {
         (await first).should.eql({ rev: "rev1" });
         (await second).should.eql({ rev: "rev2" });
         calls.map(c => c.fn).should.eql(["setFlows:first", "setFlows:second"]);
+    });
+    it("returns the result before the start completes and keeps the lock until then (R-43)", async function() {
+        let finishStart;
+        flows.setFlows = sinon.spy(async function() {
+            // as flows.setFlows: the start runs asynchronously to the result
+            lock.holdUntil(new Promise(resolve => { finishStart = resolve }));
+            return "rev1";
+        });
+        const result = await pipeline.deploy({ flows: { flows: ["first"] } });
+        result.should.eql({ rev: "rev1" });
+        lock.isLocked().should.be.true();
+        const order = [];
+        flows.readFlowsFromStorage = sinon.spy(async function() {
+            order.push("second");
+            return loadedConfig;
+        });
+        const second = pipeline.deploy({ type: "reload" });
+        const setState = lock.runExclusive(async () => order.push("setState"));
+        await new Promise(resolve => setTimeout(resolve, 10));
+        order.should.eql([]);
+        flows.readFlowsFromStorage.called.should.be.false();
+        finishStart({ errors: [] });
+        await Promise.all([second, setState]);
+        order.should.eql(["second", "setState"]);
+        lock.isLocked().should.be.false();
+    });
+    it("a failed start releases the lock", async function() {
+        let failStart;
+        flows.setFlows = sinon.spy(async function() {
+            lock.holdUntil(new Promise((resolve, reject) => { failStart = reject }));
+            return "rev1";
+        });
+        await pipeline.deploy({ flows: { flows: [1] } });
+        lock.isLocked().should.be.true();
+        failStart(new Error("start failed"));
+        (await pipeline.deploy({ type: "reload" })).should.eql({ rev: "loadRev" });
+        lock.isLocked().should.be.false();
     });
     it("releases the lock when the deployment fails", async function() {
         flows.setFlows = sinon.spy(async () => { throw new Error("save failed") });

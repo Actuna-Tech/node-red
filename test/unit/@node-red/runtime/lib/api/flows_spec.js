@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   E-01: tests of the deploy pipeline and the shared deploy lock
+ *   E-01: setState and deployments wait for the start of a deployment (R-43)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -656,6 +657,27 @@ describe("runtime-api/flows", function() {
             await setState;
             await add;
             order.should.eql(["stopFlows:start", "stopFlows:end", "addFlow"]);
+        });
+        it("setState and a second deploy wait for the start of the first deploy (R-43)", async function() {
+            const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
+            let finishStart;
+            runtime.flows.setFlows = sinon.spy(function() {
+                order.push("setFlows");
+                // as flows.setFlows: the start runs asynchronously to the result
+                lock.holdUntil(new Promise(resolve => { finishStart = () => { order.push("started"); resolve() } }));
+                return Promise.resolve("newRev");
+            });
+            const result = await flows.setFlows({flows:{flows:[1]}});
+            // The response does not wait for the start (default behaviour)
+            result.should.eql({rev:"newRev"});
+            const setState = flows.setState({state:"stop"});
+            const add = flows.addFlow({flow:{}});
+            await new Promise(resolve => setTimeout(resolve, 10));
+            order.should.eql(["setFlows"]);
+            finishStart();
+            await setState;
+            await add;
+            order.should.eql(["setFlows", "started", "stopFlows", "addFlow"]);
         });
         it("setState releases the lock when it fails", async function() {
             runtime.flows.stopFlows = sinon.spy(function() { return Promise.reject(new Error("stop failed")) });
