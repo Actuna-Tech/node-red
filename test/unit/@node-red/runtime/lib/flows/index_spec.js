@@ -16,7 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-14: flow layout: tests for layout properties in the single-flow API
- *   E-01: tests of the deploy pipeline contract
+ *   E-01: tests of the deploy pipeline contract; the deploy lock is held until the start completes
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
