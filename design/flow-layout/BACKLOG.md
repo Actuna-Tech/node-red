@@ -153,6 +153,7 @@ W commitach i opisach PR podajemy identyfikator, np. `Fix diff rows for added pr
 | [FL-B-006](#fl-b-006--dopasowanie-subflow-zależne-od-kolejności-kluczy) | Dopasowanie subflow zależne od kolejności kluczy | błąd (istniejący w Node-RED) | Do analizy | P4 | Mała | eksport-import |
 | [FL-B-007](#fl-b-007--podpowiedzi-etykiet-portów-w-układzie-tb) | Podpowiedzi etykiet portów w układzie TB | błąd | Gotowe | P4 | Mała | edytor – widok |
 | [FL-B-008](#fl-b-008--obrócone-etykiety-linków-do-innych-zakładek-w-tb) | Obrócone etykiety linków do innych zakładek w TB | błąd | Gotowe | P4 | Mała | edytor – widok |
+| [FL-B-009](#fl-b-009--flow-z-ustawieniem-domyślnym-edytora-nie-przenosi-wyglądu) | Flow z ustawieniem domyślnym edytora nie przenosi wyglądu | błąd | Gotowe | **P2 (biznes: priorytet 1)** | Średnia | eksport-import |
 | [FL-T-001](#fl-t-001--automatyczne-rozmieszczanie-węzłów) | Automatyczne rozmieszczanie węzłów | funkcja | Nowe | P3 | – | edytor – widok |
 | [FL-T-002](#fl-t-002--routing-omijający-wszystkie-węzły) | Routing omijający wszystkie węzły | funkcja | Nowe | P3 | – | edytor – widok |
 | [FL-T-003](#fl-t-003--testy-e2e-w-ci) | Testy E2E w CI | dług techniczny | Gotowe | P2 | – | testy |
@@ -264,6 +265,22 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 **DoD specyficzne:** - [ ] Tekst poziomy w TB; - [ ] klikanie w etykietę dalej przenosi do zakładki; - [ ] LR bez zmian.
 
 ---
+
+### FL-B-009 – Flow z ustawieniem domyślnym edytora nie przenosi wyglądu
+
+| Pole | Wartość |
+|---|---|
+| Status / Priorytet / Waga | Gotowe / P2 (priorytet biznesowy 1 – [../PRIORYTETY.md](../PRIORYTETY.md)) / Średnia |
+| Obszar | eksport-import, edytor |
+| Wykryto | 2026-10-03, analiza wymagania „eksport/import wyglądu ze wszystkimi parametrami” (przegląd kodu) |
+| Pliki | `editor-client/src/js/ui/view.js` – `getFlowLayoutOptions`; `editor-client/src/js/nodes.js` – `convertWorkspace`, `convertSubflow` (eksport tylko ustawionych `layout`/`wireStyle`) |
+
+**Kroki odtworzenia:** 1. Użytkownik A ustawia w Settings → View domyślny układ „Top to bottom”. 2. Tworzy flow z opcją układu „Editor default” – flow rysuje się pionowo. 3. Eksportuje flow. 4. Użytkownik B (domyślnie „Left to right”) lub inna instancja importuje flow.
+**Oczekiwane:** flow wygląda tak samo jak u użytkownika A.
+**Rzeczywiste (wg kodu):** eksport nie zawiera `layout` (flow nie ma własnej wartości) – u B flow rysuje się poziomo.
+**Przyczyna:** domyślny układ użytkownika nie jest częścią flow (świadoma decyzja projektowa – [DOKUMENTACJA.md](DOKUMENTACJA.md) „Eksport, import i przenoszalność”), ale wymaganie biznesowe oczekuje pełnej przenoszalności.
+**Proponowane rozwiązanie (decyzja B-01):** przy eksporcie oraz przy wdrożeniu z edytora flow/subflow bez własnych wartości dostaje efektywne `layout`/`wireStyle`, jeśli różnią się od wartości domyślnych Node-RED (`LR`, `curved`); flow z wartościami domyślnymi bez zmian w JSON (zgodność wstecz).
+**DoD specyficzne:** - [ ] test E2E: eksport u użytkownika z domyślnym TB → import u użytkownika z domyślnym LR → identyczny układ i geometria portów; - [ ] flow bez zmian domyślnych eksportuje się bez nowych pól; - [ ] dokumentacja zaktualizowana.
 
 ## 6. Karty – zadania i funkcjonalności (`FL-T`)
 

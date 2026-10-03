@@ -214,6 +214,8 @@ Spójny zestaw: obiekt `deploy` (P-01, Z-04, Z-05), `editorTheme.deploy` (P-02),
 | E-04 | dostosowanie istniejącej gałęzi | usunięcie atrybucji z kodu, podział na gałęzie pakietów, ustawienie `editorTheme.flowLayout.enabled` |
 | E-05 | środowisko weryfikacji | CI z pełnym `npm test` (w tym `ssh-keygen`), szablon raportu pakietu – karta w [backlog/etap-4.md](backlog/etap-4.md) |
 
+> **Priorytety biznesowe (2026-10-03)** zmieniają kolejność faz – obowiązuje [../PRIORYTETY.md](../PRIORYTETY.md); poniższe tory i zależności techniczne pozostają w mocy.
+
 ### 6.2 Kolejność realizacji – dwa tory (maks. 2 pakiety równolegle, bez wspólnych plików)
 
 Zasada: tor **A** = potok wdrożenia i runtime (zmiany w `runtime/lib/api/flows.js`, `runtime/lib/flows/*`,

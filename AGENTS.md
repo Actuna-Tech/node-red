@@ -7,6 +7,7 @@ Ten plik i katalog `design/` **nie trafiają do zgłoszeń upstream** – gałę
 
 | Temat | Dokument |
 |---|---|
+| **Priorytety biznesowe i kolejność faz (nadrzędne)** | `design/PRIORYTETY.md` |
 | Zlecenie rozszerzeń silnika (P-01…P-04, Z-01…Z-15): analiza, plan, decyzje (podjęte: §7.0) | `design/engine-extensions/ANALIZA.md` |
 | Zasady wspólne: nazwy ustawień, kontrakt potoku wdrożenia, DoD, szablon karty, role agentów | `design/engine-extensions/ZASADY.md` |
 | Fakty z kodu (plik:linia) dla każdego pakietu | `design/engine-extensions/WERYFIKACJA.md` |
