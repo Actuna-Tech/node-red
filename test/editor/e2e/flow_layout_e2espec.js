@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-14, FL-B-010: end-to-end tests of flow layouts and import of flows with the same ids
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 /**
  * End-to-end tests of the flow layout options (left-right, top-bottom, auto)

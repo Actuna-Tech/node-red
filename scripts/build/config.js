@@ -1,3 +1,8 @@
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-14: flow layout: add ui/view-layout.js to the editor build
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..", "..");

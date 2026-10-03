@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-14: flow layout: tests for diffing node orientation and subflow layout
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require("sinon");
