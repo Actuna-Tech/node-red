@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   E-01: tests of the project switch under the shared deploy lock
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require("sinon");
@@ -64,5 +69,72 @@ describe("storage/localfilesystem/projects/git/index", function() {
 
         result.should.have.property("before", "abc123~1");
         runStub.secondCall.args[1].should.containEql("abc123~1");
+    });
+});
+
+describe("storage/localfilesystem/projects - deploy lock (E-01)", function() {
+    const os = require("os");
+    const projects = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/projects");
+    const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
+    let order;
+    let runtime;
+
+    beforeEach(async function() {
+        order = [];
+        runtime = {
+            nodes: {
+                stopFlows: sinon.spy(async function() { order.push("stopFlows") }),
+                clearContext: sinon.spy(async function() { order.push("clearContext") }),
+                loadFlows: sinon.spy(async function() { order.push("loadFlows") })
+            }
+        };
+        await projects.init({
+            userDir: os.tmpdir(),
+            flowFile: "e01-test-flows.json",
+            editorTheme: { projects: { enabled: false } }
+        }, runtime);
+        sinon.stub(console, "log");
+    });
+    afterEach(function() {
+        sinon.restore();
+    });
+
+    it("project switch waits for running deploy (R-11)", async function() {
+        let release;
+        const deploy = lock.runExclusive(function() {
+            order.push("deploy:start");
+            return new Promise(resolve => { release = () => { order.push("deploy:end"); resolve() } });
+        });
+        // No active project in this test: the project-update event fails after loading,
+        // which does not matter here
+        const reload = projects._reloadActiveProject("loaded", true).catch(() => {});
+        await new Promise(resolve => setTimeout(resolve, 10));
+        order.should.eql(["deploy:start"]);
+        release();
+        await deploy;
+        await reload;
+        order.should.eql(["deploy:start", "deploy:end", "stopFlows", "clearContext", "loadFlows"]);
+        // Internal call: no deployOpts
+        runtime.nodes.loadFlows.firstCall.args.should.eql([true]);
+    });
+    it("a deploy waits for a running project switch", async function() {
+        let releaseLoad;
+        runtime.nodes.loadFlows = sinon.spy(function() {
+            order.push("loadFlows:start");
+            return new Promise(resolve => { releaseLoad = () => { order.push("loadFlows:end"); resolve() } });
+        });
+        const reload = projects._reloadActiveProject("loaded").catch(() => {});
+        const deploy = lock.runExclusive(async function() { order.push("deploy") });
+        await new Promise(resolve => setTimeout(resolve, 10));
+        order.should.eql(["stopFlows", "loadFlows:start"]);
+        releaseLoad();
+        await reload;
+        await deploy;
+        order.should.eql(["stopFlows", "loadFlows:start", "loadFlows:end", "deploy"]);
+    });
+    it("releases the lock when the project switch fails", async function() {
+        runtime.nodes.stopFlows = sinon.spy(async function() { throw new Error("stop failed") });
+        await projects._reloadActiveProject("loaded").should.be.rejectedWith("stop failed");
+        lock.isLocked().should.be.false();
     });
 });
