@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   tokens before init: regression tests for calls made before init()
+ *   tokens before init: prototype property names are not treated as tokens
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -319,6 +320,14 @@ describe("api/auth/tokens", function() {
             return result.then(function(token) {
                 should(token).be.null();
             });
+        });
+
+        it('resolves null for prototype property names before init', function() {
+            return Promise.all(["constructor","__proto__","toString"].map(function(name) {
+                return FreshTokens.get(name).then(function(token) {
+                    should(token).be.null();
+                });
+            }));
         });
 
         it('create before init rejects with not_initialised', function() {
