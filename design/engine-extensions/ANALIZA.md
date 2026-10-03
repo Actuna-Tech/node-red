@@ -175,6 +175,8 @@ Spójny zestaw: obiekt `deploy` (P-01, Z-04, Z-05), `editorTheme.deploy` (P-02),
 | `updateFlow` nie sprawdza duplikatów id względem innych flow | `runtime/lib/flows/index.js` | Z-04 | do potwierdzenia, test kontraktu |
 | Błąd startu zapisuje konfigurację – odpowiedź z błędem musi zawierać `rev`, inaczej kolejne wdrożenie edytora dostanie 409 | `runtime/lib/flows/index.js` | P-01 | w specyfikacji P-01 |
 | Hook `preDeploy` wykonywany pod blokadą API – długi hook blokuje wszystkie wdrożenia | `runtime/lib/api/flows.js:67` | Z-06 | limit czasu hooka |
+| Nazwa użytkownika wstawiana do menu użytkownika jako HTML (możliwe XSS przez nazwę z `adminAuth`) | `editor-client/src/js/user.js:265` | Z-12.06 / priorytet 2 | poprawka bezpieczeństwa (wstawianie jako tekst) z testem – do potwierdzenia |
+| Po ponownym zalogowaniu `RED.settings.user` nie jest odświeżane | `editor-client/src/js/user.js` | Z-12.08 | w ramach Z-12b |
 
 ### 4.10 Przeładowanie i zatrzymanie w wielu replikach (ryzyko z karty Z-09/Z-08)
 
@@ -299,7 +301,9 @@ ma też sekcję „Pytania do Zamawiającego”.
 | 1 | [backlog/etap-1.md](backlog/etap-1.md) | E-01, P-01, P-02, P-03, P-04, Z-01, Z-02 |
 | 2 | [backlog/etap-2.md](backlog/etap-2.md) | Z-03, Z-04, Z-05, Z-06, Z-07 |
 | 3 | [backlog/etap-3.md](backlog/etap-3.md) | E-02, Z-08, Z-09, Z-10, Z-11 |
-| 4 | [backlog/etap-4.md](backlog/etap-4.md) | Z-12, Z-13, Z-14, Z-15, E-03, E-04, E-05 |
+| 4 | [backlog/etap-4.md](backlog/etap-4.md) | Z-12 (ogólna), Z-13, Z-14, Z-15, E-03, E-04, E-05 |
+| 4 | [backlog/etap-4-z12.md](backlog/etap-4-z12.md) | **Z-12.01…Z-12.14** wg załącznika B, pakiety Z-12a…e |
+| – | [ZALACZNIK-A-ANALIZA.md](ZALACZNIK-A-ANALIZA.md) | ocena łatek Zamawiającego (P-01…P-04, Z-13) |
 
 Każda karta zawiera: weryfikację stanu, specyfikację, projekt, kryteria akceptacji BDD (kryteria odbioru ze
 zlecenia + uzupełnienia), testy, DoD specyficzne, ryzyka, podzadania. Wspólne DoD i ewaluacje – [ZASADY.md](ZASADY.md) §3.

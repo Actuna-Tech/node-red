@@ -26,6 +26,8 @@ Z-14 (krok 2.3, po Z-04) → Z-13 (krok 4, równolegle z kodem; klucze nowych te
 
 ### Z-12 – Punkty rozszerzeń edytora dla pluginów
 
+> **Po załączniku B (2026-10-03):** szczegółowe karty 14 punktów i podział na pakiety Z-12a…e – [etap-4-z12.md](etap-4-z12.md). Ta karta pozostaje opisem ogólnym.
+
 | Pole | Wartość |
 |---|---|
 | Etap / typ | 4 / funkcja – **spike + szkielet** (pełny zakres po załączniku B) |
