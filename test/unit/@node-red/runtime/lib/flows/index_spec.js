@@ -147,6 +147,21 @@ describe('flows/index', function() {
             });
 
         });
+        it('preserves the flow layout properties', function(done) {
+            var originalConfig = [
+                {id:"t1-1",x:10,y:10,z:"t1",type:"test",o:"TB",wires:[]},
+                {id:"t1",type:"tab",layout:"TB",wireStyle:"orthogonal"}
+            ];
+            flows.init({log:mockLog, settings:{},storage:storage});
+            flows.setFlows(originalConfig).then(function() {
+                storage.conf.flows.should.eql(originalConfig);
+                var savedFlows = flows.getFlows().flows;
+                savedFlows[0].o.should.equal("TB");
+                savedFlows[1].layout.should.equal("TB");
+                savedFlows[1].wireStyle.should.equal("orthogonal");
+                done();
+            }).catch(done);
+        });
         it('loads the full flow for type load', function(done) {
             var originalConfig = [
                 {id:"t1-1",x:10,y:10,z:"t1",type:"test",wires:[]},

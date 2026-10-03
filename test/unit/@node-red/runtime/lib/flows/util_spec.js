@@ -242,6 +242,56 @@ describe('flows/util', function() {
             diffResult.linked.should.have.length(0);
         });
 
+        it('ignores changes to the port orientation of a node', function() {
+            var config = [{id:"1",type:"test",foo:"a",wires:[]},{id:"2",type:"test",foo:"b",o:"TB",wires:[]}];
+            var newConfig = clone(config);
+            newConfig[0].o = "TB";
+            delete newConfig[1].o;
+
+            var diffResult = flowUtil.diffConfigs(flowUtil.parseConfig(config),flowUtil.parseConfig(newConfig));
+            diffResult.added.should.have.length(0);
+            diffResult.changed.should.have.length(0);
+            diffResult.removed.should.have.length(0);
+            diffResult.rewired.should.have.length(0);
+        });
+
+        it('ignores changes to the layout of a flow', function() {
+            var config = [
+                {id:"t1",type:"tab",label:"Flow"},
+                {id:"1",type:"test",z:"t1",foo:"a",wires:[]},
+                {id:"sf1",type:"subflow",name:"Subflow",in:[],out:[]},
+                {id:"2",type:"test",z:"sf1",foo:"a",wires:[]},
+                {id:"3",type:"subflow:sf1",z:"t1",wires:[]}
+            ];
+            var newConfig = clone(config);
+            newConfig[0].layout = "TB";
+            newConfig[0].wireStyle = "orthogonal";
+            newConfig[2].layout = "auto";
+            newConfig[2].wireStyle = "orthogonal";
+
+            var diffResult = flowUtil.diffConfigs(flowUtil.parseConfig(config),flowUtil.parseConfig(newConfig));
+            diffResult.added.should.have.length(0);
+            diffResult.changed.should.have.length(0);
+            diffResult.removed.should.have.length(0);
+            diffResult.rewired.should.have.length(0);
+            diffResult.flowChanged.should.have.length(0);
+        });
+
+        it('identifies other changes to a subflow alongside a layout change', function() {
+            var config = [
+                {id:"t1",type:"tab",label:"Flow"},
+                {id:"sf1",type:"subflow",name:"Subflow",in:[],out:[]},
+                {id:"2",type:"test",z:"sf1",foo:"a",wires:[]},
+                {id:"3",type:"subflow:sf1",z:"t1",wires:[]}
+            ];
+            var newConfig = clone(config);
+            newConfig[1].layout = "TB";
+            newConfig[1].name = "Renamed";
+
+            var diffResult = flowUtil.diffConfigs(flowUtil.parseConfig(config),flowUtil.parseConfig(newConfig));
+            diffResult.changed.should.containEql("sf1");
+        });
+
         it('identifies nodes with changed properties, including downstream linked', function() {
             var config = [{id:"1",type:"test",foo:"a",wires:[]},{id:"2",type:"test",bar:"b",wires:[[1]]},{id:"3",type:"test",foo:"a",wires:[]}];
             var newConfig = clone(config);
