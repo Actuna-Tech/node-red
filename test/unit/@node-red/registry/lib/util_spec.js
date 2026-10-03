@@ -18,6 +18,7 @@
  *   Z-02: tests of the httpAdmin guard (httpAdminNodeRoutes) in the node api
  *   Z-02: tests of use() without a path and of the position of the permission marker
  *   Z-02: tests of use() with paths that match every path
+ *   Z-10: test of RED.coordination in the node api
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -76,6 +77,24 @@ describe("red/nodes/registry/util",function() {
             registerSubflow.lastCall.args[0].should.eql("my-node")
             registerSubflow.lastCall.args[1].should.eql(subflowDef)
 
+        });
+
+        it("createNodeApi exposes RED.coordination", function() {
+            registryUtil.init(runtime);
+            const result = registryUtil.createNodeApi({id: "my-node", namespace: "my-namespace"});
+            should.exist(result.coordination);
+            result.coordination.should.equal(runtime.coordination.api);
+            result.coordination.isLeader.should.be.a.Function();
+            result.coordination.onLeaderChange.should.be.a.Function();
+            result.coordination.claim.should.be.a.Function();
+            result.coordination.info.should.be.a.Function();
+        });
+
+        it("createNodeApi without coordination in the runtime leaves RED.coordination undefined", function() {
+            registryUtil.init({nodes: runtime.nodes, settings: {}, hooks: runtime.hooks, util: runtime.util, plugins: runtime.plugins, library: runtime.library});
+            const result = registryUtil.createNodeApi({id: "my-node", namespace: "my-namespace"});
+            should.not.exist(result.coordination);
+            registryUtil.init(runtime);
         });
     });
     describe("createNodeApi httpAdmin guard", function() {

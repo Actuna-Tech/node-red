@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-02: test of publicRoute() in the stubbed admin api
+ *   Z-10: order of the start and stop of the coordination
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -30,6 +31,7 @@ var runtime = NR_TEST_UTILS.require("@node-red/runtime");
 var redNodes = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes");
 var storage = NR_TEST_UTILS.require("@node-red/runtime/lib/storage");
 var settings = NR_TEST_UTILS.require("@node-red/runtime/lib/settings");
+var coordination = NR_TEST_UTILS.require("@node-red/runtime/lib/coordination");
 var util = NR_TEST_UTILS.require("@node-red/util");
 
 var log = NR_TEST_UTILS.require("@node-red/util").log;
@@ -212,6 +214,49 @@ describe("runtime", function() {
             }).catch(err=>{done(err)});
         });
 
+        it("coordination started before startFlows", async function() {
+            redNodesGetNodeList = sinon.stub(redNodes,"getNodeList").callsFake(function() {return []});
+            let resolveStart;
+            const coordStart = sinon.stub(coordination,"start").callsFake(function() {
+                return new Promise(resolve => { resolveStart = resolve });
+            });
+            try {
+                runtime.init({testSettings: true, httpAdminRoot:"/", load:function() { return Promise.resolve();}});
+                const started = runtime.start();
+                await new Promise(resolve => setTimeout(resolve, 50));
+                coordStart.calledOnce.should.be.true();
+                coordStart.firstCall.args[0].should.equal(runtime._);
+                redNodesLoadContextsPlugin.called.should.be.true();
+                redNodesLoadFlows.called.should.be.false();
+                redNodesStartFlows.called.should.be.false();
+                resolveStart();
+                await started;
+                await new Promise(resolve => setImmediate(resolve));
+                redNodesLoadFlows.calledOnce.should.be.true();
+                redNodesStartFlows.calledOnce.should.be.true();
+                sinon.assert.callOrder(redNodesLoadContextsPlugin, coordStart, redNodesLoadFlows, redNodesStartFlows);
+            } finally {
+                coordStart.restore();
+            }
+        });
+
+        it("coordination start failure fails the start without starting flows", async function() {
+            redNodesGetNodeList = sinon.stub(redNodes,"getNodeList").callsFake(function() {return []});
+            const coordStart = sinon.stub(coordination,"start").callsFake(function() {
+                const err = new Error("not found");
+                err.code = "coordination.plugin-not-found";
+                return Promise.reject(err);
+            });
+            try {
+                runtime.init({testSettings: true, httpAdminRoot:"/", load:function() { return Promise.resolve();}});
+                const err = await runtime.start().should.be.rejected();
+                err.code.should.equal("coordination.plugin-not-found");
+                redNodesLoadFlows.called.should.be.false();
+            } finally {
+                coordStart.restore();
+            }
+        });
+
         it("reports runtime metrics",function(done) {
             var stopFlows = sinon.stub(redNodes,"stopFlows").callsFake(function() { return Promise.resolve();} );
             redNodesGetNodeList = sinon.stub(redNodes,"getNodeList").callsFake(function() {return []});
@@ -242,6 +287,24 @@ describe("runtime", function() {
         });
 
 
+    });
+
+    it("resign called before stopFlows, coordination stopped after stopFlows", async function() {
+        const stopFlows = sinon.stub(redNodes,"stopFlows").callsFake(function() { return Promise.resolve();} );
+        const closeContextsPlugin = sinon.stub(redNodes,"closeContextsPlugin").callsFake(function() { return Promise.resolve();} );
+        const resign = sinon.stub(coordination,"resign").callsFake(function() { return Promise.resolve();} );
+        const coordStop = sinon.stub(coordination,"stop").callsFake(function() { return Promise.resolve();} );
+        try {
+            await runtime.stop();
+            resign.calledOnce.should.be.true();
+            coordStop.calledOnce.should.be.true();
+            sinon.assert.callOrder(resign, stopFlows, coordStop, closeContextsPlugin);
+        } finally {
+            stopFlows.restore();
+            closeContextsPlugin.restore();
+            resign.restore();
+            coordStop.restore();
+        }
     });
 
     it("stops components", function(done) {
