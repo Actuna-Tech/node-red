@@ -929,6 +929,36 @@ describe("runtime-api/flows", function() {
                 should.not.exist(runtime.flows.updateFlow.firstCall.args[4]);
             }
         });
+        it("a missing flow with a rev returns 404 before the revision check (as in 5.0.7)", async function() {
+            for (const deploySettings of [undefined, {putCreatesFlow:false}, {requireRevision:true}]) {
+                initRuntime(deploySettings);
+                for (const flow of [{nodes:[], rev:"rev-x"}, {nodes:[], rev:""}, {nodes:[], rev:5}, {nodes:[], rev:"rev-x", globalConfigs:[], globalRev:"old"}]) {
+                    const err = await rejected(flows.updateFlow({id:"new1", flow:flow}));
+                    err.should.have.property("code","not_found");
+                    err.should.have.property("status",404);
+                }
+            }
+        });
+        it("deleteFlow of a missing flow with a rev returns 404 before the revision check", async function() {
+            for (const deploySettings of [undefined, {requireRevision:true}]) {
+                initRuntime(deploySettings);
+                runtime.flows.removeFlow = sinon.spy(function(id) {
+                    if (id === "global") {
+                        return Promise.reject(new Error("not allowed to remove global"));
+                    }
+                    const err = new Error();
+                    err.code = 404;
+                    return Promise.reject(err);
+                });
+                let err = await rejected(flows.deleteFlow({id:"new1", rev:"rev-x"}));
+                err.should.have.property("code","not_found");
+                err.should.have.property("status",404);
+                // deleting global is not allowed (400), whatever the revision
+                err = await rejected(flows.deleteFlow({id:"global", rev:"old"}));
+                err.should.have.property("status",400);
+                err.message.should.equal("not allowed to remove global");
+            }
+        });
         it("putCreatesFlow true creates flow", async function() {
             initRuntime({putCreatesFlow:true});
             const result = await flows.updateFlow({id:"new1", flow:{nodes:[], rev:null}, apiVersion:"v2"});

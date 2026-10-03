@@ -106,6 +106,8 @@ Admin API
    - an invalid `Node-RED-API-Version` on `/flow` is treated as v1, as before, with a warning in
      the log (once per value, at most 100 values); `/flows` still returns 400 `invalid_api_version`
    - `DELETE /flow/:id?rev=<rev>` checks the flow revision when given (409 `version_mismatch`)
+   - for a flow that does not exist `PUT` (without `deploy.putCreatesFlow`) and `DELETE` return
+     404 as before, also when a revision is given (the revision is not checked)
  - New setting `deploy.requireRevision` (default `false`, unchanged): Admin API deployments
    without a revision are rejected with 409 `{code: "version_required", message}` - `POST /flows`
    v2 without `rev` (an empty `rev` counts as missing), every `POST /flows` v1 (the message

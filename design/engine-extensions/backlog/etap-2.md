@@ -408,6 +408,8 @@ Funkcja: Pełne API pojedynczego flow
 
 > **Poprawka W-1 po przeglądzie F3 (2026-10-03):** doprecyzowanie (2) zmienione ze względów bezpieczeństwa – przy `deploy.requireRevision: true` `PUT /flow/:id` z `globalConfigs` wymaga także `globalRev` (brak/pusty → 409 `version_required`), jak `POST /flow`; bez `globalConfigs` `globalRev` nie jest wymagany. Test: `api/flows_spec.js` `updateFlow with globalConfigs without globalRev` (oba stany; czerwony przed poprawką).
 
+> **Drobne po przeglądzie F3 (2026-10-03):** (d) nieistniejący flow z podaną rewizją (`PUT` bez `putCreatesFlow`, `DELETE ?rev=`) – 404 ma pierwszeństwo przed 409/400 kontroli rewizji (jak v1 5.0.7); `DELETE /flow/global` – 400 przed kontrolą rewizji; (b) `rev`/`revAll` odpowiedzi v2 liczone w `apply` pod blokadą; (c) `checkRevision` bez martwej podwójnej kontroli `strictType`. Testy: `api/flows_spec.js` `a missing flow with a rev returns 404 …`, `deleteFlow of a missing flow with a rev returns 404 …`, `the revisions of a v2 response are read under the deploy lock` (czerwone przed zmianą).
+
 > **Decyzja N-01 (2026-10-03):** pusty `rev` (`""` lub `null`): przy `deploy.requireRevision: false` – jak w 5.0.7 (409 `version_mismatch`); przy `true` – traktowany jak brak rewizji → 409 `version_required` (decyzja N-01, wariant A); `400 invalid_revision` tylko dla rewizji w złym typie. Scenariusze BDD i testy kontraktu dostosować przy realizacji.
 
 | Pole | Wartość |

@@ -121,7 +121,7 @@ Bez `shutdownTimeout` drenaż jest wyłączony (zachowanie jak dotąd), a hook `
 | `PUT /flow/:id` z id węzła używanym w innym flow (Z-04) | 400 `duplicate_id` (dotąd przyjmowane, powstawały zdublowane id) | poprawić dane |
 | Nieprawidłowy nagłówek `Node-RED-API-Version` na `/flow` (Z-04, R-46) | traktowany jak **v1** (jak w 5.0.7) + ostrzeżenie w logu serwera (raz na wartość, najwyżej 100 wartości); `/flows` nadal 400 `invalid_api_version` | wysyłać `v1`/`v2` albo brak nagłówka |
 | `DELETE /flow/:id?rev=` bez `deploy.requireRevision` (Z-05) | rewizja sprawdzana, gdy podana (409 `version_mismatch`) | – |
-| `PUT /flow/:id` lub `DELETE` nieistniejącego flow przy `requireRevision` (Z-05) | 404 `not_found` ma pierwszeństwo przed `version_required` (bez `putCreatesFlow`) | – |
+| `PUT /flow/:id` lub `DELETE` nieistniejącego flow (Z-04, Z-05) | 404 `not_found` ma pierwszeństwo przed kontrolą rewizji – `version_required`, a także `version_mismatch`/`invalid_revision`, gdy podano `rev`/`?rev=` (jak v1 w 5.0.7; dla `PUT` bez `putCreatesFlow`); `DELETE /flow/global` – 400 jak dotąd | – |
 | Stan wymogu rewizji dla edytora (Z-05) | `GET /settings` → `deploy: {requireRevision: true}` (tylko gdy włączony) | – |
 
 **Zalecenie:** wszystkie narzędzia na API **v2** i obsługa obu kodów 409 (`version_mismatch`, `version_required`) tą samą
