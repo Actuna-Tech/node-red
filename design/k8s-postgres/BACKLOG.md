@@ -37,6 +37,8 @@ Oprócz DoD wspólnego i dla funkcjonalności z backlogu układu flow:
 | K8S-T-011 | Provisioning tenanta (baza, rola, Redis ACL, Secret) i usuwanie | zadanie | Nowe | P2 | K8S-T-005 |
 | K8S-T-012 | Kopie zapasowe i odtwarzanie per tenant | zadanie | Nowe | P2 | K8S-T-011 |
 | K8S-T-013 | Flow singletonowe (harmonogramy, MQTT) – blokada lub osobny Deployment | zadanie | Nowe | P3 | K8S-T-005 |
+| K8S-T-014 | `node-red-queue` – kolejka trwała (PostgreSQL SKIP LOCKED) i szybka (Redis Streams) | zadanie | Nowe | P2 | K8S-T-008 |
+| K8S-T-015 | Wznowienie rozmów (czat/voice) po wymianie poda | zadanie | Nowe | P2 | K8S-T-007 |
 
 ## Karty
 
@@ -108,3 +110,14 @@ licencja, testy, obsługa wielu tenantów i roli editor/worker, zgodność z Nod
 
 ### K8S-T-013 – Flow singletonowe
 - [ ] Mechanizm oznaczenia flow jako singleton; tylko jeden pod je wykonuje (blokada lub osobny Deployment); test przełączenia.
+
+### K8S-T-014 – Kolejki
+- [ ] Port kolejki w węźle konfiguracyjnym; adaptery `postgres` i `redis-streams` ([ARCHITEKTURA.md](ARCHITEKTURA.md) §12).
+- [ ] `queue out`/`queue in`: idempotencja, potwierdzenie po `complete`, ponawianie z opóźnieniem, DLQ, limit równoległości.
+- [ ] Test: zabicie poda w trakcie zadania → zadanie dokończone przez inny pod dokładnie raz (efekt idempotentny).
+- [ ] Metryka długości kolejki dostępna dla HPA/KEDA.
+
+### K8S-T-015 – Wznowienie rozmów
+- [ ] Stan rozmowy w Redis (TTL) + historia w PostgreSQL; identyfikator sesji po stronie klienta.
+- [ ] Test: pod zamknięty w trakcie strumienia → klient łączy się ponownie, rozmowa kontynuowana bez utraty kontekstu.
+- [ ] Wyjaśnione możliwości bramki głosowej (pytanie §11.1).

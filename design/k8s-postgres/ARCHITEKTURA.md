@@ -2,7 +2,7 @@
 
 > **Autorstwo:** analizę opracowała firma **Actuna Sp. z o.o.** w osobie **Wojciecha Repińskiego** (developer), z użyciem narzędzi AI.
 
-Data: 2026-10-03 · status: **analiza, wersja 2** (po odpowiedziach na pytania z [ANALIZA.md](ANALIZA.md) §9) ·
+Data: 2026-10-03 · status: **analiza, wersja 3** (wersja 2: odpowiedzi z [ANALIZA.md](ANALIZA.md) §9; wersja 3: odpowiedzi z §11 – sekcja 0.1, kolejkowanie – sekcja 12) ·
 bez zmian w kodzie.
 
 ## 0. Założenia (odpowiedzi zespołu)
@@ -16,6 +16,16 @@ bez zmian w kodzie.
 | 5 | Tenanci | 1 instancja PostgreSQL = wiele instancji Node-RED = wielu tenantów; otwarte: jedna baza czy wiele baz | porównanie w sekcji 6 |
 | 6 | Moduły | do analizy, uniwersalne dla ekosystemu Node-RED | pakiety npm + Helm (sekcja 9) |
 | – | Cache | Redis | role Redis w sekcji 8 |
+
+### 0.1 Odpowiedzi na pytania z §11 (wersja 3)
+
+| # | Pytanie | Odpowiedź | Konsekwencja w projekcie |
+|---|---|---|---|
+| 1 | Czas strumienia | voicebot: ~90% do 3–4 min; czatbot: zwykle do ~15 min; to nie są limity twarde | drenaż podów do **20 min** (`terminationGracePeriodSeconds: 1200`) + **wznowienie rozmowy** dla dłuższych (stan w Redis/PostgreSQL, klient łączy się ponownie) – sekcja 3.5 |
+| 2 | Tenanci na instancję | 10–20 | **wariant C (baza na tenanta) potwierdzony** – sekcja 6 |
+| 3 | Publikacja rewizji | ręcznie (edytor), przez **MCP** i przez **CI/CD** | jedna ścieżka: **Admin API** z kontrolą rewizji i walidacją przed wdrożeniem; MCP i CI/CD to klienci Admin API – sekcja 3.6 |
+| 4 | Środowisko | **on-premise** | operatory w klastrze: PostgreSQL (np. CloudNativePG), Redis (Sentinel), MinIO; kopie na lokalny magazyn obiektowy |
+| 5 | Zarządzane usługi / kolejki | dowolny wariant; kolejkowanie przewidzieć już teraz | sekcja 12 |
 
 ## 1. Werdykt technologiczny
 
@@ -87,6 +97,34 @@ spójna wersja flow na wszystkich podach w danym momencie (poza krótkim oknem p
 Edytor publikuje zdarzenie w Redis; workery przeładowują flow (deploy typu `reload`/`flows`).
 Szybsze, prostsze, ale przerywa strumienie w zmienionych flow. Dopuszczalne dla środowisk
 testowych.
+
+### 3.5 Długie rozmowy a wymiana podów
+
+- Okres drenażu: `terminationGracePeriodSeconds: 1200` (20 min) – obejmuje typowe rozmowy czatbota
+  i z dużym zapasem voicebota.
+- Rozmowy dłuższe niż okres drenażu: **wznowienie** zamiast utrzymywania poda w nieskończoność –
+  stan rozmowy (kontekst, historia, pozycja w strumieniu) w Redis z TTL + trwała historia w PostgreSQL;
+  klient (aplikacja czatu / bramka głosowa) po zamknięciu połączenia łączy się ponownie z identyfikatorem
+  sesji i trafia na nowy pod.
+- Voicebot (połączenia głosowe): sprawdzić, czy bramka/telefonia pozwala na przeniesienie
+  sesji; jeśli nie – drenaż musi objąć najdłuższe rozmowy (zgłoszone jako pytanie w sekcji 11).
+- Przeładowanie flow w miejscu (bez wymiany podów) – hook „przed przeładowaniem” czekający na
+  zakończenie rozmów z limitem czasu (pakiet Z-09 zlecenia rozszerzeń silnika, zob.
+  `design/engine-extensions/`).
+
+### 3.6 Publikacja: edytor, MCP, CI/CD
+
+```
+edytor ─┐
+MCP ────┼──▶ Admin API (/flows, /flow/:id) ──▶ walidacja przed wdrożeniem (hook) ──▶ zapis rewizji ──▶ workery
+CI/CD ──┘        kontrola rewizji (409 przy konflikcie)                                  (przeładowanie lub rolling update)
+```
+
+- Każdy klient wysyła rewizję, na której pracował; konflikt = 409, klient pobiera aktualny stan.
+- Walidacja przed wdrożeniem (np. zakazane węzły, wymagane pola, testy flow) w jednym miejscu –
+  hook w runtime, a nie w każdym kliencie.
+- Serwer MCP nie ma osobnego dostępu do bazy – korzysta z Admin API z własnym kontem i uprawnieniami
+  (audyt: kto/co wdrożył).
 
 ### 3.4 Wymagania dla workerów
 - Flow obsługujące ruch muszą być **bezstanowe** między żądaniami: stan rozmowy w Redis
@@ -222,12 +260,43 @@ per instancja, hook unieważniania cache tokenów, strumieniowa odpowiedź HTTP 
 | Długie strumienie a aktualizacje | wydania niezmienne + drenaż, `terminationGracePeriodSeconds` |
 | Spójność cache Redis | PostgreSQL źródłem prawdy, TTL, unieważnianie przez zdarzenia |
 
+## 12. Kolejkowanie
+
+### 12.1 Po co już teraz
+- **Rozdzielenie przyjęcia żądania od pracy**: długie operacje (wywołania modeli AI, transkrypcja,
+  integracje) nie blokują workera HTTP; worker przyjmuje, odkłada zadanie, zwraca identyfikator lub strumień.
+- **Odporność na wymianę podów**: zadanie w kolejce przeżywa restart poda – inny worker je dokończy.
+- **Kontrola obciążenia**: limity równoległości per tenant/model, ponawianie z opóźnieniem, kolejka błędów (DLQ).
+- **Zadania jednorazowe w klastrze**: harmonogram wrzuca zadanie raz, wykonuje je dokładnie jeden konsument
+  (uzupełnia koordynację z pakietu Z-10).
+
+### 12.2 Propozycja: dwie warstwy, bez nowego systemu
+
+| Warstwa | Technologia | Gwarancje | Do czego |
+|---|---|---|---|
+| **Kolejka trwała** | PostgreSQL (tabela zadań, `SELECT … FOR UPDATE SKIP LOCKED`, baza tenanta) | co najmniej raz, transakcyjnie z danymi biznesowymi (wzorzec *outbox*), przeżywa awarię Redis | zadania biznesowe, wywołania zewnętrzne z ponawianiem, harmonogramy |
+| **Kolejka szybka / zdarzenia** | Redis Streams (grupy konsumentów, `XAUTOCLAIM` dla porzuconych) | co najmniej raz, w pamięci (z AOF – ograniczona trwałość) | fragmenty strumieni, zdarzenia rozmów, powiadomienia edytor↔workery, zadania krótkotrwałe |
+
+Zasady: każde zadanie ma klucz idempotencji; konsument potwierdza po wykonaniu; limit prób → DLQ;
+identyfikator tenanta w nazwie kolejki/strumienia; metryki długości kolejek → HPA workerów (KEDA lub metryka własna).
+
+### 12.3 Dlaczego nie RabbitMQ / Kafka / NATS (na teraz)
+Przy 10–20 tenantach i on-premise każdy dodatkowy system to operator, kopie, monitoring i aktualizacje.
+PostgreSQL + Redis pokrywają potrzeby; interfejs kolejki w węzłach projektujemy jako **port** (sekcja 12.4),
+więc przejście na NATS JetStream / RabbitMQ później nie zmienia flow.
+
+### 12.4 Węzły (uniwersalne, pakiet `node-red-queue`)
+- węzeł konfiguracyjny „kolejka” (adapter: `postgres` | `redis-streams`, później inne),
+- `queue out` (odłóż zadanie, z kluczem idempotencji i opóźnieniem),
+- `queue in` (konsument: równoległość, potwierdzenie po zakończeniu flow przez `complete`, ponawianie, DLQ),
+- współpraca z koordynacją (Z-10): konsumenci działają na wielu instancjach bez duplikatów dzięki semantyce kolejki.
+
 ## 11. Pytania nadal otwarte
 
-1. Maksymalny czas jednego strumienia czatu (wpływa na drenaż podów).
-2. Docelowa liczba tenantów na instancję PostgreSQL (potwierdzenie wariantu C).
-3. Czy publikacja rewizji ma być ręczna (przycisk w edytorze), czy przez pipeline CI/CD.
-4. Wymagania prawne (lokalizacja danych, retencja, RODO) – wpływ na kopie i usuwanie tenantów.
-5. Zarządzany PostgreSQL/Redis (chmura) czy operator w klastrze.
+Odpowiedzi na pytania 1–5 – sekcja 0.1. Pozostaje:
+
+1. Voicebot: czy bramka głosowa/telefonia pozwala wznowić rozmowę na innym podzie (jeśli nie – drenaż musi objąć najdłuższe połączenia).
+2. Wymagania prawne (lokalizacja danych, retencja, RODO) – wpływ na kopie i usuwanie tenantów.
+3. Maksymalny akceptowalny czas niedostępności edytora (pod edytora jest pojedynczy).
 
 Plan zadań: [BACKLOG.md](BACKLOG.md).
