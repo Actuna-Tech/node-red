@@ -26,6 +26,7 @@ Godziny kroków przed pierwszym commitem są orientacyjne; godziny commitów poc
 | 09:22 | Nagranie demonstracyjne (Playwright + ffmpeg, podpisy i widoczny kursor) | `node-red-flow-layout-demo.mp4`, skrypt `demo/record-demo.js` |
 | 09:35 | Weryfikacja przenoszalności (eksport/import, schowek, subflow, Admin API) | eksport/import w edytorze działał; **znaleziona luka**: `POST/GET/PUT /flow` gubiły `layout`/`wireStyle` → poprawka w `runtime/lib/flows/index.js` |
 | 09:45 | Testy przenoszalności | 3 testy jednostkowe runtime (bez poprawki padają) + 5 testów E2E (okna eksportu/importu, kopiuj/wklej, subflow, Admin API) |
+| 10:00 | Audyt backupów, eksportu, importu, scalania i biblioteki | wyniki w [PROBLEMY.md](PROBLEMY.md): P1 naprawione wcześniej; **P2 otwarte** – okno Review Changes nie pokazuje dodanych `layout`/`o` (odtworzone w przeglądarce, scalanie działa); P3, P4 – drobne, otwarte |
 
 ## Wyniki testów (ostatnie uruchomienie)
 
@@ -38,6 +39,8 @@ Godziny kroków przed pierwszym commitem są orientacyjne; godziny commitów poc
 | build (`npm run build`) | OK |
 
 ## Otwarte tematy
+
+- problemy P2–P4 z [PROBLEMY.md](PROBLEMY.md),
 
 - automatyczne rozmieszczanie węzłów zgodnie z układem,
 - routing omijający wszystkie węzły (nie tylko końcowe),

@@ -149,6 +149,8 @@ Zmiana `layout` zakładki niczego nie restartuje (dla zakładek porównywane jes
 - **Brak automatycznego rozmieszczania węzłów** – zmiana układu nie przesuwa węzłów.
 - **Routing** omija tylko węzły na końcach linii.
 
+Wyniki audytu backupów, eksportu i importu oraz lista otwartych problemów: [PROBLEMY.md](PROBLEMY.md).
+
 ## 6. Dalsze kroki (propozycje)
 
 1. Automatyczne rozmieszczenie węzłów zgodnie z układem (np. dagre/ELK) – akcja „Uporządkuj flow”.
