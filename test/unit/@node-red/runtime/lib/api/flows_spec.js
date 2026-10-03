@@ -803,4 +803,159 @@ describe("runtime-api/flows", function() {
             err.should.have.property("status",400);
         });
     });
+
+    describe("single-flow api (Z-04)", function() {
+        let runtime;
+        let revisions;
+        function initRuntime(deploySettings) {
+            revisions = { t1: "rev-t1", global: "rev-global" };
+            runtime = {
+                log: mockLog(),
+                settings: deploySettings ? { deploy: deploySettings } : {},
+                flows: {
+                    getFlows: function() { return {rev:"rev-all",flows:[]} },
+                    getFlow: sinon.spy(function(id) { return id === "t1" ? {id:"t1",label:"Flow 1",nodes:[]} : null }),
+                    getFlowRevision: sinon.spy(function(id) { return revisions[id] || null }),
+                    addFlow: sinon.spy(function(flow) { revisions.added = "rev-added"; return Promise.resolve("added") }),
+                    updateFlow: sinon.spy(function(id, flow, user, deployOpts, opts) {
+                        if (!revisions[id] && !(opts && opts.create)) {
+                            const err = new Error();
+                            err.code = 404;
+                            return Promise.reject(err);
+                        }
+                        const created = !revisions[id];
+                        revisions[id] = "rev-" + id + "-updated";
+                        return Promise.resolve({created: created});
+                    }),
+                    removeFlow: sinon.spy(function() { return Promise.resolve() })
+                }
+            };
+            flows.init(runtime);
+        }
+        async function rejected(promise) {
+            try {
+                await promise;
+            } catch(err) {
+                return err;
+            }
+            throw new Error("not rejected");
+        }
+
+        it("returns rev only for v2", async function() {
+            initRuntime();
+            const v1 = await flows.getFlow({id:"t1"});
+            v1.should.not.have.property("rev");
+            const v2 = await flows.getFlow({id:"t1", apiVersion:"v2"});
+            v2.should.have.property("rev","rev-t1");
+            v2.should.have.property("label","Flow 1");
+        });
+        it("accepts matching rev", async function() {
+            initRuntime();
+            const id = await flows.updateFlow({id:"t1", flow:{id:"t1", label:"x", nodes:[], rev:"rev-t1"}});
+            id.should.equal("t1");
+            runtime.flows.updateFlow.calledOnce.should.be.true();
+            // rev is not stored with the flow
+            runtime.flows.updateFlow.firstCall.args[1].should.eql({id:"t1", label:"x", nodes:[]});
+        });
+        it("returns the new revisions for v2", async function() {
+            initRuntime();
+            const result = await flows.updateFlow({id:"t1", flow:{nodes:[], rev:"rev-t1"}, apiVersion:"v2"});
+            result.should.eql({id:"t1", rev:"rev-t1-updated", revAll:"rev-all", created:false});
+        });
+        it("rejects stale rev with 409 version_mismatch", async function() {
+            initRuntime();
+            const err = await rejected(flows.updateFlow({id:"t1", flow:{nodes:[], rev:"old"}}));
+            err.should.have.property("code","version_mismatch");
+            err.should.have.property("status",409);
+            runtime.flows.updateFlow.called.should.be.false();
+        });
+        it("rejects an empty rev with 409 version_mismatch (N-01)", async function() {
+            initRuntime();
+            const err = await rejected(flows.updateFlow({id:"t1", flow:{nodes:[], rev:""}}));
+            err.should.have.property("code","version_mismatch");
+        });
+        it("rejects rev of a wrong type with 400 invalid_revision", async function() {
+            initRuntime();
+            for (const rev of [5, {}, true]) {
+                const err = await rejected(flows.updateFlow({id:"t1", flow:{nodes:[], rev:rev}}));
+                err.should.have.property("code","invalid_revision");
+                err.should.have.property("status",400);
+            }
+            const err = await rejected(flows.addFlow({flow:{nodes:[], globalConfigs:[], globalRev:7}}));
+            err.should.have.property("code","invalid_revision");
+            runtime.flows.updateFlow.called.should.be.false();
+            runtime.flows.addFlow.called.should.be.false();
+        });
+        it("rev null with existing flow returns 409", async function() {
+            initRuntime({putCreatesFlow:true});
+            const err = await rejected(flows.updateFlow({id:"t1", flow:{nodes:[], rev:null}}));
+            err.should.have.property("code","version_mismatch");
+        });
+        it("putCreatesFlow false returns 404", async function() {
+            for (const deploySettings of [undefined, {putCreatesFlow:false}]) {
+                initRuntime(deploySettings);
+                const err = await rejected(flows.updateFlow({id:"new1", flow:{nodes:[]}}));
+                err.should.have.property("code","not_found");
+                err.should.have.property("status",404);
+                should.not.exist(runtime.flows.updateFlow.firstCall.args[4]);
+            }
+        });
+        it("putCreatesFlow true creates flow", async function() {
+            initRuntime({putCreatesFlow:true});
+            const result = await flows.updateFlow({id:"new1", flow:{nodes:[], rev:null}, apiVersion:"v2"});
+            result.should.eql({id:"new1", rev:"rev-new1-updated", revAll:"rev-all", created:true});
+            runtime.flows.updateFlow.firstCall.args[4].should.have.property("create", true);
+            const v1 = await flows.updateFlow({id:"new2", flow:{nodes:[]}});
+            v1.should.equal("new2");
+        });
+        it("putCreatesFlow true with a rev of a missing flow returns 409", async function() {
+            initRuntime({putCreatesFlow:true});
+            const err = await rejected(flows.updateFlow({id:"new1", flow:{nodes:[], rev:"rev-x"}}));
+            err.should.have.property("code","version_mismatch");
+            runtime.flows.updateFlow.called.should.be.false();
+        });
+        it("passes globalConfigs and checks globalRev", async function() {
+            initRuntime();
+            await flows.updateFlow({id:"t1", flow:{nodes:[], globalConfigs:[{id:"c1",type:"cfg"}], globalRev:"rev-global"}});
+            runtime.flows.updateFlow.firstCall.args[1].should.eql({nodes:[]});
+            runtime.flows.updateFlow.firstCall.args[4].should.have.property("globalConfigs", [{id:"c1",type:"cfg"}]);
+            await flows.addFlow({flow:{nodes:[], globalConfigs:[{id:"c2",type:"cfg"}]}});
+            runtime.flows.addFlow.firstCall.args[0].should.eql({nodes:[]});
+            runtime.flows.addFlow.firstCall.args[3].should.have.property("globalConfigs", [{id:"c2",type:"cfg"}]);
+        });
+        it("globalRev mismatch returns 409", async function() {
+            initRuntime();
+            let err = await rejected(flows.updateFlow({id:"t1", flow:{nodes:[], globalConfigs:[], globalRev:"old"}}));
+            err.should.have.property("code","version_mismatch");
+            err = await rejected(flows.addFlow({flow:{nodes:[], globalConfigs:[], globalRev:"old"}}));
+            err.should.have.property("code","version_mismatch");
+            err.should.have.property("status",409);
+            runtime.flows.addFlow.called.should.be.false();
+        });
+        it("addFlow ignores rev of the new flow (unchanged)", async function() {
+            initRuntime();
+            (await flows.addFlow({flow:{nodes:[], rev:"anything"}})).should.equal("added");
+            runtime.flows.addFlow.firstCall.args[0].should.eql({nodes:[]});
+        });
+        it("addFlow returns id and rev for v2", async function() {
+            initRuntime();
+            (await flows.addFlow({flow:{nodes:[]}, apiVersion:"v2"})).should.eql({id:"added", rev:"rev-added"});
+            (await flows.addFlow({flow:{nodes:[]}})).should.equal("added");
+        });
+        it("concurrent updates with same rev – one 409", async function() {
+            initRuntime();
+            const results = await Promise.all([
+                flows.updateFlow({id:"t1", flow:{nodes:[], rev:"rev-t1"}}).then(() => "ok", err => err.code),
+                flows.updateFlow({id:"t1", flow:{nodes:[], rev:"rev-t1"}}).then(() => "ok", err => err.code)
+            ]);
+            results.sort().should.eql(["ok","version_mismatch"]);
+        });
+        it("calls without the new fields are unchanged", async function() {
+            initRuntime();
+            const flow = {id:"t1", label:"x", nodes:[]};
+            (await flows.updateFlow({id:"t1", flow:flow})).should.equal("t1");
+            runtime.flows.updateFlow.firstCall.args[1].should.equal(flow);
+            runtime.flows.getFlowRevision.called.should.be.false();
+        });
+    });
 });

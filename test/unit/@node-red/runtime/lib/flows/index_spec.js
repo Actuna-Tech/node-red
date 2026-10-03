@@ -1222,6 +1222,129 @@ describe('flows/index', function() {
                 log.error.called.should.be.true();
             });
         });
+
+        describe('#getFlowRevision (Z-04)', function() {
+            const config = baseConfig.concat([
+                {id:"g1",type:"test-config"},
+                {id:"sf1",type:"subflow",name:"sf"},
+                {id:"sf1-1",type:"test",z:"sf1"}
+            ]);
+            it('is stable for unchanged flow', async function() {
+                await loadAndStart(config);
+                const rev = flows.getFlowRevision("t1");
+                rev.should.match(/^[0-9a-f]{64}$/);
+                await flows.setFlows(clone(config), "full");
+                flows.getFlowRevision("t1").should.equal(rev);
+            });
+            it('changes when flow node changes', async function() {
+                await loadAndStart(config);
+                const rev = flows.getFlowRevision("t1");
+                const changed = clone(config);
+                changed[0].x = 99;
+                await flows.setFlows(changed, "full");
+                flows.getFlowRevision("t1").should.not.equal(rev);
+            });
+            it('does not change when another flow changes', async function() {
+                await loadAndStart(config);
+                const rev = flows.getFlowRevision("t1");
+                const revAll = flows.getFlows().rev;
+                const changed = clone(config);
+                changed[2].x = 99;
+                storage.saveFlows = function(conf) { storage.conf = conf; return Promise.resolve("otherRev") };
+                await flows.setFlows(changed, "full");
+                flows.getFlowRevision("t1").should.equal(rev);
+                flows.getFlows().rev.should.not.equal(revAll);
+            });
+            it('ignores credentials', async function() {
+                await loadAndStart(config);
+                const rev = flows.getFlowRevision("t1");
+                const withCreds = clone(config);
+                withCreds[0].credentials = {user:"a"};
+                await flows.setFlows(withCreds, "full");
+                flows.getFlowRevision("t1").should.equal(rev);
+            });
+            it('computes global revision', async function() {
+                await loadAndStart(config);
+                const rev = flows.getFlowRevision("global");
+                rev.should.match(/^[0-9a-f]{64}$/);
+                const changed = clone(config);
+                changed[0].x = 99;
+                await flows.setFlows(changed, "full");
+                flows.getFlowRevision("global").should.equal(rev);
+                const changedGlobal = clone(config);
+                changedGlobal[4].name = "changed";
+                await flows.setFlows(changedGlobal, "full");
+                flows.getFlowRevision("global").should.not.equal(rev);
+            });
+            it('returns null for an unknown flow', async function() {
+                await loadAndStart(config);
+                should.not.exist(flows.getFlowRevision("unknown"));
+                should.not.exist(flows.getFlowRevision("t1-1"));
+            });
+        });
+
+        describe('single-flow configuration (Z-04)', function() {
+            const config = baseConfig.concat([{id:"g1",type:"test-config",value:1}]);
+            function codeOf(fn) {
+                try {
+                    fn();
+                } catch(err) {
+                    return err.code;
+                }
+                return null;
+            }
+            it('creates flow with given id when create flag set', async function() {
+                await loadAndStart(config);
+                const built = flows.buildUpdateFlowConfig("new1", {label:"New", layout:"TB", nodes:[{id:"n1",type:"test",wires:[]}]}, {create:true});
+                built.should.have.property("created", true);
+                built.config.should.containEql({type:"tab",label:"New",id:"new1",layout:"TB"});
+                built.config.should.containEql({id:"n1",type:"test",wires:[],z:"new1"});
+                await flows.updateFlow("new1", {label:"New", layout:"TB", nodes:[{id:"n1",type:"test",x:10,y:10,wires:[]}]}, null, undefined, {create:true});
+                flows.getFlow("new1").should.have.property("layout","TB");
+                flows.getFlow("new1").nodes.should.have.length(1);
+            });
+            it('rejects an unknown flow with code 404 without the create flag', async function() {
+                await loadAndStart(config);
+                codeOf(() => flows.buildUpdateFlowConfig("new1", {nodes:[]})).should.equal(404);
+            });
+            it('rejects create when id used by a node', async function() {
+                await loadAndStart(config);
+                codeOf(() => flows.buildUpdateFlowConfig("t1-1", {nodes:[]}, {create:true})).should.equal("invalid_flow_id");
+                codeOf(() => flows.buildUpdateFlowConfig("g1", {nodes:[]}, {create:true})).should.equal("invalid_flow_id");
+            });
+            it('rejects node id used in another flow', async function() {
+                await loadAndStart(config);
+                codeOf(() => flows.buildUpdateFlowConfig("t1", {nodes:[{id:"t2-1",type:"test"}]})).should.equal("duplicate_id");
+                codeOf(() => flows.buildUpdateFlowConfig("t1", {nodes:[], configs:[{id:"g1",type:"test-config"}]})).should.equal("duplicate_id");
+                // nodes of the same flow keep their ids
+                should(codeOf(() => flows.buildUpdateFlowConfig("t1", {nodes:[{id:"t1-1",type:"test"}]}))).be.null();
+            });
+            it('upserts globalConfigs', async function() {
+                await loadAndStart(config);
+                const built = flows.buildUpdateFlowConfig("t1", {nodes:[{id:"t1-1",type:"test"}]}, {globalConfigs:[{id:"g1",type:"test-config",value:2},{id:"g2",type:"test-config",z:"t1"}]});
+                built.config.filter(n => n.id === "g1").should.eql([{id:"g1",type:"test-config",value:2}]);
+                built.config.filter(n => n.id === "g2").should.eql([{id:"g2",type:"test-config"}]);
+                const added = flows.buildAddFlowConfig({nodes:[]}, {globalConfigs:[{id:"g3",type:"test-config"}]});
+                added.config.filter(n => n.id === "g3").should.eql([{id:"g3",type:"test-config"}]);
+            });
+            it('rejects globalConfig id used in another flow', async function() {
+                await loadAndStart(config);
+                codeOf(() => flows.buildUpdateFlowConfig("t1", {nodes:[]}, {globalConfigs:[{id:"t2-1",type:"test-config"}]})).should.equal("duplicate_id");
+                codeOf(() => flows.buildUpdateFlowConfig("t1", {nodes:[{id:"x1",type:"test"}]}, {globalConfigs:[{id:"x1",type:"test-config"}]})).should.equal("duplicate_id");
+                codeOf(() => flows.buildAddFlowConfig({nodes:[]}, {globalConfigs:[{id:"t2",type:"test-config"}]})).should.equal("duplicate_id");
+            });
+            it('rejects globalConfigs of type tab, subflow or group', async function() {
+                await loadAndStart(config);
+                ["tab","subflow","group"].forEach(function(type) {
+                    codeOf(() => flows.buildUpdateFlowConfig("t1", {nodes:[]}, {globalConfigs:[{id:"x",type:type}]})).should.equal("invalid_node_type");
+                });
+            });
+            it('keeps configs flow-scoped', async function() {
+                await loadAndStart(config);
+                const built = flows.buildUpdateFlowConfig("t1", {nodes:[], configs:[{id:"c2",type:"test-config"}]});
+                built.config.filter(n => n.id === "c2").should.eql([{id:"c2",type:"test-config",z:"t1"}]);
+            });
+        });
     });
     describe('#updateFlow', function() {
         it.skip("updateFlow");

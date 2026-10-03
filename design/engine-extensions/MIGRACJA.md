@@ -115,6 +115,11 @@ Bez `shutdownTimeout` drenaż jest wyłączony (zachowanie jak dotąd), a hook `
 | `PUT /flow/:id` nieistniejącego id bez `deploy.putCreatesFlow` | **404** jak dotąd (R-34) | utworzyć flow przez `POST /flow` |
 | `DELETE /flow/:id` przy `requireRevision: true` | wymaga `?rev=` – brak → 409 `version_required` (R-14) | dołączać `?rev=<rev flow>` |
 | Globalne węzły konfiguracyjne razem z flow | nowe pole `globalConfigs[]` (D-08) – pole `configs` zachowuje dotychczasowe znaczenie (konfiguracje flow) | nie wysyłać konfiguracji globalnych w `configs` |
+| Format `ETag` (Z-04, doprecyzowanie przy realizacji) | `ETag: "<rev>"` (w cudzysłowie, zgodnie z HTTP); `If-Match` przyjmowany z cudzysłowem lub bez, także z prefiksem `W/`; `If-Match: *` = brak rewizji | odsyłać wartość `ETag` bez zmian |
+| Odpowiedź `PUT /flow/:id` w v2 (Z-04) | `{id, rev, revAll}` – `rev` nowa rewizja flow, `revAll` nowa rewizja całości | zapamiętać `rev` do kolejnego `PUT` |
+| `rev` w `POST /flow` (Z-04) | ignorowane jak dotąd (sprawdzane tylko `globalRev`) | – |
+| `PUT /flow/:id` z id węzła używanym w innym flow (Z-04) | 400 `duplicate_id` (dotąd przyjmowane, powstawały zdublowane id) | poprawić dane |
+| Nieprawidłowy nagłówek `Node-RED-API-Version` na `/flow` (Z-04) | 400 `invalid_api_version` (jak na `/flows`) | wysyłać `v1`/`v2` albo brak nagłówka |
 
 **Zalecenie:** wszystkie narzędzia na API **v2** i obsługa obu kodów 409 (`version_mismatch`, `version_required`) tą samą
 ścieżką „pobierz – nanieś – ponów”. Pytanie N-04 (czy narzędzia dziś używają v2) – **nieznane**, więc przewodnik zakłada

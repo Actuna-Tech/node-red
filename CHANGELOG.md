@@ -57,6 +57,25 @@ Admin API
    released at the latest when the limit has passed (with a warning); without the setting the
    lock is kept until the start completes and a warning is logged after 60 s
  - Error responses of the Admin API include `rev` and `errors` when the error carries them
+ - Single-flow API (`/flow`): requests without the new fields and without
+   `Node-RED-API-Version: v2` behave as before. New:
+   - `GET /flow/:id` with v2 returns the flow revision `rev` (sha256 of the tab and its nodes,
+     without credentials; for `global` the global configuration nodes and subflows) and the
+     header `ETag: "<rev>"`; the revision changes only when that flow changes
+   - `PUT /flow/:id` checks an optional `rev` (409 `version_mismatch`, 400 `invalid_revision`
+     for a revision that is not a string); with v2 `If-Match` is equivalent to `rev` (both
+     given and different: 400 `invalid_revision`) and the response is `{id, rev, revAll}`
+   - optional `globalConfigs[]` (add or replace global configuration nodes in the same
+     deployment; 400 `duplicate_id` / `invalid_node_type`) and `globalRev` (revision of
+     `global`, 409 `version_mismatch`) in `PUT /flow/:id` and `POST /flow`; the existing
+     `configs` keeps its meaning (configuration nodes of the flow)
+   - `POST /flow` with v2 returns 201 `{id, rev}`; v1 still 200 `{id}`
+   - new setting `deploy.putCreatesFlow` (default `false`): `PUT /flow/:id` of a missing flow
+     creates it under that id (201 in v2, 200 in v1; `rev: null` = only if it does not exist;
+     400 `invalid_flow_id` if the id is used by another node); without it 404 as before
+   - `PUT /flow/:id` rejects node ids used in another flow (400 `duplicate_id`; before
+     they were accepted and produced duplicate ids)
+   - an invalid `Node-RED-API-Version` on `/flow` returns 400 `invalid_api_version`, as on `/flows`
 
 Fixes
 

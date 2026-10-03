@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-04: contract tests of the single-flow api v2 (rev, ETag, If-Match, 201)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var request = require('supertest');
@@ -245,4 +250,113 @@ describe("api/admin/flow", function() {
         })
     })
 
+    describe("single-flow api v1/v2 (Z-04)", function() {
+        let calls;
+        let created;
+        before(function() {
+            flow.init({
+                flows: {
+                    getFlow: function(opts) {
+                        calls.push(opts);
+                        const result = {id: opts.id, label: "Flow"};
+                        if (opts.apiVersion === "v2") {
+                            result.rev = "rev-" + opts.id;
+                        }
+                        return Promise.resolve(result);
+                    },
+                    addFlow: function(opts) {
+                        calls.push(opts);
+                        return Promise.resolve(opts.apiVersion === "v2" ? {id:"0123456789abcdef", rev:"rev-new"} : "0123456789abcdef");
+                    },
+                    updateFlow: function(opts) {
+                        calls.push(opts);
+                        if (opts.flow.rev === "stale") {
+                            const err = new Error();
+                            err.code = "version_mismatch";
+                            err.status = 409;
+                            return Promise.reject(err);
+                        }
+                        if (opts.apiVersion === "v2") {
+                            return Promise.resolve({id: opts.id, rev: "rev-updated", revAll: "rev-all", created: created});
+                        }
+                        return Promise.resolve(opts.id);
+                    }
+                }
+            });
+        });
+        beforeEach(function() {
+            calls = [];
+            created = false;
+        });
+        it("legacy GET/POST/PUT unchanged", async function() {
+            let res = await request(app).get("/flow/t1").expect(200);
+            res.body.should.eql({id:"t1", label:"Flow"});
+            should(res.headers.etag === '"rev-t1"').be.false();
+            res = await request(app).post("/flow").send({nodes:[]}).expect(200);
+            res.body.should.eql({id:"0123456789abcdef"});
+            res = await request(app).put("/flow/t1").send({nodes:[]}).expect(200);
+            res.body.should.eql({id:"t1"});
+            calls.forEach(c => c.should.have.property("apiVersion","v1"));
+        });
+        it("GET v2 returns rev and ETag header", async function() {
+            const res = await request(app).get("/flow/t1").set("Node-RED-API-Version","v2").expect(200);
+            res.body.should.have.property("rev","rev-t1");
+            res.headers.should.have.property("etag",'"rev-t1"');
+        });
+        it("GET v1 has no rev and no ETag of the flow revision", async function() {
+            const res = await request(app).get("/flow/t1").expect(200);
+            res.body.should.not.have.property("rev");
+            should(res.headers.etag === '"rev-t1"').be.false();
+        });
+        it("POST /flow v2 returns 201 with 16-hex id", async function() {
+            const res = await request(app).post("/flow").set("Node-RED-API-Version","v2").send({nodes:[]}).expect(201);
+            res.body.should.have.property("id");
+            res.body.id.should.match(/^[0-9a-f]{16}$/);
+            res.body.should.have.property("rev","rev-new");
+        });
+        it("POST /flow v1 returns 200", async function() {
+            const res = await request(app).post("/flow").send({nodes:[]}).expect(200);
+            res.body.id.should.match(/^[0-9a-f]{16}$/);
+        });
+        it("PUT create returns 201 in v2 and 200 in v1", async function() {
+            created = true;
+            let res = await request(app).put("/flow/new1").set("Node-RED-API-Version","v2").send({nodes:[], rev:null}).expect(201);
+            res.body.should.eql({id:"new1", rev:"rev-updated", revAll:"rev-all"});
+            res = await request(app).put("/flow/new2").send({nodes:[]}).expect(200);
+            res.body.should.eql({id:"new2"});
+        });
+        it("PUT v2 returns 200 with the revisions for an existing flow", async function() {
+            const res = await request(app).put("/flow/t1").set("Node-RED-API-Version","v2").send({nodes:[], rev:"rev-t1"}).expect(200);
+            res.body.should.eql({id:"t1", rev:"rev-updated", revAll:"rev-all"});
+        });
+        it("PUT v2 If-Match acts as rev", async function() {
+            await request(app).put("/flow/t1").set("Node-RED-API-Version","v2").set("If-Match",'"rev-t1"').send({nodes:[]}).expect(200);
+            calls[0].flow.should.eql({nodes:[], rev:"rev-t1"});
+            const res = await request(app).put("/flow/t1").set("Node-RED-API-Version","v2").set("If-Match",'W/"stale"').send({nodes:[]}).expect(409);
+            res.body.should.have.property("code","version_mismatch");
+        });
+        it("PUT v2 with If-Match and the same rev is accepted", async function() {
+            await request(app).put("/flow/t1").set("Node-RED-API-Version","v2").set("If-Match",'"rev-t1"').send({nodes:[], rev:"rev-t1"}).expect(200);
+        });
+        it("PUT v2 conflicting If-Match and rev returns 400 invalid_revision", async function() {
+            const res = await request(app).put("/flow/t1").set("Node-RED-API-Version","v2").set("If-Match",'"rev-t1"').send({nodes:[], rev:"other"}).expect(400);
+            res.body.should.have.property("code","invalid_revision");
+            calls.should.have.length(0);
+        });
+        it("If-Match ignored in v1", async function() {
+            await request(app).put("/flow/t1").set("If-Match",'"stale"').send({nodes:[]}).expect(200);
+            calls[0].flow.should.eql({nodes:[]});
+        });
+        it("PUT with stale rev returns 409", async function() {
+            const res = await request(app).put("/flow/t1").send({nodes:[], rev:"stale"}).expect(409);
+            res.body.should.have.property("code","version_mismatch");
+        });
+        it("invalid API version returns 400 invalid_api_version", async function() {
+            for (const req of [request(app).get("/flow/t1"), request(app).post("/flow").send({}), request(app).put("/flow/t1").send({})]) {
+                const res = await req.set("Node-RED-API-Version","v3").expect(400);
+                res.body.should.have.property("code","invalid_api_version");
+            }
+            calls.should.have.length(0);
+        });
+    });
 });
