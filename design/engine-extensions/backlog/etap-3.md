@@ -986,6 +986,10 @@ Funkcja: Przeładowanie flow po zmianie w magazynie
     pustej konfiguracji w stanie `ready`); wtyczka bez tablicy flow → `invalid_flows`; odczyt przy starcie bez zmian.
     Przy `readOnly`/`readOnlyUserDir` kopia `.backup` pustego pliku jest tylko czytana, nie kopiowana na plik
     (`strict_read_spec.js`, regresja z plikiem w `reload_spec.js`).
+  - utracone przeładowanie: cykl unieważniony przez operację bez zapisu magazynu (`POST /flows/state` w
+    `reloadPending`/drenażu – potok zwraca `skipped: "superseded"`; wdrożenie lokalne, które pada po
+    `begin("deploy")`, np. 400 `read_only_user_dir`) ustawia kolejny cykl, który porównuje rewizję magazynu z aktywną
+    i przeładowuje, gdy się różnią; po udanym wdrożeniu rewizje są równe – bez przeładowania (3 testy regresji).
 
 ---
 

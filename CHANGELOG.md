@@ -50,6 +50,10 @@ Features
    read error or an incomplete configuration - a missing, empty or invalid flow file of the file
    storage, a plugin result without an array of flows - is a failed read (retries, then `failed`)
    and never reloads an empty configuration. The read at start is unchanged
+ - A reload superseded by another operation on the instance (`POST /flows/state` during the
+   drain, or a deployment that fails after it started - for example 400 `read_only_user_dir`) is
+   not lost: the revision in storage is compared with the active one again and the reload is
+   resumed when they differ
  - New setting `editorOnly` (default `false`): an editor-only instance loads the flows and saves
    deployments but never starts the flows. The instance state is `loaded` (`/health/ready` 200),
    `runtimeFlowState` is neither read nor saved and safe mode is not ended by a deployment. With

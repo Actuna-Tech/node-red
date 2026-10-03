@@ -486,6 +486,67 @@ describe("flows/reload (Z-09)", function() {
             // the reload slot is released
             env.claims[0].release.calledOnce.should.be.true();
         });
+        it("a failed local deploy after begin(deploy) does not lose the reload (review regression)", async function() {
+            env = createEnv();
+            let payload;
+            const d = deferred();
+            hooks.add("preReload", p => { if (!payload) { payload = p; return d.promise } });
+            env.flows.setFlows = async function() {
+                const err = new Error("read-only user directory");
+                err.code = "read_only_user_dir";
+                err.status = 400;
+                throw err;
+            };
+            await env.start();
+            env.change("B");
+            env.notify();
+            await waitFor(() => !!payload);
+            const err = await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } }).then(() => null, e => e);
+            err.code.should.equal("read_only_user_dir");
+            payload.signal.aborted.should.be.true();
+            d.resolve();
+            // storage (B) differs from the active revision (A): the reload is resumed
+            await waitFor(() => env.applied.length === 1, 2000, "reload lost");
+            env.applied[0].rev.should.equal("B");
+            await waitFor(() => state.get().state === "ready");
+        });
+        ["stop", "start"].forEach(function(target) {
+            it("POST /flows/state " + target + " during the drain does not lose the reload (review regression)", async function() {
+                env = createEnv();
+                let payload;
+                const d = deferred();
+                hooks.add("preReload", p => { if (!payload) { payload = p; return d.promise } });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => !!payload);
+                // the same calls as api/flows.js setState
+                await lock.runExclusive(async function() {
+                    // stopped flows are not started by the reload
+                    env.idle = target === "stop";
+                    const token = state.begin("set-state", { supersede: true });
+                    state.end(token, target === "stop" ? { flowsRunning: false, reason: "set-state" } : { errors: [] });
+                });
+                d.resolve();
+                await waitFor(() => env.applied.length === 1, 2000, "reload lost");
+                env.applied[0].rev.should.equal("B");
+                await waitFor(() => state.get().state === (target === "stop" ? "idle" : "ready"));
+            });
+        });
+        it("a successful local deploy during the drain - no reload after it (storage = active)", async function() {
+            env = createEnv();
+            let payload;
+            hooks.add("preReload", p => { payload = p; return new Promise(() => {}) });
+            await env.start();
+            env.change("B");
+            env.notify();
+            await waitFor(() => !!payload);
+            await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } });
+            await waitFor(() => state.get().state === "ready");
+            await delay(30);
+            env.applied.should.have.length(0);
+            env.active.rev.should.equal("deployed");
+        });
         it("deployment waiting for the lock is not overtaken: reload and api deploy share one mutex", async function() {
             env = createEnv();
             const order = [];
