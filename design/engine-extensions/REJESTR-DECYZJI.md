@@ -52,15 +52,15 @@ kod `invalid_node_type` w katalogu.
 | R-20 | Z-09: `concurrency`, `preReload` bez weta, błąd odczytu magazynu (D-18), `retry`, D-17 | etap-3 p.7–11 | jak w kartach || **zgodnie z rekomendacją** – `concurrency` tylko liczbowo, bez łączności z koordynatorem czeka (stara konfiguracja działa); `preReload` bez weta, domyślnie 20 min; błąd odczytu → ponowienia, po wyczerpaniu `failed` i 503 (D-18); `deploy.reload.retry: { min: 1000, max: 60000, attempts }`; D-17 – dodatkowy `preReload` dla zmienionych flow (2026-10-03) |
 | R-21 | Z-10: semantyka `inject` (D-14), jawny wybór wtyczki, `mqtt in` w pakiecie?, test dwóch runtime'ów | etap-3 p.12–14 | D-14; jawnie; `mqtt in` osobno; jeden proces || **zgodnie z rekomendacją** – D-14 + status „standby”; wtyczka tylko jawnie (`coordination.plugin`); `mqtt in` w osobnym pakiecie; test dwóch instancji w jednym procesie, wieloprocesowy w osobnym podzbiorze (2026-10-03) |
 | R-22 | Z-08: stan w treści 503, zamykanie serwera HTTP, domyślny `shutdownTimeout` | etap-3 p.4–6 | stała treść; zamykanie tylko przy `health.enabled`; drenaż wyłączony domyślnie || **zgodnie z rekomendacją** – stała treść 503 `{"status":"unavailable"}`; zamykanie serwera HTTP tylko przy `health.enabled`; drenaż domyślnie wyłączony (bez `shutdownTimeout` jak dotąd); drugi SIGTERM → natychmiast (2026-10-03) |
-| R-23 | E-02: nazwy stanów i zdarzenia `instance:state` | etap-3 p.1 | jak w karcie | |
+| R-23 | E-02: nazwy stanów i zdarzenia `instance:state` | etap-3 p.1 | jak w karcie || **zgodnie z rekomendacją** – stany `init, starting, ready, deploying, reloadPending, reloading, idle, loaded, failed, stopping, stopped`; zdarzenie `instance:state` `{state, previous, reason}`; `RED.stop(reason)` (powód do `preShutdown` i logu); `init` = stan początkowy, `idle` = flow zatrzymane (korekta ANALIZA §4.2); nazwy jako kontrakt w MIGRACJA.md (2026-10-03) |
 
 ## Edytor – Z-12 (załącznik B)
 
 | ID | Temat | Źródło | Rekomendacja | Decyzja |
 |---|---|---|---|---|
-| R-24 | zakres spoza załącznika (`RED.deploy.addMenuItem`, `deployPre`), miejsce dokumentacji, okres deprecjacji, kolejność pakietów Z-12a…e | Z-12 P-1, P-2, P-11, P-12; etap-4 p.1–3 | | |
-| R-25 | 12.01 logowanie: wariant dostarczania skryptów, dodatkowe pola | Z-12 P-3, P-4 | | |
-| R-26 | 12.02 kod jednorazowy: źródło kodu, `sessionStorage` | Z-12 P-5, P-6 | | |
+| R-24 | zakres spoza załącznika (`RED.deploy.addMenuItem`, `deployPre`), miejsce dokumentacji, okres deprecjacji, kolejność pakietów Z-12a…e | Z-12 P-1, P-2, P-11, P-12; etap-4 p.1–3 | || **zgodnie z rekomendacją** – `RED.deploy.addMenuItem`, `deployPre`, dokumentacja `RED.view.annotations` poza Z-12 (osobny pakiet później); dokumentacja: JSDoc + `design/editor-api/`; deprecjacja min. jedna wersja minor z ostrzeżeniem; kolejność Z-12c → Z-12a → Z-12b → Z-12d → Z-12e (Z-01 równolegle), 07 może zostać odłożone (2026-10-03) |
+| R-25 | 12.01 logowanie: wariant dostarczania skryptów, dodatkowe pola | Z-12 P-3, P-4 | || **wariant A + `loginPost`** – skrypty logowania przez `editorTheme.page.scripts`/wtyczkę motywu (bez zmian serwera); dodatkowe pola przez krok `loginPost` z własną trasą pluginu (2026-10-03) |
+| R-26 | 12.02 kod jednorazowy: źródło kodu, `sessionStorage` | Z-12 P-5, P-6 | || **własna strategia + opcja `sessionStorage`** – kod wydaje strategia `adminAuth`/plugin, rdzeń przyjmuje `#code=…&next=…`; `sessionStorage` jako opcja, domyślnie `localStorage` (2026-10-03) |
 | R-27 | 12.08 uprawnienia: model „implikacja + `!`”, egzekucja serwerowa typów bloczków | Z-12 P-7, P-8 | | |
 | R-28 | 12.10 format linku z identyfikatorem flow | Z-12 P-9 | | |
 
