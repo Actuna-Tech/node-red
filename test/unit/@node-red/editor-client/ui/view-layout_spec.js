@@ -3,6 +3,7 @@
  *   FL-B-009: tests for the layout properties stored with a flow on export and deploy
  *   FL-B-005: tests for the select option of an unknown layout value
  *   Z-14: tests for the editorTheme.flowLayout.enabled setting and the layout options of a flow
+ *   FL-B-007: tests for the position of port label tooltips
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
@@ -460,6 +461,28 @@ describe("editor-client/ui/view-layout", function() {
             const flow = { id: "f1" };
             layout.getPersistedFlowOptions(flow, { "view-flow-layout": "TB" });
             flow.should.eql({ id: "f1" });
+        });
+    });
+
+    describe("getPortTooltipPosition (FL-B-007)", function() {
+        // The position is that of the top left corner of the 10x10 port
+        it("keeps the tooltips of a horizontal node at the side of the ports", function() {
+            layout.getPortTooltipPosition([100, 50], layout.PORT_TYPE_INPUT, "LR")
+                .should.eql({ x: 98, y: 55, direction: "left" });
+            layout.getPortTooltipPosition([100, 50], layout.PORT_TYPE_OUTPUT, "LR")
+                .should.eql({ x: 112, y: 55, direction: "right" });
+        });
+        it("shows the tooltip of an input of a vertical node above the port", function() {
+            layout.getPortTooltipPosition([100, 50], layout.PORT_TYPE_INPUT, "TB")
+                .should.eql({ x: 105, y: 48, direction: "top" });
+        });
+        it("shows the tooltip of an output of a vertical node below the port", function() {
+            layout.getPortTooltipPosition([100, 50], layout.PORT_TYPE_OUTPUT, "TB")
+                .should.eql({ x: 105, y: 62, direction: "bottom" });
+        });
+        it("treats an unknown orientation as horizontal", function() {
+            layout.getPortTooltipPosition([0, 0], layout.PORT_TYPE_OUTPUT, undefined)
+                .should.eql({ x: 12, y: 5, direction: "right" });
         });
     });
 

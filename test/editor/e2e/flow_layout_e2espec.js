@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-14, FL-B-010: end-to-end tests of flow layouts and import of flows with the same ids
  *   Z-14: run with editorTheme.flowLayout.enabled set; tests with the setting not set
+ *   FL-B-007: test of the position of port label tooltips
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -377,6 +378,78 @@ function contextMenuLabels(page, nodeId) {
             const count = await page.evaluate(() => RED.nodes.filterLinks({ source: RED.nodes.node("v3"), target: RED.nodes.node("v2") }).length);
             count.should.equal(1);
             await page.evaluate(() => RED.history.pop());
+        });
+    });
+
+    describe("port label tooltips (FL-B-007)", function() {
+        /** Hover over a port and get the bounding boxes of the port and its tooltip */
+        async function tooltipBox(selector) {
+            await page.mouse.move(5, 5);
+            await page.hover(selector);
+            await page.waitForSelector(".red-ui-flow-port-tooltip", { timeout: 3000 });
+            const result = await page.evaluate(selector => {
+                const box = el => {
+                    const r = el.getBoundingClientRect();
+                    return { x: r.x, y: r.y, w: r.width, h: r.height, cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
+                };
+                return {
+                    port: box(document.querySelector(selector)),
+                    tooltip: box(document.querySelector(".red-ui-flow-port-tooltip path")),
+                    text: box(document.querySelector(".red-ui-flow-port-tooltip text"))
+                };
+            }, selector);
+            await page.mouse.move(5, 5);
+            await page.waitForSelector(".red-ui-flow-port-tooltip", { state: "detached", timeout: 3000 });
+            return result;
+        }
+
+        async function setLabels(id) {
+            await page.evaluate(id => {
+                const n = RED.nodes.node(id);
+                n.inputLabels = ["input label"];
+                n.outputLabels = ["first", "second", "third"];
+            }, id);
+        }
+
+        async function clearLabels(id) {
+            await page.evaluate(id => {
+                const n = RED.nodes.node(id);
+                delete n.inputLabels;
+                delete n.outputLabels;
+            }, id);
+        }
+
+        it("shows the tooltips above the input and below the outputs in top to bottom layout", async function() {
+            await showFlow("tTB");
+            await setLabels("v1");
+            try {
+                const output = await tooltipBox("#v1 .red-ui-flow-port-output .red-ui-flow-port");
+                output.tooltip.y.should.be.aboveOrEqual(output.port.y + output.port.h - 1);
+                output.tooltip.cx.should.be.approximately(output.port.cx, 2);
+                // The label is inside the tooltip
+                output.text.y.should.be.aboveOrEqual(output.tooltip.y);
+                (output.text.y + output.text.h).should.be.belowOrEqual(output.tooltip.y + output.tooltip.h);
+                const input = await tooltipBox("#v1 .red-ui-flow-port-input .red-ui-flow-port");
+                (input.tooltip.y + input.tooltip.h).should.be.belowOrEqual(input.port.y + 1);
+                input.tooltip.cx.should.be.approximately(input.port.cx, 2);
+            } finally {
+                await clearLabels("v1");
+            }
+        });
+
+        it("keeps the tooltips at the side of the ports in left to right layout", async function() {
+            await showFlow("tLR");
+            await setLabels("h1");
+            try {
+                const output = await tooltipBox("#h1 .red-ui-flow-port-output .red-ui-flow-port");
+                output.tooltip.x.should.be.aboveOrEqual(output.port.x + output.port.w - 1);
+                output.tooltip.cy.should.be.approximately(output.port.cy, 2);
+                const input = await tooltipBox("#h1 .red-ui-flow-port-input .red-ui-flow-port");
+                (input.tooltip.x + input.tooltip.w).should.be.belowOrEqual(input.port.x + 1);
+                input.tooltip.cy.should.be.approximately(input.port.cy, 2);
+            } finally {
+                await clearLabels("h1");
+            }
         });
     });
 

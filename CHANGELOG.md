@@ -45,6 +45,8 @@ See `design/flow-layout/` for the analysis, documentation and work log.
    default and the replacement can be undone (FL-B-010)
  - Editor: an imported subflow matches an identical existing subflow whatever the order
    of its properties, instead of creating a duplicate (FL-B-006)
+ - Editor: port label tooltips of top-to-bottom nodes are shown above the input and
+   below the outputs instead of at their side (FL-B-007)
  - Tests: unit tests for the layout geometry, runtime diff and flow API, Playwright
    end-to-end tests including export/import (`npm run test:e2e`)
 
