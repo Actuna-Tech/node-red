@@ -18,10 +18,12 @@
 
 ### 2.1 Nazwy ustawień
 
+> **Rewizja D-02 (2026-10-03):** dwie niezależne analizy potwierdziły wszystkie nazwy – [NAZWY-ANALIZA.md](NAZWY-ANALIZA.md). Kolumna „Propozycja zlecenia” poniżej jest **oficjalną tabelą mapowania** nazw ze zlecenia/załącznika A na nazwy forka (do protokołu odbioru).
+
 | Pakiet | Propozycja zlecenia | **Rekomendacja** | Uzasadnienie |
 |---|---|---|---|
 | P-01 | `flows.deployResponse` | `deploy.response: "stopped" \| "started"` | wspólny obiekt `deploy` dla P-01/Z-04/Z-05; w `settings.js` nie ma przestrzeni `flows` (są `flowFile`, `flowFilePretty`), a `flows` myli się z plikiem flow |
-| P-02 | `editor.staleFlowsPolicy` | `editorTheme.deploy.staleFlows: "prompt" \| "reload-only"` | ustawienia funkcjonalne edytora są w `editorTheme` (`projects`, `multiplayer`); klucz `editor` jest używany przez **ustawienia użytkownika** w runtime (`RED.settings.get('editor')`) – kolizja znaczeń |
+| P-02 | `editor.staleFlowsPolicy` | `editorTheme.deploy.staleFlows: "prompt" \| "reload-only"` | ustawienia funkcjonalne edytora są w `editorTheme` (`projects`, `multiplayer`); kolizja klucza `editor` występuje **w edytorze**: `RED.settings.get()` najpierw czyta ustawienia użytkownika, a `userSettings.js:353-356` zapisuje `editor` z powrotem do profilu – polityka serwera utrwaliłaby się w profilu użytkownika (korekta: w runtime mapy są rozdzielone) |
 | P-03 | `telemetry.locked` | `telemetry.locked` (bez zmian) | obiekt `telemetry` już istnieje w `settings.js` |
 | Z-02 | `httpAdminNodeRoutes` | `httpAdminNodeRoutes: "open" \| "authenticated"` (bez zmian) | spójne z `httpAdminRoot`, `httpAdminMiddleware`; API: `RED.auth.publicRoute()` zamiast `RED.auth.public()` (czytelne jako wywołanie, nie właściwość) |
 | Z-04 | `flows.putCreates` | `deploy.putCreatesFlow: false` | jw. – obiekt `deploy` |
@@ -59,7 +61,8 @@ Sprawdzone w szablonie `packages/node_modules/node-red/settings.js` i w kodzie (
 | `externalModules.palette.allowDowngrade` | spójne z `allowInstall`, `allowUpdate`, `allowUpload` | **przyjęte** (domyślnie `true` = 5.0.6) |
 | `editorTheme.flowLayout` | spójne z `editorTheme.codeEditor`, `markdownEditor` | **przyjęte** |
 | hooki `preDeploy`, `postDeploy`, `preReload`, `preShutdown` | konwencja `pre*/post*` jak `preInstall/postInstall` | **przyjęte** (rozszerzenie `VALID_HOOKS`) |
-| `RED.auth.publicRoute()`, `node.registerHttpRoute()`, `RED.coordination` | brak kolizji w API węzłów (`registry/lib/util.js`) | **przyjęte** |
+| `RED.auth.publicRoute()`, `node.registerHttpRoute()`, `RED.coordination` | brak kolizji w API węzłów (`registry/lib/util.js`); `registerRoute` dwuznaczne z trasowaniem komunikatów (`preRoute`) | **przyjęte** |
+| klucze zarezerwowane | reguła prefiksu `registerNodeSettings` (`runtime/lib/settings.js:127-158`): węzeł o typie `deploy`, `flows`, `health`, `coordination` mógłby wyeksportować cały obiekt ustawień do edytora | **dodać listę kluczy zarezerwowanych** (odrzucenie rejestracji takiego ustawienia węzła) |
 | kody błędów `snake_case` | jak istniejące `version_mismatch`, `module_already_loaded`, `invalid_request` | **przyjęte** |
 
 ### 2.2 Wersja bazowa
@@ -115,7 +118,7 @@ Bez ustawionego `shutdownTimeout` – zachowanie 5.0.6 (natychmiastowe zatrzyman
 
 ### 2.4 Katalog kodów błędów (propozycja)
 
-Konwencja: `snake_case` we wszystkich polach `code` (także `errors[].code` z E-01); odpowiedź
+`version` w kodach błędów oznacza **rewizję flow (`rev`)**, nie wersję API. Konwencja: `snake_case` we wszystkich polach `code` (także `errors[].code` z E-01); odpowiedź
 `{ code, message, rev? }`; istniejące kody bez zmian.
 
 | Kod | HTTP | Pakiet | Kiedy |

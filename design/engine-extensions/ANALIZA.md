@@ -270,7 +270,7 @@ trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od dzia
 | **D-19** | nagłówki „Modified by Actuna Sp. z o.o.” (pkt 4(b) licencji Apache 2.0) **zachowane w forku** | w kodzie forka i jego dystrybucji nagłówki zostają i są dopisywane także do plików zmienionych przez nas (np. `view.js`); gałęzie przygotowane do ewentualnego zgłoszenia upstream (dziś zablokowane) – bez nagłówków (prawa przenosi CLA); E-04 zmienione z „usunięcie atrybucji” na „nagłówki o modyfikacji wg pkt 4(b)” |
 | **D-20** | kod błędu `version_required` (jak w łatce 0006) zamiast `revision_required` | ZASADY §2.4, karty P-02, Z-05 |
 | **D-21** | adres autora commitów i `Signed-off-by`: `wrepinski@gmail.com` | konfiguracja repozytorium zmieniona (od commita po 2026-10-03, po przekazaniu załączników) |
-| D-02 (rewizja) | ponowna analiza nazw ustawień przez agentów architekta i analityka (model Fable) – zlecona po przekazaniu załącznika A, który podaje dawne nazwy | wynik: [NAZWY-ANALIZA.md](NAZWY-ANALIZA.md) (w przygotowaniu) |
+| D-02 (rewizja) | ponowna analiza nazw przez architekta i analityka (model Fable): **rekomendacja – utrzymać D-02 w całości** (do potwierdzenia przez Zamawiającego) | [NAZWY-ANALIZA.md](NAZWY-ANALIZA.md): uzupełnienia U1–U8, notatka migracyjna jako warunek odbioru P-01, pytania N-01…N-04 |
 
 ### 7.1 Do podjęcia
 
