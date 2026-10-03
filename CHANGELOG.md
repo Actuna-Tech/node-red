@@ -59,7 +59,8 @@ Features
    `runtimeFlowState` is neither read nor saved and safe mode is not ended by a deployment. With
    `deploy.response: "started"` deployments answer `{rev, started: false}` (`POST /flows`, and
    `POST /flow`, `PUT /flow/:id` with the v2 api). `POST /flows/state` start answers 409
-   `editor_only`, stop has no effect. Debug messages, node status and admin routes of node
+   `editor_only`, stop has no effect. Missing node types only log a warning (the state stays
+   `loaded`, not `failed`) and the modules of the function node are not installed. Debug messages, node status and admin routes of node
    instances are not available on such an instance
 
 Editor

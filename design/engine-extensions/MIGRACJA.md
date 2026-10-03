@@ -188,7 +188,10 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 - **Instancja tylko edycyjna** (`editorOnly: true`, R-19): przyciski węzłów (m.in. `inject`) i akcja „Restart flows”
   w edytorze nieaktywne z podpowiedzią (R-39); `POST /flows/state` start → 409 `editor_only`; wdrożenie w trybie
   `deploy.response: "started"` → `{rev, started: false}` (R-39; także `POST /flow` i `PUT /flow/:id` w v2);
-  brakujące typy węzłów nadal dają stan `failed` (503) – instalować na instancji edycyjnej te same moduły.
+  brakujące typy węzłów **nie** dają stanu `failed` – instancja raportuje `loaded` (`/ready` 200) z ostrzeżeniem w logu
+  (`nodes.flows.editor-only-missing-types`), a moduły węzła Function nie są instalowane (`checkFlowDependencies` nie
+  jest wołane). Edytor pokazuje nieznane typy jak zwykle; walidację kompletności modułów przenieść do CI lub instancji
+  wykonawczej (tam brakujące typy nadal dają `failed`).
 
 ### 4.6 Połączenie `/comms` (P-04)
 

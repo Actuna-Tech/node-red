@@ -1620,6 +1620,49 @@ describe('flows/index', function() {
             settingsGet.calledWith("runtimeFlowState").should.be.false();
             settingsSet.called.should.be.false();
         });
+        function loadConfig(settings, config, log) {
+            storage.getFlows = function() {
+                return Promise.resolve({flows:clone(config), rev:"loadedRev"});
+            };
+            flows.init({log:log || mockLog, settings:settings, storage:storage});
+            return flows.load().then(function() {
+                return flows.startFlows();
+            });
+        }
+        function keyLog() {
+            const log = {warn: sinon.spy(), info: sinon.spy(), debug: sinon.spy(), trace: sinon.spy(), error: sinon.spy(), log: sinon.spy(), metric: sinon.spy()};
+            log._ = function(key, params) { return key + (params ? " " + JSON.stringify(params) : "") };
+            return log;
+        }
+        it('editorOnly: missing types - loaded (not failed) with a warning in the log (review regression)', async function() {
+            const log = keyLog();
+            const result = await loadConfig(editorSettings(), [{id:"t1-1",z:"t1",type:"missing"},{id:"t1",type:"tab"}], log);
+            result.should.eql({errors:[], flowsRunning:false, reason:"editor-only"});
+            instanceState.get().state.should.equal("loaded");
+            instanceState.isReady().should.be.true();
+            log.warn.args.some(a => String(a[0]).indexOf("nodes.flows.editor-only-missing-types") === 0 && String(a[0]).indexOf("missing") !== -1).should.be.true();
+            runtimeEvents.some(e => e.id === "runtime-state" && e.payload && e.payload.error === "missing-types").should.be.false();
+        });
+        it('editorOnly: checkFlowDependencies (modules of the function node) is not called (review regression)', async function() {
+            checkFlowDependencies.resetHistory();
+            const result = await loadConfig(editorSettings(), [{id:"node-with-missing-modules",z:"t1",type:"test"},{id:"t1",type:"tab"}]);
+            checkFlowDependencies.called.should.be.false();
+            result.errors.should.eql([]);
+            instanceState.get().state.should.equal("loaded");
+        });
+        it('editorOnly: a deployment with missing types is not a start error', async function() {
+            await loadWith(editorSettings());
+            const next = clone(okConfig).concat([{id:"t1-2",z:"t1",type:"missing",wires:[]}]);
+            await flows.setFlows(next, null, "full", false, false, null, {waitForStart:true});
+            storage.conf.flows.should.eql(next);
+            flowCreate.called.should.be.false();
+        });
+        it('default: missing types still fail the start (unchanged)', async function() {
+            checkFlowDependencies.resetHistory();
+            const result = await loadConfig({}, [{id:"t1-1",z:"t1",type:"missing"},{id:"t1",type:"tab"}]);
+            result.errors[0].should.have.property("code","missing_types");
+            instanceState.get().state.should.equal("failed");
+        });
         it('editorOnly: start ends in loaded (ready probe 200, D-13)', async function() {
             await loadWith(editorSettings());
             instanceState.get().state.should.equal("loaded");
