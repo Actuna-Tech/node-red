@@ -778,6 +778,104 @@ function sendJSON(method, url, body) {
                 restored.instances.should.eql(["iImp"]);
             });
 
+            it("replaces a flow with a new subflow from another instance; undo and redo keep the instance (FL-B-010)", async function() {
+                await createFlowWithSubflow();
+                // The same flow exported from another instance, now using a subflow
+                // that does not exist here
+                const exported = [
+                    { id: "tImp", type: "tab", label: "Import test (remote)", disabled: false, info: "", env: [], layout: "TB" },
+                    { id: "sfNew", type: "subflow", name: "Import subflow (remote)", info: "", category: "",
+                        in: [{ x: 60, y: 40, wires: [{ id: "sfNewN" }] }], out: [{ x: 300, y: 40, wires: [{ id: "sfNewN", port: 0 }] }], env: [], color: "#DDAA99" },
+                    { id: "sfNewN", type: "change", z: "sfNew", name: "", rules: [], x: 180, y: 120, wires: [[]] },
+                    { id: "iNew", type: "subflow:sfNew", z: "tImp", name: "", x: 300, y: 200, wires: [[]] }
+                ];
+                await startImport(exported);
+                await page.click(".red-ui-notification button:has-text('View nodes')");
+                await page.waitForSelector("#red-ui-clipboard-dialog-import-conflict", { state: "visible" });
+                await page.evaluate(() => {
+                    $('.red-ui-clipboard-dialog-import-conflicts-controls input[data-node-id="tImp"]').prop("checked", true);
+                });
+                await page.click("#red-ui-clipboard-dialog-import-conflict");
+                await page.waitForTimeout(500);
+
+                const state = () => page.evaluate(() => {
+                    const sf = RED.nodes.subflow("sfNew");
+                    const iNew = RED.nodes.node("iNew");
+                    return {
+                        label: RED.nodes.workspace("tImp").label,
+                        nodes: RED.nodes.filterNodes({ z: "tImp" }).map(n => n.id).sort(),
+                        subflow: !!sf,
+                        instance: iNew ? { type: iNew.type, outputs: iNew.outputs } : null,
+                        instances: sf ? sf.instances.map(n => n.id) : null,
+                        oldInstances: RED.nodes.subflow("sfImp").instances.map(n => n.id)
+                    };
+                });
+                const replaced = await state();
+                replaced.should.eql({
+                    label: "Import test (remote)", nodes: ["iNew"], subflow: true,
+                    instance: { type: "subflow:sfNew", outputs: 1 }, instances: ["iNew"], oldInstances: []
+                });
+                await showFlow("tImp");
+                (await page.$$("#red-ui-workspace-chart .red-ui-flow-node-unknown")).should.have.length(0);
+
+                // Undo restores the flow and removes the new subflow
+                await page.evaluate(() => RED.history.pop());
+                await page.waitForTimeout(300);
+                (await state()).should.eql({
+                    label: "Import test", nodes: ["iImp"], subflow: false,
+                    instance: null, instances: null, oldInstances: ["iImp"]
+                });
+
+                // Redo brings back the subflow before the flow content that uses it
+                await page.evaluate(() => RED.history.redo());
+                await page.waitForTimeout(300);
+                (await state()).should.eql(replaced);
+            });
+
+            it("replaces a flow with a new config node from another instance (FL-B-010)", async function() {
+                await createFlowWithSubflow();
+                const exported = [
+                    { id: "tImp", type: "tab", label: "Import test (remote)", disabled: false, info: "", env: [] },
+                    { id: "cfgNew", type: "mqtt-broker", name: "Import broker", broker: "localhost", port: "1883" },
+                    { id: "mqNew", type: "mqtt in", z: "tImp", name: "", topic: "t", qos: "2", datatype: "auto-detect", broker: "cfgNew", x: 200, y: 120, wires: [[]] }
+                ];
+                await startImport(exported);
+                await page.click(".red-ui-notification button:has-text('View nodes')");
+                await page.waitForSelector("#red-ui-clipboard-dialog-import-conflict", { state: "visible" });
+                await page.evaluate(() => {
+                    $('.red-ui-clipboard-dialog-import-conflicts-controls input[data-node-id="tImp"]').prop("checked", true);
+                });
+                await page.click("#red-ui-clipboard-dialog-import-conflict");
+                await page.waitForTimeout(500);
+
+                const state = () => page.evaluate(() => {
+                    const cfg = RED.nodes.node("cfgNew");
+                    const mq = RED.nodes.node("mqNew");
+                    return {
+                        nodes: RED.nodes.filterNodes({ z: "tImp" }).map(n => n.id).sort(),
+                        // the users are the nodes in the flow (not stale objects)
+                        users: cfg ? cfg.users.map(n => n === RED.nodes.node(n.id) ? n.id : "stale:" + n.id) : null,
+                        broker: mq ? mq.broker : null
+                    };
+                });
+                const removeConfig = () => page.evaluate(() => {
+                    if (RED.nodes.node("cfgNew")) { RED.nodes.remove("cfgNew"); }
+                });
+                try {
+                    (await state()).should.eql({ nodes: ["mqNew"], users: ["mqNew"], broker: "cfgNew" });
+                    // Undo restores the flow and removes the new config node
+                    await page.evaluate(() => RED.history.pop());
+                    await page.waitForTimeout(300);
+                    (await state()).should.eql({ nodes: ["iImp"], users: null, broker: null });
+                    // Redo adds the config node before the flow content that uses it
+                    await page.evaluate(() => RED.history.redo());
+                    await page.waitForTimeout(300);
+                    (await state()).should.eql({ nodes: ["mqNew"], users: ["mqNew"], broker: "cfgNew" });
+                } finally {
+                    await removeConfig();
+                }
+            });
+
             it("imports a copy of the flow and subflow with the imported layout and keeps the existing ones", async function() {
                 await createFlowWithSubflow();
                 const exported = await exportJSON("flow");

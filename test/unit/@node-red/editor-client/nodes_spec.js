@@ -3,6 +3,7 @@
  *   FL-B-009: tests for exporting the effective editor default layout of flows
  *   FL-B-009: tests for matching an imported subflow exported with the editor default layout
  *   FL-B-010: tests for replacing a flow with the same id on import
+ *   FL-B-010: tests for replacing a flow after the rest of the import, copies, change flags and failures
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
@@ -387,6 +388,136 @@ describe("editor-client/nodes", function() {
             RED.nodes.subflow("sf1").should.have.property("name", "local");
             RED.nodes.subflow("sf1").instances.map(function(n) { return n.id; }).sort().should.eql(["i1", "i2"]);
             idsOn("t1").should.eql(["c1", "g1", "i1", "j1", "li1", "n1", "n2"]);
+        });
+
+        function importMapFor(nodes, map) {
+            const importMap = {};
+            nodes.forEach(function(n) {
+                const v = map[n.id] || map[n.z];
+                if (v) { importMap[n.id] = v; }
+            });
+            return importMap;
+        }
+
+        it("replaces a flow that uses a new subflow from the same import", function() {
+            RED.nodes.import(existingFlows());
+            const imported = [
+                { id: "sfN", type: "subflow", name: "New subflow", info: "", in: [{ x: 50, y: 30, wires: [{ id: "sfNn1" }] }], out: [], env: [] },
+                { id: "sfNn1", type: "test-node", z: "sfN", name: "in subflow", x: 100, y: 50, wires: [[]] }
+            ].concat(importedFlow());
+            imported.push({ id: "i9", type: "subflow:sfN", z: "t1", x: 100, y: 350, wires: [] });
+            RED.nodes.import(imported, { importMap: importMapFor(imported, { t1: "replace" }) });
+
+            const instance = RED.nodes.node("i9");
+            should.exist(instance);
+            instance.should.have.properties({ type: "subflow:sfN", z: "t1", inputs: 1 });
+            instance._def.should.equal(RED.nodes.getType("subflow:sfN"));
+            RED.nodes.subflow("sfN").instances.map(function(n) { return n.id; }).should.eql(["i9"]);
+            idsOn("t1").should.eql(["i9", "li1", "n1", "n3"]);
+        });
+
+        it("replaces a flow that uses a new config node from the same import", function() {
+            RED.nodes.import(existingFlows());
+            const imported = [{ id: "c9", type: "test-config", name: "new config" }].concat(importedFlow());
+            imported[2].cfg = "c9";
+            RED.nodes.import(imported, { importMap: importMapFor(imported, { t1: "replace" }) });
+
+            RED.nodes.node("n1").should.have.property("cfg", "c9");
+            RED.nodes.node("c9").users.map(function(n) { return n.id; }).should.eql(["n1"]);
+        });
+
+        it("points a replaced flow at the copy of a config node / subflow chosen as copy", function() {
+            const existing = existingFlows();
+            existing.push({ id: "cg", type: "test-config", name: "global config" });
+            existing.push({ id: "sf1", type: "subflow", name: "Subflow", info: "", in: [{ x: 50, y: 30, wires: [] }], out: [], env: [] });
+            existing.push({ id: "sfn1", type: "test-node", z: "sf1", name: "local", x: 100, y: 50, wires: [[]] });
+            existing.push({ id: "m3", type: "test-node", z: "t2", name: "uses global", cfg: "cg", x: 300, y: 250, wires: [[]] });
+            RED.nodes.import(existing);
+
+            const imported = [
+                { id: "cg", type: "test-config", name: "imported global config" },
+                { id: "sf1", type: "subflow", name: "Imported subflow", info: "", in: [], out: [{ x: 50, y: 30, wires: [] }], env: [] },
+                { id: "sfn1", type: "test-node", z: "sf1", name: "imported", x: 100, y: 50, wires: [[]] }
+            ].concat(importedFlow());
+            imported[4].cfg = "cg";
+            imported.push({ id: "i9", type: "subflow:sf1", z: "t1", x: 100, y: 350, wires: [] });
+            RED.nodes.import(imported, { importMap: importMapFor(imported, { cg: "copy", sf1: "copy", t1: "replace" }) });
+
+            // The config node copy is used by the replaced flow
+            const n1 = RED.nodes.node("n1");
+            n1.cfg.should.not.equal("cg");
+            const copy = RED.nodes.node(n1.cfg);
+            should.exist(copy);
+            copy.should.have.properties({ type: "test-config", name: "imported global config" });
+            copy.users.map(function(n) { return n.id; }).should.eql(["n1"]);
+            RED.nodes.node("cg").should.have.property("name", "global config");
+            RED.nodes.node("cg").users.map(function(n) { return n.id; }).should.eql(["m3"]);
+
+            // The instance uses the subflow copy
+            const instance = RED.nodes.node("i9");
+            instance.type.should.not.equal("subflow:sf1");
+            const sfCopy = RED.nodes.subflow(instance.type.substring(8));
+            should.exist(sfCopy);
+            sfCopy.should.have.property("name", "Imported subflow");
+            sfCopy.instances.map(function(n) { return n.id; }).should.eql(["i9"]);
+            instance.should.have.properties({ inputs: 0, outputs: 1 });
+            RED.nodes.subflow("sf1").should.have.property("name", "Subflow");
+            RED.nodes.subflow("sf1").instances.should.have.length(0);
+        });
+
+        it("remaps only references when an imported id is used in another flow", function() {
+            RED.nodes.import(existingFlows());
+            const imported = importedFlow();
+            imported.push({ id: "m2", type: "test-node", z: "t1", name: "m2", x: 300, y: 250, wires: [["n1"]] });
+            imported[2].name = "n3";
+            RED.nodes.import(imported, { importMap: replaceMap(imported) });
+            const clash = RED.nodes.filterNodes({ z: "t1" }).filter(function(n) { return n.id !== "n1" && n.id !== "n3" && n.id !== "li1"; })[0];
+            clash.id.should.not.equal("m2");
+            // A name equal to a remapped id is not a reference
+            clash.should.have.property("name", "m2");
+        });
+
+        it("undo of a flow replace restores changed flags", function() {
+            RED.nodes.import(existingFlows());
+            RED.nodes.node("n2").changed = true;
+            RED.nodes.node("n2").moved = true;
+            should.not.exist(RED.nodes.workspace("t1").changed);
+
+            const imported = importedFlow();
+            const result = RED.nodes.import(imported, { importMap: replaceMap(imported), markChanged: true });
+            RED.nodes.workspace("t1").should.have.property("changed", true);
+            RED.nodes.node("n1").should.have.property("changed", true);
+
+            // History undo: RED.nodes.import(config, { importMap }) without markChanged
+            const undo = RED.nodes.import(result.removedNodes, { importMap: replaceMap(result.removedNodes) });
+            RED.nodes.workspace("t1").changed.should.be.false();
+            RED.nodes.node("n1").changed.should.be.false();
+            RED.nodes.node("n2").should.have.properties({ changed: true, moved: true });
+            RED.nodes.junction("j1").changed.should.be.false();
+
+            // Redo restores the flags of the replaced flow
+            RED.nodes.import(undo.removedNodes, { importMap: replaceMap(undo.removedNodes) });
+            RED.nodes.workspace("t1").should.have.property("changed", true);
+            RED.nodes.node("n1").should.have.property("changed", true);
+            RED.nodes.node("n3").should.have.property("changed", true);
+        });
+
+        it("restores the flow when the import fails", function() {
+            RED.nodes.import(existingFlows());
+            RED.editor.validateNode = function(node) {
+                if (node.name === "imported 3") { throw new Error("validation failed"); }
+            };
+            const imported = importedFlow();
+            (function() {
+                RED.nodes.import(imported, { importMap: replaceMap(imported), markChanged: true });
+            }).should.throw("validation failed");
+
+            const flow = RED.nodes.workspace("t1");
+            flow.should.have.properties({ label: "Local", info: "local info", disabled: false, layout: "LR", wireStyle: "orthogonal" });
+            idsOn("t1").should.eql(["c1", "g1", "j1", "li1", "n1", "n2"]);
+            RED.nodes.node("n1").should.have.properties({ name: "local 1", g: "g1", cfg: "c1" });
+            wiresOf("n1").should.eql(["j1"]);
+            RED.nodes.node("c1").users.map(function(n) { return n.id; }).should.eql(["n1"]);
         });
 
         it("still imports a flow with the same id as a copy", function() {
