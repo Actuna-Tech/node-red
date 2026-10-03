@@ -32,7 +32,7 @@
 | Z-06 | – | `deploy.hookTimeout: 30000` (ms) | hook `preDeploy` działa pod blokadą wdrożeń – limit chroni przed zablokowaniem API |
 | Z-09 | – | `deploy.reload: { watch: false, type: "full" \| "diff", preReloadTimeout: 1200000, concurrency: <opcjonalnie> }` | `type` domyślnie `"full"` (jak dzisiejszy `reload`); dla długich rozmów rekomendowane `"diff"`; `concurrency` wymaga wtyczki koordynacji (Z-10) |
 | Z-10 | – | `coordination: { plugin, options }`; właściwość węzła `inject`: `singleInstance` | wybór wtyczki jak `contextStorage`; domyślnie wtyczka lokalna |
-| Z-03 | – | `externalModules.palette.allowDowngrade: false` | jawna zgoda na instalację starszej wersji z `.tgz` |
+| Z-03 | – | `externalModules.palette.allowDowngrade: true` (domyślnie = zachowanie 5.0.6) | `false` blokuje instalację starszej wersji z `.tgz` (rekomendowane w produkcji); domyślna wartość nie zmienia dzisiejszego zachowania (DoD §3) |
 | Z-08 | – | `health.host` (opcjonalnie), `health.shutdownTimeout: 30000`; API osadzających `RED.health` | drenaż przy SIGTERM (D-11) z limitem |
 | E-02 | – | zdarzenie `instance:state`, odczyt `runtime.state` | jedno źródło stanu dla P-01, Z-08, Z-09, Z-15 |
 | Z-12 | – | `RED.header`, `RED.dialog`, `RED.deploy.addMenuItem`, hook edytora `deployPre` | robocze – do potwierdzenia po załączniku B |
@@ -52,9 +52,10 @@ Wspólna kolejność kroków (rozstrzygnięcia K-1…K-3 z [PRZEGLAD.md](PRZEGLA
  1. przyjęcie żądania (źródło: api | internal)
  ── blokada wdrożeń (mutex, runtime/lib/api/flows.js) ──────────────────────────
  2. kontrola rewizji            – istniejące 409 version_mismatch; Z-05 revision_required; Z-04 rewizja flow
+       (typ reload: odczyt magazynu tutaj, pod blokadą – preDeploy w kroku 3 widzi treść, która zostanie uruchomiona)
  3. hook preDeploy              – Z-06; tylko walidacja, limit deploy.hookTimeout; odrzucenie → 400 deploy_rejected
  4. stan = "deploying"          – E-02 / Z-08 (/ready → 503)
- 5. zapis do magazynu           – (typ reload: odczyt z magazynu zamiast zapisu)
+ 5. zapis do magazynu           – (typ reload: brak zapisu – treść odczytana w kroku 2)
  6. zatrzymanie zmienionych węzłów
        tryb domyślny: jak 5.0.6 (błędy zatrzymania połykane – D-05);
        tryb deploy.response="started": błąd zatrzymania → 500 deploy_stop_failed (z rev)
@@ -103,7 +104,8 @@ Konwencja: `snake_case` we wszystkich polach `code` (także `errors[].code` z E-
 | `deploy_start_failed` | 500 | P-01 | tryb `started`: błąd startu (zawiera `rev` i `errors[]`) |
 | `invalid_flow_id` | 400 | Z-04 | `PUT /flow/:id` z niedozwolonym id przy `deploy.putCreatesFlow` |
 | `duplicate_id` | 400 | Z-04 | id węzła/konfiguracji należy do innego flow |
-| `module_downgrade_not_allowed` | 400 | Z-03 | `.tgz` ze starszą wersją bez `allowDowngrade` |
+| `module_downgrade_not_allowed` | 400 | Z-03 | `.tgz` ze starszą wersją przy `allowDowngrade: false` |
+| `invalid_node_type` | 400 | Z-04 | węzeł w `globalConfigs[]` nie jest węzłem konfiguracyjnym |
 | `upload_not_allowed` | 400 | **Z-03 (nowy kod)** | upload wyłączony – dziś `Error` bez kodu / `invalid_request` |
 | `read_only_user_dir` | 400 | Z-11 | operacja wymagająca zapisu przy `readOnlyUserDir: true` |
 | `editor_only` | 409 | Z-15 | operacja wymagająca działających flow (np. `inject`) na instancji edycyjnej |

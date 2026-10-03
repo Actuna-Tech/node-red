@@ -837,3 +837,24 @@ Funkcja: Trasy HTTP w kontekście węzła
 12. **Z-06 – limit czasu i moment `postDeploy`:** czy `deploy.hookTimeout` (30 s, ZASADY §2.1) jest akceptowalny? Prosimy o zatwierdzenie propozycji ZASADY §2.3: `postDeploy` asynchronicznie po odpowiedzi (także w trybie P-01 `started`), błąd tylko w logu.
 13. **Z-06 – zakres ścieżek:** czy start runtime i przełączenie projektu mają wywoływać hooki (rekomendacja: nie – to nie wdrożenia)?
 14. **Z-07 – zgodność:** czy wymagany przełącznik awaryjny przywracający dotychczasową rejestrację `http in` (moduły czytające `_router.stack`)? Czy usunięcie zależności `rawBodyCapture` od `_router` ma być w tym pakiecie, czy osobno?
+15. **Z-04 – kod `invalid_node_type`:** kod nie występuje w katalogu ZASADY §2.4. Dopisać go do katalogu (400, Z-04) czy użyć istniejącego `invalid_request` dla `globalConfigs[]` z typem `tab`/`subflow`/`group`?
+
+## Zmiany po przeglądzie
+
+Poprawki z [../PRZEGLAD.md](../PRZEGLAD.md) („Lista poprawek do naniesienia”), zgodnie z zaktualizowanymi ZASADY §2.1/§2.3/§2.4 i ANALIZA §4.9, §6.2, §7:
+
+- **#1** – Z-06: Ryzyka i Projekt pkt 4 – `postDeploy` asynchronicznie po odpowiedzi, poza blokadą, błąd tylko w logu (ZASADY §2.3 A, krok 11); Niezmienniki, scenariusz „Kolejność wywołań” i test kolejności poprawione (`runtime-deploy` → odpowiedź → `postDeploy`); nowy scenariusz „postDeploy nie wstrzymuje odpowiedzi ani kolejnych wdrożeń”.
+- **#3** – „Kolejność realizacji”: Z-04 → Z-05 → Z-06 (Z-05 zależy od Z-04), dwa tory wg ANALIZA §6.2 (tor B: Z-03 → Z-07); zależności Z-05 w tabeli i karcie zgodne.
+- **#4** – Z-05: integracja edytora (wymuszone nadpisanie wg D-12, `revision_required`) dotyka `deploy.js` po scaleniu P-02; P-02 → Z-05 tylko miękko (brak cyklu); nowy scenariusz „Overwrite niedostępny w reload-only”; Pytanie 10 → zatwierdzenie D-12.
+- **#5** – Z-06: zależność od Z-09 zastąpiona „punktem integracji wykorzystywanym przez Z-09” (tabela, karta).
+- **#6** – Z-06 Projekt pkt 3: jawny `reload` przez API → `preDeploy` i `postDeploy`; przeładowanie z magazynu → tylko `postDeploy` (`source:"storage"`); własny mechanizm „odczyt przed hookiem” usunięty na rzecz mechanizmu E-01 (`readFlowsFromStorage` + `deploy({loaded})`); scenariusze i testy obu ścieżek; `source` ujednolicone do `api|internal|storage`.
+- **#15** – oznaczenie `[odbiór]` w scenariuszach Z-03, Z-04, Z-05, Z-06, Z-07 + objaśnienie konwencji pod „Kolejnością realizacji”.
+- **#16** – Z-03: scenariusz warunkowy „Potwierdzenie w edytorze przed instalacją” (po decyzji o `dryRun`, Pytanie 3), warunkowe podzadanie i test.
+- **#19 (Z-03)** – `upload_not_allowed` zdefiniowany jako nowy kod 400 (ZASADY §2.4) w Specyfikacji, Projekcie, BDD, Testach, DoD, Ryzykach; usunięte „kody bez zmian”.
+- **#22** – Z-05: poprawka `deploy.js:390` (`nns`) tylko jako odwołanie do P-02 (Weryfikacja, Projekt, BDD, Testy, DoD, Podzadania).
+- **#25** – Z-06: semantyka `invokeStack` (odrzucenie `undefined` nie przerywa łańcucha; rozwiązanie wartością ≠ `undefined` = błąd) w Weryfikacji; owinięcie handlerów hooków wdrożenia w Projekcie pkt 1; scenariusze, testy, DoD, Ryzyko, podzadanie.
+- **#29** – Z-06: szacunek „M–L” → L.
+- **#31** – Z-07: scenariusz „Kolejność middleware i tras zachowana” (rawBodyCapture przed trasami węzłów, middleware przed trasą węzła, trasy modułu przed dyspozytorem) i testy.
+- **Ustawienia (ZASADY §2.1):** `deploy.hookTimeout: 30000` (Z-06, bez „opcjonalnie/do potwierdzenia”); `externalModules.palette.allowDowngrade: false` (Z-03 – wartość domyślna wg §2.1; skutek zmiany zachowania opisany w Ryzykach, Pytanie 2 przeformułowane).
+- **Kody (ZASADY §2.4):** `deploy_hook_timeout` 400 (Z-06), `invalid_revision` 400 dopisany do Z-04 (używany w Z-05); `invalid_node_type` (Z-04) spoza katalogu – oznaczony „do decyzji”, Pytanie 15.
+- **Spójność z E-01:** Z-04 rozszerza funkcje `build*FlowConfig` wydzielone w E-01 (Projekt pkt 1, Zależności, Podzadania); Z-06 korzysta z funkcji potoku `deploy(opts)`.
