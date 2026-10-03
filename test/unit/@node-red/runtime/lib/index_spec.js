@@ -16,6 +16,12 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-02: test of publicRoute() in the stubbed admin api
+ *   Z-10: order of the start and stop of the coordination
+ *   E-02: the instance state on start and stop, RED.stop(reason)
+ *   Z-08: the health probes follow the start and stop of the runtime
+ *   Z-11: readOnlyUserDir - effective settings and the log at start
+ *   Z-09: the observer of storage (watchFlows) registered before the flows are
+ *   read, a failed registration fails the start, unregistered on stop
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -30,6 +36,7 @@ var runtime = NR_TEST_UTILS.require("@node-red/runtime");
 var redNodes = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes");
 var storage = NR_TEST_UTILS.require("@node-red/runtime/lib/storage");
 var settings = NR_TEST_UTILS.require("@node-red/runtime/lib/settings");
+var coordination = NR_TEST_UTILS.require("@node-red/runtime/lib/coordination");
 var util = NR_TEST_UTILS.require("@node-red/util");
 
 var log = NR_TEST_UTILS.require("@node-red/util").log;
@@ -212,6 +219,108 @@ describe("runtime", function() {
             }).catch(err=>{done(err)});
         });
 
+        it("coordination started before startFlows", async function() {
+            redNodesGetNodeList = sinon.stub(redNodes,"getNodeList").callsFake(function() {return []});
+            let resolveStart;
+            const coordStart = sinon.stub(coordination,"start").callsFake(function() {
+                return new Promise(resolve => { resolveStart = resolve });
+            });
+            try {
+                runtime.init({testSettings: true, httpAdminRoot:"/", load:function() { return Promise.resolve();}});
+                const started = runtime.start();
+                await new Promise(resolve => setTimeout(resolve, 50));
+                coordStart.calledOnce.should.be.true();
+                coordStart.firstCall.args[0].should.equal(runtime._);
+                redNodesLoadContextsPlugin.called.should.be.true();
+                redNodesLoadFlows.called.should.be.false();
+                redNodesStartFlows.called.should.be.false();
+                resolveStart();
+                await started;
+                await new Promise(resolve => setImmediate(resolve));
+                redNodesLoadFlows.calledOnce.should.be.true();
+                redNodesStartFlows.calledOnce.should.be.true();
+                sinon.assert.callOrder(redNodesLoadContextsPlugin, coordStart, redNodesLoadFlows, redNodesStartFlows);
+            } finally {
+                coordStart.restore();
+            }
+        });
+
+        it("coordination start failure fails the start without starting flows", async function() {
+            redNodesGetNodeList = sinon.stub(redNodes,"getNodeList").callsFake(function() {return []});
+            const coordStart = sinon.stub(coordination,"start").callsFake(function() {
+                const err = new Error("not found");
+                err.code = "coordination.plugin-not-found";
+                return Promise.reject(err);
+            });
+            try {
+                runtime.init({testSettings: true, httpAdminRoot:"/", load:function() { return Promise.resolve();}});
+                const err = await runtime.start().should.be.rejected();
+                err.code.should.equal("coordination.plugin-not-found");
+                redNodesLoadFlows.called.should.be.false();
+            } finally {
+                coordStart.restore();
+            }
+        });
+
+        describe("reload from storage (Z-09)", function() {
+            let hasWatch;
+            let watch;
+            let unwatch;
+            beforeEach(function() {
+                redNodesGetNodeList = sinon.stub(redNodes,"getNodeList").callsFake(function() {return []});
+                unwatch = sinon.spy(async function() {});
+                hasWatch = sinon.stub(storage,"hasWatchFlows").callsFake(() => true);
+                watch = sinon.stub(storage,"watchFlows").callsFake(async function() { return unwatch });
+            });
+            afterEach(function() {
+                hasWatch.restore();
+                watch.restore();
+            });
+            it("watchFlows registered before first loadFlows", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: {reload: {watch: true}}, load:function() { return Promise.resolve();}});
+                await runtime.start();
+                await new Promise(resolve => setImmediate(resolve));
+                watch.calledOnce.should.be.true();
+                sinon.assert.callOrder(storageInit, watch, redNodesLoadFlows);
+            });
+            it("storage without watchFlows - no watcher", async function() {
+                hasWatch.restore();
+                hasWatch = sinon.stub(storage,"hasWatchFlows").callsFake(() => false);
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: {reload: {watch: true}}, load:function() { return Promise.resolve();}});
+                await runtime.start();
+                watch.called.should.be.false();
+            });
+            it("watch not enabled - watchFlows not called", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", load:function() { return Promise.resolve();}});
+                await runtime.start();
+                watch.called.should.be.false();
+            });
+            it("watchFlows registration failure fails the start (R-36)", async function() {
+                watch.restore();
+                watch = sinon.stub(storage,"watchFlows").callsFake(async function() { throw new Error("cannot watch") });
+                sinon.stub(log,"error").callsFake(function(){});
+                try {
+                    runtime.init({testSettings: true, httpAdminRoot:"/", deploy: {reload: {watch: true}}, load:function() { return Promise.resolve();}});
+                    await runtime.start().should.be.rejectedWith("cannot watch");
+                    redNodesLoadFlows.called.should.be.false();
+                } finally {
+                    log.error.restore();
+                }
+            });
+            it("unwatch called on stop", async function() {
+                const stopFlows = sinon.stub(redNodes,"stopFlows").callsFake(function() { return Promise.resolve();} );
+                try {
+                    runtime.init({testSettings: true, httpAdminRoot:"/", deploy: {reload: {watch: true}}, load:function() { return Promise.resolve();}});
+                    await runtime.start();
+                    await runtime.stop();
+                    unwatch.calledOnce.should.be.true();
+                    sinon.assert.callOrder(unwatch, stopFlows);
+                } finally {
+                    stopFlows.restore();
+                }
+            });
+        });
+
         it("reports runtime metrics",function(done) {
             var stopFlows = sinon.stub(redNodes,"stopFlows").callsFake(function() { return Promise.resolve();} );
             redNodesGetNodeList = sinon.stub(redNodes,"getNodeList").callsFake(function() {return []});
@@ -244,6 +353,24 @@ describe("runtime", function() {
 
     });
 
+    it("resign called before stopFlows, coordination stopped after stopFlows", async function() {
+        const stopFlows = sinon.stub(redNodes,"stopFlows").callsFake(function() { return Promise.resolve();} );
+        const closeContextsPlugin = sinon.stub(redNodes,"closeContextsPlugin").callsFake(function() { return Promise.resolve();} );
+        const resign = sinon.stub(coordination,"resign").callsFake(function() { return Promise.resolve();} );
+        const coordStop = sinon.stub(coordination,"stop").callsFake(function() { return Promise.resolve();} );
+        try {
+            await runtime.stop();
+            resign.calledOnce.should.be.true();
+            coordStop.calledOnce.should.be.true();
+            sinon.assert.callOrder(resign, stopFlows, coordStop, closeContextsPlugin);
+        } finally {
+            stopFlows.restore();
+            closeContextsPlugin.restore();
+            resign.restore();
+            coordStop.restore();
+        }
+    });
+
     it("stops components", function(done) {
         var stopFlows = sinon.stub(redNodes,"stopFlows").callsFake(function() { return Promise.resolve();} );
         var closeContextsPlugin = sinon.stub(redNodes,"closeContextsPlugin").callsFake(function() { return Promise.resolve();} );
@@ -257,6 +384,286 @@ describe("runtime", function() {
             stopFlows.restore();
             closeContextsPlugin.restore();
             return done(err)
+        });
+    });
+    describe("instance state (E-02)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        let stubs;
+        let seen;
+        let off;
+        beforeEach(function() {
+            instanceState.reset();
+            seen = [];
+            off = instanceState.onChange(info => seen.push(info));
+            stubs = [
+                sinon.stub(storage,"init").callsFake(function() {return Promise.resolve();}),
+                sinon.stub(redNodes,"init").callsFake(function() {}),
+                sinon.stub(redNodes,"load").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"cleanModuleList").callsFake(function(){}),
+                sinon.stub(redNodes,"getNodeList").callsFake(function() {return []}),
+                sinon.stub(redNodes,"loadContextsPlugin").callsFake(function() {return Promise.resolve()})
+            ];
+            mockUtil();
+        });
+        afterEach(function() {
+            off();
+            stubs.forEach(s => s.restore());
+            unmockUtil();
+            instanceState.reset();
+        });
+        function stub(obj, name, fn) {
+            const s = sinon.stub(obj, name).callsFake(fn);
+            stubs.push(s);
+            return s;
+        }
+
+        it("state is init before start() and starting when start() resolves before the flows started", async function() {
+            instanceState.get().state.should.equal("init");
+            let finishStart;
+            stub(redNodes, "loadFlows", () => Promise.resolve());
+            stub(redNodes, "startFlows", () => new Promise(resolve => { finishStart = resolve }));
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start();
+            instanceState.get().state.should.equal("starting");
+            seen[0].should.containEql({state:"starting", previous:"init"});
+            finishStart({errors:[]});
+        });
+
+        it("loadFlows rejection sets failed (storage-error) and start() still resolves", async function() {
+            const err = new Error("cannot read flows");
+            stub(redNodes, "loadFlows", () => Promise.reject(err));
+            stub(redNodes, "startFlows", () => Promise.resolve({errors:[]}));
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start();
+            await new Promise(resolve => setTimeout(resolve, 10));
+            instanceState.get().should.containEql({state:"failed", reason:"storage-error"});
+        });
+
+        it("startFlows rejection sets failed (flow-start-failed) without an unhandled rejection", async function() {
+            stub(redNodes, "loadFlows", () => Promise.resolve());
+            stub(redNodes, "startFlows", () => Promise.reject(new Error("boom")));
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start();
+            await new Promise(resolve => setTimeout(resolve, 10));
+            instanceState.get().should.containEql({state:"failed", reason:"flow-start-failed"});
+        });
+
+        it("a rejected runtime start (storage.init) sets failed (startup-error) and rejects as before", async function() {
+            storage.init.restore();
+            stubs.shift();
+            stub(storage, "init", () => Promise.reject(new Error("no storage")));
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start().should.be.rejectedWith("no storage");
+            instanceState.get().should.containEql({state:"failed", reason:"startup-error"});
+        });
+
+        it("stop() sets stopping synchronously before stopFlows and stopped after closeContextsPlugin", async function() {
+            const order = [];
+            stub(redNodes, "stopFlows", () => { order.push("stopFlows:" + instanceState.get().state); return Promise.resolve() });
+            stub(redNodes, "closeContextsPlugin", () => { order.push("close:" + instanceState.get().state); return Promise.resolve() });
+            const p = runtime.stop();
+            instanceState.get().state.should.equal("stopping");
+            await p;
+            order.should.eql(["stopFlows:stopping", "close:stopping"]);
+            instanceState.get().should.containEql({state:"stopped", reason:"stop"});
+        });
+
+        it("stop() without a reason uses stop and logs nothing new", async function() {
+            stub(redNodes, "stopFlows", () => Promise.resolve());
+            stub(redNodes, "closeContextsPlugin", () => Promise.resolve());
+            await runtime.stop();
+            seen.map(i => i.reason).should.eql(["stop", "stop"]);
+            log.info.called.should.be.false();
+        });
+
+        it("stop(reason) passes the reason to instance:state and the log (R-23)", async function() {
+            const events = NR_TEST_UTILS.require("@node-red/util").events;
+            const emitted = [];
+            const onEvent = info => emitted.push(info);
+            events.on("instance:state", onEvent);
+            stub(redNodes, "stopFlows", () => Promise.resolve());
+            stub(redNodes, "closeContextsPlugin", () => Promise.resolve());
+            try {
+                await runtime.stop("SIGTERM");
+            } finally {
+                events.removeListener("instance:state", onEvent);
+            }
+            emitted[0].should.containEql({state:"stopping", reason:"SIGTERM"});
+            log.info.calledOnce.should.be.true();
+            log._.calledWithMatch("runtime.stopping", {reason:"SIGTERM"}).should.be.true();
+        });
+
+        it("a failing stop still ends in stopped", async function() {
+            stub(redNodes, "stopFlows", () => Promise.reject(new Error("stop failed")));
+            stub(redNodes, "closeContextsPlugin", () => Promise.resolve());
+            await runtime.stop().should.be.rejectedWith("stop failed");
+            instanceState.get().state.should.equal("stopped");
+        });
+
+        it("exposes the state on the internal runtime object", function() {
+            runtime._.state.should.equal(instanceState);
+        });
+    });
+    describe("health probes (Z-08)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const health = NR_TEST_UTILS.require("@node-red/runtime/lib/health");
+        const express = require("express");
+        const request = require("supertest");
+        const net = require("net");
+        let stubs;
+        beforeEach(function() {
+            instanceState.reset();
+            stubs = [
+                sinon.stub(storage,"init").callsFake(function() {return Promise.resolve();}),
+                sinon.stub(redNodes,"init").callsFake(function() {}),
+                sinon.stub(redNodes,"load").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"cleanModuleList").callsFake(function(){}),
+                sinon.stub(redNodes,"getNodeList").callsFake(function() {return []}),
+                sinon.stub(redNodes,"loadContextsPlugin").callsFake(function() {return Promise.resolve()})
+            ];
+            mockUtil();
+        });
+        afterEach(async function() {
+            stubs.forEach(s => s.restore());
+            unmockUtil();
+            await health.stop();
+            health.init({});
+            instanceState.reset();
+        });
+        function stub(obj, name, fn) {
+            const s = sinon.stub(obj, name).callsFake(fn);
+            stubs.push(s);
+            return s;
+        }
+        function app() {
+            const a = express();
+            a.use(runtime._.health.getPath(), runtime._.health.handler);
+            return a;
+        }
+
+        it("ready 503 when RED.start resolved before the flows started, 200 after", async function() {
+            let finishStart;
+            stub(redNodes, "loadFlows", () => Promise.resolve());
+            stub(redNodes, "startFlows", () => new Promise(resolve => { finishStart = resolve }).then(r => { instanceState.report(r); return r }));
+            runtime.init({testSettings: true, httpAdminRoot:"/", health: {enabled: true}});
+            await runtime.start();
+            (await request(app()).get("/health/ready")).status.should.equal(503);
+            (await request(app()).get("/health/live")).status.should.equal(200);
+            finishStart({errors: []});
+            await new Promise(resolve => setTimeout(resolve, 10));
+            (await request(app()).get("/health/ready")).status.should.equal(200);
+        });
+
+        it("ready 503 synchronously after stop() is called (slow close)", async function() {
+            instanceState.markStarting();
+            instanceState.report({errors: []});
+            runtime.init({testSettings: true, httpAdminRoot:"/", health: {enabled: true}});
+            let finishStop;
+            stub(redNodes, "stopFlows", () => new Promise(resolve => { finishStop = resolve }));
+            stub(redNodes, "closeContextsPlugin", () => Promise.resolve());
+            (await request(app()).get("/health/ready")).status.should.equal(200);
+            const stopped = runtime.stop();
+            (await request(app()).get("/health/ready")).status.should.equal(503);
+            (await request(app()).get("/health/live")).status.should.equal(200);
+            finishStop();
+            await stopped;
+        });
+
+        it("a busy health.port rejects the start with health.port-in-use and sets failed", async function() {
+            const blocker = net.createServer();
+            await new Promise(resolve => blocker.listen(0, "127.0.0.1", resolve));
+            try {
+                runtime.init({testSettings: true, httpAdminRoot:"/", health: {enabled: true, port: blocker.address().port, host: "127.0.0.1"}});
+                const err = await runtime.start().should.be.rejected();
+                err.should.have.property("code", "health.port-in-use");
+                instanceState.get().state.should.equal("failed");
+                storage.init.called.should.be.false();
+            } finally {
+                blocker.close();
+            }
+        });
+
+        it("the own server of the probes is closed when the runtime stopped", async function() {
+            const srv = net.createServer();
+            await new Promise(resolve => srv.listen(0, "127.0.0.1", resolve));
+            const port = srv.address().port;
+            await new Promise(resolve => srv.close(resolve));
+            stub(redNodes, "loadFlows", () => Promise.resolve());
+            stub(redNodes, "startFlows", () => Promise.resolve({errors: []}));
+            stub(redNodes, "stopFlows", () => Promise.resolve());
+            stub(redNodes, "closeContextsPlugin", () => Promise.resolve());
+            runtime.init({testSettings: true, httpAdminRoot:"/", health: {enabled: true, port: port, host: "127.0.0.1"}});
+            await runtime.start();
+            should.exist(runtime._.health.getServer());
+            await runtime.stop();
+            should(runtime._.health.getServer()).be.null();
+        });
+
+        it("disabled by default - no server", async function() {
+            stub(redNodes, "loadFlows", () => Promise.resolve());
+            stub(redNodes, "startFlows", () => Promise.resolve({errors: []}));
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start();
+            runtime._.health.isEnabled().should.be.false();
+            should(runtime._.health.getServer()).be.null();
+        });
+    });
+    describe("readOnlyUserDir (Z-11)", function() {
+        let stubs;
+        beforeEach(function() {
+            stubs = [
+                sinon.stub(storage,"init").callsFake(function() {return Promise.resolve();}),
+                sinon.stub(redNodes,"init").callsFake(function() {}),
+                sinon.stub(redNodes,"load").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"cleanModuleList").callsFake(function(){}),
+                sinon.stub(redNodes,"getNodeList").callsFake(function() {return []}),
+                sinon.stub(redNodes,"loadContextsPlugin").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"loadFlows").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"startFlows").callsFake(function() {return Promise.resolve({errors:[]})})
+            ];
+            mockUtil();
+        });
+        afterEach(function() {
+            stubs.forEach(s => s.restore());
+            unmockUtil();
+            NR_TEST_UTILS.require("@node-red/runtime/lib/state").reset();
+        });
+
+        it("disables the features that write and logs one block with warnings for overridden settings", async function() {
+            // editorTheme.projects is covered by readOnlyUserDir_spec: an editorTheme key
+            // would stay as a getter on the shared runtime settings for later test files
+            const userSettings = {testSettings: true, httpAdminRoot:"/", readOnlyUserDir: true,
+                externalModules: {autoInstall: true, palette: {allowInstall: true}}};
+            runtime.init(userSettings);
+            userSettings.externalModules.palette.should.eql({allowInstall: false, allowUpload: false, allowUpdate: false});
+            userSettings.externalModules.autoInstall.should.be.false();
+            userSettings.externalModules.modules.allowInstall.should.be.false();
+            // the runtime settings see the effective values
+            settings.externalModules.palette.allowInstall.should.be.false();
+            await runtime.start();
+            log._.calledWithMatch("readonly-userdir.enabled").should.be.true();
+            log._.withArgs("readonly-userdir.setting-overridden").callCount.should.equal(2);
+        });
+
+        it("does not install missing modules at start (autoInstall overridden)", async function() {
+            redNodes.getNodeList.restore();
+            stubs.splice(4, 1);
+            stubs.push(sinon.stub(redNodes,"getNodeList").callsFake(function(cb) {
+                return [{module:"module",enabled:true,loaded:false,types:["typeA"]}].filter(cb);
+            }));
+            const installModule = sinon.stub(redNodes,"installModule").callsFake(() => Promise.resolve({nodes:[]}));
+            stubs.push(installModule);
+            runtime.init({testSettings: true, httpAdminRoot:"/", readOnlyUserDir: true, externalModules: {autoInstall: true}});
+            await runtime.start();
+            installModule.called.should.be.false();
+        });
+
+        it("nothing changes without the setting", async function() {
+            const userSettings = {testSettings: true, httpAdminRoot:"/", externalModules: {autoInstall: true}};
+            runtime.init(userSettings);
+            userSettings.should.eql({testSettings: true, httpAdminRoot:"/", externalModules: {autoInstall: true}, version: userSettings.version});
+            await runtime.start();
+            log._.calledWithMatch("readonly-userdir.enabled").should.be.false();
         });
     });
 });

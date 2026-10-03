@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   P-02: tests of the stale flows handling (editorTheme.deploy.staleFlows) and of restart on 409
  *   W-4: 409 version_required does not loop the conflict dialog
+ *   Z-15: editor-only instance - no Start/Stop items, "Restart flows" disabled
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -402,6 +403,41 @@ describe("editor-client/ui/deploy", function() {
             const event = { preventDefault: sinon.stub(), stopImmediatePropagation: sinon.stub() };
             windowListeners.beforeunload(event);
             event.preventDefault.calledOnce.should.be.true();
+        });
+    });
+    describe("editor-only instance (Z-15, R-39)", function() {
+        function menuOptions() {
+            return mockRED.menu.init.lastCall.args[0].options.filter(o => o);
+        }
+        it("default: Start/Stop with runtimeState.ui and an enabled Restart flows", function() {
+            mockRED.settings.runtimeState = { enabled: true, ui: true };
+            load();
+            const ids = menuOptions().map(o => o.id);
+            ids.should.containEql("deploymenu-item-runtime-start");
+            ids.should.containEql("deploymenu-item-runtime-stop");
+            const reload = menuOptions().find(o => o.id === "deploymenu-item-reload");
+            should(reload.disabled).not.be.true();
+            actions.should.have.property("core:start-flows");
+        });
+        it("editorOnly: no Start/Stop flows, Restart flows disabled with a hint", function() {
+            mockRED.settings.runtimeState = { enabled: true, ui: true };
+            mockRED.settings.editorOnly = true;
+            load();
+            const ids = menuOptions().map(o => o.id);
+            ids.should.not.containEql("deploymenu-item-runtime-start");
+            ids.should.not.containEql("deploymenu-item-runtime-stop");
+            const reload = menuOptions().find(o => o.id === "deploymenu-item-reload");
+            reload.disabled.should.be.true();
+            reload.sublabel.should.equal("deploy.editorOnly");
+            actions.should.not.have.property("core:start-flows");
+            actions.should.not.have.property("core:stop-flows");
+        });
+        it("editorOnly: the restart action does not call the server and shows the hint", function() {
+            mockRED.settings.editorOnly = true;
+            load();
+            actions["core:restart-flows"]();
+            $.requests.should.have.length(0);
+            lastNotification().msg.should.containEql("deploy.editorOnly");
         });
     });
 });

@@ -68,13 +68,13 @@ nowego flow tuż po wdrożeniu (wraca zachowanie 5.0.7).
 | P-03 | `telemetry.locked` | `telemetry.locked` | brak blokady | bez zmian |
 | Z-02 | `httpAdminNodeRoutes` | `httpAdminNodeRoutes` | `"open"` | bez zmian |
 | Z-08 | `health: {enabled, path}` | `health: {enabled, path, port, host}` + **`shutdownTimeout`** (płasko) | wyłączone | `shutdownTimeout` < `terminationGracePeriodSeconds` w K8s |
-| Z-09 | – | `deploy.reload: {watch, type, preReloadTimeout, concurrency}` | `watch: false`, `type: "full"`, `preReloadTimeout: 1200000` (20 min) | to samo przeładowanie, co typ wdrożenia `reload` w Admin API; rekomendowane `type: "diff"`; `concurrency` – tylko liczba; bez łączności z koordynatorem przeładowanie czeka (działa stara konfiguracja) (R-20) |
+| Z-09 | – | `deploy.reload: {watch, type, preReloadTimeout, concurrency}` (kontrakt wtyczek – §5.2) | `watch: false`, `type: "full"`, `preReloadTimeout: 1200000` (20 min) | to samo przeładowanie, co typ wdrożenia `reload` w Admin API; rekomendowane `type: "diff"`; `concurrency` – tylko liczba; bez łączności z koordynatorem przeładowanie czeka (działa stara konfiguracja) (R-20) |
 | Z-09 | – | `deploy.reload.retry: { min, max, attempts }` | `min: 1000`, `max: 60000` (ms), `attempts: 10` (~8 min) (R-36) | ponowienia odczytu magazynu; po wyczerpaniu `attempts` → stan `failed`, `/ready` 503 (R-20, D-18, R-36); przy `watch: true` błąd rejestracji `watchFlows` → błąd startu (R-36) |
 | P-01 / Z-08 | – | `deploy.startTimeout` (ms) | wyłączony | limit czasu startu w trybie `deploy.response: "started"`; po przekroczeniu 500 `deploy_start_failed` z `errors[].code: "start_timeout"`, flow startują dalej w tle (R-38) |
 | Z-06 | – | `deploy.hookTimeout` | 30000 ms | |
 | Z-10 | – | `coordination: {plugin, options}`; `singleInstance` w węźle `inject` | wtyczka lokalna | wtyczkę zewnętrzną wybiera się **tylko jawnie** w `coordination.plugin` (bez automatycznego wykrywania) (R-21) |
 | Z-11 | `readOnlyUserDir` | `readOnlyUserDir` + zmienna środowiskowa `NODE_RED_READ_ONLY_USER_DIR` (R-33) | `false` | inne niż istniejące `readOnly` magazynu plikowego (`readOnly` opisane w szablonie `settings.js` – R-40); zmienna działa także w CLI przed wyborem pliku ustawień (R-18); chroni także bezwzględny `flowFile` (R-40) |
-| Z-15 | – | `editorOnly` | `false` | wyklucza się z `disableEditor`; wybrane zamiast `runtimeState.autoStart` (R-19) |
+| Z-15 | – | `editorOnly` | `false` | wyklucza się z `disableEditor`; wybrane zamiast `runtimeState.autoStart` (R-19); tylko `true` włącza (inna wartość – ostrzeżenie) |
 | Z-03 | – | `externalModules.palette.allowDowngrade` | `true` | |
 | Z-03 | `externalModules.palette.upload`, `editorTheme.palette.upload` | `externalModules.palette.allowUpload` (kanoniczne) | upload dozwolony | stare nazwy działają jako przestarzałe aliasy z ostrzeżeniem w logu – przejść na nazwę kanoniczną (R-17) |
 | P-04 / D-07 | – | `httpAdminCommsOrigins` (R-33) | brak = zachowanie 5.0.7 (bez kontroli, ostrzeżenie w logu przy starcie) (R-35) | lista dozwolonych `Origin` dla `/comms`; przy ustawionej liście przyjmowane są tylko wymienione źródła oraz własne źródło edytora (R-35); w naszych instalacjach **zawsze ustawić** (R-06, R-35) |
@@ -183,11 +183,15 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 - **Przeładowanie z magazynu** (Z-09, R-20): `preReload` nie ma prawa weta (tylko opóźnia, limit `preReloadTimeout`);
   przy dodatkowych flow zmienionych po drenażu – ponowny `preReload` dla nich (D-17), poza blokadą, najwyżej jedna
   runda, potem przeładowanie z ostrzeżeniem w logu (R-36); błąd odczytu magazynu → ponowienia wg `deploy.reload.retry`
-  (domyślnie 10 prób, ~8 min), po wyczerpaniu `failed` i 503 (D-18, R-36); przy `deploy.reload.watch: true` błąd
+  (domyślnie 10 prób, ~8 min), po wyczerpaniu `failed` i 503 (D-18, R-36), a dalej odczyt co `retry.max` – po odzyskaniu dostępu powrót do `ready` bez nowego powiadomienia; przy `deploy.reload.watch: true` błąd
   rejestracji `watchFlows` → błąd startu instancji (R-36).
-- **Instancja tylko edycyjna** (`editorOnly: true`, R-19): przycisk `inject` i akcja „Restart flows” w edytorze
-  ukryte/nieaktywne (R-39); operacje wymagające działających flow → 409 `editor_only`; wdrożenie w trybie
-  `deploy.response: "started"` → `{rev, started: false}` (R-39).
+- **Instancja tylko edycyjna** (`editorOnly: true`, R-19): przyciski węzłów (m.in. `inject`) i akcja „Restart flows”
+  w edytorze nieaktywne z podpowiedzią (R-39); `POST /flows/state` start → 409 `editor_only`; wdrożenie w trybie
+  `deploy.response: "started"` → `{rev, started: false}` (R-39; także `POST /flow` i `PUT /flow/:id` w v2);
+  brakujące typy węzłów **nie** dają stanu `failed` – instancja raportuje `loaded` (`/ready` 200) z ostrzeżeniem w logu
+  (`nodes.flows.editor-only-missing-types`), a moduły węzła Function nie są instalowane (`checkFlowDependencies` nie
+  jest wołane). Edytor pokazuje nieznane typy jak zwykle; walidację kompletności modułów przenieść do CI lub instancji
+  wykonawczej (tam brakujące typy nadal dają `failed`).
 
 ### 4.6 Połączenie `/comms` (P-04)
 
@@ -214,6 +218,63 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 | Uprawnienia (12.08) | zakresy podrzędne `flows.deploy`, `flows.import`, `flows.export`, `nodes.type.<typ>` dziedziczone z rodzica; wpis z prefiksem `!` odbiera, np. `["*", "!nodes.type.exec"]`; lista dozwolonych: `["!nodes.type.*", "nodes.type.inject", …]` – przyznanie konkretnego typu wygrywa z `!nodes.type.*`, odebranie konkretnego typu wygrywa ze wszystkim (R-42); serwer egzekwuje typy przy wdrożeniu (bez kontroli przy przeładowaniu z magazynu – R-42); `flows.export` – tylko utrudnienie w UI (R-27) | Z-12 |
 | Linki i osadzanie (12.10) | głęboki link `#flow/<flowId>/node/<nodeId>` (obsługa `hashchange`, akcja `core:reveal-node`); `postMessage`, w tym kanał `set-theme`, tylko ze źródeł z `editorTheme.embedding.allowedOrigins` – produkt osadzający edytor musi się tam wpisać (R-28); brak ustawienia = zachowanie 5.0.7 z ostrzeżeniem w logu (R-35) | Z-12 |
 | Klucze zarezerwowane | węzeł nie może zarejestrować ustawienia o nazwie `deploy`, `flows`, `health`, `coordination` | D-02 (U8) |
+
+### 5.2 Kontrakt dla autorów wtyczek magazynu: `watchFlows` i `preReload` (Z-09)
+
+Zrealizowane na gałęzi `feature/p3-database` (`runtime/lib/flows/reload.js`, `runtime/lib/storage/index.js`).
+
+**`watchFlows(callback)`** – opcjonalna funkcja modułu magazynu (`storageModule`):
+
+```js
+/**
+ * Rejestruje obserwatora zmian flow (i poświadczeń) w magazynie. Runtime wywołuje ją raz,
+ * po storage.init() i przed pierwszym odczytem flow, tylko przy deploy.reload.watch: true.
+ * @param {(notification?: {rev?: string, credentialsChanged?: boolean, source?: string}) => void} callback
+ * @returns {Promise<void | (() => Promise<void>)>} opcjonalnie funkcja wyrejestrowania (wołana w RED.stop())
+ */
+watchFlows(callback)
+```
+
+- Powiadomienie jest **tylko sygnałem**: runtime zawsze czyta flow przez `getFlows()`/`getCredentials()` i porównuje
+  rewizję (SHA-256 z `JSON.stringify(flows)`) z działającą. Wolno wołać `callback()` bez argumentów, wielokrotnie
+  i seriami (runtime łączy powiadomienia), także dla zapisów tej samej instancji (pomijane po rewizji).
+- **Rewizja nie obejmuje poświadczeń** – przy zmianie samych poświadczeń wtyczka musi przekazać
+  `credentialsChanged: true`, inaczej zmiana nie zostanie przeładowana.
+- Wyjątek w `callback` nie wraca do wtyczki; wywołanie po wyrejestrowaniu jest ignorowane.
+- Odrzucenie rejestracji przy `deploy.reload.watch: true` → **błąd startu** runtime (R-36). Magazyn bez `watchFlows`
+  → ustawienie bez efektu, ostrzeżenie w logu.
+- Przeładowanie nigdy nie zapisuje do magazynu (`saveFlows` nie jest wołane).
+- **Odczyt ścisły:** do przeładowania runtime woła `getFlows({strict: true})` i `getCredentials({strict: true})`.
+  Wtyczka przy tym argumencie musi **odrzucić** obietnicę przy błędzie odczytu lub niepełnej konfiguracji (np. zapis
+  w toku), zamiast zwracać pustą konfigurację; brak poświadczeń to `{}`. Wynik bez tablicy flow runtime odrzuca sam
+  (`invalid_flows`). Odrzucenie = nieudany odczyt: ponowienia `retry`, po wyczerpaniu `failed`, flow działają dalej
+  (D-18, R-36). Wtyczki ignorujące argument działają jak dotąd (odczyt przy starcie – bez argumentu, bez zmian).
+  Magazyn plikowy: brak, pusty lub niepoprawny plik flow → odrzucenie (kody `ENOENT`/kod `fs`, `empty_file`,
+  `invalid_json`), bez odtwarzania `.backup`.
+- Wbudowany magazyn plikowy implementuje `watchFlows` (zdarzenia systemu plików + odpytywanie co 1 s, debounce
+  200 ms; własne zapisy pomijane po treści); nie działa z Projektami.
+
+**Hook `preReload`** – `RED.hooks.add("preReload", function(event) { ... })`:
+
+| Pole (obiekt zamrożony) | Znaczenie |
+|---|---|
+| `rev` / `activeRev` | rewizja, która zostanie uruchomiona / działająca |
+| `type` | `"full"` \| `"diff"` (`deploy.reload.type`) |
+| `changedFlows` | id flow (zakładek, subflow) restartowanych; `null` = wszystkie (`full`, zmiana konfiguracji globalnej lub węzła konfiguracyjnego poza flow, zmiana poświadczeń) |
+| `credentialsChanged` | zmiana poświadczeń |
+| `deadline` | `Date.now() + preReloadTimeout` z chwili rozpoczęcia drenażu (wspólny dla dodatkowej rundy D-17) |
+| `signal` | `AbortSignal`; `reason`: `"stopping"` (zatrzymanie procesu) lub `"superseded"` (wdrożenie na tej instancji) |
+
+- Handler musi **deklarować parametr** `event` (semantyka hooków Node-RED: funkcja bez parametrów jest traktowana jak
+  wariant z `done` i nie kończy się) i zwrócić obietnicę rozwiązywaną, gdy praca w toku się zakończy.
+- Brak prawa weta (R-20): błąd, odrzucenie, `false` lub przekroczenie limitu → log i przeładowanie mimo to.
+- `/ready` 503 od wywołania hooka do końca przeładowania; hook działa **bez** blokady wdrożeń; `preDeploy` nie jest
+  wywoływany przy przeładowaniu z magazynu (`postDeploy` – po realizacji Z-06, obecnie odłożone).
+- Flow zmienione w trakcie drenażu poza `changedFlows` (`type: "diff"`) → jeszcze jeden `preReload` tylko dla nich,
+  w ramach pozostałego limitu, najwyżej jedna runda (D-17, R-36).
+- Przy `deploy.reload.concurrency` instancja przed drenażem zajmuje slot `slot:reload:<i>` przez wtyczkę koordynacji
+  (`claim(key, ttlMs)`, TTL 60 s odnawiany przez `renew` co 20 s, jeśli wtyczka go udostępnia); oczekujące instancje
+  zostają w `reloadPending` bez drenażu (`/ready` bez zmian).
 
 ### 5.1 Terminologia polska (Z-13, R-29)
 

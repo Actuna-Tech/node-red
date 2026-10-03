@@ -17,6 +17,8 @@
  * Modified by Actuna Sp. z o.o.:
  *   E-01: tests of the deploy pipeline contract
  *   E-01: the lock is held until the start completes (R-43); a failed storage read releases it
+ *   E-02: the instance state in steps 4 and 8
+ *   Z-09: reload from storage (source "storage" with reread)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -184,5 +186,164 @@ describe("flows/pipeline", function() {
         flows.setFlows = sinon.spy(async () => { throw new Error("save failed") });
         await pipeline.deploy({ flows: { flows: [1] } }).should.be.rejectedWith("save failed");
         lock.isLocked().should.be.false();
+    });
+    describe("instance state (E-02, steps 4 and 8)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        let finishStart;
+        beforeEach(function() {
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({ errors: [] });
+        });
+        afterEach(function() {
+            instanceState.reset();
+        });
+        // A setFlows that starts the flows like flows/index.js: the start is
+        // registered with lock.holdUntil()
+        function startingSetFlows(startResult) {
+            return sinon.spy(async function() {
+                calls.push({ fn: "setFlows", state: instanceState.get().state });
+                const started = new Promise(resolve => { finishStart = function() { resolve(startResult) } });
+                lock.holdUntil(started);
+                return "newRev";
+            });
+        }
+
+        it("sets deploying before the save/stop step and ready after the start, before the lock is released", async function() {
+            flows.setFlows = startingSetFlows({ errors: [] });
+            const result = await pipeline.deploy({ flows: { flows: [1] } });
+            result.should.eql({ rev: "newRev" });
+            calls[0].state.should.equal("deploying");
+            instanceState.get().state.should.equal("deploying");
+            lock.isLocked().should.be.true();
+            let stateWhenUnlocked;
+            const next = lock.runExclusive(async function() { stateWhenUnlocked = instanceState.get().state });
+            finishStart();
+            await next;
+            stateWhenUnlocked.should.equal("ready");
+            instanceState.get().should.containEql({ state: "ready", previous: "deploying", reason: "deploy" });
+        });
+
+        it("start errors set failed", async function() {
+            flows.setFlows = startingSetFlows({ errors: [{ code: "missing_types", message: "m" }] });
+            await pipeline.deploy({ flows: { flows: [1] } });
+            finishStart();
+            await lock.runExclusive(async () => {});
+            instanceState.get().should.containEql({ state: "failed", reason: "missing-types" });
+        });
+
+        it("a rejected start sets failed (flow-start-failed)", async function() {
+            flows.setFlows = sinon.spy(async function() {
+                const started = Promise.reject(new Error("boom"));
+                started.catch(() => {});
+                lock.holdUntil(started);
+                return "newRev";
+            });
+            await pipeline.deploy({ flows: { flows: [1] } });
+            await lock.runExclusive(async () => {});
+            instanceState.get().should.containEql({ state: "failed", reason: "flow-start-failed" });
+        });
+
+        it("flows not started (stopped flows) set idle", async function() {
+            await pipeline.deploy({ flows: { flows: [1] } });
+            instanceState.get().should.containEql({ state: "idle", previous: "deploying" });
+        });
+
+        it("a failed revision check does not change the state", async function() {
+            const seen = [];
+            const off = instanceState.onChange(info => seen.push(info.state));
+            await pipeline.deploy({ flows: { flows: [1], rev: "other" } }).should.be.rejected();
+            off();
+            seen.should.eql([]);
+        });
+
+        it("a failed save returns to the state before the deployment", async function() {
+            flows.setFlows = sinon.spy(async () => { throw new Error("save failed") });
+            await pipeline.deploy({ flows: { flows: [1] } }).should.be.rejectedWith("save failed");
+            instanceState.get().should.containEql({ state: "ready", previous: "deploying" });
+        });
+
+        it("a stop failure (deploy_stop_failed) sets failed", async function() {
+            flows.setFlows = sinon.spy(async () => { const err = new Error("stop"); err.code = "deploy_stop_failed"; throw err });
+            await pipeline.deploy({ flows: { flows: [1] } }).should.be.rejected();
+            instanceState.get().should.containEql({ state: "failed", reason: "deploy-stop-failed" });
+        });
+
+        it("reload and the single-flow api go through deploying", async function() {
+            const seen = [];
+            const off = instanceState.onChange(info => seen.push(info.state));
+            await pipeline.deploy({ type: "reload" });
+            await pipeline.deploy({ type: "flows", apply: async () => "x" });
+            off();
+            seen.should.eql(["deploying", "idle", "deploying", "idle"]);
+        });
+
+        it("a deployment while stopping does not change the state", async function() {
+            instanceState.markStopping("SIGTERM");
+            flows.setFlows = startingSetFlows({ errors: [] });
+            await pipeline.deploy({ flows: { flows: [1] } });
+            finishStart();
+            await lock.runExclusive(async () => {});
+            instanceState.get().state.should.equal("stopping");
+        });
+
+        it("a deployment from reloadPending cancels the pending reload", async function() {
+            instanceState.markReloadPending();
+            instanceState.markDraining();
+            flows.setFlows = startingSetFlows({ errors: [] });
+            await pipeline.deploy({ flows: { flows: [1] } });
+            calls[0].state.should.equal("deploying");
+            finishStart();
+            await lock.runExclusive(async () => {});
+            instanceState.get().state.should.equal("ready");
+        });
+    });
+    describe("reload from storage (Z-09)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        beforeEach(function() {
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({ errors: [] });
+            flows.reloadFromStorage = sinon.spy(async function(loaded) {
+                calls.push({ fn: "reloadFromStorage", locked: lock.isLocked(), state: instanceState.get().state });
+                lock.holdUntil(Promise.resolve({ errors: [] }));
+                return loaded.rev;
+            });
+        });
+        afterEach(function() {
+            instanceState.reset();
+        });
+        it("skipped when not reloadPending (superseded) - reread not called", async function() {
+            let called = false;
+            const result = await pipeline.deploy({ type: "reload", source: "storage", reread: async () => { called = true } });
+            result.should.eql({ skipped: "superseded" });
+            called.should.be.false();
+        });
+        it("rereads under the lock and reloads in the state reloading - nothing saved", async function() {
+            instanceState.markReloadPending();
+            const result = await pipeline.deploy({ type: "reload", source: "storage", reread: async function() {
+                calls.push({ fn: "reread", locked: lock.isLocked() });
+                return { apply: { flows: [], rev: "B" }, reloadType: "diff", credentialsChanged: false };
+            } });
+            result.should.eql({ rev: "B" });
+            calls.should.eql([{ fn: "reread", locked: true }, { fn: "reloadFromStorage", locked: true, state: "reloading" }]);
+            flows.reloadFromStorage.firstCall.args[1].should.eql({ type: "diff", credentialsChanged: false });
+            flows.setFlows.called.should.be.false();
+            await new Promise(r => setImmediate(r));
+            instanceState.get().state.should.equal("ready");
+        });
+        it("a decision without apply is returned as skipped", async function() {
+            instanceState.markReloadPending();
+            const result = await pipeline.deploy({ type: "reload", source: "storage", reread: async () => ({ skip: "unchanged" }) });
+            result.should.eql({ skipped: { skip: "unchanged" } });
+            flows.reloadFromStorage.called.should.be.false();
+        });
+        it("a failed reload returns to the state before the pending reload", async function() {
+            instanceState.markReloadPending();
+            flows.reloadFromStorage = async function() { throw new Error("credentials") };
+            await pipeline.deploy({ type: "reload", source: "storage", reread: async () => ({ apply: { rev: "B" } }) }).should.be.rejectedWith("credentials");
+            instanceState.get().state.should.equal("ready");
+            lock.isLocked().should.be.false();
+        });
     });
 });

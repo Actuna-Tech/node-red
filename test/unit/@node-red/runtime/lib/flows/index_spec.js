@@ -22,6 +22,8 @@
  *   R-45: the deploy lock is kept after deploy.startTimeout unless
  *   deploy.startTimeoutReleasesLock is set
  *   Z-04: tests of getFlowRevision and the single-flow configuration (create, globalConfigs)
+ *   Z-09: tests of reloadFromStorage (full, diff) and getChangedFlows
+ *   Z-15: tests of the editor-only instance (editorOnly)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1385,6 +1387,330 @@ describe('flows/index', function() {
                 const built = flows.buildUpdateFlowConfig("t1", {nodes:[], configs:[{id:"c2",type:"test-config"}]});
                 built.config.filter(n => n.id === "c2").should.eql([{id:"c2",type:"test-config",z:"t1"}]);
             });
+        });
+    });
+    describe('instance state (E-02)', function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const okConfig = [
+            {id:"t1-1",x:10,y:10,z:"t1",type:"test",wires:[]},
+            {id:"t1",type:"tab"}
+        ];
+        function loadAndStart(config, settings) {
+            storage.getFlows = function() {
+                return Promise.resolve({flows:clone(config), rev:"loadedRev"});
+            }
+            flows.init({log:mockLog, settings:settings||{}, storage:storage});
+            return flows.load().then(function() {
+                return flows.startFlows();
+            });
+        }
+        beforeEach(function() {
+            instanceState.reset();
+            instanceState.markStarting();
+        });
+        afterEach(async function() {
+            // Leave a configuration without missing types: a type registered by
+            // later tests must not start these flows
+            await flows.stopFlows();
+            storage.getFlows = function() { return Promise.resolve({flows:clone(okConfig), rev:"cleanRev"}) };
+            await flows.load();
+            instanceState.reset();
+        });
+
+        it('start without errors -> ready', async function() {
+            await loadAndStart(okConfig);
+            instanceState.get().should.containEql({state:"ready", reason:"startup"});
+        });
+        it('missing types -> failed', async function() {
+            await loadAndStart([{id:"t1-1",z:"t1",type:"missing"},{id:"t1",type:"tab"}]);
+            instanceState.get().should.containEql({state:"failed", reason:"missing-types"});
+        });
+        it('missing modules -> failed', async function() {
+            await loadAndStart([{id:"node-with-missing-modules",z:"t1",type:"test"},{id:"t1",type:"tab"}]);
+            instanceState.get().should.containEql({state:"failed", reason:"missing-modules"});
+        });
+        it('safe mode -> idle', async function() {
+            const result = await loadAndStart(okConfig, {safeMode:true});
+            result.should.have.property("flowsRunning", false);
+            result.errors[0].should.have.property("code", "safe_mode");
+            instanceState.get().should.containEql({state:"idle", reason:"safe-mode"});
+        });
+        it('runtimeFlowState stop -> idle', async function() {
+            const result = await loadAndStart(okConfig, {get: function(prop) { return prop === "runtimeFlowState" ? "stop" : undefined }});
+            result.should.eql({errors:[], flowsRunning:false, reason:"set-state"});
+            instanceState.get().should.containEql({state:"idle", reason:"set-state"});
+        });
+        it('Flow.start throws -> failed (flow-start-failed)', async function() {
+            flowCreate.restore();
+            // replaced stub - restored by the outer afterEach
+            flowCreate = sinon.stub(Flow,"create").callsFake(function() {
+                return {
+                    start: async function() { throw new Error("boom") },
+                    stop: sinon.spy(async () => {}),
+                    update: sinon.spy(),
+                    getActiveNodes: () => ({})
+                };
+            });
+            const consoleLog = sinon.stub(console, "log");
+            try {
+                await loadAndStart(okConfig);
+            } finally {
+                consoleLog.restore();
+            }
+            instanceState.get().should.containEql({state:"failed", reason:"flow-start-failed"});
+        });
+        it('type-registered late start -> ready', async function() {
+            await loadAndStart([{id:"t1-1",z:"t1",type:"missing"},{id:"t1",type:"tab"}]);
+            instanceState.get().state.should.equal("failed");
+            const ready = new Promise(resolve => {
+                const off = instanceState.onChange(info => { if (info.state === "ready") { off(); resolve(info) } });
+            });
+            events.emit("type-registered","missing");
+            const info = await ready;
+            info.should.containEql({state:"ready", previous:"failed"});
+        });
+        it('a deployment does not change the state through the start (the pipeline does)', async function() {
+            await loadAndStart(okConfig);
+            const token = instanceState.begin("deploy");
+            await flows.setFlows(clone(okConfig).concat([{id:"t1-2",z:"t1",type:"missing"}]), null, "full", false, false, null, {waitForStart:true}).catch(() => {});
+            instanceState.get().state.should.equal("deploying");
+            instanceState.end(token, {aborted:true});
+        });
+    });
+    describe('reload from storage (Z-09)', function() {
+        const base = [
+            {id:"t1",type:"tab"},
+            {id:"t1-1",z:"t1",type:"test",foo:"a",wires:[]},
+            {id:"t2",type:"tab"},
+            {id:"t2-1",z:"t2",type:"test",foo:"a",wires:[]}
+        ];
+        function changed(id, value) {
+            const config = clone(base);
+            config.forEach(n => { if (n.id === id) { n.foo = value } });
+            return config;
+        }
+        async function startWith(config, settings) {
+            storage.getFlows = function() {
+                return Promise.resolve({flows:clone(config), rev:"A"});
+            };
+            flows.init({log:mockLog, settings:settings||{}, storage:storage});
+            await flows.load();
+            await flows.startFlows();
+        }
+
+        it('getChangedFlows lists the changed tabs', async function() {
+            await startWith(base);
+            flows.getChangedFlows({flows: changed("t1-1","b")}).should.eql(["t1"]);
+            flows.getChangedFlows({flows: clone(base)}).should.eql([]);
+        });
+        it('getChangedFlows: a changed config node outside the flows - null (all flows)', async function() {
+            const withConfig = clone(base).concat([{id:"c1",type:"test-config",foo:"a"}]);
+            await startWith(withConfig);
+            const next = clone(withConfig);
+            next[next.length-1].foo = "b";
+            should(flows.getChangedFlows({flows: next})).be.null();
+        });
+        it('getChangedFlows: a changed global-config node - null (all flows)', async function() {
+            const withConfig = clone(base).concat([{id:"c1",type:"global-config",foo:"a"}]);
+            await startWith(withConfig);
+            const next = clone(withConfig);
+            next[next.length-1].foo = "b";
+            should(flows.getChangedFlows({flows: next})).be.null();
+        });
+        it('reloadFromStorage type diff restarts only changed flows', async function() {
+            await startWith(base);
+            const t2 = flowCreate.flows["t2"];
+            flowCreate.flows["t1"].stop = sinon.spy(async () => {});
+            const t1 = flowCreate.flows["t1"];
+            t2.stop = sinon.spy(async () => {});
+            const rev = await flows.reloadFromStorage({flows: changed("t1-1","b"), rev:"B", credentials:{}}, {type:"diff"});
+            rev.should.equal("B");
+            // stop() of a modified-flows reload: t1 with the changed nodes, t2 untouched
+            t1.stop.calledOnce.should.be.true();
+            t1.stop.firstCall.args[0].should.containEql("t1-1");
+            t2.stop.firstCall.args[0].should.not.containEql("t2-1");
+            storage.hasOwnProperty('conf').should.be.false();
+            flows.getFlows().rev.should.equal("B");
+            credentialsLoad.called.should.be.true();
+        });
+        it('reloadFromStorage full restarts all', async function() {
+            await startWith(base);
+            const before = Object.assign({}, flowCreate.flows);
+            await flows.reloadFromStorage({flows: changed("t1-1","b"), rev:"B", credentials:{}}, {type:"full"});
+            await new Promise(r => setTimeout(r, 10));
+            flowCreate.flows["t2"].should.not.equal(before["t2"]);
+            flowCreate.flows["t1"].should.not.equal(before["t1"]);
+            storage.hasOwnProperty('conf').should.be.false();
+        });
+        it('reloadFromStorage does not start stopped flows', async function() {
+            await startWith(base);
+            await flows.stopFlows();
+            const created = Object.keys(flowCreate.flows).length;
+            flowCreate.flows = {};
+            await flows.reloadFromStorage({flows: changed("t1-1","b"), rev:"B", credentials:{}}, {type:"full"});
+            await new Promise(r => setTimeout(r, 10));
+            Object.keys(flowCreate.flows).should.have.length(0);
+            created.should.be.above(0);
+            flows.getFlows().rev.should.equal("B");
+        });
+        it('globalConfigChanged forces full', async function() {
+            const withConfig = clone(base).concat([{id:"c1",type:"global-config",foo:"a"}]);
+            await startWith(withConfig);
+            const before = Object.assign({}, flowCreate.flows);
+            const next = clone(withConfig);
+            next[next.length-1].foo = "b";
+            await flows.reloadFromStorage({flows: next, rev:"B", credentials:{}}, {type:"diff"});
+            await new Promise(r => setTimeout(r, 10));
+            flowCreate.flows["t2"].should.not.equal(before["t2"]);
+        });
+    });
+    describe('editor-only instance (Z-15)', function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const okConfig = [
+            {id:"t1-1",x:10,y:10,z:"t1",type:"test",wires:[]},
+            {id:"t1",type:"tab"}
+        ];
+        let runtimeEvents;
+        let settingsGet;
+        let settingsSet;
+        function editorSettings(extra) {
+            settingsGet = sinon.spy(function() { return "start" });
+            settingsSet = sinon.spy();
+            return Object.assign({editorOnly: true, get: settingsGet, set: settingsSet}, extra || {});
+        }
+        function loadWith(settings) {
+            storage.getFlows = function() {
+                return Promise.resolve({flows:clone(okConfig), rev:"loadedRev"});
+            };
+            flows.init({log:mockLog, settings:settings, storage:storage});
+            return flows.load().then(function() {
+                return flows.startFlows();
+            });
+        }
+        function onRuntimeEvent(event) { runtimeEvents.push(event) }
+        beforeEach(function() {
+            runtimeEvents = [];
+            events.on("runtime-event", onRuntimeEvent);
+            instanceState.reset();
+            instanceState.markStarting();
+        });
+        afterEach(function() {
+            events.removeListener("runtime-event", onRuntimeEvent);
+            instanceState.reset();
+        });
+
+        it('default: unchanged start behaviour', async function() {
+            const result = await loadWith({});
+            result.should.eql({errors:[]});
+            flowCreate.called.should.be.true();
+            instanceState.get().state.should.equal("ready");
+        });
+        it('editorOnly: start does not start flows', async function() {
+            const result = await loadWith(editorSettings());
+            result.should.eql({errors:[], flowsRunning:false, reason:"editor-only"});
+            flowCreate.called.should.be.false();
+            flows.state().should.equal("stop");
+        });
+        it('editorOnly: emits runtime-state editor-only', async function() {
+            await loadWith(editorSettings());
+            runtimeEvents.some(e => e.id === "runtime-state" && e.payload && e.payload.error === "editor-only" && e.payload.state === "stop" && e.payload.type === "info" && e.payload.text === "notification.info.editor-only").should.be.true();
+        });
+        it('editorOnly: does not read or write runtimeFlowState', async function() {
+            await loadWith(editorSettings());
+            settingsGet.calledWith("runtimeFlowState").should.be.false();
+            settingsSet.called.should.be.false();
+        });
+        function loadConfig(settings, config, log) {
+            storage.getFlows = function() {
+                return Promise.resolve({flows:clone(config), rev:"loadedRev"});
+            };
+            flows.init({log:log || mockLog, settings:settings, storage:storage});
+            return flows.load().then(function() {
+                return flows.startFlows();
+            });
+        }
+        function keyLog() {
+            const log = {warn: sinon.spy(), info: sinon.spy(), debug: sinon.spy(), trace: sinon.spy(), error: sinon.spy(), log: sinon.spy(), metric: sinon.spy()};
+            log._ = function(key, params) { return key + (params ? " " + JSON.stringify(params) : "") };
+            return log;
+        }
+        it('editorOnly: missing types - loaded (not failed) with a warning in the log (review regression)', async function() {
+            const log = keyLog();
+            const result = await loadConfig(editorSettings(), [{id:"t1-1",z:"t1",type:"missing"},{id:"t1",type:"tab"}], log);
+            result.should.eql({errors:[], flowsRunning:false, reason:"editor-only"});
+            instanceState.get().state.should.equal("loaded");
+            instanceState.isReady().should.be.true();
+            log.warn.args.some(a => String(a[0]).indexOf("nodes.flows.editor-only-missing-types") === 0 && String(a[0]).indexOf("missing") !== -1).should.be.true();
+            runtimeEvents.some(e => e.id === "runtime-state" && e.payload && e.payload.error === "missing-types").should.be.false();
+        });
+        it('editorOnly: checkFlowDependencies (modules of the function node) is not called (review regression)', async function() {
+            checkFlowDependencies.resetHistory();
+            const result = await loadConfig(editorSettings(), [{id:"node-with-missing-modules",z:"t1",type:"test"},{id:"t1",type:"tab"}]);
+            checkFlowDependencies.called.should.be.false();
+            result.errors.should.eql([]);
+            instanceState.get().state.should.equal("loaded");
+        });
+        it('editorOnly: a deployment with missing types is not a start error', async function() {
+            await loadWith(editorSettings());
+            const next = clone(okConfig).concat([{id:"t1-2",z:"t1",type:"missing",wires:[]}]);
+            await flows.setFlows(next, null, "full", false, false, null, {waitForStart:true});
+            storage.conf.flows.should.eql(next);
+            flowCreate.called.should.be.false();
+        });
+        it('default: missing types still fail the start (unchanged)', async function() {
+            checkFlowDependencies.resetHistory();
+            const result = await loadConfig({}, [{id:"t1-1",z:"t1",type:"missing"},{id:"t1",type:"tab"}]);
+            result.errors[0].should.have.property("code","missing_types");
+            instanceState.get().state.should.equal("failed");
+        });
+        it('editorOnly: start ends in loaded (ready probe 200, D-13)', async function() {
+            await loadWith(editorSettings());
+            instanceState.get().state.should.equal("loaded");
+            instanceState.isReady().should.be.true();
+        });
+        it('editorOnly: setFlows saves without starting (full/nodes/flows)', async function() {
+            await loadWith(editorSettings());
+            runtimeEvents = [];
+            for (const type of ["full", "nodes", "flows"]) {
+                delete storage.conf;
+                const next = clone(okConfig).concat([{id:"t1-"+type,z:"t1",type:"test",wires:[]}]);
+                await flows.setFlows(next, null, type);
+                storage.conf.flows.should.eql(next);
+            }
+            flowCreate.called.should.be.false();
+            runtimeEvents.filter(e => e.id === "runtime-deploy").length.should.equal(3);
+        });
+        it('editorOnly: setFlows with forceStart does not start', async function() {
+            await loadWith(editorSettings());
+            await flows.setFlows(clone(okConfig), null, "full", false, true);
+            flowCreate.called.should.be.false();
+        });
+        it('editorOnly: load(true) does not start', async function() {
+            await loadWith(editorSettings());
+            await flows.load(true);
+            flowCreate.called.should.be.false();
+        });
+        it('editorOnly: safeMode is not cleared by deploy', async function() {
+            const settings = editorSettings({safeMode: true});
+            await loadWith(settings);
+            await flows.setFlows(clone(okConfig), null, "full");
+            await flows.load(true);
+            settings.safeMode.should.be.true();
+            flowCreate.called.should.be.false();
+        });
+        it('editorOnly: waitForStart resolves with the revision without starting (R-39)', async function() {
+            await loadWith(editorSettings());
+            storage.saveFlows = function(conf) { storage.conf = conf; return Promise.resolve("savedRev") };
+            const rev = await flows.setFlows(clone(okConfig).concat([{id:"t1-9",z:"t1",type:"test",wires:[]}]), null, "full", false, false, null, {waitForStart:true});
+            rev.should.equal("savedRev");
+            flowCreate.called.should.be.false();
+        });
+        it('editorOnly: a non-boolean value is ignored with a warning', async function() {
+            mockLog.warn.resetHistory();
+            const result = await loadWith({editorOnly: "yes"});
+            mockLog.warn.called.should.be.true();
+            result.should.eql({errors:[]});
+            flowCreate.called.should.be.true();
         });
     });
     describe('#updateFlow', function() {

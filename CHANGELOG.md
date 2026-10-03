@@ -1,3 +1,132 @@
+#### Unreleased: Instances and reload
+
+Features
+
+ - New API for the coordination of instances that run the same flows: `RED.coordination`
+   for nodes (`isLeader()`, `onLeaderChange(node, listener)`, `claim(key, ttlMs)`,
+   `info()`) and a plugin type `node-red-coordination` for coordination plugins installed
+   from outside the core. The plugin is selected only explicitly with the new setting
+   `coordination: {plugin, options}`; without it the built-in local coordination is used
+   (a single instance: always the leader, claims in memory) and the behaviour is unchanged.
+   An unknown plugin or a failing plugin start fails the start of the runtime. The
+   coordination starts before the flows start; `RED.stop()` resigns the leadership before
+   the flows stop and stops the plugin after them.
+ - Inject node: new option "Run only on one instance" (`singleInstance`, off by default).
+   With a coordination plugin a scheduled trigger ("at a specific time", "interval between
+   times") fires on the instance that claims it, an "interval" and "inject once" fire only
+   on the leader and the node shows the "standby" status on the other instances. The button
+   of the node is not affected. Nodes without the option are exported as before.
+ - Reload of the flows after a change in storage made by another instance: new setting
+   `deploy.reload: { watch, type, preReloadTimeout, concurrency, retry }` (`watch: false` by
+   default - nothing changes without it) and the optional function `watchFlows(callback)` of
+   storage plugins (without it the setting only logs a warning). The flows are reloaded in the
+   process - storage is read again under the deploy lock and the newest revision is started,
+   nothing is saved, stopped flows are not started, the process and its HTTP server keep running.
+   `type: "full"` (default) restarts all flows, `"diff"` only the changed ones (a changed global
+   configuration or credentials restart all). Own writes and duplicate notifications are skipped
+   by comparing the revisions; notifications during a reload are coalesced into one more reload,
+   those during the start are handled after it; a deployment on this instance supersedes a pending
+   reload. The instance state is `reloadPending` → `reloading`; `/ready` answers 503 from the
+   start of the drain until the reload has completed
+ - New hook `preReload` (`{rev, activeRev, type, changedFlows, credentialsChanged, deadline,
+   signal}`, frozen): drains the work in progress before the reload, at most
+   `deploy.reload.preReloadTimeout` (default 20 minutes). It can only delay the reload - a
+   failure, `false` or the timeout are logged and the flows are reloaded anyway. `signal` is
+   aborted on shutdown (`"stopping"`) or when a deployment supersedes the reload
+   (`"superseded"`). Flows changed during the drain outside `changedFlows` get one more
+   `preReload` (at most one round)
+ - `deploy.reload.concurrency` (an integer): at most this many instances drain and reload at the
+   same time, through reload slots of a coordination plugin; waiting instances keep the old
+   configuration and stay ready, also without a connection to the coordinator. No effect with the
+   local coordination (warning)
+ - `deploy.reload.retry: { min, max, attempts }` (default `1000`, `60000` ms, `10`): a failed
+   read of storage is retried with an exponential delay; after `attempts` failures the instance
+   state is `failed` (`/ready` 503) and the running flows are not stopped. With `watch: true` a
+   rejected registration of `watchFlows` fails the start
+ - The file storage provides `watchFlows`: `flowFile` and its credentials file are watched (file
+   system events and polling - also on a shared volume, with `readOnly` and `readOnlyUserDir`);
+   own writes and rewrites with the same content are not reported. Not available with projects
+ - A reload reads storage strictly (`getFlows({strict: true})`, also passed to storage plugins): a
+   read error or an incomplete configuration - a missing, empty or invalid flow file of the file
+   storage, a plugin result without an array of flows - is a failed read (retries, then `failed`)
+   and never reloads an empty configuration. The read at start is unchanged
+ - A reload superseded by another operation on the instance (`POST /flows/state` during the
+   drain, or a deployment that fails after it started - for example 400 `read_only_user_dir`) is
+   not lost: the revision in storage is compared with the active one again and the reload is
+   resumed when they differ
+ - After the retries of a failed read were exhausted (`failed`) storage is read again every
+   `deploy.reload.retry.max`: the instance becomes ready again once storage can be read, without
+   a new notification. The timers of the reload do not keep the process alive and its waits end
+   when the runtime stops
+ - The file storage keeps the last known content per observer, so two observers of the same file
+   in one process are both notified
+ - New setting `editorOnly` (default `false`): an editor-only instance loads the flows and saves
+   deployments but never starts the flows. The instance state is `loaded` (`/health/ready` 200),
+   `runtimeFlowState` is neither read nor saved and safe mode is not ended by a deployment. With
+   `deploy.response: "started"` deployments answer `{rev, started: false}` (`POST /flows`, and
+   `POST /flow`, `PUT /flow/:id` with the v2 api). `POST /flows/state` start answers 409
+   `editor_only`, stop has no effect. Missing node types only log a warning (the state stays
+   `loaded`, not `failed`) and the modules of the function node are not installed. Debug messages, node status and admin routes of node
+   instances are not available on such an instance
+
+Editor
+
+ - On an editor-only instance the editor shows that the flows are not run on this instance, offers
+   no Start/Stop flows, and disables "Restart Flows", the node buttons (for example inject) and
+   the "Inject now" button of the inject dialog with a tooltip
+
+Runtime
+
+ - New internal module of the instance state (`runtime/lib/state.js`, available to the runtime as
+   `runtime.state`): states `init`, `starting`, `ready`, `deploying`, `reloadPending`, `reloading`,
+   `idle`, `loaded`, `failed`, `stopping`, `stopped`; every change emits the event `instance:state`
+   with `{state, previous, reason}` (plus `since`, `draining`, `errors`) on `RED.events`. The module
+   is passive - responses, logs and the order of the existing events do not change
+ - `RED.stop(reason)` / `runtime.stop(reason)`: an optional reason (for example `"SIGTERM"`) given
+   to `instance:state` and logged; without it nothing more is logged
+ - A failure to read the flows or to start them when the runtime starts is no longer swallowed
+   silently: the instance state is `failed` (the log messages and the result of `RED.start()` are
+   unchanged)
+ - The result of the start of the flows reports `flowsRunning: false` with a `reason` when the
+   flows were not started on purpose (safe mode, flows stopped through `POST /flows/state`)
+ - New setting `health: { enabled, path, port, host }` (disabled by default): health probes
+   `<path>/live` (200 while the process runs) and `<path>/ready` (200 when the flows run or, on an
+   editor-only instance, are loaded; otherwise 503 with the constant body `{"status":"unavailable"}`),
+   without authentication, `Cache-Control: no-store`, 405 for other methods, 404 for other paths.
+   Without `port` they are mounted on the main server before any authentication and the server
+   listens even with `httpAdminRoot: false` and `httpNodeRoot: false`; with `port` a separate
+   server is started (`host` defaults to `uiHost`); a port in use fails the start
+   (`health.port-in-use`)
+ - New setting `shutdownTimeout` (ms, not set by default): on a stop signal `/ready` answers 503 at
+   once, the new hook `preShutdown` (`{reason, deadline, signal}`) is called and waited for at most
+   `shutdownTimeout`, then the flows stop. Without the setting the hook is not called and the flows
+   stop at once as before. A second signal during the drain stops at once
+ - With `health.enabled` the HTTP server is closed (idle connections too) after the flows stopped
+   on a stop signal; without it the shutdown is unchanged
+ - New api for embedding applications `RED.health` (`enabled`, `path`, `usesMainServer`, `handler`,
+   `shutdown({reason, signal})`, `closeServer(server, limit)`)
+ - The CLI logs a failed shutdown (`Shutdown failed: ...`) and exits with 1 instead of an
+   unhandled rejection
+ - The CLI passes the signal as the stop reason (`RED.stop("SIGTERM")`), logged as
+   `Stopping Node-RED (SIGTERM)`
+ - New setting `readOnlyUserDir` (default `false`) and the CLI environment variable
+   `NODE_RED_READ_ONLY_USER_DIR`: the runtime does not write to the user directory. Palette
+   install/update/remove/upload, auto-install of missing modules, modules of the function node and
+   Projects are disabled (settings set to `true` are overridden with a warning); one log block at
+   start lists the disabled features. With the file storage a deployment and saving a library entry
+   are rejected with 400 `read_only_user_dir` (also for an absolute `flowFile` outside the user
+   directory), and so is removing a palette module (`DELETE /nodes/:module`, before: `npm remove`
+   was run); the installers reject install, update, upload and remove and the modules of the
+   function node with `read_only_user_dir` whatever the other settings say; settings and sessions are kept in memory only; a `localfilesystem` context store in
+   the user directory fails the start. With the environment variable the CLI does not copy the
+   default settings file to `~/.node-red`
+ - The CLI no longer fails with an exception when the default settings file cannot be copied to the
+   user directory: it warns and uses the default settings file
+ - The existing `readOnly` setting is described in the settings template
+ - With `readOnly` or `readOnlyUserDir` the file storage reads the backup of an empty flow or
+   credentials file without copying it over the file (before, the backup was copied also with
+   `readOnly`)
+
 #### Unreleased: Security and fixes
 
 Security

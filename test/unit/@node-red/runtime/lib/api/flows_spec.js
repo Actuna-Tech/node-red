@@ -17,6 +17,9 @@
  * Modified by Actuna Sp. z o.o.:
  *   E-01: tests of the deploy pipeline and the shared deploy lock
  *   E-01: setState and deployments wait for the start of a deployment (R-43)
+ *   E-02: setState moves the instance state between idle and ready
+ *   Z-15: editorOnly - setState start 409 editor_only, stop without effect, the
+ *   deployment response {rev, started: false} with deploy.response "started"
  *   P-01: tests of deploy.response "started" (waitForStart, deploy errors with status 500)
  *   Z-04: tests of the single-flow api (rev, globalRev, globalConfigs, putCreatesFlow)
  *   Z-05: tests of deploy.requireRevision in both states
@@ -544,6 +547,30 @@ describe("runtime-api/flows", function() {
             should(err).have.property("code", "not_allowed")
             should(err).have.property("status", 405)
         });
+        it("editorOnly: setState start returns 409 editor_only without saving runtimeFlowState", async function() {
+            runtime.settings.editorOnly = true;
+            runtime.settings.set = sinon.spy();
+            flows.init(runtime);
+            let err;
+            try {
+                await flows.setState({state:"start"});
+            } catch (error) {
+                err = error;
+            }
+            should(err).have.property("code", "editor_only");
+            should(err).have.property("status", 409);
+            startFlows.called.should.be.false();
+            runtime.settings.set.called.should.be.false();
+        });
+        it("editorOnly: setState stop is no-op", async function() {
+            runtime.settings.editorOnly = true;
+            runtime.settings.set = sinon.spy();
+            flows.init(runtime);
+            const state = await flows.setState({state:"stop"});
+            state.should.have.property("state");
+            stopFlows.called.should.be.false();
+            runtime.settings.set.called.should.be.false();
+        });
         it("rejects setting invalid flows run state", async function() {
             let err;
             flows.init(runtime);
@@ -556,6 +583,60 @@ describe("runtime-api/flows", function() {
             startFlows.called.should.not.be.true();
             should(err).have.property("code", "invalid_run_state")
             should(err).have.property("status", 400)
+        });
+        describe("instance state (E-02)", function() {
+            const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+            beforeEach(function() {
+                instanceState.reset();
+                instanceState.markStarting();
+                instanceState.report({errors:[]});
+            });
+            afterEach(function() {
+                instanceState.reset();
+            });
+            it("setState stop/start transitions ready -> idle -> ready", async function() {
+                flows.init(runtime);
+                const seen = [];
+                const off = instanceState.onChange(info => seen.push(info.state + "/" + info.reason));
+                await flows.setState({state:"stop"});
+                instanceState.get().should.containEql({state:"idle", reason:"set-state"});
+                await flows.setState({state:"start"});
+                off();
+                instanceState.get().should.containEql({state:"ready", previous:"idle", reason:"set-state"});
+                seen.should.eql(["idle/set-state", "ready/set-state"]);
+            });
+            it("setState start with start errors sets failed", async function() {
+                runtime.flows.startFlows = sinon.spy(async () => ({errors:[{code:"missing_types", message:"m"}]}));
+                flows.init(runtime);
+                await flows.setState({state:"start"});
+                instanceState.get().should.containEql({state:"failed", reason:"missing-types"});
+            });
+            it("setState start with flows not started on purpose (safe mode) sets idle", async function() {
+                runtime.flows.startFlows = sinon.spy(async () => ({errors:[{code:"safe_mode"}], flowsRunning:false, reason:"safe-mode"}));
+                flows.init(runtime);
+                await flows.setState({state:"start"});
+                instanceState.get().should.containEql({state:"idle", reason:"safe-mode"});
+            });
+            it("a rejected start sets failed", async function() {
+                runtime.flows.startFlows = sinon.spy(async () => { throw new Error("boom") });
+                flows.init(runtime);
+                await flows.setState({state:"start"}).should.be.rejected();
+                instanceState.get().should.containEql({state:"failed", reason:"flow-start-failed"});
+            });
+            it("a rejected stop keeps the state", async function() {
+                runtime.flows.stopFlows = sinon.spy(async () => { throw new Error("boom") });
+                flows.init(runtime);
+                await flows.setState({state:"stop"}).should.be.rejected();
+                instanceState.get().state.should.equal("ready");
+            });
+            it("an invalid state does not change the instance state", async function() {
+                flows.init(runtime);
+                const seen = [];
+                const off = instanceState.onChange(info => seen.push(info.state));
+                await flows.setState({state:"bad-state"}).should.be.rejected();
+                off();
+                seen.should.eql([]);
+            });
         });
     });
 
@@ -738,6 +819,28 @@ describe("runtime-api/flows", function() {
             initRuntime({response:"started"});
             await flows.setFlows({flows:{flows:[1]}});
             runtime.flows.setFlows.firstCall.args[6].should.eql({waitForStart:true});
+        });
+        it("editorOnly: response {rev, started: false} with deploy.response started (R-39)", async function() {
+            initRuntime({response:"started"});
+            runtime.settings.editorOnly = true;
+            const result = await flows.setFlows({flows:{flows:[1]}});
+            result.should.eql({rev:"newRev", started:false});
+            const reload = await flows.setFlows({deploymentType:"reload"});
+            reload.should.eql({rev:"loadRev", started:false});
+        });
+        it("editorOnly: response {rev} with the default deploy.response", async function() {
+            initRuntime(undefined);
+            runtime.settings.editorOnly = true;
+            const result = await flows.setFlows({flows:{flows:[1]}});
+            result.should.eql({rev:"newRev"});
+        });
+        it("editorOnly: single-flow v2 responses carry started: false with deploy.response started", async function() {
+            initRuntime({response:"started"});
+            runtime.settings.editorOnly = true;
+            const added = await flows.addFlow({flow:{label:"x"}, apiVersion:"v2"});
+            added.should.have.property("started", false);
+            const updated = await flows.updateFlow({id:"f1", flow:{label:"x"}, apiVersion:"v2"});
+            updated.should.have.property("started", false);
         });
         it("reload passes waitForStart when deploy.response is started", async function() {
             initRuntime({response:"started"});

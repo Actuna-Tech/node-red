@@ -19,6 +19,7 @@
  *   Z-05: contract tests of DELETE /flow/:id?rev=
  *   R-46: an invalid Node-RED-API-Version on /flow is treated as v1 with a warning
  *   W-3: contract of the deploy errors of the single-flow api (rev, revAll, errors)
+ *   Z-15: PUT v2 passes started: false of an editor-only instance (R-39)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -279,6 +280,9 @@ describe("api/admin/flow", function() {
                             err.status = 409;
                             return Promise.reject(err);
                         }
+                        if (opts.apiVersion === "v2" && opts.id === "editorOnly") {
+                            return Promise.resolve({id: opts.id, rev: "rev-updated", revAll: "rev-all", created: false, started: false});
+                        }
                         if (opts.apiVersion === "v2") {
                             return Promise.resolve({id: opts.id, rev: "rev-updated", revAll: "rev-all", created: created});
                         }
@@ -331,6 +335,10 @@ describe("api/admin/flow", function() {
         it("PUT v2 returns 200 with the revisions for an existing flow", async function() {
             const res = await request(app).put("/flow/t1").set("Node-RED-API-Version","v2").send({nodes:[], rev:"rev-t1"}).expect(200);
             res.body.should.eql({id:"t1", rev:"rev-updated", revAll:"rev-all"});
+        });
+        it("PUT v2 passes started: false (editor-only instance, R-39)", async function() {
+            const res = await request(app).put("/flow/editorOnly").set("Node-RED-API-Version","v2").send({nodes:[], rev:"rev-t1"}).expect(200);
+            res.body.should.eql({id:"editorOnly", rev:"rev-updated", revAll:"rev-all", started:false});
         });
         it("PUT v2 If-Match acts as rev", async function() {
             await request(app).put("/flow/t1").set("Node-RED-API-Version","v2").set("If-Match",'"rev-t1"').send({nodes:[]}).expect(200);

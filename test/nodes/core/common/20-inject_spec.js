@@ -13,11 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-10: tests of the singleInstance option (coordination of instances)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var injectNode = require("nr-test-utils").require("@node-red/nodes/core/common/20-inject.js");
 var Context = require("nr-test-utils").require("@node-red/runtime/lib/nodes/context");
 var helper = require("node-red-node-test-helper");
+var sinon = require("sinon");
 
 describe('inject node', function() {
 
@@ -950,6 +956,283 @@ describe('inject node', function() {
 
         it('should fail for invalid node', function(done) {
             helper.request().post('/inject/invalid').expect(404).end(done);
+        });
+    });
+
+    describe('singleInstance', function() {
+        // A stand-in for RED.coordination
+        function mockCoordination(leader) {
+            const listeners = [];
+            const coordination = {
+                leader: leader,
+                listeners: listeners,
+                isLeader: sinon.spy(function() { return coordination.leader }),
+                onLeaderChange: sinon.spy(function(node, listener) {
+                    const entry = {node: node, listener: listener};
+                    listeners.push(entry);
+                    return function() { listeners.splice(listeners.indexOf(entry), 1) };
+                }),
+                claim: sinon.stub().callsFake(function(key, ttl) {
+                    return Promise.resolve({key: key, expiresAt: Date.now() + ttl, release: function() { return Promise.resolve() }});
+                }),
+                info: function() { return {plugin: "mock", local: false} },
+                setLeader: function(value) {
+                    coordination.leader = value;
+                    listeners.slice().forEach(e => e.listener(value));
+                }
+            };
+            return coordination;
+        }
+        function injectWith(coordination) {
+            return function(RED) {
+                RED.coordination = coordination;
+                return injectNode(RED);
+            };
+        }
+        function wait(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+        function callsOf(node, method) {
+            return node[method].getCalls().filter(c => c.thisValue === node);
+        }
+        function countInputs(node) {
+            const counter = {count: 0, msgs: []};
+            node.on("input", function(msg) { counter.count++; counter.msgs.push(msg) });
+            return counter;
+        }
+
+        it('singleInstance cron claims nodeId:scheduledTime', function(done) {
+            this.timeout(3000);
+            const coordination = mockCoordination(false);
+            helper.load(injectWith(coordination), [{id:"n1", type:"inject", topic: "t3",
+                        crontab: "* * * * * *", singleInstance: true, wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                const n2 = helper.getNode("n2");
+                n2.on("input", function(msg) {
+                    try {
+                        msg.should.have.property('topic', 't3');
+                        coordination.claim.called.should.be.true();
+                        const args = coordination.claim.firstCall.args;
+                        args[0].should.match(/^inject:n1:\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.000Z$/);
+                        args[1].should.equal(60000);
+                        // cron does not use the leadership and shows no standby status
+                        coordination.isLeader.called.should.be.false();
+                        callsOf(helper.getNode("n1"), "status").length.should.equal(0);
+                        helper.clearFlows().then(() => done());
+                    } catch(err) {
+                        done(err);
+                    }
+                });
+            });
+        });
+
+        it('singleInstance cron skips when claim null', function(done) {
+            this.timeout(3000);
+            const coordination = mockCoordination(true);
+            coordination.claim = sinon.stub().resolves(null);
+            helper.load(injectWith(coordination), [{id:"n1", type:"inject",
+                        crontab: "* * * * * *", singleInstance: true, wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                const counter = countInputs(helper.getNode("n2"));
+                wait(1500).then(function() {
+                    coordination.claim.called.should.be.true();
+                    counter.count.should.equal(0);
+                    callsOf(helper.getNode("n1"), "warn").length.should.equal(0);
+                    return helper.clearFlows();
+                }).then(() => done()).catch(done);
+            });
+        });
+
+        it('singleInstance cron skips and warns on claim rejection', function(done) {
+            this.timeout(3000);
+            const coordination = mockCoordination(true);
+            coordination.claim = sinon.stub().rejects(new Error("no connection"));
+            helper.load(injectWith(coordination), [{id:"n1", type:"inject",
+                        crontab: "* * * * * *", singleInstance: true, wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                const counter = countInputs(helper.getNode("n2"));
+                wait(1500).then(function() {
+                    coordination.claim.called.should.be.true();
+                    counter.count.should.equal(0);
+                    const warns = callsOf(helper.getNode("n1"), "warn");
+                    warns.length.should.be.above(0);
+                    warns[0].args[0].should.match(/inject.errors.claim-failed/);
+                    return helper.clearFlows();
+                }).then(() => done()).catch(done);
+            });
+        });
+
+        it('singleInstance interval fires only when leader', function(done) {
+            const coordination = mockCoordination(false);
+            helper.load(injectWith(coordination), [{id:"n1", type:"inject", topic: "t2",
+                        repeat: 0.05, singleInstance: true, wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                const counter = countInputs(helper.getNode("n2"));
+                wait(200).then(function() {
+                    counter.count.should.equal(0);
+                    coordination.isLeader.called.should.be.true();
+                    coordination.setLeader(true);
+                    return wait(200);
+                }).then(function() {
+                    counter.count.should.be.above(1);
+                    counter.msgs[0].should.have.property('topic', 't2');
+                    coordination.claim.called.should.be.false();
+                    coordination.setLeader(false);
+                    const before = counter.count;
+                    return wait(200).then(() => counter.count.should.equal(before));
+                }).then(function() {
+                    return helper.clearFlows();
+                }).then(() => done()).catch(done);
+            });
+        });
+
+        it('once fires only when leader', function(done) {
+            const coordination = mockCoordination(false);
+            helper.load(injectWith(coordination), [{id:"n1", type:"inject",
+                        once: true, onceDelay: 0.05, singleInstance: true, wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                const counter = countInputs(helper.getNode("n2"));
+                wait(200).then(function() {
+                    counter.count.should.equal(0);
+                    return helper.clearFlows();
+                }).then(() => done()).catch(done);
+            });
+        });
+
+        it('once fires on the leader', function(done) {
+            const coordination = mockCoordination(true);
+            helper.load(injectWith(coordination), [{id:"n1", type:"inject",
+                        once: true, onceDelay: 0.05, singleInstance: true, wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                const counter = countInputs(helper.getNode("n2"));
+                wait(200).then(function() {
+                    counter.count.should.equal(1);
+                    return helper.clearFlows();
+                }).then(() => done()).catch(done);
+            });
+        });
+
+        it('manual button not gated', function(done) {
+            const coordination = mockCoordination(false);
+            helper.load(injectWith(coordination), [{id:"n1", type:"inject", payloadType:"str", payload:"hello",
+                        repeat: 10, singleInstance: true, wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                const n2 = helper.getNode("n2");
+                n2.on("input", function(msg) {
+                    try {
+                        msg.should.have.property('payload', 'hello');
+                        helper.clearFlows().then(() => done());
+                    } catch(err) {
+                        done(err);
+                    }
+                });
+                helper.request().post('/inject/n1').expect(200).end(function(err) {
+                    if (err) { done(err) }
+                });
+            });
+        });
+
+        it('default (no singleInstance) unchanged', function(done) {
+            const coordination = mockCoordination(false);
+            helper.load(injectWith(coordination), [{id:"n1", type:"inject",
+                        repeat: 0.05, wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                const n1 = helper.getNode("n1");
+                n1.should.have.property('singleInstance', false);
+                const counter = countInputs(helper.getNode("n2"));
+                wait(200).then(function() {
+                    counter.count.should.be.above(1);
+                    coordination.isLeader.called.should.be.false();
+                    coordination.onLeaderChange.called.should.be.false();
+                    coordination.claim.called.should.be.false();
+                    callsOf(n1, "status").length.should.equal(0);
+                    return helper.clearFlows();
+                }).then(() => done()).catch(done);
+            });
+        });
+
+        it('default cron does not claim', function(done) {
+            this.timeout(3000);
+            const coordination = mockCoordination(false);
+            helper.load(injectWith(coordination), [{id:"n1", type:"inject",
+                        crontab: "* * * * * *", wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                helper.getNode("n2").on("input", function() {
+                    try {
+                        coordination.claim.called.should.be.false();
+                        helper.clearFlows().then(() => done());
+                    } catch(err) {
+                        done(err);
+                    }
+                });
+            });
+        });
+
+        it('singleInstance without RED.coordination behaves as without the option', function(done) {
+            helper.load(injectNode, [{id:"n1", type:"inject",
+                        repeat: 0.05, singleInstance: true, wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                const counter = countInputs(helper.getNode("n2"));
+                wait(200).then(function() {
+                    counter.count.should.be.above(1);
+                    return helper.clearFlows();
+                }).then(() => done()).catch(done);
+            });
+        });
+
+        it('shows standby status when not leader and clears it on leadership', function(done) {
+            const coordination = mockCoordination(false);
+            helper.load(injectWith(coordination), [{id:"n1", type:"inject",
+                        repeat: 10, singleInstance: true, wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                try {
+                    const n1 = helper.getNode("n1");
+                    let calls = callsOf(n1, "status");
+                    calls.length.should.equal(1);
+                    calls[0].args[0].should.eql({fill: "grey", shape: "ring", text: "inject.standby"});
+                    coordination.onLeaderChange.calledOnce.should.be.true();
+                    coordination.onLeaderChange.firstCall.args[0].should.equal(n1);
+                    coordination.setLeader(true);
+                    calls = callsOf(n1, "status");
+                    calls.length.should.equal(2);
+                    calls[1].args[0].should.eql({});
+                    coordination.setLeader(false);
+                    calls = callsOf(n1, "status");
+                    calls[2].args[0].should.have.property("text", "inject.standby");
+                    helper.clearFlows().then(() => done());
+                } catch(err) {
+                    done(err);
+                }
+            });
+        });
+
+        it('no standby status on the leader', function(done) {
+            const coordination = mockCoordination(true);
+            helper.load(injectWith(coordination), [{id:"n1", type:"inject",
+                        repeat: 10, singleInstance: true, wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                try {
+                    callsOf(helper.getNode("n1"), "status").length.should.equal(0);
+                    helper.clearFlows().then(() => done());
+                } catch(err) {
+                    done(err);
+                }
+            });
+        });
+
+        it('no leadership listener without a timer', function(done) {
+            const coordination = mockCoordination(false);
+            helper.load(injectWith(coordination), [{id:"n1", type:"inject",
+                        singleInstance: true, wires:[["n2"]] },
+                       {id:"n2", type:"helper"}], function() {
+                try {
+                    coordination.onLeaderChange.called.should.be.false();
+                    callsOf(helper.getNode("n1"), "status").length.should.equal(0);
+                    helper.clearFlows().then(() => done());
+                } catch(err) {
+                    done(err);
+                }
+            });
         });
     });
 });

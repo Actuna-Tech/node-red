@@ -103,6 +103,21 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   Projektów (zmiana gałęzi, pull, revert, scalanie); druga operacja czeka. Blokada trwa do końca startu flow (R-43).
 - Potok `runtime/lib/flows/pipeline.js` – kroki i punkty rozszerzeń: ZASADY §2.3.
 
+### Wiele instancji (gałąź `feature/p3-database`, w toku do scalenia z `main`)
+
+| Ustawienie / API | Domyślnie | Działanie | Pakiet |
+|---|---|---|---|
+| stan instancji `runtime.state`, zdarzenie `instance:state`, `RED.stop(reason)` | zawsze (pasywne) | `init, starting, ready, deploying, reloadPending, reloading, idle, loaded, failed, stopping, stopped` | E-02 |
+| `health: {enabled, path, port, host}` | wyłączone | `/live`, `/ready` (503 `{"status":"unavailable"}` poza stanem gotowości), bez uwierzytelnienia | Z-08 |
+| `shutdownTimeout` + hook `preShutdown` | brak | drenaż przy SIGTERM: `/ready` 503 od razu, hook z limitem, potem zatrzymanie; drugi sygnał = natychmiast | Z-08 |
+| `readOnlyUserDir`, zmienna `NODE_RED_READ_ONLY_USER_DIR` | `false` | brak zapisu do katalogu użytkownika; wdrożenie przy magazynie plikowym i `DELETE /nodes/<moduł>` → 400 `read_only_user_dir`; instalatory palety i modułów function odrzucają zapis niezależnie od innych ustawień | Z-11 |
+| `coordination: {plugin, options}`, `RED.coordination` (węzły), typ wtyczki `node-red-coordination` | wtyczka lokalna | przywództwo i zajęcia z TTL; własna wtyczka wybierana jawnie | Z-10 |
+| `inject` – „Run only on one instance” (`singleInstance`) | wyłączone | cron raz w klastrze, interwał tylko na liderze, status „standby” | Z-10 |
+| `deploy.reload: {watch, type, preReloadTimeout, concurrency, retry}` | `watch: false`, `type: "full"`, 20 min, brak limitu, `{1000, 60000, 10}` | przeładowanie flow w procesie po zmianie w magazynie: drenaż (`/ready` 503), ponowny odczyt pod blokadą, najnowsza rewizja, bez zapisu i bez restartu procesu; powiadomienia łączone, w trakcie startu buforowane; wdrożenie lokalne unieważnia oczekujące przeładowanie (po unieważnieniu – także przez `POST /flows/state` lub nieudane wdrożenie – rewizja w magazynie jest porównywana z aktywną i przeładowanie wznawiane, gdy się różnią); `diff` – tylko zmienione flow; `concurrency` – sloty koordynacji; po wyczerpaniu ponowień odczytu `failed`, potem odczyt co `retry.max` aż do powrotu do `ready` | Z-09 |
+| `watchFlows(callback)` wtyczki magazynu | opcjonalne | bez niego `deploy.reload` bez efektu (ostrzeżenie); magazyn plikowy obserwuje `flowFile` i plik poświadczeń (także wspólny wolumen, `readOnly`, `readOnlyUserDir`; nie z Projektami); błąd rejestracji przy `watch: true` → błąd startu; odczyt do przeładowania ścisły (`getFlows({strict: true})`) – błąd odczytu, brak, pusty lub niepoprawny plik flow → ponowienia, potem `failed`, nigdy pusta konfiguracja | Z-09 |
+| hook `preReload` | brak | `{rev, activeRev, type, changedFlows, credentialsChanged, deadline, signal}` – drenaż pracy w toku z limitem `preReloadTimeout`, bez prawa weta; dodatkowa runda dla flow zmienionych w trakcie drenażu (najwyżej jedna) | Z-09 |
+| `editorOnly` | `false` | instancja tylko do edycji: flow wczytane, nigdy nie startują (stan `loaded`, `/ready` 200 – także przy brakujących typach, tylko ostrzeżenie w logu; moduły węzła Function nie są instalowane); wdrożenie tylko zapisuje (`{rev, started: false}` przy `deploy.response: "started"`); `POST /flows/state` start → 409 `editor_only`; w edytorze bez Start/Stop, „Restart Flows” i przyciski węzłów (inject) nieaktywne z podpowiedzią | Z-15 |
+
 ## 6. Zmiany zachowania względem 5.0.7 (poprawki błędów)
 
 - Restart flow przy 409 i przyciski „Merge”/„Ignore & deploy” nie kończą się błędem skryptu.
@@ -110,6 +125,9 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 - `PUT /flow/:id` z id węzła z innego flow → 400 `duplicate_id` (wcześniej zdublowane id).
 - Nieprawidłowy `Node-RED-API-Version` na `/flow` – traktowany jak v1 z ostrzeżeniem w logu (R-46).
 - Operacje stanu flow i Projektów czekają na trwające wdrożenie (wcześniej mogły się na nie nałożyć).
+- Nowa linia logu przy starcie `Coordination   : local` (lub nazwa wtyczki koordynacji, Z-10) – świadoma zmiana wyjścia logu; narzędzia parsujące log startowy muszą ją tolerować.
+- Nieudane zatrzymanie po sygnale (np. odrzucone `RED.stop()`) – log `Shutdown failed: …` i kod wyjścia 1 (wcześniej nieobsłużone odrzucenie obietnicy, Z-08).
+- Przy `readOnly`/`readOnlyUserDir` pusty plik flow lub poświadczeń nie jest nadpisywany kopią `.backup` – kopia jest tylko czytana (Z-09/Z-11).
 
 ## 7. Testy i proces
 
@@ -127,11 +145,9 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 ## 8. W toku (gałąź `feature/p3-database`)
 
 Ogólne API rdzenia do pracy wielu instancji (edytor + instancje wykonawcze); prywatne wtyczki magazynu
-i koordynacji podpina się poza tym repozytorium:
-- E-02 – model stanów instancji; Z-08 – sondy `/health/live`, `/health/ready`, drenaż przy SIGTERM;
-- Z-09 – przeładowanie flow po zmianie w magazynie (`watchFlows`, hook `preReload` z limitem – drenaż pracy w toku,
-  łączenie powiadomień), także dla `flows.json` na wspólnym wolumenie;
-- Z-10 – koordynacja (`RED.coordination`, wtyczka lokalna), `inject` „tylko jedna instancja”;
-- Z-11 – katalog użytkownika tylko do odczytu; Z-15 – instancja tylko do edycji (`editorOnly`).
+i koordynacji podpina się poza tym repozytorium. Priorytet 3 zrealizowany w zakresie budżetu
+(sekcja 5, „Wiele instancji”: E-02, Z-08, Z-09, Z-10, Z-11, Z-15) – gałąź czeka na przegląd i akceptację.
+Kontrakt `watchFlows`/`preReload` dla autorów wtyczek magazynu:
+[design/engine-extensions/MIGRACJA.md](design/engine-extensions/MIGRACJA.md) §5.2.
 
 Opis zostanie przeniesiony do sekcji 3–6 po scaleniu z `main`.
