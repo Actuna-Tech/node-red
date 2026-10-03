@@ -142,6 +142,10 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 - Instancja tylko edycyjna (`editorOnly: true`): odpowiedź **`{rev, started: false}`** bez błędu – flow nie są
   uruchamiane (R-39).
 - Błąd zatrzymania: 500 `deploy_stop_failed` z `rev`.
+- Znaczenie `rev` w błędach `deploy_start_failed`/`deploy_stop_failed` (W-3): w `/flows` – rewizja całej konfiguracji
+  (bez zmian); w `/flow` (`POST`, `PUT /flow/:id`, `DELETE /flow/:id`, v1 i v2) – `rev` = nowa rewizja **flow** (jak
+  w odpowiedzi sukcesu v2; `null` po `DELETE` – flow już nie istnieje), a `revAll` = nowa rewizja całości. Narzędzie
+  zapamiętuje `rev` do kolejnego `PUT /flow/:id` (lub `DELETE ?rev=`), a `revAll` do `POST /flows`.
 - Kolejne wdrożenia czekają na start flow poprzedniego wdrożenia (blokada wdrożeń) – **do końca startu**, także
   po przekroczeniu `deploy.startTimeout` (odpowiedź 500 `start_timeout` wraca, blokada trwa); po 60 s ostrzeżenie
   w logu (R-43, **R-45**). Zwolnienie blokady po upływie `deploy.startTimeout` (w obu trybach odpowiedzi,

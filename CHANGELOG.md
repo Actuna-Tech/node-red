@@ -79,7 +79,11 @@ Admin API
    response modes, with a warning) while the flows are still starting - a following
    deployment may then run concurrently with that start. An invalid value or `true` without
    `deploy.startTimeout` is logged as a warning
- - Error responses of the Admin API include `rev` and `errors` when the error carries them
+ - Error responses of the Admin API include `rev` and `errors` when the error carries them. In
+   `deploy_start_failed`/`deploy_stop_failed` of the single-flow API (`POST /flow`,
+   `PUT`/`DELETE /flow/:id`) `rev` is the new revision of the flow (as in the v2 response;
+   `null` after `DELETE`) and `revAll` the new revision of the whole configuration; on `/flows`
+   `rev` stays the revision of the whole configuration
  - Single-flow API (`/flow`): requests without the new fields and without
    `Node-RED-API-Version: v2` behave as before. New:
    - `GET /flow/:id` with v2 returns the flow revision `rev` (sha256 of the tab and its nodes,

@@ -21,6 +21,7 @@
  *   Z-04: tests of the single-flow api (rev, globalRev, globalConfigs, putCreatesFlow)
  *   Z-05: tests of deploy.requireRevision in both states
  *   R-45: warnings for deploy.startTimeoutReleasesLock
+ *   W-3: revisions of the flow and of the whole configuration in deploy errors of /flow
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -710,6 +711,7 @@ describe("runtime-api/flows", function() {
                 settings: { deploy: deploySettings },
                 flows: {
                     getFlows: function() { return {rev:"currentRev",flows:[]} },
+                    getFlowRevision: function(id) { return "flowRev-" + id },
                     setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
                     loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
                     readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
@@ -795,7 +797,7 @@ describe("runtime-api/flows", function() {
         });
         it("keeps status 500 of deploy_start_failed and deploy_stop_failed for the single-flow api", async function() {
             initRuntime({response:"started"});
-            runtime.flows.addFlow = sinon.spy(function() { return Promise.reject(startFailed()) });
+            runtime.flows.addFlow = sinon.spy(function(flow) { flow.id = "f1"; return Promise.reject(startFailed()) });
             runtime.flows.updateFlow = sinon.spy(function() { return Promise.reject(startFailed()) });
             runtime.flows.removeFlow = sinon.spy(function() {
                 const err = new Error("stop failed");
@@ -806,13 +808,22 @@ describe("runtime-api/flows", function() {
             });
             let err = await flows.addFlow({flow:{}}).should.be.rejected();
             err.should.have.property("status",500);
-            err.should.have.property("rev","newRev");
+            // W-3: rev of the flow, revAll of the whole configuration
+            err.should.have.property("rev","flowRev-f1");
+            err.should.have.property("revAll","newRev");
             err = await flows.updateFlow({id:"1",flow:{}}).should.be.rejected();
             err.should.have.property("status",500);
             err.should.have.property("code","deploy_start_failed");
             err = await flows.deleteFlow({id:"1"}).should.be.rejected();
             err.should.have.property("status",500);
             err.should.have.property("code","deploy_stop_failed");
+        });
+        it("setFlows (/flows): rev of a deploy error stays the revision of the whole configuration (W-3)", async function() {
+            initRuntime({response:"started"});
+            runtime.flows.setFlows = sinon.spy(function() { return Promise.reject(startFailed()) });
+            const err = await flows.setFlows({flows:{flows:[1]}, apiVersion:"v2"}).should.be.rejected();
+            err.should.have.property("rev","newRev");
+            err.should.not.have.property("revAll");
         });
         it("other single-flow errors keep status 400", async function() {
             initRuntime({response:"started"});
@@ -976,6 +987,75 @@ describe("runtime-api/flows", function() {
             runtime.flows.removeFlow.called.should.be.false();
             await flows.deleteFlow({id:"t1", rev:"rev-t1"});
             runtime.flows.removeFlow.calledOnce.should.be.true();
+        });
+        describe("revisions in deploy errors (W-3)", function() {
+            function deployFailed(code) {
+                const err = new Error("deploy failed");
+                err.code = code;
+                err.status = 500;
+                err.rev = "rev-all-new";
+                if (code === "deploy_start_failed") {
+                    err.errors = [{code:"missing_types", message:"Missing node types"}];
+                }
+                return err;
+            }
+            it("updateFlow: rev is the flow revision and revAll the revision of the whole configuration", async function() {
+                initRuntime();
+                runtime.flows.updateFlow = sinon.spy(function(id) {
+                    revisions[id] = "rev-" + id + "-new";
+                    return Promise.reject(deployFailed("deploy_start_failed"));
+                });
+                for (const apiVersion of ["v1", "v2"]) {
+                    const err = await rejected(flows.updateFlow({id:"t1", flow:{nodes:[]}, apiVersion}));
+                    err.should.have.property("code","deploy_start_failed");
+                    err.should.have.property("status",500);
+                    err.should.have.property("rev","rev-t1-new");
+                    err.should.have.property("revAll","rev-all-new");
+                    err.errors[0].should.have.property("code","missing_types");
+                }
+            });
+            it("addFlow: rev is the revision of the new flow", async function() {
+                initRuntime();
+                runtime.flows.addFlow = sinon.spy(function(flow) {
+                    flow.id = "added";
+                    revisions.added = "rev-added";
+                    return Promise.reject(deployFailed("deploy_stop_failed"));
+                });
+                const err = await rejected(flows.addFlow({flow:{nodes:[]}, apiVersion:"v2"}));
+                err.should.have.property("code","deploy_stop_failed");
+                err.should.have.property("rev","rev-added");
+                err.should.have.property("revAll","rev-all-new");
+            });
+            it("deleteFlow: rev is null (the flow no longer exists)", async function() {
+                initRuntime();
+                runtime.flows.removeFlow = sinon.spy(function(id) {
+                    delete revisions[id];
+                    return Promise.reject(deployFailed("deploy_start_failed"));
+                });
+                const err = await rejected(flows.deleteFlow({id:"t1"}));
+                err.should.have.property("rev",null);
+                err.should.have.property("revAll","rev-all-new");
+            });
+            it("the revisions are read under the deploy lock", async function() {
+                initRuntime();
+                const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
+                let lockedWhenRead = null;
+                runtime.flows.updateFlow = sinon.spy(function(id) {
+                    return Promise.reject(deployFailed("deploy_start_failed"));
+                });
+                runtime.flows.getFlowRevision = function(id) {
+                    lockedWhenRead = lock.isLocked();
+                    return revisions[id] || null;
+                };
+                await rejected(flows.updateFlow({id:"t1", flow:{nodes:[]}}));
+                lockedWhenRead.should.be.true();
+            });
+            it("other errors have no revAll", async function() {
+                initRuntime();
+                const err = await rejected(flows.updateFlow({id:"t1", flow:{nodes:[], rev:"old"}}));
+                err.should.have.property("code","version_mismatch");
+                err.should.not.have.property("revAll");
+            });
         });
         it("calls without the new fields are unchanged", async function() {
             initRuntime();

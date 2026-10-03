@@ -18,6 +18,7 @@
  *   Z-04: contract tests of the single-flow api v2 (rev, ETag, If-Match, 201)
  *   Z-05: contract tests of DELETE /flow/:id?rev=
  *   R-46: an invalid Node-RED-API-Version on /flow is treated as v1 with a warning
+ *   W-3: contract of the deploy errors of the single-flow api (rev, revAll, errors)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -401,6 +402,48 @@ describe("api/admin/flow", function() {
                 await request(app).get("/flow/t1").set("Node-RED-API-Version","v2").expect(200);
                 warn.called.should.be.false();
             });
+        });
+    });
+
+    describe("deploy errors of the single-flow api (W-3)", function() {
+        before(function() {
+            flow.init({
+                flows: {
+                    updateFlow: function(opts) {
+                        const err = new Error("Deployment saved, but the flows did not start");
+                        err.code = "deploy_start_failed";
+                        err.status = 500;
+                        err.rev = "rev-flow";
+                        err.revAll = "rev-all";
+                        err.errors = [{code:"start_timeout", message:"timeout"}];
+                        return Promise.reject(err);
+                    },
+                    deleteFlow: function(opts) {
+                        const err = new Error("stop failed");
+                        err.code = "deploy_stop_failed";
+                        err.status = 500;
+                        err.rev = null;
+                        err.revAll = "rev-all";
+                        return Promise.reject(err);
+                    }
+                }
+            });
+        });
+        it("PUT returns 500 with rev of the flow, revAll and errors", async function() {
+            for (const version of ["v1", "v2"]) {
+                const res = await request(app).put("/flow/t1").set("Node-RED-API-Version",version).send({nodes:[]}).expect(500);
+                res.body.should.eql({
+                    code: "deploy_start_failed",
+                    message: "Deployment saved, but the flows did not start",
+                    rev: "rev-flow",
+                    revAll: "rev-all",
+                    errors: [{code:"start_timeout", message:"timeout"}]
+                });
+            }
+        });
+        it("DELETE returns 500 with rev null and revAll", async function() {
+            const res = await request(app).delete("/flow/t1").expect(500);
+            res.body.should.eql({code:"deploy_stop_failed", message:"stop failed", rev:null, revAll:"rev-all"});
         });
     });
 

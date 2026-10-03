@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   P-01: tests of rejectHandler passing rev and errors of a deployment error
+ *   W-3: revAll of a deployment error of the single-flow api
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -127,6 +128,14 @@ describe("api/util", function() {
                 err.errors = [{code:"missing_types", message:"Missing node types", types:["missing"]}];
                 apiUtil.rejectHandler(req,res,err);
             });
+            app.get("/flowStopFailed", function(req,res) {
+                var err = new Error("stop failed");
+                err.code = "deploy_stop_failed";
+                err.status = 500;
+                err.rev = null;
+                err.revAll = "all";
+                apiUtil.rejectHandler(req,res,err);
+            });
             app.get("/plain", function(req,res) {
                 var err = new Error("not found");
                 err.code = "not_found";
@@ -146,6 +155,10 @@ describe("api/util", function() {
                 rev: "abc",
                 errors: [{code:"missing_types", message:"Missing node types", types:["missing"]}]
             });
+        });
+        it("rejectHandler includes revAll and a null rev of the single-flow api (W-3)", async function() {
+            const res = await request(app).get("/flowStopFailed").expect(500);
+            res.body.should.eql({code:"deploy_stop_failed", message:"stop failed", rev:null, revAll:"all"});
         });
         it("rejectHandler response unchanged without rev and errors", async function() {
             const res = await request(app).get("/plain").expect(404);
