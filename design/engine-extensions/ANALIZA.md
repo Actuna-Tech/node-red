@@ -116,6 +116,7 @@ starting ──▶ ready ──▶ deploying ──▶ ready
 | Problem | Pakiet | Rekomendacja |
 |---|---|---|
 | Zdalne zatrzymanie procesu bez uwierzytelnienia (wniosek z kodu) | P-04 | potwierdzić testem; zgłoszenie **prywatnie** wg `SECURITY.md` projektu, nie publiczny PR; do czasu wydania – poprawka w naszym obrazie |
+| Połączenie `/comms` (upgrade websocket) pomija `httpAdminMiddleware` i nie sprawdza nagłówka `Origin` (`editor/comms.js:222-245`) – atak może przyjść z obcej strony otwartej w przeglądarce użytkownika (wniosek z kodu, karta P-04) | P-04 | kontrola `Origin` dla `/comms` jako osobna decyzja (D-07); dołączyć do zgłoszenia bezpieczeństwa |
 | Trasy admin węzłów bez uprawnień | Z-02 | tryb `authenticated`; przegląd publicznych widoków core (`21-debug.js:286,310`) |
 | Admin API dostępne na workerach (`disableEditor` go nie wyłącza) | – (konfiguracja) | workery: `httpAdminRoot: false`; sondy z Z-08 niezależne od `httpAdminRoot` (osobny port) |
 | Telemetria wbrew administratorowi | P-03 | `telemetry.locked` |
@@ -215,6 +216,17 @@ przy którym runtime wczytuje flow, ale ich nie uruchamia, **bez zapisu stanu do
 trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od działającego runtime (debug, status, przycisk
 `inject`) – opis ograniczeń; przekazywanie zdarzeń z workerów pozostaje wtyczką (K8S-T-003).
 
+### 4.9 Dodatkowe błędy ujawnione przy pisaniu kart (wnioski z kodu, nieuruchamiane)
+
+| Błąd | Miejsce | Karta | Propozycja |
+|---|---|---|---|
+| `restart()` używa niezdefiniowanej zmiennej `nns` – przy 409 możliwy `ReferenceError` | `editor-client/src/js/ui/deploy.js:390` | Z-05 / P-02 | poprawka z testem w P-02 |
+| `installTarball` zapisuje `.tgz` przed sprawdzeniem wersji (ta sama wersja → plik zostaje/nadpisuje); pomija `pending_version` | `registry/lib/installer.js:443` | Z-03 | w zakresie skorygowanego Z-03 |
+| Zamknięcie jednego węzła `http in` usuwa trasy innych węzłów z tą samą ścieżką i metodą; `splice` w `forEach` | `nodes/core/network/21-httpin.js:356-365` | Z-07 | testy regresji na 5.0.7 przed zmianą (brak testów `http in` w repozytorium) |
+| `updateFlow` nie sprawdza duplikatów id względem innych flow | `runtime/lib/flows/index.js` | Z-04 | do potwierdzenia, test kontraktu |
+| Błąd startu zapisuje konfigurację – odpowiedź z błędem musi zawierać `rev`, inaczej kolejne wdrożenie edytora dostanie 409 | `runtime/lib/flows/index.js` | P-01 | w specyfikacji P-01 |
+| Hook `preDeploy` wykonywany pod blokadą API – długi hook blokuje wszystkie wdrożenia | `runtime/lib/api/flows.js:67` | Z-06 | limit czasu hooka |
+
 ## 7. Decyzje do podjęcia przez Zamawiającego
 
 | ID | Decyzja | Rekomendacja |
@@ -225,6 +237,9 @@ trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od dzia
 | D-04 | CLA OpenJS / DCO, polityka oznaczania pracy z AI | podpis osoby odpowiedzialnej; informacja o wspomaganiu AI w opisie PR |
 | D-05 | poprawki ujawnione w weryfikacji, ale spoza zakresu (połykanie błędów zatrzymania, `splice` w `http in`, niespójne nazwy ustawień uploadu, zamykanie serwera HTTP przy SIGTERM) | dołączyć do pakietów, których dotyczą (P-01, Z-07, Z-03, Z-08), jako poprawki błędów z testami regresji |
 | D-06 | Z-14 i Z-15 w zakresie zlecenia | tak |
+| D-07 | kontrola nagłówka `Origin` dla `/comms` (ochrona przed obcymi stronami) | tak, jako ustawienie z bezpieczną listą domyślną (do uzgodnienia w zgłoszeniu bezpieczeństwa) |
+| D-08 | Z-04: kolizja pola `configs` (dziś z zasięgiem flow) – nowe pole `globalConfigs[]` vs zmiana znaczenia | `globalConfigs[]` (zgodność wstecz) |
+| D-09 | Z-04: `rev` w `GET /flow/:id` tylko dla `Node-RED-API-Version: v2` (klienci v1 robiący GET→PUT nie dostaną nagle 409) | tak |
 
 ## 8. Backlog
 
