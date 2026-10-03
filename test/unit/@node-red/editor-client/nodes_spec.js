@@ -1,6 +1,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   FL-B-009: tests for exporting the effective editor default layout of flows
+ *   FL-B-009: tests for matching an imported subflow exported with the editor default layout
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
@@ -20,7 +21,10 @@ describe("editor-client/nodes", function() {
                 get: function(key) {
                     return key === "editor" ? { view: viewSettings } : undefined;
                 }
-            }
+            },
+            events: { emit: function() {}, on: function() {} },
+            utils: { validateTypedProperty: function() { return true; } },
+            _: function(key) { return key; }
         };
         delete require.cache[viewLayoutModulePath];
         delete require.cache[nodesModulePath];
@@ -118,6 +122,40 @@ describe("editor-client/nodes", function() {
             exported.filter(function(n) { return n.id === "t1" })[0].should.have.property("layout", "TB");
             const plain = RED.nodes.createCompleteNodeSet();
             plain.filter(function(n) { return n.id === "t1" })[0].should.not.have.property("layout");
+        });
+    });
+    describe("matching an imported subflow (FL-B-009)", function() {
+        function exportSubflow(opts) {
+            return RED.nodes.createExportableNodeSet([RED.nodes.subflow("s1")], opts);
+        }
+
+        it("matches the existing subflow when the export carries the editor default layout", function() {
+            viewSettings["view-flow-layout"] = "TB";
+            RED.nodes.addSubflow(subflow());
+            const exported = exportSubflow({ flowLayoutDefaults: true });
+            exported[0].should.have.property("layout", "TB");
+            const imported = Object.assign({}, exported[0], { id: "s2" });
+            const match = RED.nodes.checkForMatchingSubflow(imported, []);
+            should.exist(match);
+            match.should.have.property("id", "s1");
+        });
+
+        it("matches the existing subflow when the export has no layout options", function() {
+            viewSettings["view-flow-layout"] = "TB";
+            RED.nodes.addSubflow(subflow());
+            const exported = exportSubflow();
+            exported[0].should.not.have.property("layout");
+            const imported = Object.assign({}, exported[0], { id: "s2" });
+            const match = RED.nodes.checkForMatchingSubflow(imported, []);
+            should.exist(match);
+            match.should.have.property("id", "s1");
+        });
+
+        it("does not match a subflow with a different layout", function() {
+            RED.nodes.addSubflow(subflow());
+            const exported = exportSubflow();
+            const imported = Object.assign({}, exported[0], { id: "s2", layout: "TB" });
+            should.not.exist(RED.nodes.checkForMatchingSubflow(imported, []));
         });
     });
 });
