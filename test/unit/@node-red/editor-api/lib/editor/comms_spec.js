@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   comms auth packet: regression tests for auth packets without adminAuth and failed token lookups
+ *   comms subscriptions: characterise subscribe before auth when no anonymous user
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -423,6 +424,29 @@ describe("api/editor/comms", function() {
             });
             ws.on('close', function() {
                 done();
+            });
+        });
+
+        it('closes connection with auth fail when subscribe arrives before auth',function(done) {
+            // Documents why the editor must not send subscriptions while
+            // authentication is pending
+            var ws = new WebSocket(url);
+            var received = [];
+            ws.on('open', function() {
+                ws.send('{"subscribe":"foo"}');
+                ws.send('{"auth":"1234"}');
+            });
+            ws.on('message', function(msg) {
+                received.push(msg.toString());
+            });
+            ws.on('close', function() {
+                try {
+                    received[0].should.equal('{"auth":"fail"}');
+                    received.should.not.containEql('{"auth":"ok"}');
+                    done();
+                } catch(err) {
+                    done(err);
+                }
             });
         });
 
