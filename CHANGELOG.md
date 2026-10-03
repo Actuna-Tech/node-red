@@ -16,6 +16,12 @@ See `design/flow-layout/` for the analysis, documentation and work log.
    on a modified-nodes deploy
  - Runtime: the single-flow Admin API (`POST /flow`, `GET`/`PUT /flow/:id`) keeps the
    flow `layout` and `wireStyle`
+ - Editor: export and deploy store the editor default layout and wire style of flows
+   without their own values when they differ from `LR`/`curved` (FL-B-009)
+ - Editor: the diff view shows rows for properties added locally or remotely, such as
+   `layout`, `wireStyle` and `o` (FL-B-004)
+ - Editor: unknown `layout`, `wireStyle` and `o` values are shown in the edit dialogs
+   and no longer removed when the dialog is closed (FL-B-005)
  - Tests: unit tests for the layout geometry, runtime diff and flow API, Playwright
    end-to-end tests including export/import (`npm run test:e2e`)
 

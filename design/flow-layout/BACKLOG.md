@@ -148,12 +148,12 @@ W commitach i opisach PR podajemy identyfikator, np. `Fix diff rows for added pr
 
 | ID | Tytuł | Typ | Status | Priorytet | Waga | Obszar |
 |---|---|---|---|---|---|---|
-| [FL-B-004](#fl-b-004--okno-różnic-nie-pokazuje-dodanych-właściwości-układu) | Okno różnic nie pokazuje dodanych właściwości układu | błąd | Gotowe | P3 | Średnia | edytor – okna |
-| [FL-B-005](#fl-b-005--nieprawidłowe-wartości-układu-z-importu) | Nieprawidłowe wartości układu z importu | błąd | Gotowe | P4 | Mała | eksport-import |
+| [FL-B-004](#fl-b-004--okno-różnic-nie-pokazuje-dodanych-właściwości-układu) | Okno różnic nie pokazuje dodanych właściwości układu | błąd | Do weryfikacji (zrobione: `925b091`) | P3 | Średnia | edytor – okna |
+| [FL-B-005](#fl-b-005--nieprawidłowe-wartości-układu-z-importu) | Nieprawidłowe wartości układu z importu | błąd | Do weryfikacji (zrobione: `1116d4f`) | P4 | Mała | eksport-import |
 | [FL-B-006](#fl-b-006--dopasowanie-subflow-zależne-od-kolejności-kluczy) | Dopasowanie subflow zależne od kolejności kluczy | błąd (istniejący w Node-RED) | Do analizy | P4 | Mała | eksport-import |
 | [FL-B-007](#fl-b-007--podpowiedzi-etykiet-portów-w-układzie-tb) | Podpowiedzi etykiet portów w układzie TB | błąd | Gotowe | P4 | Mała | edytor – widok |
 | [FL-B-008](#fl-b-008--obrócone-etykiety-linków-do-innych-zakładek-w-tb) | Obrócone etykiety linków do innych zakładek w TB | błąd | Gotowe | P4 | Mała | edytor – widok |
-| [FL-B-009](#fl-b-009--flow-z-ustawieniem-domyślnym-edytora-nie-przenosi-wyglądu) | Flow z ustawieniem domyślnym edytora nie przenosi wyglądu | błąd | Gotowe | **P2 (biznes: priorytet 1)** | Średnia | eksport-import |
+| [FL-B-009](#fl-b-009--flow-z-ustawieniem-domyślnym-edytora-nie-przenosi-wyglądu) | Flow z ustawieniem domyślnym edytora nie przenosi wyglądu | błąd | Do weryfikacji (zrobione: `cf95b28`) | **P2 (biznes: priorytet 1)** | Średnia | eksport-import |
 | [FL-T-001](#fl-t-001--automatyczne-rozmieszczanie-węzłów) | Automatyczne rozmieszczanie węzłów | funkcja | Nowe | P3 | – | edytor – widok |
 | [FL-T-002](#fl-t-002--routing-omijający-wszystkie-węzły) | Routing omijający wszystkie węzły | funkcja | Nowe | P3 | – | edytor – widok |
 | [FL-T-003](#fl-t-003--testy-e2e-w-ci) | Testy E2E w CI | dług techniczny | Gotowe | P2 | – | testy |
@@ -174,7 +174,7 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 
 | Pole | Wartość |
 |---|---|
-| Status / Priorytet / Waga | Gotowe / P3 / Średnia |
+| Status / Priorytet / Waga | Do weryfikacji (zrobione 2026-10-03, commit `925b091`) / P3 / Średnia |
 | Obszar | edytor – okna (Review Changes, różnice commitów w Projektach) |
 | Zakres | **w zakresie Z-14** (R-03, 2026-10-03) |
 | Wykryto | 2026-10-03, audyt eksport/import ([PROBLEMY.md](PROBLEMY.md) P2), odtworzone w przeglądarce |
@@ -201,11 +201,19 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 
 **Testy:** E2E – scenariusz z kroków odtworzenia (pada bez poprawki), asercje na wiersze tabeli i wynik Merge.
 
+**Wynik (2026-10-03, `925b091`):** lista wierszy wydzielona do `RED.diff.getNodePropertyNames` – suma kluczy wersji
+bazowej, definicji typu oraz wersji lokalnej i zdalnej (bez `credentials` i właściwości z osobnymi wierszami); kolejność
+dotychczasowych wierszy bez zmian. Liczniki zmian i konflikty liczone w tej samej pętli, więc obejmują nowe wiersze.
+Testy jednostkowe `test/unit/@node-red/editor-client/ui/diff_spec.js`: 5 testów padało na dotychczasowej logice (wydzielonej
+bez zmian), przechodzą z poprawką; test scalania (zdalne `layout`/`o` + lokalne przesunięcie) potwierdza wynik Merge bez
+zmian. Widok różnic commitów w Projektach używa tej samej funkcji (`createNodePropertiesTable`) – nie sprawdzony w
+przeglądarce. E2E nie uruchomione (brak Playwrighta w środowisku).
+
 ### FL-B-005 – Nieprawidłowe wartości układu z importu
 
 | Pole | Wartość |
 |---|---|
-| Status / Priorytet / Waga | Gotowe / P4 / Mała |
+| Status / Priorytet / Waga | Do weryfikacji (zrobione 2026-10-03, commit `1116d4f`) / P4 / Mała |
 | Obszar | eksport-import, edytor – okna |
 | Zakres | **w zakresie Z-14** (R-03, 2026-10-03) |
 | Wykryto | 2026-10-03, przegląd kodu ([PROBLEMY.md](PROBLEMY.md) P3) – nie odtworzone w przeglądarce |
@@ -222,6 +230,14 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 - [ ] Rysowanie dalej używa układu domyślnego dla nieznanej wartości.
 
 **Testy:** E2E – import z błędną wartością, otwarcie i zamknięcie właściwości, eksport zawiera tę samą wartość.
+
+**Wynik (2026-10-03, `1116d4f`):** odtworzone na poziomie jednostkowym (nie w przeglądarce – brak Playwrighta/przeglądarki
+w środowisku): atrapa `select` zachowująca się jak przeglądarka (brak pasującej opcji → `val()` = `null`) – *Done* bez
+zmian usuwał `layout`/`wireStyle`. Poprawka: `RED.viewLayout.addUnknownOption` dodaje opcję „Unknown value: XY”
+(`layout.unknownValue`), formularz porównuje wartości jako tekst – właściwość zmienia się tylko po wyborze innej wartości.
+Dotyczy właściwości flow, wyglądu subflow i orientacji portów węzła (`appearance.js`). Rysowanie bez zmian (nieznana
+wartość → układ domyślny); eksport zachowuje wartość. Testy: `ui/editors/flowLayout_spec.js` (3 padały bez poprawki),
+`ui/view-layout_spec.js` – `addUnknownOption`. Ostrzeżenie przy imporcie (opcjonalne) – nie realizowane.
 
 ### FL-B-006 – Dopasowanie subflow zależne od kolejności kluczy
 
@@ -277,7 +293,7 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 
 | Pole | Wartość |
 |---|---|
-| Status / Priorytet / Waga | Gotowe / P2 (priorytet biznesowy 1 – [../PRIORYTETY.md](../PRIORYTETY.md)) / Średnia |
+| Status / Priorytet / Waga | Do weryfikacji (zrobione 2026-10-03, commit `cf95b28`) / P2 (priorytet biznesowy 1 – [../PRIORYTETY.md](../PRIORYTETY.md)) / Średnia |
 | Obszar | eksport-import, edytor |
 | Zakres | **w zakresie Z-14** (R-03, decyzja B-01); przy `flowLayout.enabled: false` ustawienia użytkownika są ignorowane (R-01), więc wartości efektywne = domyślne Node-RED i eksport nie dostaje nowych pól |
 | Wykryto | 2026-10-03, analiza wymagania „eksport/import wyglądu ze wszystkimi parametrami” (przegląd kodu) |
@@ -288,7 +304,16 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 **Rzeczywiste (wg kodu):** eksport nie zawiera `layout` (flow nie ma własnej wartości) – u B flow rysuje się poziomo.
 **Przyczyna:** domyślny układ użytkownika nie jest częścią flow (świadoma decyzja projektowa – [DOKUMENTACJA.md](DOKUMENTACJA.md) „Eksport, import i przenoszalność”), ale wymaganie biznesowe oczekuje pełnej przenoszalności.
 **Proponowane rozwiązanie (decyzja B-01):** przy eksporcie oraz przy wdrożeniu z edytora flow/subflow bez własnych wartości dostaje efektywne `layout`/`wireStyle`, jeśli różnią się od wartości domyślnych Node-RED (`LR`, `curved`); flow z wartościami domyślnymi bez zmian w JSON (zgodność wstecz).
-**DoD specyficzne:** - [ ] test E2E: eksport u użytkownika z domyślnym TB → import u użytkownika z domyślnym LR → identyczny układ i geometria portów; - [ ] flow bez zmian domyślnych eksportuje się bez nowych pól; - [ ] dokumentacja zaktualizowana.
+**DoD specyficzne:** - [ ] test E2E: eksport u użytkownika z domyślnym TB → import u użytkownika z domyślnym LR → identyczny układ i geometria portów; - [x] flow bez zmian domyślnych eksportuje się bez nowych pól; - [x] dokumentacja zaktualizowana.
+
+**Wynik (2026-10-03, `cf95b28`):** `RED.viewLayout.getPersistedFlowOptions(flow, viewSettings)` – własne wartości flow bez
+zmian (także nieznane), brakujące uzupełniane z ustawień użytkownika, gdy znane i ≠ `LR`/`curved`. W `nodes.js` opcja
+`flowLayoutDefaults` (domyślnie wyłączona) w `createExportableNodeSet`/`createCompleteNodeSet`; włączona w oknie eksportu
+(wszystkie zakresy) i przy deployu. Po udanym deployu wdrożone wartości są wpisywane do flow w edytorze (stan jak po
+ponownym wczytaniu). Bez zmian: kopiuj/wklej, okno różnic, dopasowanie subflow przy imporcie, historia. Testy:
+`editor-client/nodes_spec.js` (3 padały bez poprawki), `ui/view-layout_spec.js` – `getPersistedFlowOptions`. Test E2E –
+nie uruchomiony (brak Playwrighta). Uwaga: ustawienie `editorTheme.flowLayout.enabled` (E-04) jeszcze nie istnieje – przy
+jego wprowadzeniu wyłączenie funkcji musi dawać puste `viewSettings` w eksporcie (R-01).
 
 ## 6. Karty – zadania i funkcjonalności (`FL-T`)
 
