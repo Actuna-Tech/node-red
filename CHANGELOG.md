@@ -62,6 +62,9 @@ Fixes
    Admin API response still returns before the start completes
  - Project operations that change the flow files (branch change, pull, revert, merge, project
    switch and settings) run together with the reload of the flows under the deploy lock
+ - A project commit checks whether it completes a merge under the deploy lock; reading a project
+   (`GET /projects/:id`) and creating a project from the existing flow files run under the
+   deploy lock, so a deployment cannot save the old flow files between the copy and the switch
 
 Runtime
 

@@ -17,6 +17,8 @@
  * Modified by Actuna Sp. z o.o.:
  *   E-01: tests of the project switch under the shared deploy lock
  *   E-01: project operations that change the flow files run with the reload under the lock (R-11)
+ *   E-01: commit checks the merge state under the lock; getProject and a project created
+ *   from the existing flow files under the lock; tests wait for the lock to be released
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -26,6 +28,20 @@ var sinon = require("sinon");
 var NR_TEST_UTILS = require("nr-test-utils");
 var gitTools = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/projects/git");
 var util = NR_TEST_UTILS.require("@node-red/util");
+
+/**
+ * Waits until the shared deploy lock is free, so a section left by a test
+ * cannot run into the next test; fails if it is still held after 2 s.
+ */
+function waitForDeployLockRelease(lock) {
+    let timer;
+    return Promise.race([
+        lock.runExclusive(async function() {}),
+        new Promise((resolve, reject) => {
+            timer = setTimeout(() => reject(new Error("the deploy lock is still held after the test")), 2000);
+        })
+    ]).finally(() => clearTimeout(timer));
+}
 
 describe("storage/localfilesystem/projects/git/index", function() {
     afterEach(function() {
@@ -96,8 +112,9 @@ describe("storage/localfilesystem/projects - deploy lock (E-01)", function() {
         }, runtime);
         sinon.stub(console, "log");
     });
-    afterEach(function() {
+    afterEach(async function() {
         sinon.restore();
+        await waitForDeployLockRelease(lock);
     });
 
     it("project switch waits for running deploy (R-11)", async function() {
@@ -224,8 +241,9 @@ describe("storage/localfilesystem/projects - operations under the deploy lock (E
         await projects.setActiveProject(null, "p1");
         order = [];
     });
-    afterEach(function() {
+    afterEach(async function() {
         sinon.restore();
+        await waitForDeployLockRelease(lock);
     });
 
     it("a deploy waits for a running branch change and its reload", async function() {
@@ -298,6 +316,45 @@ describe("storage/localfilesystem/projects - operations under the deploy lock (E
         await projects.commit(null, "p1", {message: "merge"});
         order.should.eql(["commit:locked", "stopFlows", "loadFlows"]);
     });
+    it("a commit checks the merge state under the lock (TOCTOU)", async function() {
+        // a pull under the lock leaves the project merging; a commit requested meanwhile
+        // must see that state, complete the merge and reload the flows
+        let release;
+        const pullSection = lock.runExclusive(function() {
+            order.push("pull:start");
+            return new Promise(resolve => { release = () => { project.merging = true; order.push("pull:end"); resolve() } });
+        });
+        const commit = projects.commit(null, "p1", {message: "merge"});
+        await wait();
+        order.should.eql(["pull:start"]);
+        release();
+        await pullSection;
+        await commit;
+        order.should.eql(["pull:start", "pull:end", "commit:locked", "stopFlows", "loadFlows"]);
+    });
+    it("a commit without a merge does not reload the flows", async function() {
+        await projects.commit(null, "p1", {message: "change"});
+        order.should.eql(["commit:locked"]);
+    });
+    it("getProject loads the project under the lock and waits for a deploy", async function() {
+        project.export = function() { return { name: "p1" } };
+        let release;
+        const deploy = lock.runExclusive(function() {
+            order.push("deploy:start");
+            return new Promise(resolve => { release = () => { order.push("deploy:end"); resolve() } });
+        });
+        const get = projects.getProject(null, "p1");
+        await wait();
+        order.should.eql(["deploy:start"]);
+        release();
+        await deploy;
+        (await get).should.eql({ name: "p1" });
+        order.should.eql(["deploy:start", "deploy:end", "load:locked"]);
+    });
+    it("getProject of an inactive project fails without the lock", function() {
+        (function() { projects.getProject(null, "other") }).should.throw(/inactive project/);
+        lock.isLocked().should.be.false();
+    });
     it("a project switch loads the project under the lock", async function() {
         await projects.setActiveProject(null, "p1");
         order.should.eql(["load:locked", "stopFlows", "loadFlows"]);
@@ -307,5 +364,98 @@ describe("storage/localfilesystem/projects - operations under the deploy lock (E
         await projects.setBranch(null, "p1", "dev", false).should.be.rejectedWith("checkout failed");
         lock.isLocked().should.be.false();
         order.should.eql([]);
+    });
+});
+
+describe("storage/localfilesystem/projects - project created from the existing flow files (E-01)", function() {
+    const os = require("os");
+    const projectsModulePath = NR_TEST_UTILS.resolve("@node-red/runtime/lib/storage/localfilesystem/projects/index.js");
+    const Project = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/projects/Project");
+    const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
+    let projects;
+    let order;
+    let runtime;
+    let project;
+
+    beforeEach(async function() {
+        // a fresh module instance: no active project
+        delete require.cache[projectsModulePath];
+        projects = require(projectsModulePath);
+        order = [];
+        runtime = {
+            nodes: {
+                stopFlows: sinon.spy(async function() { order.push("stopFlows") }),
+                clearContext: sinon.spy(async function() { order.push("clearContext") }),
+                loadFlows: sinon.spy(async function() { order.push("loadFlows") }),
+                setCredentialSecret: sinon.spy()
+            }
+        };
+        let projectSettings = {};
+        sinon.stub(gitTools, "init").resolves({ version: "2.40.0" });
+        sinon.stub(NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/projects/ssh"), "init").resolves();
+        sinon.stub(Project, "init");
+        await projects.init({
+            userDir: os.tmpdir(),
+            readOnly: true,
+            flowFile: "e01-test-flows.json",
+            editorTheme: { projects: { enabled: true } },
+            get: function(key) { return projectSettings[key] },
+            set: async function(key, value) { projectSettings[key] = value }
+        }, runtime);
+        project = {
+            name: "p2",
+            isMerging: () => false,
+            getFlowFile: () => "flows.json",
+            getFlowFileBackup: () => ".flows.json.backup",
+            getCredentialsFile: () => "flows_cred.json",
+            getCredentialsFileBackup: () => ".flows_cred.json.backup",
+            export: () => ({ name: "p2" })
+        };
+        sinon.stub(Project, "create").callsFake(async function(user, metadata) {
+            order.push("create" + (lock.isLocked() ? ":locked" : ":unlocked"));
+            return project;
+        });
+        sinon.stub(Project, "load").callsFake(async function() {
+            order.push("load" + (lock.isLocked() ? ":locked" : ":unlocked"));
+            return project;
+        });
+        sinon.stub(console, "log");
+    });
+    afterEach(async function() {
+        sinon.restore();
+        delete require.cache[projectsModulePath];
+        await waitForDeployLockRelease(lock);
+    });
+
+    it("copies the flow files and activates the project in one section with a deploy waiting", async function() {
+        let release;
+        const firstDeploy = lock.runExclusive(function() {
+            order.push("deploy1:start");
+            return new Promise(resolve => { release = () => { order.push("deploy1:end"); resolve() } });
+        });
+        const create = projects.createProject(null, { name: "p2", files: { flow: "flows.json" }, migrateFiles: true });
+        await new Promise(resolve => setTimeout(resolve, 10));
+        // a deploy requested meanwhile must not save between the copy and the activation
+        const secondDeploy = lock.runExclusive(async function() { order.push("deploy2") });
+        order.should.eql(["deploy1:start"]);
+        release();
+        await firstDeploy;
+        (await create).should.eql({ name: "p2" });
+        await secondDeploy;
+        order.indexOf("deploy2").should.be.above(order.indexOf("loadFlows"));
+        order.slice(0, 6).should.eql(["deploy1:start", "deploy1:end", "create:locked", "load:locked", "stopFlows", "loadFlows"]);
+        const metadata = Project.create.firstCall.args[1];
+        metadata.files.should.have.property("oldFlow");
+        metadata.files.should.have.property("oldCredentials");
+    });
+    it("a new empty project is created outside the lock and activated under it", async function() {
+        await projects.createProject(null, { name: "p2", files: { flow: "flows.json" } });
+        order.slice(0, 4).should.eql(["create:unlocked", "load:locked", "stopFlows", "loadFlows"]);
+    });
+    it("releases the lock when creating the project fails", async function() {
+        Project.create.restore();
+        sinon.stub(Project, "create").rejects(new Error("create failed"));
+        await projects.createProject(null, { name: "p2", files: { flow: "flows.json" }, migrateFiles: true }).should.be.rejectedWith("create failed");
+        lock.isLocked().should.be.false();
     });
 });
