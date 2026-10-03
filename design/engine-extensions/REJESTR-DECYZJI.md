@@ -61,19 +61,19 @@ kod `invalid_node_type` w katalogu.
 | R-24 | zakres spoza załącznika (`RED.deploy.addMenuItem`, `deployPre`), miejsce dokumentacji, okres deprecjacji, kolejność pakietów Z-12a…e | Z-12 P-1, P-2, P-11, P-12; etap-4 p.1–3 | || **zgodnie z rekomendacją** – `RED.deploy.addMenuItem`, `deployPre`, dokumentacja `RED.view.annotations` poza Z-12 (osobny pakiet później); dokumentacja: JSDoc + `design/editor-api/`; deprecjacja min. jedna wersja minor z ostrzeżeniem; kolejność Z-12c → Z-12a → Z-12b → Z-12d → Z-12e (Z-01 równolegle), 07 może zostać odłożone (2026-10-03) |
 | R-25 | 12.01 logowanie: wariant dostarczania skryptów, dodatkowe pola | Z-12 P-3, P-4 | || **wariant A + `loginPost`** – skrypty logowania przez `editorTheme.page.scripts`/wtyczkę motywu (bez zmian serwera); dodatkowe pola przez krok `loginPost` z własną trasą pluginu (2026-10-03) |
 | R-26 | 12.02 kod jednorazowy: źródło kodu, `sessionStorage` | Z-12 P-5, P-6 | || **własna strategia + opcja `sessionStorage`** – kod wydaje strategia `adminAuth`/plugin, rdzeń przyjmuje `#code=…&next=…`; `sessionStorage` jako opcja, domyślnie `localStorage` (2026-10-03) |
-| R-27 | 12.08 uprawnienia: model „implikacja + `!`”, egzekucja serwerowa typów bloczków | Z-12 P-7, P-8 | | |
-| R-28 | 12.10 format linku z identyfikatorem flow | Z-12 P-9 | | |
+| R-27 | 12.08 uprawnienia: model „implikacja + `!`”, egzekucja serwerowa typów bloczków | Z-12 P-7, P-8 | || **implikacja + `!`; egzekucja serwerowa** – uprawnienia podrzędne (`flows.deploy`, `flows.import`, `flows.export`, `nodes.type.<typ>`) dziedziczone, wpisy `!` odbierają (pierwszeństwo); serwer odrzuca przy wdrożeniu dodane/zmienione węzły zabronionego typu (zmiana potoku E-01); `flows.export` – tylko utrudnienie (2026-10-03) |
+| R-28 | 12.10 format linku z identyfikatorem flow | Z-12 P-9 | || **`#flow/<flowId>/node/<nodeId>` + `allowedOrigins` dla motywu** – nowy format linku, `hashchange`, `core:reveal-node`; kanał `set-theme` objęty `editorTheme.embedding.allowedOrigins` (2026-10-03) |
 
 ## Z-13 – język polski
 
 | ID | Temat | Źródło | Rekomendacja | Decyzja |
 |---|---|---|---|---|
-| R-29 | zakres (`runtime.json`, pomoc HTML – D-16), wersja źródłowa tłumaczenia, rejestr i terminologia („węzeł” vs „bloczek”), automatyczny wybór języka, utrzymanie | etap-4 p.4–8; ZAŁ-A p.6 | | |
+| R-29 | zakres (`runtime.json`, pomoc HTML – D-16), wersja źródłowa tłumaczenia, rejestr i terminologia („węzeł” vs „bloczek”), automatyczny wybór języka, utrzymanie | etap-4 p.4–8; ZAŁ-A p.6 | || **zgodnie z rekomendacją** – JSON edytora, `messages.json` i `runtime.json` teraz, pomoc HTML (D-16) osobnym etapem; baza 5.0.7; forma bezosobowa; „węzeł”, „flow”/„subflow” bez tłumaczenia, „Wdróż”; słownik zatwierdza Zamawiający; automatyczny wybór `pl`; test zgodności kluczy, uzupełnia Wykonawca (2026-10-03) |
 
 ## Proces i dostarczenie
 
 | ID | Temat | Źródło | Rekomendacja | Decyzja |
 |---|---|---|---|---|
-| R-30 | E-04: szablon nagłówków (JSON, pliki bez licencji), komentarze „upstream”, historia łatek, CHANGELOG, nazwy narzędzi | ZAŁ-A p.7–9; etap-4 p.16–17 | | |
+| R-30 | E-04: szablon nagłówków (JSON, pliki bez licencji), komentarze „upstream”, historia łatek, CHANGELOG, nazwy narzędzi | ZAŁ-A p.7–9; etap-4 p.16–17 | || **zgodnie z rekomendacją** – szablon nagłówka z łatek + `MODIFICATIONS.md` dla plików bez komentarzy/licencji, uzupełnienie nagłówków z 0004; komentarze „upstream” → „wersja bazowa 5.0.7”; łatki zastąpione commitami pakietów (odwołanie do zał. A); CHANGELOG „Unreleased” w gałęzi pakietu; nazwy narzędzi stron trzecich dozwolone (2026-10-03) |
 | R-31 | E-05: miejsce CI, macierz wersji Node | etap-4 p.18 | | |
 | R-32 | Z-01: test klienta przez eksport CommonJS w `comms.js` (po D-03) | etap-1 p.10 | tak | |
