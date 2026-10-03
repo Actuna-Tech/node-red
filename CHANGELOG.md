@@ -100,8 +100,8 @@ Admin API
    without a revision are rejected with 409 `{code: "version_required", message}` - `POST /flows`
    v2 without `rev` (an empty `rev` counts as missing), every `POST /flows` v1 (the message
    points to the v2 API), `PUT /flow/:id` without the flow `rev` (`rev: null` to create with
-   `deploy.putCreatesFlow`), `DELETE /flow/:id` without `?rev=`, `POST /flow` with
-   `globalConfigs` but without `globalRev`. A revision of a wrong type returns 400
+   `deploy.putCreatesFlow`), `DELETE /flow/:id` without `?rev=`, `POST /flow` and
+   `PUT /flow/:id` with `globalConfigs` but without `globalRev`. A revision of a wrong type returns 400
    `invalid_revision`. `reload` deployments and `POST /flows/state` are exempt. `GET /settings`
    reports `deploy: {requireRevision: true}` for the editor
 

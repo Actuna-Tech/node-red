@@ -110,7 +110,7 @@ Bez `shutdownTimeout` drenaż jest wyłączony (zachowanie jak dotąd), a hook `
 | `GET /flow/:id` z nagłówkiem v2 | zawiera `rev` flow i nagłówek `ETag` (Z-04, R-13); bez nagłówka v2 – odpowiedź bez zmian (D-09) | używać tej rewizji w `PUT /flow/:id` |
 | `POST /flow` | API **v2**: **201** z id nowego flow (16 znaków hex) (R-13, R-34); API v1: **200** jak dotąd (R-34) | odczytać id z odpowiedzi; nie zakładać 201 bez nagłówka v2 |
 | `PUT /flow/:id` z nagłówkiem `If-Match: <ETag>` (v2) | równoważne `rev` w treści; `If-Match` i `rev` sprzeczne → **400** (R-34) | wysyłać jedno z nich albo oba zgodne |
-| Globalne węzły konfiguracyjne – rewizja | `globalRev` (R-13) | wysyłać `globalRev` razem z `globalConfigs[]` |
+| Globalne węzły konfiguracyjne – rewizja | `globalRev` (R-13); przy `deploy.requireRevision: true` `globalConfigs[]` bez `globalRev` → 409 `version_required` w `POST /flow` i `PUT /flow/:id` (Z-05) | wysyłać `globalRev` razem z `globalConfigs[]` |
 | `PUT /flow/:id` nieistniejącego id przy `deploy.putCreatesFlow: true` | tworzy flow pod tym id; rewizja `rev: null`; **201** w v2 / **200** w v1 (R-34) | – |
 | `PUT /flow/:id` nieistniejącego id bez `deploy.putCreatesFlow` | **404** jak dotąd (R-34) | utworzyć flow przez `POST /flow` |
 | `DELETE /flow/:id` przy `requireRevision: true` | wymaga `?rev=` – brak → 409 `version_required` (R-14) | dołączać `?rev=<rev flow>` |

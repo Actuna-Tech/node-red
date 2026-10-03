@@ -1069,6 +1069,15 @@ describe("runtime-api/flows", function() {
                     (await outcome(flows.addFlow({flow:{nodes:[], globalConfigs:[{id:"c1",type:"x"}]}}))).should.equal(expectRequired);
                     (await outcome(flows.addFlow({flow:{nodes:[], globalConfigs:[{id:"c1",type:"x"}], globalRev:"rev-global"}}))).should.equal("ok");
                 });
+                it("updateFlow with globalConfigs without globalRev", async function() {
+                    (await outcome(flows.updateFlow({id:"t1", flow:{nodes:[], rev:"rev-t1", globalConfigs:[{id:"c1",type:"x"}]}}))).should.equal(expectRequired);
+                    deployed().should.equal(!required);
+                    (await outcome(flows.updateFlow({id:"t1", flow:{nodes:[], rev:"rev-t1", globalConfigs:[{id:"c1",type:"x"}], globalRev:""}}))).should.equal(required ? "409 version_required" : "409 version_mismatch");
+                    (await outcome(flows.updateFlow({id:"t1", flow:{nodes:[], rev:"rev-t1", globalConfigs:[{id:"c1",type:"x"}], globalRev:"rev-global"}}))).should.equal("ok");
+                });
+                it("updateFlow without globalConfigs does not need globalRev", async function() {
+                    (await outcome(flows.updateFlow({id:"t1", flow:{nodes:[], rev:"rev-t1"}}))).should.equal("ok");
+                });
                 it("deleteFlow without rev", async function() {
                     (await outcome(flows.deleteFlow({id:"t1"}))).should.equal(expectRequired);
                     (await outcome(flows.deleteFlow({id:"t1", rev:"rev-t1"}))).should.equal("ok");
