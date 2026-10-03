@@ -1,0 +1,11 @@
+#!/bin/sh
+# Blokada (decyzja D-04, 2026-10-03): brak wypychania do oryginalnego repozytorium Node-RED.
+remote="$1"
+url="$2"
+case "$(echo "$url" | tr 'A-Z' 'a-z')" in
+  *github.com/node-red/node-red*|*github.com:node-red/node-red*)
+    echo "pre-push: wypychanie do $url jest zablokowane (decyzja D-04 - brak zgłoszeń do upstream)." >&2
+    exit 1
+    ;;
+esac
+exit 0

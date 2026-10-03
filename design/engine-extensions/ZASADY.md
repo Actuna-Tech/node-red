@@ -148,7 +148,7 @@ Konwencja: `snake_case` we wszystkich polach `code` (także `errors[].code` z E-
 - [ ] **Brak nazw produktów** w kodzie, komunikatach, ustawieniach, testach i nagłówkach plików; brak nowych zależności npm bez zgody.
 - [ ] **Dokumentacja:** ustawienie w szablonie `packages/node_modules/node-red/settings.js` (zakomentowane, z opisem); JSDoc dla nowego API; wpis do CHANGELOG (bez nazw produktów); teksty UI w `locales/en-US` (+ `pl` po Z-13).
 - [ ] **Kontrakty:** zmiany Admin API opisane i pokryte testami kontraktu (stare wywołania bez zmian).
-- [ ] **Dostarczenie:** osobna gałąź pakietu względem wersji bazowej; commity w stylu projektu z `Signed-off-by` (DCO) osoby odpowiedzialnej; zależności między pakietami jawnie opisane.
+- [ ] **Dostarczenie:** osobna gałąź pakietu względem wersji bazowej (5.0.7) w forku `Actuna-Tech/node-red`; commity w stylu projektu, autor i `Signed-off-by`: Wojciech Repiński (Actuna Sp. z o.o.) – D-04; **bez PR/push do `node-red/node-red`**; zależności między pakietami jawnie opisane.
 - [ ] **Przegląd:** niezależny przegląd diffu (poprawność, zakres, zgodność wstecz, bezpieczeństwo); brak niezwiązanych zmian.
 - [ ] **Raport:** co zmieniono, nowe ustawienia, wpływ na zgodność, dowody weryfikacji (liczby testów), czego nie zweryfikowano.
 

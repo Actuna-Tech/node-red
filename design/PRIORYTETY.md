@@ -86,5 +86,7 @@ Z-06/Z-08/Z-10 przed Z-09). Uzupełnienie zlecenia (zapowiedziane) może zmieni�
 
 | ID | Decyzja | Rekomendacja |
 |---|---|---|
-| B-01 | FL-B-009: jak utrwalać wygląd flow korzystających z ustawień domyślnych edytora | przy eksporcie i zapisie dopisywać efektywne `layout`/`wireStyle`, gdy ≠ `LR`/`curved` |
-| B-02 | Czy zaczynamy F1 przed otrzymaniem uzupełnienia zlecenia | tak – F1 dotyczy naszego pakietu Z-14 i P-04/Z-01 (krytyczne), małe ryzyko kolizji z uzupełnieniem |
+| B-01 | FL-B-009: jak utrwalać wygląd flow korzystających z ustawień domyślnych edytora | **przyjęte (2026-10-03, na obecnym etapie ustaleń)**: przy eksporcie i zapisie dopisywać efektywne `layout`/`wireStyle`, gdy ≠ `LR`/`curved` |
+| B-02 | Czy zaczynamy F1 przed otrzymaniem uzupełnienia zlecenia | **wstrzymane (2026-10-03)** – start po otrzymaniu uzupełnienia zlecenia |
+| D-04 | Podpisy i zgłoszenia | dane Actuna / Wojciech Repiński; **PR i push do `node-red/node-red` zablokowane** |
+| D-11 | Drenaż przy SIGTERM | **przyjęte** |

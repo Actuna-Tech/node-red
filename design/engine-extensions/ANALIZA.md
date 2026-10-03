@@ -262,8 +262,8 @@ trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od dzia
 | **D-02** | rekomendacje nazw przyjęte **po krytycznym sprawdzeniu** | wynik i korekty w [ZASADY.md](ZASADY.md) §2.1a: `shutdownTimeout` (płasko, zamiast `health.shutdownTimeout`), relacja `readOnlyUserDir` ↔ istniejące `readOnly`, `editorOnly` wyklucza się z `disableEditor` |
 | **D-03** | **bez Playwright w repozytorium**; E2E to osobny podzbiór testów | kryteria „test edytora” spełniane testami jednostkowymi logiki wydzielonej z DOM (E-03) w `npm test`; E2E – osobny podzbiór uruchamiany poza `npm test`, z narzędziem instalowanym poza repozytorium, **nie wchodzi do gałęzi pakietów** |
 | **D-10** | przyjęte: przeładowanie różnicowe + limit równoległości przez koordynację | Z-09: `deploy.reload.type` (`"full"` domyślnie dla zgodności, `"diff"` rekomendowane), `deploy.reload.concurrency` |
-| D-04 | wyjaśnienie (CLA/DCO) przekazane – decyzja oczekuje | – |
-| D-11 | wyjaśnienie (drenaż przy SIGTERM) przekazane – decyzja oczekuje | – |
+| **D-04** | commity i podpisy **danymi Actuna Sp. z o.o. i Wojciecha Repińskiego**; **zgłoszenia do `node-red/node-red` (PR, push) zablokowane** do odwołania | autor commitów `Wojciech Repiński <tech@actuna.pl>` + `Signed-off-by` (od 2026-10-03; wcześniejsze commity – autor „Claude”, porządkowane w E-04 przy tworzeniu gałęzi pakietów); udział AI oznaczany w commitach (`Co-Authored-By`); CLA OpenJS – podpis dopiero przy ewentualnym zgłoszeniu; lokalna blokada `pre-push` (`design/git-hooks/pre-push`) |
+| **D-11** | **przyjęte**: drenaż przy SIGTERM w rdzeniu (hook `preShutdown`, `shutdownTimeout`, domyślnie wyłączony) | Z-08 – scenariusze drenażu w karcie |
 
 ### 7.1 Do podjęcia
 
@@ -276,7 +276,6 @@ trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od dzia
 | D-08 | Z-04: kolizja pola `configs` (dziś z zasięgiem flow) – nowe pole `globalConfigs[]` vs zmiana znaczenia | `globalConfigs[]` (zgodność wstecz) |
 | D-09 | Z-04: `rev` w `GET /flow/:id` tylko dla `Node-RED-API-Version: v2` (klienci v1 robiący GET→PUT nie dostaną nagle 409) | tak |
 | ~~D-10~~ (podjęta, §7.0) | Z-09: przeładowanie rozłożone w czasie i/lub różnicowe | `deploy.reload.type` domyślnie `"full"` (jak dziś), **rekomendowane `"diff"`** dla wdrożeń z długimi rozmowami; limit równoległości `deploy.reload.concurrency` przez koordynację (Z-10) |
-| D-11 | Z-08: drenaż przy SIGTERM przed zatrzymaniem flow (hook `preShutdown`, `shutdownTimeout`; domyślnie wyłączony) | tak – w rdzeniu (niezależnie od `preStop` orkiestratora, który można stosować dodatkowo) |
 | D-12 | P-02/Z-05: „Overwrite” w edytorze przy `deploy.requireRevision` | wymuszone nadpisanie wysyła aktualną rewizję po potwierdzeniu w oknie; w `reload-only` niedostępne |
 | D-13 | Z-08/Z-15: `/ready` instancji tylko edycyjnej | 200 po wczytaniu flow (stan `loaded`) – instancja gotowa do edycji |
 | D-14 | Z-10: semantyka „tylko jedna instancja” w `inject` | harmonogram cron: zajęcie klucza `<id>:<czas zaplanowany>` (dokładnie raz); interwał: lider |

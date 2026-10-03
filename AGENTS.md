@@ -44,8 +44,10 @@ npm run test:e2e              # osobny podzbiór E2E (D-03: Playwright NIE jest 
 6. **Bez nowych zależności npm** bez zgody Zamawiającego.
 7. **Małe zmiany:** jeden pakiet = jedna gałąź; bez niezwiązanych refaktoryzacji.
 8. **Nie twierdź, że działa, bez dowodu** – raport z liczbą testów i listą niezweryfikowanych rzeczy.
-9. **Commity:** styl projektu; `Signed-off-by` osoby odpowiedzialnej (DCO); projekt wymaga też CLA OpenJS.
-10. **Zgłoszenia upstream** (PR, issues) wyłącznie po pisemnej zgodzie Zamawiającego; problemy bezpieczeństwa – prywatnie wg `SECURITY.md`.
+9. **Commity:** styl projektu; `Signed-off-by` osoby odpowiedzialnej (DCO – zob. pkt 11); CLA OpenJS dopiero przy ewentualnym zgłoszeniu (obecnie zablokowane).
+10. **ZAKAZ zgłoszeń do upstream (decyzja D-04):** żadnych pull requestów, issues ani wypychania do `node-red/node-red` do odwołania przez Zamawiającego. Pull requesty tylko w obrębie forka `Actuna-Tech/node-red` i tylko na wyraźną prośbę. Uwaga: interfejs GitHub dla forka domyślnie proponuje PR do repozytorium źródłowego – zawsze sprawdzić repozytorium docelowe.
+11. **Tożsamość commitów (D-04):** autor `Wojciech Repiński <tech@actuna.pl>` (Actuna Sp. z o.o.), linia `Signed-off-by` w każdym commicie, udział AI oznaczony `Co-Authored-By`. Konfiguracja: `git config user.name "Wojciech Repiński"; git config user.email "tech@actuna.pl"`; commit: `git commit -s`.
+12. **Blokada wypychania:** zainstaluj hook `cp design/git-hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push` (odrzuca push do `node-red/node-red`).
 
 ## Równoległa praca agentów
 
