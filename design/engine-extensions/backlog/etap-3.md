@@ -347,7 +347,7 @@ Wynik: **POTWIERDZONE**, z rozszerzeniem.
 
 #### Specyfikacja
 - **Cel:** endpointy żywotności i gotowości dla orkiestratora i load balancera, wiarygodne także w trakcie startu, wdrożenia, przeładowania i zatrzymania; drenaż pracy w toku przy SIGTERM przed zatrzymaniem flow (D-11, ZASADY §2.3 C).
-- **Wejścia:** `GET`/`HEAD` `<path>/live`, `<path>/ready`; ustawienia `health.enabled` (domyślnie `false`), `health.path` (domyślnie `"/health"`), `health.port` (opcjonalnie; brak → serwer główny), `health.host` (opcjonalnie; brak → `uiHost`), `health.shutdownTimeout` (domyślnie 30000 ms – limit drenażu przy zatrzymaniu); sygnały SIGTERM/SIGINT (CLI); handlery hooka `preShutdown`.
+- **Wejścia:** `GET`/`HEAD` `<path>/live`, `<path>/ready`; ustawienia `health.enabled` (domyślnie `false`), `health.path` (domyślnie `"/health"`), `health.port` (opcjonalnie; brak → serwer główny), `health.host` (opcjonalnie; brak → `uiHost`), `shutdownTimeout` (domyślnie 30000 ms – limit drenażu przy zatrzymaniu); sygnały SIGTERM/SIGINT (CLI); handlery hooka `preShutdown`.
 - **Wyjścia:**
   - `/live` → `200` zawsze, gdy proces obsługuje pętlę zdarzeń (we wszystkich stanach E-02, także `stopping` – nie restartować instancji w trakcie drenażu).
   - `/ready` → `200` w stanie `ready`, w `loaded` (instancja tylko edycyjna – D-13; stan wprowadza Z-15, test w Z-15) oraz w `reloadPending` przed rozpoczęciem drenażu (oczekiwanie na slot, gdy stan poprzedni był gotowy); `503` w `starting`, `deploying`, `reloadPending` z `draining: true` (od wywołania `preReload`), `reloading`, `idle` (propozycja), `failed`, `stopping`, `stopped`.
@@ -358,7 +358,7 @@ Wynik: **POTWIERDZONE**, z rozszerzeniem.
   - bez uwierzytelnienia i bez `httpAdminMiddleware`/`httpNodeMiddleware`, niezależnie od `adminAuth`, `httpAdminAuth`, `httpNodeAuth`;
   - działa przy `httpAdminRoot: false` i `httpNodeRoot: false` (z `port` – osobny serwer; bez `port` – serwer główny zaczyna nasłuch tylko dla sond);
   - `/ready` przechodzi na `503` **synchronicznie** w chwili odebrania SIGTERM/SIGINT (stan `stopping`, przed drenażem i przed zatrzymaniem pierwszego węzła), w chwili wywołania `runtime.stop()` przez osadzenie, w kroku 4 E-01 (przed zatrzymaniem węzłów wdrożenia) i przy rozpoczęciu `preReload` (Z-09);
-  - kolejność zatrzymania (ZASADY §2.3 C): sygnał → `stopping` (`/ready` 503, `/live` 200) → hook `preShutdown` / oczekiwanie najwyżej `health.shutdownTimeout` → `RED.stop()` → zamknięcie serwera HTTP → wyjście; bez zarejestrowanych handlerów `preShutdown` brak oczekiwania (zachowanie jak 5.0.7);
+  - kolejność zatrzymania (ZASADY §2.3 C): sygnał → `stopping` (`/ready` 503, `/live` 200) → hook `preShutdown` / oczekiwanie najwyżej `shutdownTimeout` → `RED.stop()` → zamknięcie serwera HTTP → wyjście; bez zarejestrowanych handlerów `preShutdown` brak oczekiwania (zachowanie jak 5.0.7);
   - odpowiedź nie wykonuje I/O (odczyt `runtime.state.get()`), czas odpowiedzi stały;
   - przy `health.enabled: false` – zachowanie identyczne z 5.0.7 (w tym brak zamykania serwera HTTP – zob. Ryzyka).
 - **Przypadki błędów:** `health.port` zajęty → start runtime odrzucony z czytelnym komunikatem (`health.port-in-use`), stan `failed`; `health.port === uiPort` → montaż na serwerze głównym + `log.warn`; `health.path` bez wiodącego `/` lub równy `/` → błąd startu (`health.invalid-path`); `health.path` wewnątrz `httpAdminRoot`/`httpNodeRoot` → dozwolone, sondy mają pierwszeństwo + `log.info` przy starcie (trasa węzła o tej samej ścieżce zostanie przesłonięta).
@@ -369,7 +369,7 @@ Wynik: **POTWIERDZONE**, z rozszerzeniem.
 2. `runtime/lib/index.js`: `health.init` w `init()`, `health.start()` na początku `start()` (sondy dostępne od `starting` – `/ready` 503); `runtime.health` w obiekcie runtime.
 3. `node-red/red.js` (CLI): gdy `health.enabled` i brak osobnego portu – `app.use(health.path, RED.health.handler)` **przed** montowaniem `httpAdminAuth`/`httpNodeAuth` i aplikacji (`:417`); warunek nasłuchu (`:484`) rozszerzony o `health.enabled` bez portu.
 4. `node-red/lib/red.js`: getter `health` (`{ handler, shutdown }`) dla aplikacji osadzających Node-RED (nowe publiczne API, nazwa wg ZASADY §2.1).
-5. Drenaż i D-05 w `exitWhenStopped` (CLI, `node-red/red.js:543-558`): `runtime.state.markStopping(signal)` (przez `RED.health`) → `hooks.trigger("preShutdown", {reason, deadline, signal})` w `Promise.race` z `health.shutdownTimeout` (wzorzec limitu z Z-06) → `RED.stop()` → `server.close()` + `server.closeIdleConnections()` (Node ≥ 18.2) z limitem → `process.exit()`; `"preShutdown"` w `VALID_HOOKS`. Osadzający bez CLI: `RED.health.shutdown({reason})` wykonuje te same kroki bez zamykania cudzego serwera.
+5. Drenaż i D-05 w `exitWhenStopped` (CLI, `node-red/red.js:543-558`): `runtime.state.markStopping(signal)` (przez `RED.health`) → `hooks.trigger("preShutdown", {reason, deadline, signal})` w `Promise.race` z `shutdownTimeout` (wzorzec limitu z Z-06) → `RED.stop()` → `server.close()` + `server.closeIdleConnections()` (Node ≥ 18.2) z limitem → `process.exit()`; `"preShutdown"` w `VALID_HOOKS`. Osadzający bez CLI: `RED.health.shutdown({reason})` wykonuje te same kroki bez zamykania cudzego serwera.
 6. Szablon `settings.js`: blok `health` (zakomentowany) z opisem stanów, zaleceniem osobnego portu dla workerów, opisem `shutdownTimeout`/`preShutdown` i relacji z `terminationGracePeriodSeconds` (limit orkiestratora > `shutdownTimeout` + zatrzymanie węzłów).
 7. Teksty logów w `runtime.json` (`health.listening`, `health.port-in-use`, `health.invalid-path`, `health.path-shadows-route`, `health.draining`, `health.shutdown-timeout`).
 
@@ -419,8 +419,8 @@ Funkcja: Sondy zdrowia
     Kiedy hook się zakończy
     Wtedy wywołane zostanie RED.stop(), a po zatrzymaniu flow serwer HTTP zostanie zamknięty i proces zakończy się
 
-  Scenariusz: Drenaż przy SIGTERM – limit health.shutdownTimeout
-    Zakładając health.shutdownTimeout = 200 ms i hook preShutdown, który się nie kończy
+  Scenariusz: Drenaż przy SIGTERM – limit shutdownTimeout
+    Zakładając shutdownTimeout = 200 ms i hook preShutdown, który się nie kończy
     Kiedy proces otrzyma SIGTERM
     Wtedy po 200 ms wywołane zostanie RED.stop() mimo to
     I w logu pojawi się ostrzeżenie o przekroczeniu limitu drenażu
@@ -505,11 +505,11 @@ Funkcja: Sondy zdrowia
 - [ ] Szablon `settings.js` z opisem, zaleceniem dla workerów (`httpAdminRoot:false` + `port`) i ostrzeżeniem, że sondy są publiczne na danym porcie.
 - [ ] Dokumentacja odpowiedzi (kody, treść) i tabela stan → kod (z E-02).
 - [ ] Zamknięcie serwera przy SIGTERM pokryte testem regresji (D-05) albo jawnie odłożone decyzją.
-- [ ] Drenaż przy SIGTERM (D-11): `/ready` 503 od sygnału, `preShutdown` z limitem `health.shutdownTimeout`, potem `RED.stop()` i zamknięcie serwera HTTP – test w procesie potomnym; bez handlerów `preShutdown` brak opóźnienia.
+- [ ] Drenaż przy SIGTERM (D-11): `/ready` 503 od sygnału, `preShutdown` z limitem `shutdownTimeout`, potem `RED.stop()` i zamknięcie serwera HTTP – test w procesie potomnym; bez handlerów `preShutdown` brak opóźnienia.
 
 #### Ryzyka i alternatywy
-- **Drenaż przy SIGTERM (D-11):** dziś `RED.stop()` od razu zatrzymuje flow (zamyka węzły w ciągu `nodeCloseTimeout`), więc `terminationGracePeriodSeconds: 1200` sam nie chroni rozmów. Rozwiązanie w rdzeniu (zgodnie z D-11 i ZASADY §2.3 C): `stopping` od sygnału, hook `preShutdown` (kończy drenaż wcześniej, gdy rozmowy się skończą) z limitem `health.shutdownTimeout`, potem `RED.stop()`. `preStop` orkiestratora (uśpienie przed SIGTERM) – **opcja dodatkowa**, niezależna od rdzenia (np. by Endpoints zdążyły się zaktualizować). Ryzyko: `health.shutdownTimeout` + czas zatrzymania węzłów musi być krótszy niż okres łaski orkiestratora (dokumentacja).
-- **Globalny limit zatrzymania:** `health.shutdownTimeout` ogranicza fazę drenażu; samo `RED.stop()` nadal ograniczone tylko `nodeCloseTimeout` per węzeł – proces może kończyć się dłużej niż okres łaski orkiestratora → SIGKILL. Proponujemy nie dodawać osobnego limitu dla `RED.stop()` w tym pakiecie – **pytanie**.
+- **Drenaż przy SIGTERM (D-11):** dziś `RED.stop()` od razu zatrzymuje flow (zamyka węzły w ciągu `nodeCloseTimeout`), więc `terminationGracePeriodSeconds: 1200` sam nie chroni rozmów. Rozwiązanie w rdzeniu (zgodnie z D-11 i ZASADY §2.3 C): `stopping` od sygnału, hook `preShutdown` (kończy drenaż wcześniej, gdy rozmowy się skończą) z limitem `shutdownTimeout`, potem `RED.stop()`. `preStop` orkiestratora (uśpienie przed SIGTERM) – **opcja dodatkowa**, niezależna od rdzenia (np. by Endpoints zdążyły się zaktualizować). Ryzyko: `shutdownTimeout` + czas zatrzymania węzłów musi być krótszy niż okres łaski orkiestratora (dokumentacja).
+- **Globalny limit zatrzymania:** `shutdownTimeout` ogranicza fazę drenażu; samo `RED.stop()` nadal ograniczone tylko `nodeCloseTimeout` per węzeł – proces może kończyć się dłużej niż okres łaski orkiestratora → SIGKILL. Proponujemy nie dodawać osobnego limitu dla `RED.stop()` w tym pakiecie – **pytanie**.
 - **Zamknięcie serwera:** zgodnie z ZASADY §2.3 C serwer zamykany jest dopiero **po** `RED.stop()` – w fazie drenażu `/live` odpowiada także przy sondach na serwerze głównym (wcześniejsze ryzyko wyłączenia `/live` usunięte). Poprawka D-05 przy `health.enabled:false` (domyślnie) – tylko uporządkowane zamknięcie tuż przed `process.exit()`; czy włączać ją także bez sond – **do decyzji** (pytanie 6).
 - **`/ready` przy `idle`** (`runtimeState` stop, safe mode): 503 chroni przed kierowaniem ruchu do instancji bez flow. Instancja edycyjna (Z-15) ma osobny stan `loaded` z `/ready` 200 (D-13) – jedna propozycja, jedno pytanie (pytanie 3).
 - **Wszystkie workery 503 jednocześnie** przy przeładowaniu – rozwiązane w Z-09 (`deploy.reload.concurrency` przez koordynację Z-10, `type: "diff"`).
@@ -520,7 +520,7 @@ Funkcja: Sondy zdrowia
 - [ ] `runtime/lib/health.js` + testy jednostkowe handlera (M)
 - [ ] Osobny serwer (`port`) + obsługa błędów portu (S)
 - [ ] Montaż w CLI przed uwierzytelnieniem, warunek nasłuchu, `RED.health` (S)
-- [ ] Drenaż przy SIGTERM (D-11): `stopping` od sygnału, hook `preShutdown`, `health.shutdownTimeout`, kolejność `RED.stop()` → zamknięcie serwera HTTP (D-05), `RED.health.shutdown` + test w procesie potomnym (M)
+- [ ] Drenaż przy SIGTERM (D-11): `stopping` od sygnału, hook `preShutdown`, `shutdownTimeout`, kolejność `RED.stop()` → zamknięcie serwera HTTP (D-05), `RED.health.shutdown` + test w procesie potomnym (M)
 - [ ] Test cyklu życia (integracyjny) (M)
 - [ ] Szablon `settings.js`, CHANGELOG, teksty logów (S)
 
@@ -1229,7 +1229,7 @@ Funkcja: Katalog użytkownika tylko do odczytu
 2. **E-02 – `setState` w mutexie:** zgoda na objęcie API start/stop flow (`runtimeState`) wspólną blokadą wdrożeń (usunięcie wyścigu, zmiana kolejkowania)?
 3. **E-02/Z-08/Z-15 – `/ready` bez działających flow (jedno pytanie):** propozycja – instancja tylko edycyjna w stanie `loaded` → `/ready` 200 (D-13, „gotowa do edycji”); safe mode i `runtimeFlowState: stop` (`idle`) → 503. Czy potwierdzają Państwo? (Pytanie 12 w etapie 4 odsyła tutaj.) Przy okazji: czy ujednolicić nazwę `idle` z ANALIZA §4.2, gdzie oznacza stan początkowy?
 4. **Z-08 – treść odpowiedzi:** czy nazwa stanu w treści `503` jest dopuszczalna (nie jest konfiguracją), czy treść ma być stała?
-5. **Z-08 – drenaż przy SIGTERM (D-11):** potwierdzenie rozwiązania w rdzeniu: `/ready` 503 od sygnału, hook `preShutdown` z limitem `health.shutdownTimeout` (domyślnie 30 s), potem `RED.stop()` i zamknięcie serwera HTTP; `preStop` orkiestratora jako opcja dodatkowa. Czy drugi sygnał w trakcie drenażu ma zatrzymywać natychmiast? Czy potrzebny osobny limit czasu samego `RED.stop()`?
+5. **Z-08 – drenaż przy SIGTERM (D-11):** potwierdzenie rozwiązania w rdzeniu: `/ready` 503 od sygnału, hook `preShutdown` z limitem `shutdownTimeout` (domyślnie 30 s), potem `RED.stop()` i zamknięcie serwera HTTP; `preStop` orkiestratora jako opcja dodatkowa. Czy drugi sygnał w trakcie drenażu ma zatrzymywać natychmiast? Czy potrzebny osobny limit czasu samego `RED.stop()`?
 6. **Z-08 – serwer HTTP przy SIGTERM (D-05):** zamknięcie serwera po `RED.stop()` tylko przy `health.enabled` (propozycja), czy zawsze (zmiana zachowania 5.0.6, w praktyce tuż przed `process.exit()`)?
 7. **Z-09 – limit równoległości (D-10):** potwierdzenie `deploy.reload.concurrency` (slot przez koordynację Z-10, instancje czekające na slot zwracają `/ready` 200, 503 od rozpoczęcia drenażu). Czy `concurrency` ma przyjmować także wartość procentową (np. `"25%"`)? Czy przy braku łączności z koordynatorem przeładowanie ma czekać (propozycja), czy wykonać się bez limitu?
 8. **Z-09 – przeładowanie różnicowe (D-10):** potwierdzenie `deploy.reload.type: "full" | "diff"` z domyślnym `"full"` i zaleceniem `"diff"` dla długich rozmów. Gdy treść odczytana pod blokadą zmienia flow spoza drenowanych w `preReload` – przeładować najnowszą rewizję z ostrzeżeniem (propozycja) czy wykonać dodatkowy drenaż?
@@ -1257,7 +1257,7 @@ Poprawki z listy w [../PRZEGLAD.md](../PRZEGLAD.md) („Lista poprawek do nanies
 - **#11** – jedna propozycja `/ready` dla instancji edycyjnej (`loaded` → 200, D-13) w E-02 i Z-08; jedno pytanie (pytanie 3).
 - **#12** – tabela podsumowania: E-02 „wykorzystywany opcjonalnie przez P-01”.
 - **#19** – Z-11: `upload_not_allowed` opisany jako nowy kod definiowany w Z-03 (ZASADY §2.4); zależność od Z-03.
-- **#20** – Z-08: drenaż przy SIGTERM wg D-11 i ZASADY §2.3 C (`stopping` od sygnału, hook `preShutdown`, `health.shutdownTimeout`, potem `RED.stop()` i zamknięcie serwera HTTP); scenariusze BDD, testy, DoD, podzadanie; `preStop` orkiestratora jako opcja dodatkowa; ustawienia `health.host`, `health.shutdownTimeout`, `RED.health`.
+- **#20** – Z-08: drenaż przy SIGTERM wg D-11 i ZASADY §2.3 C (`stopping` od sygnału, hook `preShutdown`, `shutdownTimeout`, potem `RED.stop()` i zamknięcie serwera HTTP); scenariusze BDD, testy, DoD, podzadanie; `preStop` orkiestratora jako opcja dodatkowa; ustawienia `health.host`, `shutdownTimeout`, `RED.health`.
 - **#21** – Z-09: `type: "full" | "diff"`, domyślnie `"full"`, rekomendacja `"diff"` dla długich rozmów; `watch` domyślnie `false` (ZASADY §2.1).
 - **#26** – E-02: `runtime/lib/index.js:247` → `:245`; dopisano, że `.catch` obejmuje tylko `loadFlows` (obietnica `startFlows()` nie jest zwracana).
 - **Dodatkowo** – szacunek podzadania Z-10 „M/L” → „L” (skala S/M/L, ZASADY §4); pytania 3, 5–8, 11 zaktualizowane do rozstrzygnięć; nowe „do decyzji”: nazwa `idle` vs ANALIZA §4.2, zmiana flow spoza drenowanych w trakcie `preReload`, `retry` w `deploy.reload`.

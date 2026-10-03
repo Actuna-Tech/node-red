@@ -10,7 +10,11 @@
 - Powiązania z istniejącymi backlogami: `FL-*` ([../flow-layout/BACKLOG.md](../flow-layout/BACKLOG.md)), `K8S-*` ([../k8s-postgres/BACKLOG.md](../k8s-postgres/BACKLOG.md)).
 - Statusy i priorytety jak w backlogu układu flow (§1).
 
-## 2. Decyzje wstępne (do potwierdzenia przez Zamawiającego – pkt 3.4 zlecenia)
+## 2. Decyzje (pkt 3.4 zlecenia)
+
+> **Decyzje Zamawiającego z 2026-10-03:** D-01 baza **5.0.7**; D-02 rekomendacje nazw **przyjęte po krytycznym
+> sprawdzeniu** (wynik w §2.1a); D-03 **bez Playwright w repozytorium** – E2E to osobny podzbiór testów;
+> D-10 przyjęte. Szczegóły i pozostałe decyzje: [ANALIZA.md](ANALIZA.md) §7.
 
 ### 2.1 Nazwy ustawień
 
@@ -33,14 +37,34 @@
 | Z-09 | – | `deploy.reload: { watch: false, type: "full" \| "diff", preReloadTimeout: 1200000, concurrency: <opcjonalnie> }` | `type` domyślnie `"full"` (jak dzisiejszy `reload`); dla długich rozmów rekomendowane `"diff"`; `concurrency` wymaga wtyczki koordynacji (Z-10) |
 | Z-10 | – | `coordination: { plugin, options }`; właściwość węzła `inject`: `singleInstance` | wybór wtyczki jak `contextStorage`; domyślnie wtyczka lokalna |
 | Z-03 | – | `externalModules.palette.allowDowngrade: true` (domyślnie = zachowanie 5.0.6) | `false` blokuje instalację starszej wersji z `.tgz` (rekomendowane w produkcji); domyślna wartość nie zmienia dzisiejszego zachowania (DoD §3) |
-| Z-08 | – | `health.host` (opcjonalnie), `health.shutdownTimeout: 30000`; API osadzających `RED.health` | drenaż przy SIGTERM (D-11) z limitem |
+| Z-08 | – | `health.host` (opcjonalnie); **`shutdownTimeout`** (płasko, domyślnie wyłączony drenaż – zachowanie 5.0.6); API osadzających `RED.health` | drenaż przy SIGTERM (D-11); nazwa płaska jak `nodeCloseTimeout`/`functionTimeout` – to cykl życia procesu, nie sonda |
 | E-02 | – | zdarzenie `instance:state`, odczyt `runtime.state` | jedno źródło stanu dla P-01, Z-08, Z-09, Z-15 |
 | Z-12 | – | `RED.header`, `RED.dialog`, `RED.deploy.addMenuItem`, hook edytora `deployPre` | robocze – do potwierdzenia po załączniku B |
 
+### 2.1a Krytyczne sprawdzenie nazw (D-02, wynik)
+
+Sprawdzone w szablonie `packages/node_modules/node-red/settings.js` i w kodzie (runtime, editor-api, editor-client, registry):
+
+| Nazwa | Kolizja / konwencja | Wynik |
+|---|---|---|
+| `deploy.*` | brak klucza `deploy` w ustawieniach i kodzie runtime; obiekty grupujące mają precedensy (`runtimeState`, `telemetry`, `externalModules`) | **przyjęte** |
+| `editorTheme.deploy.staleFlows` | `editorTheme` ma już m.in. `palette`, `projects`, `codeEditor`, `deployButton` (wygląd przycisku) – `deploy` jako osobny obiekt zachowania, nie wyglądu | **przyjęte**; w dokumentacji odróżnić od `deployButton` |
+| `telemetry.locked` | obiekt `telemetry` istnieje w szablonie | **przyjęte** |
+| `httpAdminNodeRoutes` | spójne z rodziną `httpAdmin*` (`httpAdminRoot`, `httpAdminMiddleware`, `httpAdminCookieOptions`) | **przyjęte** |
+| `health: {enabled, path, port, host}` | brak kolizji; struktura jak `diagnostics: {enabled, ui}` | **przyjęte** |
+| `health.shutdownTimeout` | zatrzymanie procesu to nie sonda; płaskie limity czasu w projekcie: `nodeCloseTimeout`, `functionTimeout`, `globalFunctionTimeout` | **zmienione na `shutdownTimeout`** |
+| `readOnlyUserDir` | **istnieje nieudokumentowane `readOnly`** używane przez magazyn plikowy (`storage/localfilesystem/index.js:49,59`, `library.js:148`) – po cichu pomija zapis | **przyjęte**; zmiana znaczenia `readOnly` złamałaby zgodność – w Z-11 opisać relację: `readOnlyUserDir` obejmuje cały runtime i zgłasza błąd zamiast cichego pominięcia; `readOnly` bez zmian |
+| `editorOnly` | symetryczne do istniejącego `disableEditor` (płaskie, boolean) | **przyjęte**; `editorOnly` + `disableEditor` jednocześnie = błąd konfiguracji przy starcie |
+| `coordination: {plugin, options}` | wzorzec jak `contextStorage`; typ wtyczki jak `node-red-library-source` | **przyjęte** |
+| `externalModules.palette.allowDowngrade` | spójne z `allowInstall`, `allowUpdate`, `allowUpload` | **przyjęte** (domyślnie `true` = 5.0.6) |
+| `editorTheme.flowLayout` | spójne z `editorTheme.codeEditor`, `markdownEditor` | **przyjęte** |
+| hooki `preDeploy`, `postDeploy`, `preReload`, `preShutdown` | konwencja `pre*/post*` jak `preInstall/postInstall` | **przyjęte** (rozszerzenie `VALID_HOOKS`) |
+| `RED.auth.publicRoute()`, `node.registerHttpRoute()`, `RED.coordination` | brak kolizji w API węzłów (`registry/lib/util.js`) | **przyjęte** |
+| kody błędów `snake_case` | jak istniejące `version_mismatch`, `module_already_loaded`, `invalid_request` | **przyjęte** |
+
 ### 2.2 Wersja bazowa
 Zlecenie wskazuje `5.0.6`. Wydanie `5.0.7` zawiera poprawki bezpieczeństwa (migracja na załataną
-bibliotekę JSONata, aktualizacja `body-parser`). **Rekomendacja:** baza `5.0.7` (każdy pakiet
-przenaszalny na `5.0.6` bez zmian merytorycznych – lista różnic w ANALIZA.md).
+bibliotekę JSONata, aktualizacja `body-parser`). **Decyzja D-01: baza `5.0.7`.**
 
 ### 2.3 Kontrakt potoku wdrożenia (zadanie E-01)
 Pakiety P-01, Z-04, Z-05, Z-06, Z-08, Z-09, Z-15 oraz nasze FL-B-001/FL-B-002 zmieniają te same funkcje
@@ -86,7 +110,8 @@ Wspólna kolejność kroków (rozstrzygnięcia K-1…K-3 z [PRZEGLAD.md](PRZEGLA
 ```
 
 **C. Zatrzymanie procesu** (Z-08, D-11): SIGTERM/SIGINT → stan `stopping` (/ready 503, nieodwracalny) →
-hook `preShutdown` / oczekiwanie do `health.shutdownTimeout` → `RED.stop()` → zamknięcie serwera HTTP → wyjście.
+hook `preShutdown` / oczekiwanie do `shutdownTimeout` → `RED.stop()` → zamknięcie serwera HTTP → wyjście.
+Bez ustawionego `shutdownTimeout` – zachowanie 5.0.6 (natychmiastowe zatrzymanie).
 
 ### 2.4 Katalog kodów błędów (propozycja)
 

@@ -7,7 +7,7 @@ Ten plik i katalog `design/` **nie trafiają do zgłoszeń upstream** – gałę
 
 | Temat | Dokument |
 |---|---|
-| Zlecenie rozszerzeń silnika (P-01…P-04, Z-01…Z-15): analiza, plan, decyzje | `design/engine-extensions/ANALIZA.md` |
+| Zlecenie rozszerzeń silnika (P-01…P-04, Z-01…Z-15): analiza, plan, decyzje (podjęte: §7.0) | `design/engine-extensions/ANALIZA.md` |
 | Zasady wspólne: nazwy ustawień, kontrakt potoku wdrożenia, DoD, szablon karty, role agentów | `design/engine-extensions/ZASADY.md` |
 | Fakty z kodu (plik:linia) dla każdego pakietu | `design/engine-extensions/WERYFIKACJA.md` |
 | Karty pakietów (specyfikacja, BDD, testy, DoD) | `design/engine-extensions/backlog/etap-*.md` |
@@ -30,7 +30,7 @@ npm run build                 # wymagane przed testami edytora i E2E
 npm run lint                  # eslint editor-client
 npx mocha test/unit/_spec.js "test/unit/@node-red/<pakiet>/**/*_spec.js"   # szybkie testy obszaru
 npm test                      # pełne: build, verify-deps, lint, coverage (wymaga ssh-keygen dla testów projektów)
-npm run test:e2e              # opcjonalne E2E (Playwright – nie jest zależnością; bez niego testy są pomijane)
+npm run test:e2e              # osobny podzbiór E2E (D-03: Playwright NIE jest w repozytorium – narzędzie instalowane poza nim; bez niego testy są pomijane; nie wchodzi do gałęzi pakietów)
 ```
 
 ## Zasady

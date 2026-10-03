@@ -250,21 +250,31 @@ przy którym runtime wczytuje flow, ale ich nie uruchamia, **bez zapisu stanu do
 trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od działającego runtime (debug, status, przycisk
 `inject`) – opis ograniczeń; przekazywanie zdarzeń z workerów pozostaje wtyczką (K8S-T-003).
 
-## 7. Decyzje do podjęcia przez Zamawiającego
+## 7. Decyzje Zamawiającego
+
+### 7.0 Podjęte (2026-10-03)
+
+| ID | Decyzja | Skutek w planie |
+|---|---|---|
+| **D-01** | baza **5.0.7** | gałęzie pakietów od znacznika/commita wydania 5.0.7 |
+| **D-02** | rekomendacje nazw przyjęte **po krytycznym sprawdzeniu** | wynik i korekty w [ZASADY.md](ZASADY.md) §2.1a: `shutdownTimeout` (płasko, zamiast `health.shutdownTimeout`), relacja `readOnlyUserDir` ↔ istniejące `readOnly`, `editorOnly` wyklucza się z `disableEditor` |
+| **D-03** | **bez Playwright w repozytorium**; E2E to osobny podzbiór testów | kryteria „test edytora” spełniane testami jednostkowymi logiki wydzielonej z DOM (E-03) w `npm test`; E2E – osobny podzbiór uruchamiany poza `npm test`, z narzędziem instalowanym poza repozytorium, **nie wchodzi do gałęzi pakietów** |
+| **D-10** | przyjęte: przeładowanie różnicowe + limit równoległości przez koordynację | Z-09: `deploy.reload.type` (`"full"` domyślnie dla zgodności, `"diff"` rekomendowane), `deploy.reload.concurrency` |
+| D-04 | wyjaśnienie (CLA/DCO) przekazane – decyzja oczekuje | – |
+| D-11 | wyjaśnienie (drenaż przy SIGTERM) przekazane – decyzja oczekuje | – |
+
+### 7.1 Do podjęcia
 
 | ID | Decyzja | Rekomendacja |
 |---|---|---|
-| D-01 | wersja bazowa | 5.0.7 |
-| D-02 | nazwy ustawień i API | [ZASADY.md](ZASADY.md) §2.1 + Z-15 |
-| D-03 | Playwright jako zależność deweloperska (testy E2E edytora) | tak, tylko `devDependencies`, uruchamiane osobnym skryptem; alternatywa: wyłącznie testy jednostkowe logiki wydzielonej z DOM |
 | D-04 | CLA OpenJS / DCO, polityka oznaczania pracy z AI | podpis osoby odpowiedzialnej; informacja o wspomaganiu AI w opisie PR |
 | D-05 | poprawki ujawnione w weryfikacji, ale spoza zakresu (połykanie błędów zatrzymania, `splice` w `http in`, niespójne nazwy ustawień uploadu, zamykanie serwera HTTP przy SIGTERM) | dołączyć do pakietów, których dotyczą (P-01, Z-07, Z-03, Z-08), jako poprawki błędów z testami regresji |
 | D-06 | Z-14 i Z-15 w zakresie zlecenia | tak |
 | D-07 | kontrola nagłówka `Origin` dla `/comms` (ochrona przed obcymi stronami) | tak, jako ustawienie z bezpieczną listą domyślną (do uzgodnienia w zgłoszeniu bezpieczeństwa) |
 | D-08 | Z-04: kolizja pola `configs` (dziś z zasięgiem flow) – nowe pole `globalConfigs[]` vs zmiana znaczenia | `globalConfigs[]` (zgodność wstecz) |
 | D-09 | Z-04: `rev` w `GET /flow/:id` tylko dla `Node-RED-API-Version: v2` (klienci v1 robiący GET→PUT nie dostaną nagle 409) | tak |
-| D-10 | Z-09: przeładowanie rozłożone w czasie i/lub różnicowe | `deploy.reload.type` domyślnie `"full"` (jak dziś), **rekomendowane `"diff"`** dla wdrożeń z długimi rozmowami; limit równoległości `deploy.reload.concurrency` przez koordynację (Z-10) |
-| D-11 | Z-08: drenaż przy SIGTERM przed zatrzymaniem flow (hook `preShutdown`, `health.shutdownTimeout`) | tak – w rdzeniu (niezależnie od `preStop` orkiestratora, który można stosować dodatkowo) |
+| ~~D-10~~ (podjęta, §7.0) | Z-09: przeładowanie rozłożone w czasie i/lub różnicowe | `deploy.reload.type` domyślnie `"full"` (jak dziś), **rekomendowane `"diff"`** dla wdrożeń z długimi rozmowami; limit równoległości `deploy.reload.concurrency` przez koordynację (Z-10) |
+| D-11 | Z-08: drenaż przy SIGTERM przed zatrzymaniem flow (hook `preShutdown`, `shutdownTimeout`; domyślnie wyłączony) | tak – w rdzeniu (niezależnie od `preStop` orkiestratora, który można stosować dodatkowo) |
 | D-12 | P-02/Z-05: „Overwrite” w edytorze przy `deploy.requireRevision` | wymuszone nadpisanie wysyła aktualną rewizję po potwierdzeniu w oknie; w `reload-only` niedostępne |
 | D-13 | Z-08/Z-15: `/ready` instancji tylko edycyjnej | 200 po wczytaniu flow (stan `loaded`) – instancja gotowa do edycji |
 | D-14 | Z-10: semantyka „tylko jedna instancja” w `inject` | harmonogram cron: zajęcie klucza `<id>:<czas zaplanowany>` (dokładnie raz); interwał: lider |
