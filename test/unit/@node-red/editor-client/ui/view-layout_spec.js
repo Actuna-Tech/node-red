@@ -2,6 +2,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   FL-B-009: tests for the layout properties stored with a flow on export and deploy
  *   FL-B-005: tests for the select option of an unknown layout value
+ *   Z-14: tests for the editorTheme.flowLayout.enabled setting and the layout options of a flow
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
@@ -459,6 +460,133 @@ describe("editor-client/ui/view-layout", function() {
             const flow = { id: "f1" };
             layout.getPersistedFlowOptions(flow, { "view-flow-layout": "TB" });
             flow.should.eql({ id: "f1" });
+        });
+    });
+
+    describe("flow layout setting (Z-14)", function() {
+        let savedSettings;
+        beforeEach(function() {
+            savedSettings = RED.settings;
+        });
+        afterEach(function() {
+            RED.settings = savedSettings;
+        });
+
+        // Mirrors RED.settings.theme in the editor
+        function setSettings(editorTheme, viewSettings) {
+            RED.settings = {
+                editorTheme: editorTheme,
+                theme: function(property, defaultValue) {
+                    if (!RED.settings.editorTheme) {
+                        return defaultValue;
+                    }
+                    let v = RED.settings.editorTheme;
+                    try {
+                        property.split(".").forEach(function(p) { v = v[p] });
+                    } catch (err) {
+                        return defaultValue;
+                    }
+                    return v === undefined ? defaultValue : v;
+                },
+                get: function(key) {
+                    return key === "editor" ? { view: viewSettings } : undefined;
+                }
+            };
+        }
+
+        describe("isEnabled", function() {
+            it("is disabled when the setting is not set", function() {
+                setSettings(undefined);
+                layout.isEnabled().should.be.false();
+                setSettings({});
+                layout.isEnabled().should.be.false();
+                setSettings({ flowLayout: {} });
+                layout.isEnabled().should.be.false();
+            });
+            it("is enabled when editorTheme.flowLayout.enabled is true", function() {
+                setSettings({ flowLayout: { enabled: true } });
+                layout.isEnabled().should.be.true();
+            });
+            it("is disabled when editorTheme.flowLayout.enabled is false", function() {
+                setSettings({ flowLayout: { enabled: false } });
+                layout.isEnabled().should.be.false();
+            });
+            it("treats an invalid setting as disabled", function() {
+                setSettings({ flowLayout: "yes" });
+                layout.isEnabled().should.be.false();
+                setSettings({ flowLayout: null });
+                layout.isEnabled().should.be.false();
+                setSettings({ flowLayout: { enabled: "true" } });
+                layout.isEnabled().should.be.false();
+                setSettings({ flowLayout: { enabled: 1 } });
+                layout.isEnabled().should.be.false();
+            });
+            it("is disabled when the editor settings are not available", function() {
+                RED.settings = undefined;
+                layout.isEnabled().should.be.false();
+                RED.settings = { theme: function() { throw new Error("not loaded") } };
+                layout.isEnabled().should.be.false();
+            });
+        });
+
+        describe("getUserViewSettings", function() {
+            it("returns the user's view settings when enabled", function() {
+                setSettings({ flowLayout: { enabled: true } }, { "view-flow-layout": "TB" });
+                layout.getUserViewSettings().should.eql({ "view-flow-layout": "TB" });
+            });
+            it("ignores the user's view settings when disabled", function() {
+                const view = { "view-flow-layout": "TB", "view-wire-style": "orthogonal" };
+                setSettings({ flowLayout: { enabled: false } }, view);
+                layout.getUserViewSettings().should.eql({});
+                setSettings(undefined, view);
+                layout.getUserViewSettings().should.eql({});
+                // The user settings are kept
+                view.should.eql({ "view-flow-layout": "TB", "view-wire-style": "orthogonal" });
+            });
+            it("returns no settings when the user has none", function() {
+                setSettings({ flowLayout: { enabled: true } }, undefined);
+                layout.getUserViewSettings().should.eql({});
+                RED.settings.get = function() { throw new Error("not loaded") };
+                layout.getUserViewSettings().should.eql({});
+            });
+        });
+
+        describe("getFlowOptions", function() {
+            it("uses the layout options set on the flow", function() {
+                layout.getFlowOptions({ layout: "TB", wireStyle: "orthogonal" }, { "view-flow-layout": "auto" })
+                    .should.eql({ layout: "TB", wireStyle: "orthogonal" });
+            });
+            it("uses the user's settings for a flow without its own options", function() {
+                layout.getFlowOptions({}, { "view-flow-layout": "auto", "view-wire-style": "orthogonal" })
+                    .should.eql({ layout: "auto", wireStyle: "orthogonal" });
+                layout.getFlowOptions(undefined, { "view-flow-layout": "TB" })
+                    .should.eql({ layout: "TB", wireStyle: "curved" });
+            });
+            it("defaults to LR and curved", function() {
+                layout.getFlowOptions({}, {}).should.eql({ layout: "LR", wireStyle: "curved" });
+                layout.getFlowOptions().should.eql({ layout: "LR", wireStyle: "curved" });
+            });
+            it("treats an invalid layout value as unset", function() {
+                layout.getFlowOptions({ layout: "XY", wireStyle: "zigzag" }, { "view-flow-layout": "TB" })
+                    .should.eql({ layout: "LR", wireStyle: "curved" });
+                layout.getFlowOptions({}, { "view-flow-layout": "XY" })
+                    .should.eql({ layout: "LR", wireStyle: "curved" });
+            });
+            it("disabled: draws a flow with a saved layout from its data", function() {
+                setSettings({ flowLayout: { enabled: false } }, { "view-flow-layout": "auto", "view-wire-style": "orthogonal" });
+                layout.getFlowOptions({ layout: "TB" }, layout.getUserViewSettings())
+                    .should.eql({ layout: "TB", wireStyle: "curved" });
+            });
+            it("disabled: ignores the user's settings", function() {
+                setSettings({ flowLayout: { enabled: false } }, { "view-flow-layout": "TB", "view-wire-style": "orthogonal" });
+                layout.getFlowOptions({}, layout.getUserViewSettings())
+                    .should.eql({ layout: "LR", wireStyle: "curved" });
+            });
+            it("enabled: uses the user's settings", function() {
+                setSettings({ flowLayout: { enabled: true } }, { "view-flow-layout": "TB", "view-wire-style": "orthogonal" });
+                layout.getFlowOptions({}, layout.getUserViewSettings())
+                    .should.eql({ layout: "TB", wireStyle: "orthogonal" });
+            });
         });
     });
 });

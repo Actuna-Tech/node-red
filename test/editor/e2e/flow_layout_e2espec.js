@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-14, FL-B-010: end-to-end tests of flow layouts and import of flows with the same ids
+ *   Z-14: run with editorTheme.flowLayout.enabled set; tests with the setting not set
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -32,6 +33,9 @@
  *   npm run test:e2e
  *
  * The tests are skipped if Playwright cannot be loaded.
+ *
+ * The main suite runs with `editorTheme.flowLayout.enabled: true`; a second
+ * suite checks the editor with the setting not set (the default).
  */
 const should = require("should");
 const path = require("path");
@@ -159,6 +163,38 @@ function sendJSON(method, url, body) {
     });
 }
 
+/**
+ * Start Node-RED in a child process with the test flows
+ * @param {object} editorTheme the editorTheme settings
+ * @returns {Promise<{server, url: string, userDir: string}>}
+ */
+async function startNodeRED(editorTheme) {
+    if (!fs.existsSync(path.resolve(__dirname, "../../../packages/node_modules/@node-red/editor-client/public/red/red.min.js"))) {
+        throw new Error("Editor not built - run 'npm run build' first");
+    }
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "nr-layout-e2e-"));
+    fs.writeFileSync(path.join(userDir, "flows.json"), JSON.stringify(testFlows()));
+    const settings = { flowFile: "flows.json", editorTheme: editorTheme, logging: { console: { level: "warn" } } };
+    fs.writeFileSync(path.join(userDir, "settings.js"), "module.exports = " + JSON.stringify(settings));
+    const port = await getFreePort();
+    const url = "http://127.0.0.1:" + port;
+    const server = spawn(process.execPath, [RED_JS, "-u", userDir, "-p", String(port)], { stdio: "ignore" });
+    await waitForServer(url, 30000);
+    return { server, url, userDir };
+}
+
+/** Get the labels of the items of the context menu shown for the selected node */
+function contextMenuLabels(page, nodeId) {
+    return page.evaluate(nodeId => {
+        RED.view.select({ nodes: [RED.nodes.node(nodeId)] });
+        RED.contextMenu.show({ type: "workspace", x: 200, y: 200 });
+        const labels = Array.from(document.querySelectorAll("#red-ui-workspace-context-menu .red-ui-menu-label")).map(el => el.textContent);
+        RED.contextMenu.hide();
+        RED.view.select(null);
+        return labels;
+    }, nodeId);
+}
+
 (playwright ? describe : describe.skip)("editor flow layout (e2e)", function() {
     this.timeout(60000);
 
@@ -170,16 +206,7 @@ function sendJSON(method, url, body) {
     let pageErrors;
 
     before(async function() {
-        if (!fs.existsSync(path.resolve(__dirname, "../../../packages/node_modules/@node-red/editor-client/public/red/red.min.js"))) {
-            throw new Error("Editor not built - run 'npm run build' first");
-        }
-        userDir = fs.mkdtempSync(path.join(os.tmpdir(), "nr-layout-e2e-"));
-        fs.writeFileSync(path.join(userDir, "flows.json"), JSON.stringify(testFlows()));
-        fs.writeFileSync(path.join(userDir, "settings.js"), "module.exports = { flowFile: 'flows.json', editorTheme: { tours: false }, logging: { console: { level: 'warn' } } }");
-        const port = await getFreePort();
-        url = "http://127.0.0.1:" + port;
-        server = spawn(process.execPath, [RED_JS, "-u", userDir, "-p", String(port)], { stdio: "ignore" });
-        await waitForServer(url, 30000);
+        ({ server, url, userDir } = await startNodeRED({ tours: false, flowLayout: { enabled: true } }));
         browser = await playwright.chromium.launch();
     });
 
@@ -414,6 +441,13 @@ function sendJSON(method, url, body) {
                 return { afterSet, exported, afterReset, afterUndo, final: n.o, exportedFinal: RED.nodes.convertNode(n).hasOwnProperty("o") };
             });
             result.should.eql({ afterSet: "TB", exported: "TB", afterReset: undefined, afterUndo: "TB", final: undefined, exportedFinal: false });
+        });
+
+        it("shows the port orientation entries in the context menu", async function() {
+            await showFlow("tLR");
+            const expected = await page.evaluate(() => [RED._("layout.setHorizontal"), RED._("layout.setVertical"), RED._("layout.setInherit")]);
+            const labels = await contextMenuLabels(page, "h3");
+            labels.should.containDeep(expected);
         });
 
         it("sets the orientation from the node appearance tab", async function() {
@@ -1004,5 +1038,175 @@ function sendJSON(method, url, body) {
             flows.find(n => n.id === "tTB").layout.should.equal("TB");
             flows.find(n => n.id === "m3").o.should.equal("TB");
         });
+    });
+});
+
+(playwright ? describe : describe.skip)("editor flow layout with editorTheme.flowLayout.enabled not set (e2e)", function() {
+    this.timeout(60000);
+
+    let userDir;
+    let server;
+    let url;
+    let browser;
+    let page;
+    let pageErrors;
+
+    before(async function() {
+        ({ server, url, userDir } = await startNodeRED({ tours: false }));
+        browser = await playwright.chromium.launch();
+    });
+
+    after(async function() {
+        if (browser) {
+            await browser.close();
+        }
+        if (server) {
+            server.kill();
+        }
+        if (userDir) {
+            fs.rmSync(userDir, { recursive: true, force: true });
+        }
+    });
+
+    beforeEach(async function() {
+        page = await browser.newPage({ viewport: { width: 1500, height: 900 } });
+        pageErrors = [];
+        page.on("pageerror", err => pageErrors.push(err.message));
+        await page.goto(url);
+        await page.waitForSelector(".red-ui-flow-node-group", { timeout: 30000 });
+        const dismiss = await page.$("text=No, do not enable notifications");
+        if (dismiss) {
+            await dismiss.click();
+        }
+    });
+
+    afterEach(async function() {
+        pageErrors.should.eql([]);
+        await page.close();
+    });
+
+    async function showFlow(id) {
+        await page.evaluate(id => RED.workspaces.show(id), id);
+        await page.waitForTimeout(300);
+    }
+
+    function orientation(id) {
+        return page.evaluate(id => RED.view.layout.getNodeOrientation(RED.nodes.node(id)), id);
+    }
+
+    function linkPath(sourceId, targetId) {
+        return page.evaluate(([sourceId, targetId]) => {
+            const link = Array.from(document.querySelectorAll(".red-ui-flow-link")).find(el => el.__data__.source.id === sourceId && el.__data__.target.id === targetId);
+            return link ? link.querySelector(".red-ui-flow-link-line").getAttribute("d") : null;
+        }, [sourceId, targetId]);
+    }
+
+    async function setUserDefaults(view) {
+        await Promise.all([
+            page.waitForResponse(res => /\/settings\/user$/.test(res.url())),
+            page.evaluate(view => {
+                const editor = RED.settings.get("editor");
+                Object.assign(editor.view, view);
+                RED.settings.set("editor", editor, true);
+                RED.view.redraw(true, true);
+            }, view)
+        ]);
+    }
+
+    it("shows no flow layout controls", async function() {
+        (await page.evaluate(() => RED.view.layout.isEnabled())).should.be.false();
+
+        // Flow properties
+        await showFlow("tTB");
+        await page.evaluate(() => RED.editor.editFlow(RED.nodes.workspace("tTB")));
+        await page.waitForSelector("#node-input-name");
+        should(await page.$("#node-input-flow-layout")).be.null();
+        should(await page.$("#node-input-flow-wire-style")).be.null();
+        // Let the info editor finish loading before the dialog is closed
+        await page.waitForTimeout(1000);
+        await page.click("#node-dialog-cancel");
+        await page.waitForTimeout(300);
+
+        // Node appearance
+        await page.evaluate(() => RED.editor.edit(RED.nodes.node("v1")));
+        await page.waitForSelector("#node-input-show-label", { state: "attached" });
+        should(await page.$("#node-input-port-orientation")).be.null();
+        await page.waitForTimeout(1000);
+        await page.click("#node-dialog-cancel");
+        await page.waitForTimeout(300);
+
+        // User settings
+        await page.evaluate(() => RED.actions.invoke("core:show-user-settings"));
+        await page.waitForSelector("#user-settings-view-node-show-label", { state: "attached" });
+        should(await page.$("#user-settings-view-flow-layout")).be.null();
+        should(await page.$("#user-settings-view-wire-style")).be.null();
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(300);
+
+        // Context menu and actions
+        const layoutLabels = await page.evaluate(() => [RED._("layout.setHorizontal"), RED._("layout.setVertical"), RED._("layout.setInherit")]);
+        const labels = await contextMenuLabels(page, "v1");
+        labels.length.should.be.above(0);
+        layoutLabels.forEach(l => labels.should.not.containEql(l));
+        const actions = await page.evaluate(() => RED.actions.list().map(a => a.id));
+        actions.should.containEql("core:show-selected-node-labels");
+        ["core:set-selected-node-ports-horizontal", "core:set-selected-node-ports-vertical", "core:reset-selected-node-ports"]
+            .forEach(a => actions.should.not.containEql(a));
+    });
+
+    it("draws flows with saved layout properties from their data", async function() {
+        await showFlow("tTB");
+        (await orientation("v1")).should.equal("TB");
+        await showFlow("tMix");
+        (await orientation("m1")).should.equal("LR");
+        (await orientation("m3")).should.equal("TB");
+        await showFlow("tOrth");
+        (await linkPath("o0", "o1")).should.not.match(/C/);
+    });
+
+    it("draws flows without layout properties with the classic curve", async function() {
+        await showFlow("tLR");
+        (await orientation("h1")).should.equal("LR");
+        const expected = await page.evaluate(() => {
+            const s = RED.nodes.node("h0");
+            const t = RED.nodes.node("h1");
+            return RED.viewLayout.generateLinkPath(s.x + s.w / 2, s.y, t.x - t.w / 2, t.y, 1, false);
+        });
+        (await linkPath("h0", "h1")).should.equal(expected);
+    });
+
+    it("ignores the user's default layout settings and keeps them", async function() {
+        await setUserDefaults({ "view-flow-layout": "TB", "view-wire-style": "orthogonal" });
+        try {
+            await showFlow("tLR");
+            (await orientation("h1")).should.equal("LR");
+            const exported = await page.evaluate(() => RED.nodes.createCompleteNodeSet({ flowLayoutDefaults: true }));
+            const tLR = exported.find(n => n.id === "tLR");
+            tLR.should.not.have.property("layout");
+            tLR.should.not.have.property("wireStyle");
+            const view = await page.evaluate(() => RED.settings.get("editor").view);
+            view.should.containEql({ "view-flow-layout": "TB", "view-wire-style": "orthogonal" });
+        } finally {
+            await setUserDefaults({ "view-flow-layout": "LR", "view-wire-style": "curved" });
+        }
+    });
+
+    it("keeps the layout properties on edit and deploy", async function() {
+        await page.evaluate(() => {
+            const n = RED.nodes.node("v3");
+            n.name = "renamed";
+            n.changed = true;
+            n.dirty = true;
+            RED.nodes.dirty(true);
+        });
+        await page.evaluate(() => RED.actions.invoke("core:deploy-flows"));
+        await page.waitForFunction(() => !RED.nodes.dirty(), null, { timeout: 10000 });
+        const flows = await getJSON(url + "/flows");
+        flows.find(n => n.id === "v3").name.should.equal("renamed");
+        flows.find(n => n.id === "tTB").layout.should.equal("TB");
+        flows.find(n => n.id === "tOrth").wireStyle.should.equal("orthogonal");
+        flows.find(n => n.id === "m3").o.should.equal("TB");
+        flows.find(n => n.id === "tLR").should.not.have.property("layout");
+        flows.find(n => n.id === "tLR").should.not.have.property("wireStyle");
     });
 });

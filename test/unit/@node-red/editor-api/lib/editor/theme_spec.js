@@ -14,6 +14,12 @@
  * limitations under the License.
  **/
 
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   Z-14: tests for passing editorTheme.flowLayout to the editor
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
+
 var should = require("should");
 var request = require("supertest");
 var express = require('express');
@@ -212,6 +218,47 @@ describe("api/editor/theme", function () {
       settings.should.have.a.property("userMenu");
       settings.userMenu.should.be.eql(true);
 
+    });
+
+    it("passes editorTheme.flowLayout to the editor", async function () {
+        theme.init({
+            editorTheme: {
+                flowLayout: { enabled: true }
+            }
+        });
+
+        theme.app();
+
+        var settings = await theme.settings();
+        settings.should.have.a.property("flowLayout");
+        settings.flowLayout.should.eql({ enabled: true });
+    });
+
+    it("passes a disabled editorTheme.flowLayout to the editor", async function () {
+        theme.init({
+            editorTheme: {
+                flowLayout: { enabled: false }
+            }
+        });
+
+        theme.app();
+
+        var settings = await theme.settings();
+        settings.should.have.a.property("flowLayout");
+        settings.flowLayout.should.eql({ enabled: false });
+    });
+
+    it("omits flowLayout when not set", async function () {
+        theme.init({
+            editorTheme: {
+                userMenu: true
+            }
+        });
+
+        theme.app();
+
+        var settings = await theme.settings();
+        settings.should.not.have.a.property("flowLayout");
     });
 
 

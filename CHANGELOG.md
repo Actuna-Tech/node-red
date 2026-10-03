@@ -15,6 +15,12 @@ Fixes
 Developed by Actuna Sp. z o.o. (Wojciech Repiński), with AI-assisted development.
 See `design/flow-layout/` for the analysis, documentation and work log.
 
+ - Settings: the flow layout controls are enabled with `editorTheme.flowLayout.enabled`
+   (default `false`). When disabled the editor shows no layout controls (flow properties,
+   node and subflow appearance, user settings, context menu, `core:*-node-ports*` actions)
+   and ignores the users' default layout settings; flows that contain `layout`,
+   `wireStyle` or `o` are still drawn with them and saved unchanged. The runtime parts
+   do not depend on the setting (Z-14)
  - Editor: flows can be drawn top-to-bottom (`layout: "TB"`) or with an automatic,
    mixed layout (`layout: "auto"`) as well as left-to-right; set per flow, per
    subflow, or as the editor default in the user settings

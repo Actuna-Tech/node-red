@@ -5,6 +5,7 @@
  *   FL-B-010: test that a locked flow is not replaced by a user import
  *   FL-B-010: tests for replacing a flow with the same id on import
  *   FL-B-010: tests for replacing a flow after the rest of the import, copies, change flags and failures
+ *   Z-14: tests for exporting flows with editorTheme.flowLayout.enabled set and unset
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
@@ -16,13 +17,20 @@ const viewLayoutModulePath = NR_TEST_UTILS.resolve("@node-red/editor-client/src/
 
 describe("editor-client/nodes", function() {
     let viewSettings;
+    let editorTheme;
 
     beforeEach(function() {
         viewSettings = {};
+        // The flow layout functions are enabled unless a test says otherwise
+        editorTheme = { flowLayout: { enabled: true } };
         global.RED = {
             settings: {
                 get: function(key) {
                     return key === "editor" ? { view: viewSettings } : undefined;
+                },
+                theme: function(property, defaultValue) {
+                    const v = property.split(".").reduce(function(o, p) { return (o === undefined || o === null) ? undefined : o[p] }, editorTheme);
+                    return v === undefined ? defaultValue : v;
                 }
             },
             events: { emit: function() {}, on: function() {} },
@@ -127,6 +135,54 @@ describe("editor-client/nodes", function() {
             plain.filter(function(n) { return n.id === "t1" })[0].should.not.have.property("layout");
         });
     });
+    describe("flow layout options on export with flow layout disabled (Z-14, R-01)", function() {
+        [
+            ["not set", undefined],
+            ["disabled", { flowLayout: { enabled: false } }],
+            ["not an object", { flowLayout: "yes" }],
+            ["not a boolean", { flowLayout: { enabled: "true" } }]
+        ].forEach(function([name, theme]) {
+            it("ignores the editor default layout when editorTheme.flowLayout is " + name, function() {
+                editorTheme = theme;
+                viewSettings["view-flow-layout"] = "TB";
+                viewSettings["view-wire-style"] = "orthogonal";
+                const result = exportFlow(tab(), { flowLayoutDefaults: true });
+                result.should.not.have.property("layout");
+                result.should.not.have.property("wireStyle");
+                exportFlow(subflow(), { flowLayoutDefaults: true }).should.not.have.property("layout");
+            });
+        });
+
+        it("keeps the layout options set on a flow", function() {
+            editorTheme = { flowLayout: { enabled: false } };
+            viewSettings["view-flow-layout"] = "auto";
+            exportFlow(tab({ layout: "TB", wireStyle: "orthogonal" }), { flowLayoutDefaults: true })
+                .should.have.properties({ layout: "TB", wireStyle: "orthogonal" });
+            exportFlow(subflow({ layout: "XY" }), { flowLayoutDefaults: true })
+                .should.have.property("layout", "XY");
+            exportFlow(subflow({ layout: "TB" }), { flowLayoutDefaults: true })
+                .should.not.have.property("wireStyle");
+        });
+
+        it("deploys flows without the editor default layout", function() {
+            editorTheme = { flowLayout: { enabled: false } };
+            viewSettings["view-flow-layout"] = "TB";
+            RED.events = { emit: function() {}, on: function() {} };
+            RED.nodes.addWorkspace(tab());
+            RED.nodes.addWorkspace(tab({ id: "t2", layout: "TB" }));
+            const exported = RED.nodes.createCompleteNodeSet({ flowLayoutDefaults: true });
+            exported.filter(function(n) { return n.id === "t1" })[0].should.not.have.property("layout");
+            exported.filter(function(n) { return n.id === "t2" })[0].should.have.property("layout", "TB");
+        });
+
+        it("does not modify the user settings", function() {
+            editorTheme = { flowLayout: { enabled: false } };
+            viewSettings["view-flow-layout"] = "TB";
+            exportFlow(tab(), { flowLayoutDefaults: true });
+            viewSettings.should.eql({ "view-flow-layout": "TB" });
+        });
+    });
+
     describe("matching an imported subflow (FL-B-009)", function() {
         function exportSubflow(opts) {
             return RED.nodes.createExportableNodeSet([RED.nodes.subflow("s1")], opts);

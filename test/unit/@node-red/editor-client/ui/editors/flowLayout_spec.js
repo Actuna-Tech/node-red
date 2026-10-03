@@ -1,6 +1,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   FL-B-005: tests for keeping unknown flow layout values in the flow layout form
+ *   Z-14: tests for the flow layout form with editorTheme.flowLayout.enabled set and unset
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
@@ -78,12 +79,19 @@ function createFakeJQuery() {
 describe("editor-client/ui/editors/flowLayout", function() {
     let form;
     let redraws;
+    let flowLayoutEnabled;
 
     beforeEach(function() {
         redraws = 0;
+        flowLayoutEnabled = true;
         global.$ = createFakeJQuery();
         global.RED = {
             editor: {},
+            settings: {
+                theme: function(property, defaultValue) {
+                    return property === "flowLayout.enabled" ? flowLayoutEnabled : defaultValue;
+                }
+            },
             _: function(key, opts) { return key + (opts ? JSON.stringify(opts) : "") },
             view: {
                 redraw: function() { redraws++ },
@@ -190,6 +198,41 @@ describe("editor-client/ui/editors/flowLayout", function() {
             state.changes.should.have.property("layout", "LR");
             state.changes.should.have.property("wireStyle", undefined);
             redraws.should.equal(1);
+        });
+    });
+
+    describe("editorTheme.flowLayout.enabled (Z-14)", function() {
+        it("adds no form rows when disabled", function() {
+            flowLayoutEnabled = false;
+            const flow = { id: "t1", type: "tab", layout: "TB" };
+            RED.editor.flowLayout.create(form, flow);
+            form.el.children.should.have.length(0);
+            $("#node-input-flow-layout").length.should.equal(0);
+            $("#node-input-flow-wire-style").length.should.equal(0);
+        });
+
+        it("keeps the layout options of a flow when disabled", function() {
+            flowLayoutEnabled = false;
+            const flow = { id: "t1", type: "tab", layout: "TB", wireStyle: "orthogonal" };
+            RED.editor.flowLayout.create(form, flow);
+            const state = editState();
+            RED.editor.flowLayout.apply(flow, state).should.be.false();
+            flow.should.have.properties({ layout: "TB", wireStyle: "orthogonal" });
+            state.changed.should.be.false();
+            state.changes.should.eql({});
+            redraws.should.equal(0);
+        });
+
+        it("treats a missing setting as disabled", function() {
+            flowLayoutEnabled = undefined;
+            RED.editor.flowLayout.create(form, { id: "t1", type: "tab" });
+            form.el.children.should.have.length(0);
+        });
+
+        it("adds the form rows when enabled", function() {
+            RED.editor.flowLayout.create(form, { id: "t1", type: "tab" });
+            form.el.children.should.have.length(2);
+            $("#node-input-flow-layout").length.should.equal(1);
         });
     });
 });
