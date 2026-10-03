@@ -12,9 +12,9 @@
 |---|---|---|---|---|---|---|
 | [Z-12](#z-12--punkty-rozszerzeń-edytora-dla-pluginów) | Punkty rozszerzeń edytora dla pluginów (spike + szkielet) | funkcja | P3 | wysokie (publiczne API, brak załącznika B) | załącznik B (Zamawiający), E-03, P-02/Z-06 (Deploy) | M (spike + szkielet); każdy punkt z załącznika B – osobna karta z własnym szacunkiem S/M/L |
 | [Z-13](#z-13--polskie-tłumaczenie) | Polskie tłumaczenie | funkcja | P3 | średnie (wolumen, przegląd językowy) | tłumaczenie częściowe od Zamawiającego; klucze z P-02, Z-03, Z-14, Z-15 | L |
-| [Z-14](#z-14--układ-flow-dostosowanie-istniejącej-realizacji) | Układ flow – dostosowanie istniejącej realizacji | funkcja (propozycja Wykonawcy) | P3 | średnie | E-04, Z-04 (część runtime), E-03, D-03, D-06 | M |
+| [Z-14](#z-14--układ-flow-dostosowanie-istniejącej-realizacji) | Układ flow – dostosowanie istniejącej realizacji | funkcja (propozycja Wykonawcy) | P3 | średnie | E-04, Z-04 (część runtime), E-03, D-03, D-06 | L (było M; zakres FL-B-004…009 rozszerzony – R-03) |
 | [Z-15](#z-15--instancja-tylko-edycyjna) | Instancja tylko edycyjna | funkcja (propozycja Wykonawcy) | P2 | średnie | E-01, E-02; zgodność z P-01, Z-06, Z-08, Z-09; D-02, D-06 | M |
-| [E-03](#e-03--harness-testów-edytora) | Harness testów edytora | przerobienie (infrastruktura testów) | P1 (etap 0) | niskie | D-03 | M (helper S + E2E M przy D-03 = tak) |
+| [E-03](#e-03--harness-testów-edytora) | Harness testów edytora | przerobienie (infrastruktura testów) | P1 (etap 0) | niskie | D-03 | S–M (helper S + wspólny helper E2E S; D-03 = nie) |
 | [E-04](#e-04--dostosowanie-istniejącej-gałęzi) | Dostosowanie istniejącej gałęzi | przerobienie (proces) | P1 (etap 0) | niskie | D-01, D-04 | M |
 | [E-05](#e-05--środowisko-weryfikacji) | Środowisko weryfikacji (CI, raport pakietu, gałąź integracyjna) | przerobienie (infrastruktura weryfikacji) | P1 (etap 0) | niskie | D-03 (zadanie E2E), D-04 | M |
 
@@ -27,6 +27,8 @@ Z-14 (krok 2.3, po Z-04) → Z-13 (krok 4, równolegle z kodem; klucze nowych te
 ### Z-12 – Punkty rozszerzeń edytora dla pluginów
 
 > **Po załączniku B (2026-10-03):** szczegółowe karty 14 punktów i podział na pakiety Z-12a…e – [etap-4-z12.md](etap-4-z12.md). Ta karta pozostaje opisem ogólnym.
+>
+> **Po decyzji R-24 (2026-10-03):** `RED.deploy.addMenuItem`, hook edytora `deployPre` i dokumentacja `RED.view.annotations` (zakres spoza załącznika B) – **przeniesione poza Z-12, do osobnego pakietu realizowanego później** (oznaczenia „→ osobny pakiet (R-24)” niżej). Dokumentacja API: JSDoc + `design/editor-api/`. Deprecjacja: min. jedna wersja minor z ostrzeżeniem w konsoli. Kolejność pakietów: Z-12c → Z-12a → Z-12b → Z-12d → Z-12e (Z-01 równolegle); punkt 07 może zostać odłożony.
 
 | Pole | Wartość |
 |---|---|
@@ -61,20 +63,20 @@ Fakt: brak testów jednostkowych edytora dla tych modułów (WERYFIKACJA: jedyne
 - **Cel:** pluginy edytora realizują dodatki (nagłówek, Deploy, okna, plakietki) przez publiczne, udokumentowane API zamiast wstrzykiwania skryptów (`editorTheme.page.scripts`) operujących na DOM; API odporne na zmiany wersji.
 - **Wejścia:** załącznik B (lista punktów od Zamawiającego); propozycje Wykonawcy (do potwierdzenia po załączniku B):
   1. `RED.header.add({id, element|label+icon+onclick, priority, position:"left"|"right"})` → uchwyt `{remove(), setVisible(b)}`; `RED.header.remove(id)`.
-  2. Rozszerzenia Deploy: `RED.deploy.addMenuItem({id, label, sublabel, icon, onselect, priority})`, zdarzenia `deploy:before` / `deploy:after` (`RED.events`) albo hook edytora `deployPre` (może anulować z komunikatem) – **powiązanie z Z-06** (walidacja serwerowa pozostaje źródłem prawdy) i **P-02** (polityka `reload-only` ma pierwszeństwo).
+  2. ~~Rozszerzenia Deploy~~ **→ osobny pakiet (R-24):** `RED.deploy.addMenuItem({id, label, sublabel, icon, onselect, priority})`, zdarzenia `deploy:before` / `deploy:after` (`RED.events`) albo hook edytora `deployPre` (może anulować z komunikatem) – **powiązanie z Z-06** (walidacja serwerowa pozostaje źródłem prawdy) i **P-02** (polityka `reload-only` ma pierwszeństwo). Opis zachowany jako wejście do przyszłego pakietu.
   3. Ogólne okno modalne: `RED.dialog.show({title, content, buttons:[{text, class, click}], width, closeOnEscape})` → `{close()}`; `RED.dialog.confirm(text, opts) → Promise<boolean>` (nazwa `RED.dialog` – do potwierdzenia, brak kolizji w `editor-client/src/js` – do sprawdzenia przy implementacji).
-  4. Dokumentacja `RED.view.annotations.register/unregister` (bez zmiany kodu, deklaracja jako API publiczne).
-- **Wyjścia:** nowe moduły/API z JSDoc; dokument „Punkty rozszerzeń edytora” (strona w `docs`/`API.md` – miejsce do potwierdzenia); przykład pluginu dla każdego nowego punktu (`test/resources/plugins/editor-extension-example/` lub katalog przykładów – do potwierdzenia).
+  4. Dokumentacja `RED.view.annotations.register/unregister` (bez zmiany kodu, deklaracja jako API publiczne) – **→ osobny pakiet (R-24)**.
+- **Wyjścia:** nowe moduły/API z JSDoc; dokument „Punkty rozszerzeń edytora” w `design/editor-api/` (**R-24**); przykład pluginu dla każdego nowego punktu (`test/resources/plugins/editor-extension-example/` lub katalog przykładów – do potwierdzenia).
 - **Niezmienniki:** bez pluginu UI identyczny z 5.0.7 (core migruje swoje elementy nagłówka na nowe API tylko jeśli DOM i kolejność pozostają bez zmian – albo nie migruje, decyzja w spike); stare sposoby (`page.scripts`, jQuery na `.red-ui-header-toolbar`) działają dalej; plugin nie może usunąć elementów core (tylko własne `id`).
-- **Przypadki błędów:** duplikat `id` → ostrzeżenie w konsoli, drugi wpis odrzucony (spójnie z `registerType` – ostrzeżenie zamiast wyjątku); wyjątek w `onclick`/`onselect`/handlerze `deployPre` → złapany, zalogowany, nie blokuje edytora; handler `deployPre` bez odpowiedzi → limit czasu (np. 10 s – do potwierdzenia) i kontynuacja/anulowanie wg decyzji.
-- **Skutki uboczne:** nowe publiczne API (zobowiązanie); zasady stabilności – wersjonowanie (`RED.header.version` lub sekcja w dokumentacji), deprecjacja min. jedna wersja minor z ostrzeżeniem w konsoli.
+- **Przypadki błędów:** duplikat `id` → ostrzeżenie w konsoli, drugi wpis odrzucony (spójnie z `registerType` – ostrzeżenie zamiast wyjątku); wyjątek w `onclick`/`onselect`/handlerze `deployPre` → złapany, zalogowany, nie blokuje edytora; handler `deployPre` bez odpowiedzi → limit czasu (np. 10 s – do potwierdzenia) i kontynuacja/anulowanie wg decyzji (`deployPre` → osobny pakiet, R-24).
+- **Skutki uboczne:** nowe publiczne API (zobowiązanie); zasady stabilności – wersjonowanie (`RED.header.version` lub sekcja w dokumentacji), deprecjacja min. jedna wersja minor z ostrzeżeniem w konsoli (**R-24**).
 
 #### Projekt rozwiązania (minimalny)
 1. **Spike (M):** porównanie załącznika B z macierzą powyżej; dla każdej pozycji decyzja: istniejące API (dokumentacja) / nowe API / poza zakresem. Wynik – tabela w tej karcie + pytania do Zamawiającego.
 2. **Szkielet wspólny:** każdy nowy punkt jako cienki moduł `ui/<punkt>.js` w `scripts/build/config.js` (lista `concatEditor`), rejestrowany przed `RED.plugins` (kolejność ładowania – do potwierdzenia), z logiką wydzieloną od DOM (testowalną w E-03).
 3. **Wzorzec użycia:** plugin typu edytora rejestrowany przez `RED.plugins.registerPlugin("my-plugin", {type:"…", onadd: function(){ RED.header.add(...) }})` – przykład w dokumentacji i w katalogu przykładów.
-4. Dokumentacja `RED.view.annotations` (parametry `element`, `show`, `filter`, kolejność rysowania – na podstawie `view-annotations.js`).
-5. Stabilność: lista API publicznych w dokumencie, oznaczenie `@public`/`@since` w JSDoc.
+4. ~~Dokumentacja `RED.view.annotations`~~ **→ osobny pakiet (R-24)** (parametry `element`, `show`, `filter`, kolejność rysowania – na podstawie `view-annotations.js`).
+5. Stabilność: lista API publicznych w dokumencie `design/editor-api/` (R-24), oznaczenie `@public`/`@since` w JSDoc.
 
 #### Kryteria akceptacji (BDD)
 ```gherkin
@@ -89,14 +91,13 @@ Funkcja: Punkty rozszerzeń edytora dla pluginów
     Przykłady:
       | punkt          | miejsce                        |
       | RED.header     | pasek nagłówka, wg priorytetu  |
-      | RED.deploy     | menu przycisku Deploy          |
       | RED.dialog     | okno modalne po akcji pluginu  |
-    # lista ostateczna wg załącznika B
+    # lista ostateczna wg załącznika B (etap-4-z12.md); RED.deploy (menu Deploy) → osobny pakiet (R-24)
 
   # Kryterium odbioru ze zlecenia (2)
   Scenariusz: Testy edytora projektu przechodzą bez błędów
     Zakładając gałąź pakietu Z-12
-    Kiedy uruchomię npm test (oraz test:e2e, jeśli D-03 = tak)
+    Kiedy uruchomię npm test (oraz opcjonalnie test:e2e – D-03)
     Wtedy wszystkie testy przechodzą, w tym nowe testy punktów rozszerzeń
 
   Scenariusz: Brak pluginu – edytor jak w 5.0.7
@@ -113,15 +114,16 @@ Funkcja: Punkty rozszerzeń edytora dla pluginów
     Wtedy w konsoli pojawia się ostrzeżenie, a drugi element nie jest dodany
 
   Scenariusz: Błąd w handlerze pluginu nie blokuje edytora
-    Zakładając pozycję menu Deploy, której onselect zgłasza wyjątek
-    Kiedy wybiorę tę pozycję
+    Zakładając element nagłówka, którego onclick zgłasza wyjątek
+    Kiedy kliknę ten element
     Wtedy błąd jest zalogowany w konsoli, a edytor i Deploy działają dalej
 
-  Scenariusz: Hook przed wdrożeniem w edytorze anuluje wdrożenie
-    Zakładając plugin z handlerem deployPre zwracającym odmowę z komunikatem
-    Kiedy kliknę Deploy
-    Wtedy żądanie wdrożenia nie jest wysyłane, a komunikat jest wyświetlony
-    I walidacja serwerowa preDeploy (Z-06) działa niezależnie od edytora
+  # Scenariusz „Hook przed wdrożeniem w edytorze anuluje wdrożenie” (deployPre) – przeniesiony do osobnego pakietu (R-24)
+
+  Scenariusz: Ostrzeżenie o przestarzałym API (R-24)
+    Zakładając API punktu rozszerzeń oznaczone jako przestarzałe
+    Kiedy plugin go użyje
+    Wtedy w konsoli pojawia się ostrzeżenie, a API działa co najmniej do kolejnej wersji minor
 
   Scenariusz: Usunięcie elementu przez uchwyt
     Kiedy plugin wywoła remove() na uchwycie elementu nagłówka
@@ -130,31 +132,31 @@ Funkcja: Punkty rozszerzeń edytora dla pluginów
 
 #### Testy
 - Jednostkowe (wzorzec E-03) `test/unit/@node-red/editor-client/ui/header_spec.js`: `orders items by priority`, `rejects duplicate id with warning`, `remove() detaches item`, `handler exception is caught`.
-- `test/unit/@node-red/editor-client/ui/deploy-extensions_spec.js`: `addMenuItem adds item to deploy menu`, `deployPre rejection cancels deploy`, `deployPre timeout`, `handler exception does not block deploy`.
+- ~~`test/unit/@node-red/editor-client/ui/deploy-extensions_spec.js`~~ – **→ osobny pakiet (R-24)** (`addMenuItem adds item to deploy menu`, `deployPre rejection cancels deploy`, `deployPre timeout`, `handler exception does not block deploy`).
 - `test/unit/@node-red/editor-client/ui/dialog_spec.js`: `confirm resolves true/false`, `escape closes when allowed` (tylko logika – DOM w E2E).
-- E2E (jeśli D-03 = tak) `test/editor/e2e/editor_extensions_e2espec.js`: przykładowy plugin ładowany z katalogu testowego; asercje widoczności i kolejności.
+- E2E (osobny podzbiór, nieblokujący – D-03, R-31) `test/editor/e2e/editor_extensions_e2espec.js`: przykładowy plugin ładowany z katalogu testowego; asercje widoczności i kolejności.
 - `test/unit/@node-red/editor-api/lib/editor/theme_spec.js` – tylko jeśli powstaną nowe ustawienia `editorTheme` (dziś nieplanowane).
 
 #### DoD specyficzne
 - [ ] Wynik spike (macierz po załączniku B) zatwierdzony przez Zamawiającego przed implementacją.
-- [ ] Każdy nowy punkt: JSDoc, dokumentacja, przykład pluginu, test jednostkowy logiki, (E2E wg D-03).
-- [ ] `RED.view.annotations` udokumentowane.
-- [ ] Zasady stabilności i deprecjacji opisane w dokumentacji.
+- [ ] Każdy nowy punkt: JSDoc, dokumentacja w `design/editor-api/` (R-24), przykład pluginu, test jednostkowy logiki, (E2E wg D-03).
+- [ ] ~~`RED.view.annotations` udokumentowane~~ – → osobny pakiet (R-24).
+- [ ] Zasady stabilności i deprecjacji (min. jedna wersja minor z ostrzeżeniem – R-24) opisane w dokumentacji.
 - [ ] Brak zmian UI bez pluginów (porównanie zrzutów ekranu przed/po w raporcie).
 
 #### Ryzyka i alternatywy
 - **Brak załącznika B** – karta celowo ogranicza się do spike i szkieletu; szacunek końcowy po załączniku.
 - **Zobowiązanie utrzymaniowe:** każde API edytora musi przetrwać przebudowy UI upstream; ocena szans przyjęcia upstream zależy od punktu (ANALIZA §4.8). Alternatywa: punkty jako zdarzenia (`RED.events`) zamiast nowych modułów – mniej kodu, słabsza kontrola kolejności.
-- **Hook przed wdrożeniem w edytorze** dubluje Z-06 – ryzyko mylenia walidacji klienta z serwerową; rekomendacja: hook edytora tylko do UX (np. potwierdzenie), walidacja wiążąca w Z-06.
-- **Kolizja z P-02:** rozszerzenie Deploy nie może omijać polityki `reload-only` – test integracyjny P-02 + Z-12.
+- **Hook przed wdrożeniem w edytorze** dubluje Z-06 – ryzyko mylenia walidacji klienta z serwerową; rekomendacja: hook edytora tylko do UX (np. potwierdzenie), walidacja wiążąca w Z-06. **R-24:** `deployPre` poza Z-12 – rekomendacja przechodzi do osobnego pakietu.
+- **Kolizja z P-02:** rozszerzenie Deploy nie może omijać polityki `reload-only` – test integracyjny P-02 + pakiet rozszerzeń Deploy (osobny, R-24).
 - **Brak harnessu DOM** (brak jsdom w zależnościach) – testy jednostkowe tylko dla logiki; zachowanie DOM wymaga E2E (D-03).
 
 #### Podzadania
 - [ ] Spike: macierz załącznik B × istniejące API, pytania – M
 - [ ] `RED.header` + test + przykład – M
-- [ ] Rozszerzenia Deploy (menu, zdarzenia/hook) + testy + przykład – M
+- [ ] ~~Rozszerzenia Deploy (menu, zdarzenia/hook) + testy + przykład – M~~ → osobny pakiet (R-24)
 - [ ] `RED.dialog` + test + przykład – S
-- [ ] Dokumentacja `RED.view.annotations` i zasady stabilności – S
+- [ ] Zasady stabilności i deprecjacji w `design/editor-api/` (R-24) – S; ~~dokumentacja `RED.view.annotations`~~ → osobny pakiet (R-24)
 - [ ] E2E przykładowych pluginów (wg D-03) – M
 
 ---
@@ -167,7 +169,7 @@ Funkcja: Punkty rozszerzeń edytora dla pluginów
 | Priorytet / ryzyko | P3 / średnie (wolumen, spójność terminologii, formy liczby mnogiej) |
 | Ustawienie | brak (język wykrywany z katalogu `locales/pl`; wybór w ustawieniach użytkownika lub z przeglądarki) |
 | Zależności | tłumaczenie częściowe od Zamawiającego; teksty nowych pakietów (P-02 `deploy.confirm.*`, Z-03, Z-12, Z-14 `layout.*`, Z-15) – doklejane przed zamknięciem |
-| Pliki | nowe: `editor-client/locales/pl/{editor,jsonata,infotips}.json`, `nodes/locales/pl/messages.json` + pliki pomocy `nodes/locales/pl/<kategoria>/*.html`, `runtime/locales/pl/runtime.json` (zakres – pytanie); zmiana: `"pl": "Polski"` w `languages` wszystkich `editor-client/locales/*/editor.json`; mechanizm: `util/lib/i18n.js:49-67,165-185,221`, `editor-client/src/js/i18n.js:30-57`, `ui/userSettings.js:105,186`, `registry/lib/loader.js:546-575` |
+| Pliki | nowe: `editor-client/locales/pl/{editor,jsonata,infotips}.json`, `nodes/locales/pl/messages.json`, `runtime/locales/pl/runtime.json` (zakres – **R-29**); pliki pomocy `nodes/locales/pl/<kategoria>/*.html` – **osobny etap** (D-16, R-29); zmiana: `"pl": "Polski"` w `languages` wszystkich `editor-client/locales/*/editor.json`; mechanizm: `util/lib/i18n.js:49-67,165-185,221`, `editor-client/src/js/i18n.js:30-57`, `ui/userSettings.js:105,186`, `registry/lib/loader.js:546-575` |
 | Powiązania | FL-T-004 (klucze `layout.*`), K8S (on-premise dla polskich klientów) |
 
 #### Weryfikacja stanu (kod 5.0.7)
@@ -179,19 +181,19 @@ Wynik: **CZĘŚCIOWO** (WERYFIKACJA §Z-13) + uzupełnienia:
 - **Liczba mnoga (do potwierdzenia w edytorze):** projekt używa `i18next` **25.8.14** (`package.json:71`) bez opcji `compatibilityJSON` (`editor-client/src/js/i18n.js:30-50`, `util/lib/i18n.js:165-180`). en-US używa formatu v3 (`klucz` + `klucz_plural`: 39 par w `editor.json`, 5 w `messages.json`, 1 w `runtime.json`), `ru` – formatu v1/v2 (`klucz_plural_2`, `klucz_plural_5`). Próba poza edytorem (skrypt z `i18next` z `node_modules` projektu): `_plural` en-US **nie jest używany** („2 node”), natomiast sufiksy Intl dla `pl` działają poprawnie: `_one` (1), `_few` (2, 22), `_many` (5, 25), `_other` (1.5). Wniosek: dla `pl` stosujemy sufiksy `_one/_few/_many/_other`; niedziałające `_plural` en-US to osobny problem upstream (poza zakresem; zgłoszenie – pytanie).
 
 #### Specyfikacja
-- **Cel:** pełne polskie tłumaczenie edytora i węzłów core, spójne terminologicznie, z automatyczną kontrolą kompletności w `npm test`.
-- **Wejścia:** pliki en-US (źródło prawdy); tłumaczenie częściowe Zamawiającego (332 klucze edytora wg zlecenia); słownik pojęć (tworzony w pakiecie).
+- **Cel:** pełne polskie tłumaczenie edytora i węzłów core (JSON edytora, `messages.json`, `runtime.json` – R-29), spójne terminologicznie, z automatyczną kontrolą kompletności w `npm test`; pomoc HTML węzłów – osobny etap (D-16, R-29).
+- **Wejścia:** pliki en-US wersji bazowej **5.0.7** (źródło prawdy, R-29); tłumaczenie częściowe Zamawiającego (332 klucze edytora wg zlecenia – klucze nieistniejące w 5.0.7 pomijane); słownik pojęć (tworzony w pakiecie, **zatwierdza Zamawiający** – R-29).
 - **Wyjścia:** pliki `pl` (lista w „Pliki”); słownik pojęć w opisie zmiany (PR) i w `design/engine-extensions/` (np. `SLOWNIK-PL.md` – poza upstream); test zgodności kluczy.
 - **Niezmienniki:** pliki en-US i pozostałych języków bez zmian poza dodaniem `"pl": "Polski"` w `languages`; użytkownik bez wybranego `pl` (i przeglądarka bez `pl`) widzi edytor jak w 5.0.7; placeholdery `__nazwa__` i znaczniki HTML zachowane 1:1; identyfikatory techniczne (`msg.payload`, nazwy właściwości, typy) nietłumaczone.
 - **Przypadki błędów:** brakujący klucz w `pl` → test czerwony (w runtime zapasowo en-US przez `fallbackLng`); placeholder różny od en-US → test czerwony; niepoprawny JSON → błąd buildu (`scripts/build/jsonlint.js`).
-- **Skutki uboczne:** przeglądarki z językiem `pl` zaczną domyślnie pokazywać polski edytor (wykrywanie automatyczne) – zmiana widoczna dla polskich użytkowników instalacji z domyślnymi ustawieniami (zob. Ryzyka).
+- **Skutki uboczne:** przeglądarki z językiem `pl` zaczną domyślnie pokazywać polski edytor (wykrywanie automatyczne) – zmiana widoczna dla polskich użytkowników instalacji z domyślnymi ustawieniami – **zaakceptowane (R-29)**.
 
 #### Projekt rozwiązania (minimalny)
-1. **Słownik pojęć** (przed tłumaczeniem, zatwierdzany przez Zamawiającego): flow, subflow, węzeł/bloczek, wdrożenie (Deploy), paleta, kontekst, zakładka, linia/połączenie, grupa, węzeł konfiguracyjny itd. – z decyzją, co zostaje po angielsku (np. „Deploy” na przycisku?).
-2. **Rejestr:** forma bezosobowa w etykietach i komunikatach („Wdróż”, „Nie można zapisać…”) vs „Ty” – **pytanie**; rekomendacja: bezosobowa/tryb rozkazujący jak w systemowych UI.
+1. **Słownik pojęć** (przed tłumaczeniem, zatwierdzany przez Zamawiającego – R-29): ustalone (R-29): **„węzeł”** (nie „bloczek”), **„flow” i „subflow” bez tłumaczenia**, przycisk Deploy – **„Wdróż”**; pozostałe pojęcia (paleta, kontekst, zakładka, linia/połączenie, grupa, węzeł konfiguracyjny itd.) – do ustalenia w słowniku.
+2. **Rejestr:** **forma bezosobowa** w etykietach i komunikatach („Wdróż”, „Nie można zapisać…”) – **rozstrzygnięte (R-29)**.
 3. **Proces:** scalenie tłumaczenia Zamawiającego → tłumaczenie brakujących kluczy wspomagane AI ze słownikiem → automatyczny test zgodności → przegląd językowy Zamawiającego (w paczkach wg przestrzeni kluczy) → poprawki.
 4. **Liczba mnoga:** dla każdej pary en-US `x`/`x_plural` w `pl`: `x` (forma podstawowa, dla wywołań bez `count`), `x_one`, `x_few`, `x_many`, `x_other` – do potwierdzenia testem w edytorze (E2E lub ręcznie) przed tłumaczeniem całości.
-5. **Test zgodności** `test/unit/locales/pl_parity_spec.js` (nazwa do potwierdzenia): porównanie drzew kluczy pl↔en-US dla `editor`, `jsonata`, `infotips`, `messages`, `runtime` (wg zakresu), z regułą dla liczby mnogiej; porównanie zbiorów placeholderów `__x__` i znaczników HTML w każdej wartości; brak kluczy nadmiarowych; `languages.pl` we wszystkich `editor.json`; dla pomocy HTML (jeśli w zakresie) – zgodność listy plików.
+5. **Test zgodności** `test/unit/locales/pl_parity_spec.js` (nazwa do potwierdzenia): porównanie drzew kluczy pl↔en-US dla `editor`, `jsonata`, `infotips`, `messages`, `runtime` (zakres wg R-29), z regułą dla liczby mnogiej; porównanie zbiorów placeholderów `__x__` i znaczników HTML w każdej wartości; brak kluczy nadmiarowych; `languages.pl` we wszystkich `editor.json`; pomoc HTML – poza tym etapem (D-16, R-29), test listy plików dodawany w etapie pomocy. Uzupełnianie tłumaczenia przy nowych kluczach (test czerwony) – **Wykonawca** (R-29).
 6. Klucze nowych pakietów (P-02, Z-03, Z-12, Z-14 `layout.*`, Z-15) dopisywane w tych pakietach albo w Z-13 przed zamknięciem – test zgodności to wymusza.
 
 #### Kryteria akceptacji (BDD)
@@ -215,7 +217,13 @@ Funkcja: Polskie tłumaczenie edytora i węzłów
   Scenariusz: Wybór języka polskiego
     Zakładając instalację z katalogami locales/pl
     Kiedy w ustawieniach użytkownika wybiorę język "Polski"
-    Wtedy menu, okna, paleta i pomoc węzłów są po polsku
+    Wtedy menu, okna, paleta i komunikaty runtime są po polsku
+    I pomoc węzłów jest wyświetlana po angielsku do czasu etapu tłumaczenia pomocy (D-16, R-29)
+
+  Scenariusz: Automatyczny wybór języka polskiego (R-29)
+    Zakładając przeglądarkę z językiem pl i brak wyboru języka w ustawieniach użytkownika
+    Kiedy otworzę edytor
+    Wtedy edytor jest po polsku
 
   Scenariusz: Język domyślny bez zmian dla innych użytkowników
     Zakładając przeglądarkę z językiem en-US i brak wyboru języka w ustawieniach
@@ -238,13 +246,13 @@ Funkcja: Polskie tłumaczenie edytora i węzłów
 ```
 
 #### Testy
-- `test/unit/locales/pl_parity_spec.js` (nowy): `editor.json pl has all en-US keys`, `no extra keys in pl`, `plural keys have _one/_few/_many/_other`, `placeholders match en-US`, `html tags match en-US`, `jsonata/infotips/messages/runtime parity` (wg zakresu), `every editor.json lists pl in languages`, `help files list matches` (jeśli pomoc w zakresie).
+- `test/unit/locales/pl_parity_spec.js` (nowy): `editor.json pl has all en-US keys`, `no extra keys in pl`, `plural keys have _one/_few/_many/_other`, `placeholders match en-US`, `html tags match en-US`, `jsonata/infotips/messages/runtime parity` (zakres R-29), `every editor.json lists pl in languages`; `help files list matches` – w etapie pomocy HTML (D-16, R-29).
 - Istniejące: `test/unit/@node-red/util/lib/i18n_spec.js`, `test/unit/@node-red/editor-api/lib/editor/locales_spec.js` – bez zmian, przechodzą.
-- Opcjonalnie: prosty test słownika (lista zakazanych wariantów, np. „przepływ” jeśli słownik ustali „flow”) – do decyzji.
+- Opcjonalnie: prosty test słownika (lista zakazanych wariantów, np. „przepływ”, „bloczek” – R-29 ustala „flow” i „węzeł”) – do decyzji.
 - Ręcznie / E2E: zrzuty kluczowych okien (Deploy, właściwości węzła, ustawienia) w `pl` do przeglądu językowego.
 
 #### DoD specyficzne
-- [ ] Słownik pojęć i rejestr zatwierdzone przed tłumaczeniem całości.
+- [ ] Słownik pojęć zatwierdzony przez Zamawiającego przed tłumaczeniem całości; rejestr – forma bezosobowa, „węzeł”, „flow”/„subflow”, „Wdróż” (R-29).
 - [ ] Mechanizm liczby mnogiej `pl` potwierdzony w edytorze (zrzut/test) przed tłumaczeniem całości.
 - [ ] Test zgodności w `npm test`, zielony.
 - [ ] Przegląd językowy Zamawiającego zatwierdzony.
@@ -253,21 +261,21 @@ Funkcja: Polskie tłumaczenie edytora i węzłów
 
 #### Ryzyka i alternatywy
 - **Wolumen:** ~2310 tekstów JSON + ~13,3 tys. słów pomocy; przegląd językowy to wąskie gardło – paczki wg przestrzeni kluczy.
-- **Automatyczne przełączenie na polski:** użytkownicy z przeglądarką `pl` zobaczą polski edytor bez akcji – formalnie zmiana względem 5.0.7 przy domyślnych ustawieniach (wymóg 3.2). Tak działa każdy nowy język w projekcie; rekomendacja: akceptować (bez ustawienia) – **pytanie**.
-- **Liczba mnoga:** mieszane formaty (v3 w en-US, v1/v2 w `ru`) przy i18next 25 – ryzyko, że niektóre formy nie działają; wykryte przy okazji (en-US `_plural`) – zgłosić upstream osobno, nie poprawiać w Z-13.
-- **Rozjazd po aktualizacji upstream:** nowe klucze en-US w kolejnych wersjach → test zgodności czerwony; to zamierzone (wymusza uzupełnienie), ale wymaga procesu utrzymania – **pytanie**, kto utrzymuje.
-- **Pomoc węzłów HTML:** duży koszt; alternatywa – w pierwszej wersji tylko JSON, pomoc w drugiej fazie (zapasowanie per plik działa).
+- **Automatyczne przełączenie na polski:** użytkownicy z przeglądarką `pl` zobaczą polski edytor bez akcji – formalnie zmiana względem 5.0.7 przy domyślnych ustawieniach (wymóg 3.2). Tak działa każdy nowy język w projekcie – **zaakceptowane (R-29)**, bez ustawienia.
+- **Liczba mnoga:** mieszane formaty (v3 w en-US, v1/v2 w `ru`) przy i18next 25 – ryzyko, że niektóre formy nie działają; wykryte przy okazji (en-US `_plural`) – nie poprawiać w Z-13; zgłoszenie upstream możliwe dopiero po zniesieniu blokady D-04 (R-29 tej kwestii nie rozstrzyga).
+- **Rozjazd po aktualizacji upstream:** nowe klucze en-US w kolejnych wersjach → test zgodności czerwony; to zamierzone (wymusza uzupełnienie); **uzupełnia Wykonawca (R-29)**.
+- **Pomoc węzłów HTML:** duży koszt – **rozstrzygnięte (R-29, D-16): osobny etap** (zapasowanie per plik działa).
 - **Jakość tłumaczenia AI:** łagodzenie – słownik, przegląd językowy, test placeholderów.
 
 #### Podzadania
-- [ ] Słownik pojęć + decyzja o rejestrze – S
+- [ ] Słownik pojęć (rejestr bezosobowy, „węzeł”, „flow”/„subflow”, „Wdróż” – R-29) + zatwierdzenie przez Zamawiającego – S
 - [ ] Potwierdzenie mechanizmu liczby mnogiej w edytorze – S
 - [ ] Test zgodności kluczy (czerwony na starcie) – S
 - [ ] Scalenie tłumaczenia Zamawiającego + `editor.json` – L
 - [ ] `jsonata.json`, `infotips.json` – S
 - [ ] `nodes/messages.json` – M
-- [ ] `runtime.json` (jeśli w zakresie) – S
-- [ ] Pomoc węzłów HTML (jeśli w zakresie) – L
+- [ ] `runtime.json` (w zakresie – R-29) – S
+- [ ] ~~Pomoc węzłów HTML – L~~ → osobny etap (D-16, R-29)
 - [ ] Przegląd językowy i poprawki – M
 
 ---
@@ -300,8 +308,8 @@ Wynik: **funkcja działa; NIEZGODNA z wymaganiami ogólnymi zlecenia** w punktac
 - **Wejścia:** `editorTheme.flowLayout.enabled` (`boolean`, domyślnie `false`; brak obiektu = `false`); dane flow: `layout`, `wireStyle` (`tab`, `subflow`), `o` (węzeł, `junction`); ustawienia użytkownika `view-flow-layout`, `view-wire-style`.
 - **Wyjścia:**
   - `enabled: true` – zachowanie jak dziś na gałęzi;
-  - `enabled: false` (**rekomendacja do zatwierdzenia**): brak kontrolek (pola we właściwościach flow/subflow/węzła, sekcja w ustawieniach użytkownika, pozycje menu kontekstowego, akcje `core:*-node-ports*` nierejestrowane); **flow z zapisanym układem nadal rysują się zgodnie z danymi** (dane mają pierwszeństwo; brak „cichej” zmiany wyglądu po imporcie) i dane są zachowywane przy zapisie, eksporcie, kopiowaniu i w Admin API; **ustawienia użytkownika (`view-flow-layout`, `view-wire-style`) są ignorowane** (domyślnie `LR`/`curved`) – nie są usuwane.
-- **Niezmienniki:** przy `enabled: false` i flow bez `layout`/`wireStyle`/`o` rysowanie, eksport, deploy i Admin API identyczne jak w 5.0.7 (w tym ścieżka krzywej LR – `generateLinkPath` jak oryginał); runtime nie zależy od ustawienia (dane przechodzą zawsze); wartości poza `LR`/`TB`/`auto`, `curved`/`orthogonal` nie zmieniają rysowania (traktowane jak brak).
+  - `enabled: false` (**rozstrzygnięte R-01** – rysuj wg danych, ukryte tylko kontrolki): brak kontrolek (pola we właściwościach flow/subflow/węzła, sekcja w ustawieniach użytkownika, pozycje menu kontekstowego, akcje `core:*-node-ports*` nierejestrowane); **flow z zapisanym układem nadal rysują się zgodnie z danymi** (dane mają pierwszeństwo; brak „cichej” zmiany wyglądu po imporcie) i dane są zachowywane przy zapisie, eksporcie, kopiowaniu i w Admin API; **ustawienia użytkownika (`view-flow-layout`, `view-wire-style`) są ignorowane** (domyślnie `LR`/`curved`) – nie są usuwane.
+- **Niezmienniki:** przy `enabled: false` i flow bez `layout`/`wireStyle`/`o` rysowanie, eksport, deploy i Admin API identyczne jak w 5.0.7 (w tym ścieżka krzywej LR – `generateLinkPath` jak oryginał); runtime nie zależy od ustawienia (dane przechodzą zawsze – `copyFlowLayoutProperties` i `diffNodes`, **R-02**); wartości poza `LR`/`TB`/`auto`, `curved`/`orthogonal` nie zmieniają rysowania (traktowane jak brak).
 - **Przypadki błędów:** `editorTheme.flowLayout` nie-obiekt lub `enabled` nie-boolean → traktowane jak `false` (bez wyjątku); nieprawidłowe wartości w danych → FL-B-005 (zachowane, nieużywane, nieusuwane po cichu).
 - **Skutki uboczne:** nowe ustawienie w `settings.js`; `RED.view.layout`, `RED.viewLayout`, `RED.editor.flowLayout` – nowe API edytora (zob. Ryzyka); klucze `layout.*` w `pl` (Z-13).
 
@@ -322,7 +330,7 @@ Wynik: **funkcja działa; NIEZGODNA z wymaganiami ogólnymi zlecenia** w punktac
    - **Z-14a runtime** – `diffNodes` (`o`, `layout`/`wireStyle` subflow) + `copyFlowLayoutProperties`; **razem z Z-04** albo nad Z-04 (te same funkcje `addFlow/getFlow/updateFlow`) – testy runtime;
    - **Z-14b geometria** – `ui/view-layout.js` + `scripts/build/config.js` + `view-layout_spec.js` (bez zmian zachowania: `view.js` korzysta z funkcji 1:1 dla LR);
    - **Z-14c UI** – `view.js`, `flowLayout.js`, panele, ustawienia, menu, akcje, `nodes.js` (eksport), `theme.js`, `settings.js`, `en-US`.
-6. Otwarte błędy w zakresie (rekomendacja, **pytanie**): **FL-B-005** (integralność danych – w zakresie), **FL-B-004** (czytelność okna różnic; powiązane z P-02 tryb `prompt` – w zakresie jako osobny commit; dotyczy też `l`, `d`, `icon` – błąd upstream), **FL-B-007/008** (kosmetyka widoczna tylko przy `enabled: true` – opcjonalnie), **FL-B-006** (błąd upstream – poza zakresem, zgłoszenie osobno). FL-T-001/002/005/006 – poza zakresem zlecenia.
+6. Otwarte błędy w zakresie (**rozstrzygnięte R-03 – wszystkie**): **FL-B-004** (czytelność okna różnic; powiązane z P-02 tryb `prompt`; dotyczy też `l`, `d`, `icon`), **FL-B-005** (integralność danych), **FL-B-006** (błąd istniejący w wersji bazowej – poprawka w forku; zgłoszenie upstream zablokowane D-04), **FL-B-007/008** (kosmetyka układu TB – po R-01 widoczna także przy `enabled: false` dla flow z zapisanym układem TB), **FL-B-009** (przenoszalność wyglądu – decyzja B-01, priorytet biznesowy 1); każdy jako osobny commit z testem. FL-T-001/002/005/006 – poza zakresem zlecenia.
 7. E2E: `test:e2e` zostaje poza `npm test` (wymóg „`npm test` bez błędów” spełniony testami jednostkowymi); E2E uruchamiane w CI osobno (FL-T-003) – wg D-03. E2E dopisuje start Node-RED z `editorTheme.flowLayout.enabled: true` oraz scenariusz z wyłączonym.
 8. Zmiany w Express / editor-api poza `theme.js` – **brak**.
 
@@ -370,6 +378,21 @@ Funkcja: Układ flow sterowany ustawieniem editorTheme.flowLayout.enabled
   Scenariusz: API pojedynczego flow zachowuje układ (oba stany ustawienia)
     Kiedy wyślę PUT /flow/:id z layout "TB"
     Wtedy GET /flow/:id zwraca layout "TB"
+    # R-02: części runtime działają zawsze, niezależnie od editorTheme.flowLayout.enabled
+
+  Szablon scenariusza: Błędy FL-B w zakresie (R-03)
+    Zakładając poprawkę "<błąd>" z gałęzi Z-14
+    Kiedy wykonam kroki odtworzenia z karty w design/flow-layout/BACKLOG.md
+    Wtedy zachowanie jest zgodne z „Oczekiwane” w karcie
+    I test z karty pada bez poprawki
+    Przykłady:
+      | błąd     |
+      | FL-B-004 |
+      | FL-B-005 |
+      | FL-B-006 |
+      | FL-B-007 |
+      | FL-B-008 |
+      | FL-B-009 |
 
   Scenariusz: Nieprawidłowa wartość ustawienia
     Zakładając editorTheme.flowLayout = "yes"
@@ -385,7 +408,8 @@ Funkcja: Układ flow sterowany ustawieniem editorTheme.flowLayout.enabled
 - `test/unit/@node-red/editor-client/ui/view-layout_spec.js` (istniejący): bez zmian; dopisać `LR curved path equals original generateLinkPath` (jeśli nie ma – do sprawdzenia).
 - Nowy, wg E-03 (jeśli logika `isEnabled`/opcji flow zostanie wydzielona z `view.js`): `test/unit/@node-red/editor-client/ui/view-layout-options_spec.js`: `disabled ignores user settings`, `disabled uses flow layout data`, `invalid setting treated as disabled`, `invalid layout value treated as unset`.
 - Runtime (istniejące): `runtime/lib/flows/util_spec.js` (`o`, layout subflow), `runtime/lib/flows/index_spec.js` (`addFlow/getFlow/updateFlow` z `layout`/`wireStyle`) – przeniesione do gałęzi Z-14a.
-- E2E (poza `npm test`, wg D-03) `test/editor/e2e/flow_layout_e2espec.js`: dodać `disabled: no layout controls`, `disabled: flow with saved layout is drawn and kept`; istniejące przypadki uruchamiane z `enabled: true`.
+- E2E (poza `npm test`, wg D-03) `test/editor/e2e/flow_layout_e2espec.js`: dodać `disabled: no layout controls`, `disabled: flow with saved layout is drawn and kept` (R-01); istniejące przypadki uruchamiane z `enabled: true`.
+- Testy FL-B-004…009 wg kart w `design/flow-layout/BACKLOG.md` (R-03) – każdy czerwony bez poprawki.
 
 #### DoD specyficzne
 - [ ] Ustawienie `editorTheme.flowLayout.enabled` przekazane do edytora, opisane w `settings.js`, testy obu stanów.
@@ -393,12 +417,12 @@ Funkcja: Układ flow sterowany ustawieniem editorTheme.flowLayout.enabled
 - [ ] Brak atrybucji w `packages/`, `test/`, `CHANGELOG.md` (po `npm run build` – także pliki generowane).
 - [ ] Wpis CHANGELOG bez nazw firm (opis funkcji + ustawienia).
 - [ ] Trzy gałęzie/PR (Z-14a/b/c) – każda z `npm test`; Z-14a zintegrowana z Z-04.
-- [ ] Decyzja o FL-B-004…008 zapisana; pozycje w zakresie zamknięte z testami.
+- [ ] FL-B-004, 005, 006, 007, 008 i 009 zamknięte z testami (R-03).
 - [ ] Klucze `layout.*` przekazane do Z-13.
 
 #### Ryzyka i alternatywy
-- **Rysowanie przy wyłączonym ustawieniu (decyzja):** rekomendacja „dane mają pierwszeństwo” odbiega od ścisłego „jak 5.0.7” tylko dla flow, które już zawierają `layout`/`o` (5.0.7 narysowałby je lewo → prawo, a przy ponownym zapisie/eksporcie pominąłby właściwości układu – DOKUMENTACJA, „Zgodność”). Alternatywa: przy wyłączonym ignorować dane przy rysowaniu, ale nadal je zachowywać – mniej spójne wizualnie między instancjami. → **pytanie**.
-- **Runtime niezależny od ustawienia:** `copyFlowLayoutProperties` zmienia kontrakt `POST/PUT /flow` dla klientów wysyłających `layout`/`wireStyle` (5.0.7 je gubi). Rekomendacja: bez bramkowania (zachowanie danych, brak skutku dla klientów bez tych pól) – **pytanie**; alternatywa – bramkowanie ustawieniem runtime.
+- **Rysowanie przy wyłączonym ustawieniu (decyzja):** rekomendacja „dane mają pierwszeństwo” odbiega od ścisłego „jak 5.0.7” tylko dla flow, które już zawierają `layout`/`o` (5.0.7 narysowałby je lewo → prawo, a przy ponownym zapisie/eksporcie pominąłby właściwości układu – DOKUMENTACJA, „Zgodność”). Alternatywa: przy wyłączonym ignorować dane przy rysowaniu, ale nadal je zachowywać – mniej spójne wizualnie między instancjami. → **rozstrzygnięte (R-01): rysuj wg danych**, ukryte tylko kontrolki.
+- **Runtime niezależny od ustawienia:** `copyFlowLayoutProperties` zmienia kontrakt `POST/PUT /flow` dla klientów wysyłających `layout`/`wireStyle` (5.0.7 je gubi). **Rozstrzygnięte (R-02): bez bramkowania** – części runtime działają zawsze (brak skutku dla klientów bez tych pól); bramkowanie ustawieniem runtime odrzucone.
 - **Publiczne API edytora** (`RED.view.layout`, `RED.viewLayout`, `RED.editor.flowLayout`) – zobowiązanie; alternatywa: oznaczyć jako wewnętrzne w pierwszej wersji.
 - **Upstream:** duża zmiana `view.js` (+446/−189) – ryzyko konfliktów przy aktualizacji bazy; dyskusja z opiekunami przed PR (FL-T-007).
 - **E2E poza `npm test`:** regresje UI wykrywane tylko w osobnym zadaniu CI (FL-T-003) – zależne od D-03.
@@ -408,7 +432,7 @@ Funkcja: Układ flow sterowany ustawieniem editorTheme.flowLayout.enabled
 - [ ] Bramkowanie kontrolek i ustawień użytkownika w edytorze + testy logiki – M
 - [ ] `settings.js`, CHANGELOG, JSDoc API układu – S
 - [ ] Podział na gałęzie Z-14a/b/c (z E-04) + `npm test` na każdej – M
-- [ ] FL-B-005 (+ FL-B-004 wg decyzji) – M
+- [ ] FL-B-004, 005, 006, 007, 008, 009 (R-03) – L
 - [ ] E2E obu stanów ustawienia (wg D-03) – S
 
 ---
@@ -419,7 +443,7 @@ Funkcja: Układ flow sterowany ustawieniem editorTheme.flowLayout.enabled
 |---|---|
 | Etap / typ | 4 / funkcja – propozycja Wykonawcy (wymóg z rozmowy: „edytor produkcyjny służy tylko do edycji, nie jest workerem”) |
 | Priorytet / ryzyko | P2 / średnie (dotyka startu runtime i potoku wdrożenia) |
-| Ustawienie | `editorOnly: false` (ZASADY §2.1; alternatywa: `runtimeState.autoStart` – semantyka miękka: nie startują przy uruchomieniu, ale mogłyby być uruchomione API); rekomendacja – semantyka ścisła: przy `editorOnly: true` flow nigdy nie startują; potwierdzenie D-02 |
+| Ustawienie | `editorOnly: false` (ZASADY §2.1; alternatywa: `runtimeState.autoStart` – semantyka miękka: nie startują przy uruchomieniu, ale mogłyby być uruchomione API); semantyka ścisła: przy `editorOnly: true` flow nigdy nie startują – **rozstrzygnięte (R-19)** |
 | Zależności | E-01 (punkt w potoku: „start” pomijany – ZASADY §2.3 A krok 7), E-02 (stan `loaded`, T14), zgodność z P-01, Z-06, Z-08, Z-09, Z-10; D-02, D-06, D-13 |
 | Pliki | `runtime/lib/flows/index.js:36-38` (`started`, `state`), `:104-110` (`load`, `safeMode`), `:118-133` (`setFlows`, `safeMode`), `:207-241` (gałąź `forceStart \|\| started`), `:272-345` (`start`: `safeMode` `:320-327`, `runtimeFlowState` `:329-338`); `runtime/lib/api/flows.js:66-100` (`setFlows`, `reload`), `:282-336` (`setState`, wymaga `runtimeState.enabled`); `editor-api/lib/admin/index.js:47-49` (`/flows/state`); `runtime/lib/api/settings.js:166-173` (`runtimeState` dla edytora); `editor-client/src/js/red.js:366-420` (powiadomienia `runtime-state`), `ui/deploy.js:77-80` (Start/Stop/Restart w menu Deploy); `node-red/settings.js:304-315` (`runtimeState`) |
 | Powiązania | K8S-T-002 (rola editor), K8S-T-003 (debug/status z workerów – wtyczka), K8S-T-006 (publikacja) |
@@ -444,7 +468,7 @@ Wynik: **brak funkcji; dwa istniejące mechanizmy częściowe, oba nieodpowiedni
 - **Skutki uboczne / ograniczenia (do opisu w dokumentacji):**
   - **debug** – brak komunikatów (węzły nie działają); przekazywanie z workerów – wtyczka (K8S-T-003, poza zakresem);
   - **status węzłów** – brak;
-  - **przycisk `inject`** – `POST /inject/:id` zwróci 404 (węzeł nie istnieje) → komunikat błędu w edytorze; rekomendacja: przycisk nieaktywny przy `editor-only` (do decyzji – zmiana w `20-inject.html` lub ogólny mechanizm);
+  - **przycisk `inject`** – **nieaktywny z podpowiedzią** na instancji edycyjnej (**R-19**; podpowiedź z kluczem en-US, np. „Flow nie są wykonywane na tej instancji”); mechanizm (zmiana w `20-inject.html` vs ogólny) – do ustalenia w implementacji; bez tego `POST /inject/:id` zwróciłoby 404;
   - **panel kontekstu** – działa, jeśli magazyn kontekstu jest wspólny (np. własny `contextStorage`); przy `memory` pusty;
   - **trasy administracyjne węzłów** (`httpAdmin`) – rejestrowane w konstruktorach węzłów → niedostępne;
   - hooki/zdarzenia `flows:started`, `nodes-started` nie są emitowane – pluginy na nich oparte nie zadziałają.
@@ -456,7 +480,7 @@ Wynik: **brak funkcji; dwa istniejące mechanizmy częściowe, oba nieodpowiedni
 4. `api/settings.js`: `safeSettings.editorOnly = true` (dla edytora); edytor (`red.js`, `deploy.js`): powiadomienie i ukrycie Start/Stop.
 5. Model stanu (E-02): osobny stan `loaded` (flow wczytane, nieuruchomione; przejścia `starting` → `loaded` (T14), `loaded` → `deploying`/`reloadPending` → `loaded`; nigdy `ready`) – zgodnie z ANALIZA §4.2 i kartą E-02.
 6. Zgodność z pakietami:
-   - **Z-08:** `/ready` na instancji edycyjnej → **200 w stanie `loaded`** (D-13 – jedna propozycja, wspólna z E-02/Z-08; pytanie 3 w etapie 3), `/live` jak zwykle; `deploying` → 503 na czas zapisu;
+   - **Z-08:** `/ready` na instancji edycyjnej → **200 w stanie `loaded`** (D-13, **R-19**), `/live` jak zwykle; `deploying` → 503 na czas zapisu;
    - **Z-09:** instancja edycyjna (przy `deploy.reload.watch: true`) obsługuje `watchFlows` przez przeładowanie konfiguracji **bez startu** (`loaded` → `reloadPending` → `reloading` → `loaded`; edytory dostają `runtime-deploy` → powiadomienie o zmianie na serwerze); `preReload` wywoływany (brak drenażu – nic nie działa) – propozycja;
    - **P-01:** `deploy.response: "started"` na instancji edycyjnej = odpowiedź po zapisie (kroku startu brak), w odpowiedzi np. `{rev, started:false}` – **do potwierdzenia** (zmiana kształtu odpowiedzi tylko w trybie `started`);
    - **Z-06:** `preDeploy`/`postDeploy` wywoływane normalnie – instancja edycyjna to naturalne miejsce walidacji i wyzwalacza publikacji (K8S-T-006);
@@ -509,6 +533,12 @@ Funkcja: Instancja tylko edycyjna
     Wtedy odpowiedź ma status 409 i kod editor_only
     I magazyn nie otrzymuje zapisu runtimeFlowState
 
+  Scenariusz: Przycisk inject nieaktywny z podpowiedzią (R-19)
+    Zakładając editorOnly = true i flow z węzłem inject
+    Kiedy otworzę edytor
+    Wtedy przycisk węzła inject jest nieaktywny
+    I po najechaniu widać podpowiedź, że flow nie są wykonywane na tej instancji
+
   Scenariusz: Komunikat w edytorze
     Zakładając editorOnly = true
     Kiedy otworzę edytor
@@ -528,27 +558,28 @@ Funkcja: Instancja tylko edycyjna
 - `test/unit/@node-red/runtime/lib/state_spec.js` / `health_spec.js`: `editorOnly start ends in loaded`, `ready 200 in loaded`, `deploy in editorOnly returns to loaded`.
 - `test/unit/@node-red/editor-api/lib/admin/flows_spec.js`: kontrakt `POST /flows/state` 409 (jeśli mapowanie kodu w editor-api wymaga zmian – do sprawdzenia).
 - Integracyjny (jeśli wykonalny bez nowych zależności): runtime z atrapą magazynu – brak `saveSettings` z `runtimeFlowState`.
-- Edytor (wg E-03): logika powiadomienia/ukrycia pozycji Deploy; E2E (D-03) – komunikat widoczny.
+- Edytor (wg E-03): logika powiadomienia/ukrycia pozycji Deploy i nieaktywnego przycisku `inject` (R-19); E2E (D-03) – komunikat i podpowiedź widoczne.
 
 #### DoD specyficzne
-- [ ] Decyzja D-02 (nazwa i semantyka) zapisana przed implementacją.
+- [ ] Nazwa i semantyka wg R-19 (`editorOnly: true`, semantyka ścisła) opisane w `settings.js`.
+- [ ] Przycisk `inject` nieaktywny z podpowiedzią (R-19) – test logiki.
 - [ ] Brak jakiegokolwiek zapisu `runtimeFlowState` z instancji edycyjnej (test na atrapie magazynu).
 - [ ] Ograniczenia (debug, status, inject, kontekst, trasy admin węzłów, zdarzenia) opisane w `settings.js` i dokumentacji.
 - [ ] Zachowanie z P-01, Z-08, Z-09 opisane w ich kartach (odsyłacze) i pokryte testami po ich realizacji.
 - [ ] Teksty w `en-US` (+ `pl` w Z-13).
 
 #### Ryzyka i alternatywy
-- **Nazwa/semantyka (D-02):** `runtimeState.autoStart: false` łączy się z istniejącym obiektem `runtimeState`, ale sugeruje możliwość ręcznego startu (sprzeczne z wymogiem); `editorOnly: true` – jednoznaczne, nowy klucz najwyższego poziomu (jak `safeMode`). Rekomendacja Wykonawcy: semantyka ścisła; nazwa do decyzji.
+- **Nazwa/semantyka (D-02):** `runtimeState.autoStart: false` łączy się z istniejącym obiektem `runtimeState`, ale sugeruje możliwość ręcznego startu (sprzeczne z wymogiem); `editorOnly: true` – jednoznaczne, nowy klucz najwyższego poziomu (jak `safeMode`). **Rozstrzygnięte (R-19):** `editorOnly: true`, semantyka ścisła.
 - **Walidacja przy wdrożeniu:** dziś część błędów (konstruktory węzłów, brakujące moduły przy starcie) ujawnia się dopiero przy starcie – instancja edycyjna ich nie wykryje; walidacja musi przejść do `preDeploy` (Z-06) lub CI.
-- **Przycisk `inject` i trasy admin węzłów:** komunikaty błędów mylące dla użytkownika; alternatywa – ogólny mechanizm „węzeł niedostępny na instancji edycyjnej” (więcej zmian w węzłach core).
+- **Przycisk `inject` i trasy admin węzłów:** komunikaty błędów mylące dla użytkownika – **R-19: przycisk `inject` nieaktywny z podpowiedzią**; trasy admin innych węzłów – opis ograniczenia; alternatywa – ogólny mechanizm „węzeł niedostępny na instancji edycyjnej” (więcej zmian w węzłach core).
 - **Alternatywa bez zmian w rdzeniu:** wtyczka magazynu zwracająca `runtimeFlowState='stop'` tylko dla instancji edycyjnej (obejście z ANALIZA §3) – kruche (zależne od wewnętrznego klucza), `reload` i `setState` nadal mogą wystartować flow.
 - **Projekty (`editorTheme.projects`):** przełączenie projektu woła `loadFlows(true)` – przy `editorOnly` nie startuje (test), ale zachowanie Projektów na instancji edycyjnej – do potwierdzenia.
 
 #### Podzadania
-- [ ] Decyzja D-02 + opis semantyki – S
+- [ ] Opis semantyki `editorOnly` (R-19) – S
 - [ ] Runtime: `start`/`load`/`setFlows` + testy (czerwone najpierw) – M
 - [ ] API: `setState` 409, `settings` dla edytora + testy – S
-- [ ] Edytor: powiadomienie, menu Deploy (+ test wg E-03) – S
+- [ ] Edytor: powiadomienie, menu Deploy, nieaktywny przycisk `inject` z podpowiedzią (R-19) (+ test wg E-03) – S
 - [ ] `settings.js`, JSDoc, CHANGELOG, dokumentacja ograniczeń – S
 - [ ] Uzgodnienie z kartami P-01, Z-08, Z-09 (zachowanie instancji edycyjnej) – S
 
@@ -585,7 +616,7 @@ Wynik: **CZĘŚCIOWO** – mechanizm istnieje, brak standardu i E2E w zależnoś
 #### Projekt rozwiązania (minimalny)
 1. Helper `editor_test_helper.js` (`loadEditorModule(path, mockRED)`, `createMockRED(overrides)`) – na podstawie `search_spec.js`/`view-layout_spec.js`.
 2. Szablon testu (komentarz w helperze + przykład) – **przykład wykonywany w Z-01** (`comms_spec.js`: `does not send subscribe while auth pending`) lub **P-02** (`deploy_spec.js`) – w tamtych pakietach, nie tutaj.
-3. E2E (jeśli D-03 = tak): `playwright` w `devDependencies` (wersja przypięta), skrypt `test:e2e` (już jest), wspólny helper startu Node-RED w procesie potomnym (wydzielony z `flow_layout_e2espec.js`), workflow CI osobny od `npm test` (FL-T-003). Jeśli D-03 = nie: E2E zostają opcjonalne (`--no-save`), a kryteria „test edytora” spełniane testami logiki + ręcznym scenariuszem w raporcie.
+3. E2E – **D-03 = nie**: Playwright nie trafia do repozytorium (instalowany poza nim, np. `--no-save`); skrypt `test:e2e` (już jest) pomija testy bez narzędzia; wspólny helper startu Node-RED w procesie potomnym (wydzielony z `flow_layout_e2espec.js`); E2E uruchamiane ręcznie/nocnie, nieblokujące (R-31). Kryteria „test edytora” spełniane testami logiki w `npm test` + scenariuszem ręcznym / wynikiem E2E w raporcie.
 4. Stare testy WebdriverIO – bez zmian (poza zakresem; ewentualne usunięcie to decyzja upstream).
 
 #### Kryteria akceptacji (BDD)
@@ -612,10 +643,11 @@ Funkcja: Harness testów edytora
     Kiedy uruchomię npm run test:e2e
     Wtedy testy są pominięte, a proces kończy się kodem 0
 
-  Scenariusz: E2E z Playwrightem (D-03 = tak)
-    Zakładając Playwright w devDependencies
-    Kiedy uruchomię npm run test:e2e w CI
+  Scenariusz: E2E z narzędziem zainstalowanym poza repozytorium (D-03)
+    Zakładając Playwright zainstalowany poza package.json (np. npm i --no-save)
+    Kiedy uruchomię npm run test:e2e
     Wtedy testy E2E się wykonują, a npm test pozostaje bez E2E
+    I package.json oraz package-lock.json nie zawierają Playwrighta
 ```
 
 #### Testy
@@ -625,7 +657,7 @@ Funkcja: Harness testów edytora
 
 #### DoD specyficzne
 - [ ] Helper i szablon w repozytorium, opis konwencji (miejsce wg decyzji).
-- [ ] Brak nowych zależności bez D-03; przy D-03 = tak – tylko `devDependencies`, przypięta wersja, `verify-deps` przechodzi.
+- [ ] Brak nowych zależności (D-03 = nie): Playwright poza `package.json`/`package-lock.json`; `verify-deps` przechodzi.
 - [ ] Przynajmniej jeden test pakietu (Z-01 lub P-02) korzysta z helpera.
 - [ ] `npm test` czas wykonania bez istotnego wzrostu (pomiar w raporcie).
 
@@ -637,7 +669,7 @@ Funkcja: Harness testów edytora
 #### Podzadania
 - [ ] Helper + szablon + opis konwencji – S
 - [ ] Wydzielenie wspólnego helpera E2E – S
-- [ ] Przy D-03 = tak: `devDependencies`, workflow CI E2E (FL-T-003) – M
+- [ ] Opcjonalny workflow E2E nieblokujący (ręcznie/nocnie, instalacja narzędzia w kroku CI, nie w repozytorium – D-03, R-31) – S
 
 ---
 
@@ -665,30 +697,37 @@ Wynik: **POTWIERDZONE** – gałąź wymaga przebudowy przed dostarczeniem.
 - `grep -i` nazwy firmy/osoby w `packages`, `test`, `CHANGELOG.md`, `package.json`, `scripts`: 2 nagłówki kodu (`view-layout.js:16`, `flowLayout.js:16`), `CHANGELOG.md:3`, oraz pliki generowane z buildu (`public/red/red.js` ×2, `public/red/about:3`, `node-red/CHANGELOG.md:3`). W `test/` – brak.
 - Commity od bazy `cd05a9a`: 18, wszystkie z autorem `Claude <noreply@anthropic.com>`, z trailerem `Co-Authored-By`, **bez `Signed-off-by`**; kod i `design/` przemieszane (np. `373ff93` – CHANGELOG + dokumentacja).
 - Baza gałęzi: `cd05a9a` (5.0.7 + 2 commity upstream po wydaniu: CSV, dokumentacja tcp) – nie jest tagiem wydania.
-- `CHANGELOG.md` wspomina narzędzie E2E z nazwy (Playwright) – czy nazwy narzędzi stron trzecich podlegają wymogowi „bez nazw produktów” – **pytanie**.
+- `CHANGELOG.md` wspomina narzędzie E2E z nazwy (Playwright) – **rozstrzygnięte (R-30): nazwy narzędzi stron trzecich dozwolone**.
 
 #### Specyfikacja
-- **Cel:** dostarczenie zgodne z wymaganiami 3.3 (bez nazw), 3.8 (gałąź na pakiet, DCO) i 3.5 (`npm test`), z atrybucją zachowaną wyłącznie w `design/` i opisie dostarczenia.
+- **Cel:** dostarczenie zgodne z wymaganiami 3.3 (bez nazw produktów), 3.8 (gałąź na pakiet, DCO) i 3.5 (`npm test`); w forku nagłówki o modyfikacji wg pkt 4(b) (D-19, R-30), w gałęziach do upstream – bez nich.
 - **Wejścia:** obecna gałąź; decyzje D-01, D-04.
 - **Wyjścia:** gałęzie pakietów od bazy (tag `5.0.7` lub `5.0.6` wg D-01), m.in. `z14a-flow-layout-runtime` (nad Z-04), `z14b-flow-layout-geometry`, `z14c-flow-layout-ui` (nazewnictwo do potwierdzenia); osobna gałąź dokumentacji `design/` (nie trafia do upstream ani do gałęzi pakietów); gałąź integracyjna; raport z wynikami `npm test` dla każdej gałęzi.
-- **Niezmienniki:** zawartość merytoryczna kodu identyczna z obecną (poza usunięciem atrybucji i zmianami z Z-14); historia `claude/loving-fermat-ftfo9h` zachowana (nie nadpisujemy – nowe gałęzie).
+- **Niezmienniki:** zawartość merytoryczna kodu identyczna z obecną (poza nagłówkami o modyfikacji wg D-19/R-30 i zmianami z Z-14); historia `claude/loving-fermat-ftfo9h` zachowana (nie nadpisujemy – nowe gałęzie).
 - **Przypadki błędów:** konflikt przy przenoszeniu na 5.0.6 → opis w raporcie (ANALIZA §2: obszary pakietów bez różnic – do potwierdzenia cherry-pickiem); `npm test` czerwony z przyczyn środowiskowych (`ssh-keygen`) → uruchomienie w środowisku CI (E-05).
 - **Skutki uboczne:** nowe identyfikatory commitów (odsyłacze w `design/flow-layout/BACKLOG.md` §8 do `556b053`, `036dd6a`, `e564e91` – zaktualizować lub zostawić z adnotacją).
 
 #### Projekt rozwiązania (minimalny)
-1. Usunąć 2 linie atrybucji z nagłówków (`view-layout.js`, `flowLayout.js`) – nagłówek licencyjny OpenJS pozostaje; z `CHANGELOG.md` usunąć linię z nazwą firmy i odwołanie do `design/`; wpis CHANGELOG przeredagować bez nazw (w formacie projektu – zob. Ryzyka).
+1. **Wg D-19:** w forku nagłówki „Modified by Actuna Sp. z o.o.: …” zostają i są dopisywane do każdego zmienionego pliku (pkt 7). Tylko w gałęziach do ewentualnego zgłoszenia upstream (zablokowane – D-04) nagłówki i nazwę firmy w CHANGELOG usuwa się; nagłówek licencyjny OpenJS zawsze pozostaje.
 2. Utworzyć gałęzie pakietów od bazy (D-01), przenosząc zmiany **jako nowe commity** w stylu projektu (`Editor: …`, `Runtime: …`, `Test: …`), z autorem = osoba odpowiedzialna Wykonawcy, `Signed-off-by` tej osoby (DCO) i oznaczeniem pracy z AI wg D-04 (np. trailer `Co-Authored-By` lub informacja w opisie PR).
 3. `design/` – wyłącznie w osobnej gałęzi dokumentacji (lub repozytorium Wykonawcy); `.mp4` i obrazy poza gałęziami pakietów.
 4. Dla każdej gałęzi: `npm ci && npm test` w środowisku z `ssh-keygen` (E-05); wynik (liczby testów) w raporcie.
-5. Kontrola automatyczna: `grep -rniE "<nazwa firmy>|<nazwisko>" packages test CHANGELOG.md package.json scripts` po `npm run build` → pusty wynik (wzorzec przekazany w zadaniu, nie w kodzie).
+5. Kontrola automatyczna: w forku – każdy plik zmieniony względem bazy ma nagłówek o modyfikacji lub wpis w `MODIFICATIONS.md`; nazwy firmy występują wyłącznie w tych nagłówkach (poza `design/`). W gałęziach do upstream – `grep -rniE "<nazwa firmy>|<nazwisko>" packages test CHANGELOG.md package.json scripts` → pusty wynik (wzorzec przekazany w zadaniu, nie w kodzie).
 6. CLA OpenJS – podpis osoby odpowiedzialnej przed jakimkolwiek PR upstream (D-04).
+7. **Wg R-30:** nagłówek o modyfikacji wg szablonu z łatek załącznika A; pliki bez możliwości komentarza lub bez nagłówka licencji (np. JSON) – wpis w `MODIFICATIONS.md`; uzupełnienie brakujących nagłówków z łatki 0004; komentarze w kodzie „upstream” → „wersja bazowa 5.0.7”; łatki zastąpione commitami pakietów (z odwołaniem do załącznika A w opisie commitu); CHANGELOG – sekcja „Unreleased” w gałęzi pakietu.
 
 #### Kryteria akceptacji (BDD)
 ```gherkin
 Funkcja: Dostosowanie istniejącej gałęzi do wymagań zlecenia
 
-  Scenariusz: Brak nazw firmy i produktu w kodzie i testach
-    Zakładając dowolną gałąź pakietu po npm run build
+  Scenariusz: Nagłówki o modyfikacji w forku (D-19)
+    Zakładając gałąź pakietu w forku
+    Kiedy porównam ją z bazą
+    Wtedy każdy zmieniony plik ma nagłówek „Modified by Actuna Sp. z o.o.: …” lub wpis w MODIFICATIONS.md
+    I nazwa firmy nie występuje w kodzie poza tymi nagłówkami
+
+  Scenariusz: Brak nazw firmy w gałęzi do upstream
+    Zakładając gałąź przygotowaną do zgłoszenia upstream (po zniesieniu D-04)
     Kiedy przeszukam packages/, test/, CHANGELOG.md, package.json i scripts/ pod kątem nazwy firmy i osoby Wykonawcy
     Wtedy nie ma żadnego wystąpienia
 
@@ -715,20 +754,21 @@ Funkcja: Dostosowanie istniejącej gałęzi do wymagań zlecenia
 - Brak nowych testów kodu; weryfikacja: `npm test` na każdej gałęzi, skrypt kontroli nazw (polecenie w raporcie; ewentualnie krok CI w E-05 – bez wpisywania nazw do repozytorium upstream), `git log --format='%(trailers:key=Signed-off-by)'` dla każdej gałęzi.
 
 #### DoD specyficzne
-- [ ] Atrybucja usunięta z kodu i CHANGELOG; obecna w `design/` i opisie dostarczenia.
+- [ ] Fork: nagłówki o modyfikacji w każdym zmienionym pliku (D-19); gałęzie do upstream: bez nazw firmy w kodzie i CHANGELOG.
 - [ ] Gałęzie pakietów od bazy D-01; `design/` poza nimi.
 - [ ] `Signed-off-by` na każdym commicie; oznaczenie pracy z AI wg D-04.
 - [ ] `npm test` zielony na każdej gałęzi (raport z liczbami testów i ewentualnymi znanymi błędami środowiskowymi).
 - [ ] Odsyłacze do commitów w `design/flow-layout/BACKLOG.md` zaktualizowane lub opisane.
+- [ ] R-30: nagłówki wg szablonu z łatek, `MODIFICATIONS.md` dla plików bez komentarzy/licencji, nagłówki z 0004 uzupełnione, brak komentarzy „upstream” (zastąpione „wersja bazowa 5.0.7”), CHANGELOG „Unreleased” w gałęzi pakietu.
 
 #### Ryzyka i alternatywy
-- **CHANGELOG w PR:** upstream redaguje CHANGELOG przy wydaniu (sekcje wersji); własna sekcja „Unreleased” może kolidować z praktyką projektu – wymóg zlecenia spełniamy wpisem w gałęzi pakietu, przy PR upstream ewentualnie przenosimy go do opisu PR – **do potwierdzenia**.
+- **CHANGELOG w PR:** upstream redaguje CHANGELOG przy wydaniu (sekcje wersji); własna sekcja „Unreleased” może kolidować z praktyką projektu – **rozstrzygnięte (R-30): sekcja „Unreleased” w gałęzi pakietu**; przy ewentualnym PR upstream (po zniesieniu D-04) przeniesienie do opisu PR.
 - **Autorstwo commitów:** obecne commity mają autora-narzędzie; DCO wymaga certyfikacji przez osobę – dlatego nowe commity z autorem-osobą (D-04).
 - **Baza 5.0.6 vs 5.0.7:** przy 5.0.6 – brak poprawek bezpieczeństwa 5.0.7; przenoszalność do potwierdzenia przy cherry-pick.
 - **Alternatywa:** `git rebase` z przepisaniem historii obecnej gałęzi – odrzucona (utrata śladu prac i odsyłaczy).
 
 #### Podzadania
-- [ ] Usunięcie atrybucji + przeredagowanie CHANGELOG – S
+- [ ] Nagłówki wg R-30 (szablon z łatek, `MODIFICATIONS.md`, uzupełnienie 0004), komentarze „upstream” → „wersja bazowa 5.0.7”, CHANGELOG „Unreleased” – S
 - [ ] Gałęzie pakietów Z-14a/b/c od bazy (z Z-14) – M
 - [ ] Gałąź dokumentacji `design/` – S
 - [ ] `npm test` na każdej gałęzi + raport – S
@@ -758,18 +798,18 @@ Wynik: **POTWIERDZONE** – CI istnieje, brak raportu i gałęzi integracyjnej.
 - **Cel:** powtarzalna weryfikacja każdego pakietu i ich połączenia: pełne `npm test` w środowisku zgodnym z projektem, opcjonalne E2E, jednolity raport pakietu, gałąź integracyjna.
 - **Wejścia:** gałęzie pakietów (ANALIZA §5, 3.8 – warstwowo w torze A, od bazy w torze B), gałąź integracyjna, decyzje D-03, D-04.
 - **Wyjścia:**
-  - zadanie CI „test”: macierz Node jak w `.github/workflows/tests.yml` (22, 24), `ubuntu-latest` z `ssh-keygen` (krok kontrolny `ssh-keygen -V` lub `command -v ssh-keygen` – brak → błąd zadania, nie pominięcie testów), `npm ci` → `npm test`; wyzwalane dla gałęzi pakietów i integracyjnej;
-  - opcjonalne zadanie „test:e2e” (tylko przy D-03 = tak): instalacja przeglądarki Playwright, `npm run test:e2e`; osobne od `npm test`, niewymagane do scalenia (do decyzji);
+  - zadanie CI „test” (**R-31**: GitHub Actions w forku `Actuna-Tech/node-red`): **gałęzie pakietów – Node 22; gałąź integracyjna – Node 22 i 24**, `ubuntu-latest` z `ssh-keygen` (krok kontrolny `ssh-keygen -V` lub `command -v ssh-keygen` – brak → błąd zadania, nie pominięcie testów), `npm ci` → `npm test`; wyzwalane dla gałęzi pakietów i integracyjnej;
+  - zadanie „test:e2e” – **nieblokujące (R-31)**: uruchamiane ręcznie lub nocnie, wynik w raporcie pakietu; narzędzie E2E instalowane poza repozytorium (D-03); osobne od `npm test`, niewymagane do scalenia;
   - kontrole dostarczenia: trailery `Signed-off-by` (D-04) i brak nazw firmy/osoby w `packages/`, `test/`, `CHANGELOG.md`, `package.json`, `scripts/` po `npm run build` (wzorzec przekazany jako sekret/zmienna CI, nie w repozytorium – E-04);
   - **szablon raportu pakietu** (ZASADY §3 „Raport”): co zmieniono (pliki, zakres), nowe ustawienia (nazwa, wartość domyślna, wpis w `settings.js`), wpływ na zgodność (zachowanie domyślne, kontrakty Admin API, kody błędów wg ZASADY §2.4), dowody weryfikacji (liczby testów: przechodzące/pominięte/nieudane dla `npm test` per wersja Node, pokrycie, wynik E2E, wynik kontroli nazw i DCO, odnośnik do przebiegu CI), czego nie zweryfikowano (z uzasadnieniem), zależności od innych pakietów;
-  - **gałąź integracyjna** (np. `integration/engine-extensions` – nazwa do potwierdzenia): scalenia pakietów w kolejności ANALIZA §6.2, po każdym scaleniu pełne `npm test`; konflikty w plikach wyłączonych z reguły (`settings.js`, `CHANGELOG.md`, `locales/*`) rozwiązywane na niej.
-- **Niezmienniki:** brak zmian w kodzie produktu i w istniejącym zachowaniu `tests.yml` dla `main`/`dev`; brak nowych zależności npm bez zgody (Playwright tylko przy D-03 = tak, `devDependencies`); `npm test` uruchamiane w całości (bez wyłączania testów środowiskowych).
-- **Przypadki błędów:** brak `ssh-keygen` w środowisku → zadanie kończy się błędem z czytelnym komunikatem (nie ciche pominięcie 5 testów); niestabilny test (flaky) → odnotowany w raporcie z numerem przebiegu, bez wyłączania; E2E nieudane przy D-03 = tak → raport, scalenie wg decyzji.
-- **Skutki uboczne:** dodatkowe przebiegi CI (czas, koszt) dla każdej gałęzi pakietu; workflow w repozytorium Wykonawcy/Zamawiającego – miejsce do potwierdzenia (pytanie 18).
+  - **gałąź integracyjna** w forku (np. `actuna/integration` – R-31): scalenia pakietów w kolejności ANALIZA §6.2, po każdym scaleniu pełne `npm test`; konflikty w plikach wyłączonych z reguły (`settings.js`, `CHANGELOG.md`, `locales/*`) rozwiązywane na niej.
+- **Niezmienniki:** brak zmian w kodzie produktu i w istniejącym zachowaniu `tests.yml` dla `main`/`dev`; brak nowych zależności npm bez zgody (Playwright nie trafia do repozytorium – D-03); `npm test` uruchamiane w całości (bez wyłączania testów środowiskowych).
+- **Przypadki błędów:** brak `ssh-keygen` w środowisku → zadanie kończy się błędem z czytelnym komunikatem (nie ciche pominięcie 5 testów); niestabilny test (flaky) → odnotowany w raporcie z numerem przebiegu, bez wyłączania; E2E nieudane → raport, scalenie nieblokowane (R-31).
+- **Skutki uboczne:** dodatkowe przebiegi CI (czas, koszt) dla każdej gałęzi pakietu; workflow w forku `Actuna-Tech/node-red` (**R-31**).
 
 #### Projekt rozwiązania (minimalny)
-1. Workflow weryfikacji (osobny plik, by nie zmieniać `tests.yml` upstream): wyzwalacz dla gałęzi pakietów i integracyjnej, macierz Node 22/24, krok kontrolny `ssh-keygen`, `npm ci`, `npm test`, zapis podsumowania liczby testów jako artefakt.
-2. Zadanie `test:e2e` warunkowe (D-03): instalacja przeglądarki, `npm run test:e2e`, artefakty zrzutów (FL-T-003).
+1. Workflow weryfikacji w forku `Actuna-Tech/node-red` (osobny plik, by nie zmieniać `tests.yml` upstream): wyzwalacz dla gałęzi pakietów i integracyjnej, Node 22 dla gałęzi pakietów, macierz Node 22/24 dla gałęzi integracyjnej (R-31), krok kontrolny `ssh-keygen`, `npm ci`, `npm test`, zapis podsumowania liczby testów jako artefakt.
+2. Zadanie `test:e2e` nieblokujące (R-31; ręcznie – `workflow_dispatch` – lub nocnie – harmonogram): instalacja narzędzia i przeglądarki poza repozytorium (D-03), `npm run test:e2e`, artefakty zrzutów (FL-T-003), wynik w raporcie pakietu.
 3. Zadanie kontroli dostarczenia: `git log --format='%(trailers:key=Signed-off-by)'` dla zakresu gałęzi; kontrola nazw (E-04) po `npm run build`.
 4. Szablon raportu pakietu (Markdown w `design/engine-extensions/` – poza gałęziami pakietów) z sekcjami jak w Wyjściach.
 5. Gałąź integracyjna i procedura scaleń (kolejność ANALIZA §6.2, `npm test` po każdym scaleniu).
@@ -781,7 +821,7 @@ Funkcja: Środowisko weryfikacji
   Scenariusz: Pełne npm test w CI
     Zakładając gałąź pakietu wypchniętą do repozytorium
     Kiedy uruchomi się workflow weryfikacji
-    Wtedy npm test (build, verify-deps, lint, coverage) wykona się dla Node 22 i 24
+    Wtedy npm test (build, verify-deps, lint, coverage) wykona się dla Node 22 (gałąź pakietu) albo dla Node 22 i 24 (gałąź integracyjna) – R-31
     I testy storage/localfilesystem/projects/ssh nie zostaną pominięte ani nie padną z powodu braku ssh-keygen
 
   Scenariusz: Brak ssh-keygen jest błędem środowiska
@@ -789,10 +829,11 @@ Funkcja: Środowisko weryfikacji
     Kiedy uruchomi się zadanie test
     Wtedy zadanie zakończy się błędem z komunikatem o brakującym ssh-keygen przed uruchomieniem testów
 
-  Scenariusz: Opcjonalne E2E (D-03 = tak)
-    Zakładając Playwright w devDependencies
-    Kiedy uruchomi się zadanie test:e2e
-    Wtedy testy E2E się wykonają, a wynik zadania test nie zależy od E2E
+  Scenariusz: E2E nieblokujące (R-31)
+    Zakładając narzędzie E2E zainstalowane poza repozytorium (D-03)
+    Kiedy zadanie test:e2e uruchomi się ręcznie lub nocnie
+    Wtedy testy E2E się wykonają, wynik trafi do raportu pakietu
+    I wynik zadania test ani scalenie nie zależą od E2E
 
   Scenariusz: Raport pakietu
     Zakładając zakończony przebieg CI dla gałęzi pakietu
@@ -815,24 +856,24 @@ Funkcja: Środowisko weryfikacji
 ```
 
 #### Testy
-- Brak nowych testów kodu. Weryfikacja: przebieg workflow na gałęzi próbnej (zielony dla Node 22 i 24; liczba testów zgodna z przebiegiem lokalnym w środowisku z `ssh-keygen`); przebieg kontrolny bez `ssh-keygen` (oczekiwany błąd kroku kontrolnego); przy D-03 = tak – przebieg `test:e2e` z `flow_layout_e2espec.js`.
+- Brak nowych testów kodu. Weryfikacja: przebieg workflow na gałęzi próbnej (zielony dla Node 22; na gałęzi integracyjnej dla 22 i 24 – R-31; liczba testów zgodna z przebiegiem lokalnym w środowisku z `ssh-keygen`); przebieg kontrolny bez `ssh-keygen` (oczekiwany błąd kroku kontrolnego); opcjonalnie przebieg `test:e2e` z `flow_layout_e2espec.js` (narzędzie instalowane w kroku CI – D-03).
 
 #### DoD specyficzne
 - [ ] Workflow weryfikacji działa dla gałęzi pakietów i integracyjnej; `tests.yml` bez zmian.
 - [ ] Krok kontrolny `ssh-keygen`; 5 testów projektów/ssh wykonywanych i zielonych.
 - [ ] Szablon raportu pakietu zatwierdzony i użyty w pierwszym pakiecie (P-04).
 - [ ] Gałąź integracyjna utworzona, procedura scaleń opisana.
-- [ ] Zadanie `test:e2e` wg D-03 (albo jawnie pominięte decyzją).
+- [ ] Zadanie `test:e2e` nieblokujące, ręcznie/nocnie, wynik w raporcie (R-31, D-03).
 
 #### Ryzyka i alternatywy
-- **Miejsce uruchamiania CI** (repozytorium Wykonawcy vs Zamawiającego) – wpływa na sekrety (wzorzec kontroli nazw) i dostęp do przebiegów – **pytanie**.
-- **Czas CI:** pełne `npm test` × 2 wersje Node × liczba gałęzi pakietów; alternatywa: jedna wersja Node dla gałęzi pakietów, pełna macierz dla integracyjnej – **do decyzji**.
+- **Miejsce uruchamiania CI** – **rozstrzygnięte (R-31): fork `Actuna-Tech/node-red`** (sekrety wzorca kontroli nazw w ustawieniach forka).
+- **Czas CI:** **rozstrzygnięte (R-31):** gałęzie pakietów – Node 22, gałąź integracyjna – Node 22 i 24.
 - **Alternatywa:** rozszerzenie `tests.yml` o gałęzie pakietów – prostsze, ale zmienia plik upstream (konflikt przy PR).
 - Kontener roboczy bez `ssh-keygen` – lokalne przebiegi raportują 5 znanych błędów środowiskowych; dowodem odbioru jest przebieg CI.
 
 #### Podzadania
-- [ ] Workflow weryfikacji (macierz Node, `ssh-keygen`, `npm test`, artefakt z liczbami testów) – S
-- [ ] Zadanie `test:e2e` (wg D-03) – S
+- [ ] Workflow weryfikacji w forku (Node 22 / 22+24 wg R-31, `ssh-keygen`, `npm test`, artefakt z liczbami testów) – S
+- [ ] Zadanie `test:e2e` nieblokujące, ręcznie/nocnie (R-31) – S
 - [ ] Kontrole DCO i nazw (wspólnie z E-04) – S
 - [ ] Szablon raportu pakietu – S
 - [ ] Gałąź integracyjna + procedura scaleń – S
@@ -841,24 +882,24 @@ Funkcja: Środowisko weryfikacji
 
 ## Pytania do Zamawiającego (etap 4)
 
-1. **Z-12 – załącznik B:** kiedy zostanie przekazana lista punktów? Czy propozycje `RED.header`, rozszerzenia Deploy (pozycje menu, hook/zdarzenie przed wdrożeniem w edytorze), `RED.dialog` i dokumentacja `RED.view.annotations` pokrywają Wasze potrzeby (przycisk „Publikuj”, oznaczenie środowiska)?
-2. **Z-12 – hook Deploy w edytorze:** czy ma służyć tylko UX (potwierdzenie), a walidacja wiążąca pozostaje w `preDeploy` (Z-06)?
-3. **Z-12 – stabilność API:** jaki okres deprecjacji akceptujecie (rekomendacja: min. jedna wersja minor z ostrzeżeniem)?
-4. **Z-13 – zakres:** czy obejmuje `runtime/locales/pl/runtime.json` (141 kluczy) oraz 36 plików pomocy węzłów HTML (~13,3 tys. słów), czy tylko JSON z `editor-client` i `nodes/messages.json`?
-5. **Z-13 – liczba kluczy:** zlecenie podaje 1089 kluczy edytora; czysty 5.0.7 ma 1126 (1140 z kluczami Z-14). Z jakiej wersji pochodzi Wasze częściowe tłumaczenie (332 klucze)?
-6. **Z-13 – rejestr i terminologia:** forma bezosobowa czy „Ty”? Które pojęcia zostają po angielsku (flow, subflow, Deploy)? Kto zatwierdza słownik?
-7. **Z-13 – automatyczny wybór języka:** czy akceptujecie, że przeglądarki z językiem `pl` domyślnie pokażą polski edytor (standardowe zachowanie projektu, bez ustawienia)?
-8. **Z-13 – utrzymanie:** kto uzupełnia tłumaczenie przy kolejnych wersjach upstream (test zgodności będzie czerwony przy nowych kluczach)? Czy zgłaszamy upstream wykryty problem z `_plural` en-US przy i18next 25?
-9. **Z-14 – wyłączone ustawienie:** czy akceptujecie rekomendację „flow z zapisanym układem rysują się zgodnie z danymi, ukryte są tylko kontrolki, ustawienia użytkownika ignorowane”? Alternatywa: przy wyłączonym ignorować dane przy rysowaniu.
-10. **Z-14 – runtime bez bramkowania:** czy przenoszenie `layout`/`wireStyle` w API pojedynczego flow i pomijanie `o`/układu subflow w `diffNodes` może działać niezależnie od ustawienia (brak skutku dla flow bez tych pól)?
-11. **Z-14 – otwarte błędy:** zgoda na zakres FL-B-005 (wymagany) i FL-B-004 (zalecany); FL-B-007/008 opcjonalnie; FL-B-006 poza zakresem (zgłoszenie upstream)?
-12. **Z-15 – nazwa i semantyka (D-02):** `editorOnly: true` (flow nigdy nie startują; ZASADY §2.1) czy `runtimeState.autoStart: false` (możliwy ręczny start)? Czy odpowiedź P-01 `started` na instancji edycyjnej ma mieć postać `{rev, started:false}`? (`/ready` instancji edycyjnej – jedno pytanie: etap 3, pytanie 3.)
-13. **Z-15 – przycisk `inject` i trasy admin węzłów:** wystarczy opis ograniczeń, czy przycisk ma być nieaktywny na instancji edycyjnej?
-14. **E-03 / D-03:** zgoda na Playwright w `devDependencies` (osobny skrypt `test:e2e`, poza `npm test`)? Jeśli nie – czy kryteria „test edytora” (P-02, Z-01, Z-12) mogą być spełnione testami logiki + scenariuszem ręcznym w raporcie?
-15. **E-04 / D-04:** kto z Wykonawcy podpisuje DCO i CLA OpenJS; jak oznaczać pracę wspomaganą AI (trailer w commicie czy opis PR)?
-16. **E-04 – nazwy narzędzi:** czy wymóg „bez nazw produktów” obejmuje nazwy narzędzi stron trzecich (np. narzędzia E2E) w CHANGELOG i komentarzach testów?
-17. **E-04 – CHANGELOG:** wpis w gałęzi pakietu (sekcja bez wersji) czy wyłącznie w opisie dostarczenia (upstream redaguje CHANGELOG przy wydaniu)?
-18. **E-05 – miejsce CI:** w którym repozytorium uruchamiamy workflow weryfikacji i gałąź integracyjną (Wykonawcy czy Zamawiającego)? Czy gałęzie pakietów wymagają pełnej macierzy Node (22, 24), czy wystarczy ona dla gałęzi integracyjnej? Czy zadanie `test:e2e` (przy D-03 = tak) ma blokować scalenie?
+1. **Z-12 – załącznik B:** kiedy zostanie przekazana lista punktów? Czy propozycje `RED.header`, rozszerzenia Deploy (pozycje menu, hook/zdarzenie przed wdrożeniem w edytorze), `RED.dialog` i dokumentacja `RED.view.annotations` pokrywają Wasze potrzeby (przycisk „Publikuj”, oznaczenie środowiska)? **Rozstrzygnięte (R-24):** załącznik B przekazany (karty: [etap-4-z12.md](etap-4-z12.md)); `RED.deploy.addMenuItem`, `deployPre` i dokumentacja `RED.view.annotations` – poza Z-12, osobny pakiet później; dokumentacja: JSDoc + `design/editor-api/`.
+2. **Z-12 – hook Deploy w edytorze:** czy ma służyć tylko UX (potwierdzenie), a walidacja wiążąca pozostaje w `preDeploy` (Z-06)? **Rozstrzygnięte (R-24):** hook `deployPre` przeniesiony poza Z-12 (osobny pakiet później) – rola hooka (tylko UX, walidacja wiążąca w `preDeploy`) do potwierdzenia w tamtym pakiecie.
+3. **Z-12 – stabilność API:** jaki okres deprecjacji akceptujecie (rekomendacja: min. jedna wersja minor z ostrzeżeniem)? **Rozstrzygnięte (R-24):** deprecjacja min. jedna wersja minor z ostrzeżeniem.
+4. **Z-13 – zakres:** czy obejmuje `runtime/locales/pl/runtime.json` (141 kluczy) oraz 36 plików pomocy węzłów HTML (~13,3 tys. słów), czy tylko JSON z `editor-client` i `nodes/messages.json`? **Rozstrzygnięte (R-29, D-16):** JSON edytora, `messages.json` i `runtime.json` teraz; pomoc HTML – osobnym etapem.
+5. **Z-13 – liczba kluczy:** zlecenie podaje 1089 kluczy edytora; czysty 5.0.7 ma 1126 (1140 z kluczami Z-14). Z jakiej wersji pochodzi Wasze częściowe tłumaczenie (332 klucze)? **Rozstrzygnięte (R-29):** wersja źródłowa – baza 5.0.7.
+6. **Z-13 – rejestr i terminologia:** forma bezosobowa czy „Ty”? Które pojęcia zostają po angielsku (flow, subflow, Deploy)? Kto zatwierdza słownik? **Rozstrzygnięte (R-29):** forma bezosobowa; „węzeł”, „flow”/„subflow” bez tłumaczenia, „Wdróż”; słownik zatwierdza Zamawiający.
+7. **Z-13 – automatyczny wybór języka:** czy akceptujecie, że przeglądarki z językiem `pl` domyślnie pokażą polski edytor (standardowe zachowanie projektu, bez ustawienia)? **Rozstrzygnięte (R-29):** tak – automatyczny wybór `pl`.
+8. **Z-13 – utrzymanie:** kto uzupełnia tłumaczenie przy kolejnych wersjach upstream (test zgodności będzie czerwony przy nowych kluczach)? Czy zgłaszamy upstream wykryty problem z `_plural` en-US przy i18next 25? **Rozstrzygnięte (R-29):** test zgodności kluczy, uzupełnia Wykonawca. Zgłoszenie upstream problemu `_plural` – nieobjęte decyzją; zablokowane do czasu zniesienia D-04.
+9. **Z-14 – wyłączone ustawienie:** czy akceptujecie rekomendację „flow z zapisanym układem rysują się zgodnie z danymi, ukryte są tylko kontrolki, ustawienia użytkownika ignorowane”? Alternatywa: przy wyłączonym ignorować dane przy rysowaniu. **Rozstrzygnięte (R-01):** rysuj wg danych – ukryte tylko kontrolki.
+10. **Z-14 – runtime bez bramkowania:** czy przenoszenie `layout`/`wireStyle` w API pojedynczego flow i pomijanie `o`/układu subflow w `diffNodes` może działać niezależnie od ustawienia (brak skutku dla flow bez tych pól)? **Rozstrzygnięte (R-02):** tak – części runtime działają zawsze, niezależnie od ustawienia.
+11. **Z-14 – otwarte błędy:** zgoda na zakres FL-B-005 (wymagany) i FL-B-004 (zalecany); FL-B-007/008 opcjonalnie; FL-B-006 poza zakresem (zgłoszenie upstream)? **Rozstrzygnięte (R-03):** w zakresie wszystkie: FL-B-004, 005, 006, 007, 008 (+ 009 z B-01).
+12. **Z-15 – nazwa i semantyka (D-02):** `editorOnly: true` (flow nigdy nie startują; ZASADY §2.1) czy `runtimeState.autoStart: false` (możliwy ręczny start)? Czy odpowiedź P-01 `started` na instancji edycyjnej ma mieć postać `{rev, started:false}`? (`/ready` instancji edycyjnej – jedno pytanie: etap 3, pytanie 3.) **Rozstrzygnięte (R-19):** `editorOnly: true` (semantyka ścisła); `/ready` 200 w `loaded`. Kształt odpowiedzi P-01 `started` na instancji edycyjnej (`{rev, started:false}`) – nieobjęty decyzją.
+13. **Z-15 – przycisk `inject` i trasy admin węzłów:** wystarczy opis ograniczeń, czy przycisk ma być nieaktywny na instancji edycyjnej? **Rozstrzygnięte (R-19):** przycisk `inject` nieaktywny z podpowiedzią.
+14. **E-03 / D-03:** zgoda na Playwright w `devDependencies` (osobny skrypt `test:e2e`, poza `npm test`)? Jeśli nie – czy kryteria „test edytora” (P-02, Z-01, Z-12) mogą być spełnione testami logiki + scenariuszem ręcznym w raporcie? **Rozstrzygnięte (D-03, poza rejestrem R):** Playwright **nie** trafia do repozytorium (narzędzie instalowane poza nim; bez niego testy E2E pomijane); kryteria „test edytora” – testy logiki w `npm test` + scenariusz ręczny / E2E nieblokujące (R-31).
+15. **E-04 / D-04:** kto z Wykonawcy podpisuje DCO i CLA OpenJS; jak oznaczać pracę wspomaganą AI (trailer w commicie czy opis PR)? **Rozstrzygnięte (D-04/D-21, poza rejestrem R):** autor i `Signed-off-by` – Wojciech Repiński (Actuna Sp. z o.o.); praca z AI – trailer `Co-Authored-By`; CLA OpenJS dopiero przy ewentualnym zgłoszeniu upstream (zablokowane).
+16. **E-04 – nazwy narzędzi:** czy wymóg „bez nazw produktów” obejmuje nazwy narzędzi stron trzecich (np. narzędzia E2E) w CHANGELOG i komentarzach testów? **Rozstrzygnięte (R-30):** nazwy narzędzi stron trzecich dozwolone.
+17. **E-04 – CHANGELOG:** wpis w gałęzi pakietu (sekcja bez wersji) czy wyłącznie w opisie dostarczenia (upstream redaguje CHANGELOG przy wydaniu)? **Rozstrzygnięte (R-30):** CHANGELOG – sekcja „Unreleased” w gałęzi pakietu.
+18. **E-05 – miejsce CI:** w którym repozytorium uruchamiamy workflow weryfikacji i gałąź integracyjną (Wykonawcy czy Zamawiającego)? Czy gałęzie pakietów wymagają pełnej macierzy Node (22, 24), czy wystarczy ona dla gałęzi integracyjnej? Czy zadanie `test:e2e` (przy D-03 = tak) ma blokować scalenie? **Rozstrzygnięte (R-31):** CI (GitHub Actions) w forku `Actuna-Tech/node-red`, gałąź integracyjna (np. `actuna/integration`); gałęzie pakietów Node 22, integracja Node 22 i 24; E2E nieblokujące (ręcznie/nocnie, wynik w raporcie).
 
 ---
 
@@ -870,3 +911,15 @@ Poprawki z listy w [../PRZEGLAD.md](../PRZEGLAD.md) („Lista poprawek do nanies
 - **#13** – nowa karta **E-05 – Środowisko weryfikacji** (CI z pełnym `npm test` dla Node 22/24 wg `.github/workflows/tests.yml`, krok kontrolny `ssh-keygen`, opcjonalne zadanie `test:e2e` wg D-03, szablon raportu pakietu, gałąź integracyjna); wiersz w tabeli podsumowania, kolejność realizacji, pytanie 18.
 - **#29** – szacunki wyłącznie S/M/L: Z-12 „M (spike) + S–M na każdy punkt” → „M (spike + szkielet); każdy punkt z załącznika B – osobna karta”; E-03 „S (+ M dla E2E)” → „M”; dodatkowo podzadanie Z-14 „S/M” → „M”.
 - **Dodatkowo (nazwy, ZASADY §2.1)** – Z-15: ustawienie `editorOnly` (alternatywa `runtimeState.autoStart` w nawiasie), zależności uzupełnione o E-02 (T14), D-13, ZASADY §2.3 A krok 7; zgodność z Z-09 uwzględnia `deploy.reload.watch` i stan `reloadPending`.
+
+## Zmiany po decyzjach (2026-10-03)
+
+Naniesione decyzje z [../REJESTR-DECYZJI.md](../REJESTR-DECYZJI.md):
+
+- **Pytania 1–18** – dopisane rozstrzygnięcia (R-01, R-02, R-03, R-19, R-24, R-29, R-30, R-31; p.14 – D-03, p.15 – D-04/D-21).
+- **Z-12 (R-24):** `RED.deploy.addMenuItem`, hook edytora `deployPre` i dokumentacja `RED.view.annotations` **oznaczone jako przeniesione do osobnego pakietu realizowanego później** (Specyfikacja pkt 2 i 4, Projekt pkt 4, BDD, testy `deploy-extensions_spec.js`, DoD, Ryzyka, podzadania – treść zachowana jako wejście do przyszłego pakietu); dokumentacja: JSDoc + `design/editor-api/`; deprecjacja min. jedna wersja minor (nowy scenariusz); kolejność Z-12c → a → b → d → e. Szacunek karty ogólnej bez zmian (M).
+- **Z-13 (R-29, D-16):** zakres – JSON edytora, `messages.json`, `runtime.json`; pomoc HTML – osobny etap (podzadanie L wyłączone); baza 5.0.7; forma bezosobowa, „węzeł”, „flow”/„subflow”, „Wdróż”; słownik zatwierdza Zamawiający; automatyczny wybór `pl` zaakceptowany (nowy scenariusz); utrzymanie – Wykonawca. Szacunek bez zmian (L), mniejszy o pomoc HTML.
+- **Z-14 (R-01, R-02, R-03):** rysowanie wg danych przy `enabled: false` (rozstrzygnięte); runtime bez bramkowania; zakres błędów FL-B-004, 005, 006, 007, 008, 009 (Projekt pkt 6, szablon scenariusza BDD, testy, DoD, podzadanie M → L). **Szacunek Z-14: M → L.**
+- **Z-15 (R-19):** `editorOnly: true` (semantyka ścisła); przycisk `inject` nieaktywny z podpowiedzią (Skutki uboczne, nowy scenariusz, testy, DoD, Ryzyka, podzadania); `/ready` 200 w `loaded`.
+- **E-04 (R-30):** nazwy narzędzi stron trzecich dozwolone; CHANGELOG „Unreleased” w gałęzi pakietu; szablon nagłówka z łatek + `MODIFICATIONS.md`, uzupełnienie nagłówków z 0004, komentarze „upstream” → „wersja bazowa 5.0.7”, łatki zastąpione commitami (Projekt pkt 7, DoD, podzadanie).
+- **E-05 (R-31):** CI w forku `Actuna-Tech/node-red`, gałąź integracyjna `actuna/integration`; gałęzie pakietów – Node 22, integracja – Node 22 i 24; E2E nieblokujące (ręcznie/nocnie, wynik w raporcie) – Wyjścia, Projekt, BDD, testy, DoD, Ryzyka, podzadania.

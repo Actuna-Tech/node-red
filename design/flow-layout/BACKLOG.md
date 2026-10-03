@@ -162,6 +162,8 @@ W commitach i opisach PR podajemy identyfikator, np. `Fix diff rows for added pr
 | [FL-T-006](#fl-t-006--szybka-zmiana-układu-z-menu-zakładki) | Szybka zmiana układu z menu zakładki | funkcja | Nowe | P4 | – | edytor – okna |
 | [FL-T-007](#fl-t-007--przygotowanie-zmian-do-zgłoszenia-w-node-rednode-red) | Przygotowanie zmian do zgłoszenia w node-red/node-red | zadanie | Nowe | P4 | – | proces |
 
+**Zakres po decyzjach (2026-10-03, [REJESTR-DECYZJI](../engine-extensions/REJESTR-DECYZJI.md)):** FL-B-004, 005, 006, 007, 008 oraz FL-B-009 (z decyzji B-01) – **wszystkie w zakresie Z-14** (R-03). Przy `editorTheme.flowLayout.enabled: false` flow z zapisanym układem rysują się wg danych, ukryte są tylko kontrolki (R-01); części runtime (API flow, `diffNodes`) działają zawsze (R-02).
+
 Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 
 ---
@@ -174,6 +176,7 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 |---|---|
 | Status / Priorytet / Waga | Gotowe / P3 / Średnia |
 | Obszar | edytor – okna (Review Changes, różnice commitów w Projektach) |
+| Zakres | **w zakresie Z-14** (R-03, 2026-10-03) |
 | Wykryto | 2026-10-03, audyt eksport/import ([PROBLEMY.md](PROBLEMY.md) P2), odtworzone w przeglądarce |
 | Środowisko | Chromium, Node.js 22, flow demo `design/flow-layout/demo/demo-flows.json` |
 | Pliki | `editor-client/src/js/ui/diff.js` – `createNodePropertiesTable` |
@@ -204,6 +207,7 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 |---|---|
 | Status / Priorytet / Waga | Gotowe / P4 / Mała |
 | Obszar | eksport-import, edytor – okna |
+| Zakres | **w zakresie Z-14** (R-03, 2026-10-03) |
 | Wykryto | 2026-10-03, przegląd kodu ([PROBLEMY.md](PROBLEMY.md) P3) – nie odtworzone w przeglądarce |
 | Pliki | `ui/view.js` – `getFlowLayoutOptions`, `getNodeOrientation`; `ui/editors/flowLayout.js`; `ui/editors/panes/appearance.js` |
 
@@ -225,14 +229,15 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 |---|---|
 | Status / Priorytet / Waga | Do analizy / P4 / Mała |
 | Obszar | eksport-import |
+| Zakres | **w zakresie Z-14** (R-03, 2026-10-03) – analiza i poprawka w forku |
 | Wykryto | 2026-10-03, przegląd kodu ([PROBLEMY.md](PROBLEMY.md) P4) |
 | Pliki | `editor-client/src/js/nodes.js` – `checkForMatchingSubflow` |
 | Powiązania | błąd istniejący w Node-RED – nowe właściwości go nie powodują |
 
 **Opis:** przy imporcie edytor szuka istniejącego, identycznego subflow, porównując tekst JSON. Ten sam subflow z kluczami w innej kolejności (np. `layout` przed `color` – edycja ręczna, inne narzędzia) nie zostanie rozpoznany i powstanie duplikat / konflikt.
-**Do ustalenia w analizie:** odtworzenie, czy to realny problem dla użytkowników (pliki generowane przez narzędzia), czy zgłosić do node-red/node-red zamiast poprawiać lokalnie.
+**Do ustalenia w analizie:** odtworzenie i skala problemu dla użytkowników (pliki generowane przez narzędzia). **Po R-03:** błąd w zakresie – poprawka w forku; zgłoszenie do node-red/node-red niemożliwe do czasu zniesienia blokady D-04.
 **Proponowane rozwiązanie:** porównanie po znormalizowanych obiektach (`RED.utils.compareObjects` lub JSON z posortowanymi kluczami).
-**DoD specyficzne:** - [ ] Wynik analizy w karcie; - [ ] jeśli poprawka: test jednostkowy/E2E z odwróconą kolejnością kluczy.
+**DoD specyficzne:** - [ ] Wynik analizy w karcie; - [ ] poprawka (R-03) z testem jednostkowym/E2E z odwróconą kolejnością kluczy.
 
 ### FL-B-007 – Podpowiedzi etykiet portów w układzie TB
 
@@ -242,6 +247,7 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 | Obszar | edytor – widok |
 | Wykryto | 2026-10-03, przegląd kodu przy implementacji |
 | Pliki | `ui/view.js` – `portMouseOver` (pozycja i kierunek `showTooltip`) |
+| Zakres | **w zakresie Z-14** (R-03, 2026-10-03); po R-01 widoczny także przy `flowLayout.enabled: false` dla flow z zapisanym układem TB |
 
 **Kroki odtworzenia:** 1. Flow w układzie *Top to bottom*. 2. Węzeł z etykietami portów (Appearance → Port labels). 3. Najedź na port.
 **Oczekiwane:** podpowiedź nad wejściem (u góry) i pod wyjściem (u dołu), nie zasłania węzła.
@@ -257,6 +263,7 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 | Obszar | edytor – widok |
 | Wykryto | 2026-10-03, przy implementacji (świadome uproszczenie) |
 | Pliki | `ui/view.js` – rysowanie `.red-ui-flow-link-off-flow` (transformacja `rotate(90)`) |
+| Zakres | **w zakresie Z-14** (R-03, 2026-10-03); po R-01 widoczny także przy `flowLayout.enabled: false` dla flow z zapisanym układem TB |
 
 **Kroki odtworzenia:** 1. Flow w układzie TB z węzłem `link out` połączonym z `link in` na innej zakładce. 2. Zaznacz węzeł `link out`.
 **Oczekiwane:** odgałęzienie wychodzi z dołu, nazwy zakładek docelowych czytelne poziomo.
@@ -272,6 +279,7 @@ Sekcja 7 (tematy do analizy) czeka na listę do przeanalizowania.
 |---|---|
 | Status / Priorytet / Waga | Gotowe / P2 (priorytet biznesowy 1 – [../PRIORYTETY.md](../PRIORYTETY.md)) / Średnia |
 | Obszar | eksport-import, edytor |
+| Zakres | **w zakresie Z-14** (R-03, decyzja B-01); przy `flowLayout.enabled: false` ustawienia użytkownika są ignorowane (R-01), więc wartości efektywne = domyślne Node-RED i eksport nie dostaje nowych pól |
 | Wykryto | 2026-10-03, analiza wymagania „eksport/import wyglądu ze wszystkimi parametrami” (przegląd kodu) |
 | Pliki | `editor-client/src/js/ui/view.js` – `getFlowLayoutOptions`; `editor-client/src/js/nodes.js` – `convertWorkspace`, `convertSubflow` (eksport tylko ustawionych `layout`/`wireStyle`) |
 
