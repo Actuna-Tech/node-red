@@ -33,7 +33,8 @@ Zgodnie z praktyką *Explore → Specify → Plan*:
 1. Cztery niezależne przeglądy kodu tylko do odczytu (każdy z zakresem i formatem wyniku) – wynik w [WERYFIKACJA.md](WERYFIKACJA.md).
 2. Porównanie z dotychczasowym planem: [układ flow](../flow-layout/BACKLOG.md), [K8s/PostgreSQL](../k8s-postgres/ARCHITEKTURA.md) (wersja 3, z odpowiedziami zespołu).
 3. Analiza przekrojowa (miejsca w kodzie zmieniane przez wiele pakietów).
-4. Karty backlogu wg wspólnego szablonu ([ZASADY.md](ZASADY.md) §4), pisane równolegle (maks. 2 jednocześnie), z niezależnym przeglądem spójności.
+4. Karty backlogu wg wspólnego szablonu ([ZASADY.md](ZASADY.md) §4) – czterech autorów (agentów), w parach (maks. 2 jednocześnie), na wspólnych faktach z weryfikacji.
+5. Niezależny przegląd spójności ([PRZEGLAD.md](PRZEGLAD.md)): 33 uwagi (5 krytycznych), 15 z 17 twierdzeń o kodzie potwierdzonych; poprawki naniesione (rozstrzygnięcia K-1…K-3 w [ZASADY.md](ZASADY.md) §2.3, katalog kodów §2.4).
 
 ## 2. Wersja bazowa
 
@@ -55,7 +56,7 @@ Legenda: **=** zgodne (ten sam cel) · **+** uzupełnia (zlecenie dostarcza fund
 | P-01 odpowiedź po starcie | K8S §3.6 (publikacja CI/CD, MCP) | **+** | automaty dostają odpowiedź, gdy flow faktycznie działa – warunek wiarygodnych testów po wdrożeniu w CI/CD |
 | P-02 nieaktualny edytor | FL-B-004 (okno różnic) | **=** / **≠** | w trybie `reload-only` scalanie znika; FL-B-004 nadal potrzebne w trybie `prompt` |
 | P-03 telemetria | on-premise (K8S v3) | **+** | on-premise: zalecane `locked: true` |
-| P-04 tokens przed init | K8S-T-005 (workery) | **+** | workery z `disableEditor` **nadal wystawiają Admin API i /comms**; bez `adminAuth` – ryzyko zatrzymania procesu |
+| P-04 tokens przed init | K8S-T-005 (workery) | **+** | dotyczy instancji z edytorem (`/comms` nie startuje przy `disableEditor`); workery z `disableEditor` nadal wystawiają **Admin API** (`editor-api/lib/index.js:83-95`) |
 | Z-01 wyścig /comms | – | = | edytor; brak kolizji |
 | Z-02 trasy admin bloczków | K8S-T-005 (bezpieczeństwo) | **+** | dodatkowo zalecenie dla workerów: `httpAdminRoot: false` + sondy na osobnym porcie (Z-08) |
 | Z-03 aktualizacja .tgz | K8S-T-004 (obraz, paleta tylko do odczytu) | = | w docelowym K8s upload wyłączony; pakiet nadal uniwersalnie przydatny – niższy priorytet dla nas |
@@ -92,18 +93,23 @@ mechanizm podstawowy – akceptujemy, z warunkiem długiego limitu `preReload`) 
 **Działanie:** zadanie **E-01** – kontrakt potoku wdrożenia ([ZASADY.md](ZASADY.md) §2.3) zatwierdzony przed
 P-01; wszystkie pakiety implementują swoje kroki w tej kolejności. Dodatkowo naprawa ujawniona w weryfikacji:
 pusty `.catch` połykający błędy zatrzymania (`flows/index.js:233`) – w ramach P-01 (tryb `started`) i jako
-osobna poprawka błędu (E-01b) dla trybu domyślnego? → **D-05** (domyślnie zachowujemy 5.0.6, poprawkę proponujemy upstream osobno).
+osobna poprawka błędu dla trybu domyślnego → **D-05**: w trybie domyślnym zachowujemy 5.0.6 (zgodność), w trybie `started` błąd zatrzymania jest zwracany (`deploy_stop_failed`, [ZASADY.md](ZASADY.md) §2.3–2.4); poprawkę trybu domyślnego proponujemy upstream osobno.
 
 ### 4.2 Model stanu instancji (E-02)
 
 P-01, Z-08 i Z-09 potrzebują jednego, wiarygodnego stanu runtime:
 
 ```
-starting ──▶ ready ──▶ deploying ──▶ ready
-   │           │  └──▶ reloading ──▶ ready
-   │           └──────────▶ stopping (SIGTERM/SIGINT) ──▶ stopped
-   └─▶ failed (start się nie powiódł)
+idle ──▶ starting ──▶ ready ──▶ deploying ──────────────▶ ready
+            │           │  └──▶ reloadPending ──▶ reloading ──▶ ready
+            │           │        (preReload, drenaż;   (pod blokadą)
+            │           │         unieważniane przez wdrożenie)
+            │           └──────────▶ stopping (SIGTERM/SIGINT, nieodwracalny) ──▶ stopped
+            └─▶ failed (start / odczyt flow się nie powiódł)
+instancja tylko edycyjna (Z-15): idle ──▶ loaded (flow wczytane, nie uruchomione)
 ```
+Szczegóły przejść (T1–T13) i niezmienniki – karta E-02 w [backlog/etap-3.md](backlog/etap-3.md);
+kolejność kroków wdrożenia/przeładowania/zatrzymania – [ZASADY.md](ZASADY.md) §2.3.
 
 - Źródło: zdarzenia już istniejące (`flows:starting/started/stopping/stopped`, `runtime-state`) + nowe przejścia
   (`deploying`, `reloading`, `stopping` od sygnału).
@@ -158,6 +164,27 @@ Spójny zestaw: obiekt `deploy` (P-01, Z-04, Z-05), `editorTheme.deploy` (P-02),
 | Z-13 | wysoka (tłumaczenia są przyjmowane), wymaga przeglądu językowego | – |
 | Z-14 | średnia – duża zmiana edytora | dyskusja z opiekunami przed PR; podział na mniejsze PR |
 
+### 4.9 Dodatkowe błędy ujawnione przy pisaniu kart (wnioski z kodu, nieuruchamiane)
+
+| Błąd | Miejsce | Karta | Propozycja |
+|---|---|---|---|
+| `restart()` używa niezdefiniowanej zmiennej `nns` – przy 409 możliwy `ReferenceError` | `editor-client/src/js/ui/deploy.js:390` | **P-02** (właściciel `deploy.js`) | poprawka z testem w P-02 |
+| `installTarball` zapisuje `.tgz` przed sprawdzeniem wersji (ta sama wersja → plik zostaje/nadpisuje); pomija `pending_version` | `registry/lib/installer.js:443` | Z-03 | w zakresie skorygowanego Z-03 |
+| Zamknięcie jednego węzła `http in` usuwa trasy innych węzłów z tą samą ścieżką i metodą; `splice` w `forEach` | `nodes/core/network/21-httpin.js:356-365` | Z-07 | testy regresji na 5.0.7 przed zmianą (brak testów `http in` w repozytorium) |
+| `updateFlow` nie sprawdza duplikatów id względem innych flow | `runtime/lib/flows/index.js` | Z-04 | do potwierdzenia, test kontraktu |
+| Błąd startu zapisuje konfigurację – odpowiedź z błędem musi zawierać `rev`, inaczej kolejne wdrożenie edytora dostanie 409 | `runtime/lib/flows/index.js` | P-01 | w specyfikacji P-01 |
+| Hook `preDeploy` wykonywany pod blokadą API – długi hook blokuje wszystkie wdrożenia | `runtime/lib/api/flows.js:67` | Z-06 | limit czasu hooka |
+
+### 4.10 Przeładowanie i zatrzymanie w wielu replikach (ryzyko z karty Z-09/Z-08)
+
+| Problem | Skutek | Propozycja |
+|---|---|---|
+| Powiadomienie `watchFlows` trafia **jednocześnie do wszystkich workerów**; każdy w drenażu zwraca `/ready` 503 | przy rozmowach do ~15–20 min **cały Deployment wypada z load balancera** | (1) **przeładowanie rozłożone w czasie** – runtime przed przeładowaniem zajmuje „slot przeładowania” przez koordynację Z-10 (`claim("reload:<rev>", T)` z limitem równoległości, np. 1 lub 25% replik); domyślna wtyczka lokalna = brak ograniczeń (jak dziś); (2) **przeładowanie różnicowe** – restart tylko zmienionych flow, `/ready` 503 tylko gdy przeładowanie dotyczy flow obsługujących ruch (do decyzji); (3) alternatywa operacyjna: wydania niezmienne + rolling update (K8S-T-006) |
+| SIGTERM natychmiast zatrzymuje flow (`node-red/red.js:543-558` → `RED.stop()`) | `terminationGracePeriodSeconds` nie chroni rozmów – flow giną na początku okresu | Z-08: po SIGTERM najpierw `/ready` 503 i **drenaż** (hook `preShutdown` lub ten sam mechanizm co `preReload`, z limitem), dopiero potem `RED.stop()`; zamknięcie serwera HTTP; globalny limit czasu |
+| `readOnly` istniejącego magazynu plikowego pomija zapis flow po cichu – wdrożenie „udaje się”, zmiany giną po restarcie | utrata zmian | Z-11: przy `readOnlyUserDir` z magazynem plikowym – wdrożenie zwraca błąd zamiast cichego pominięcia (decyzja) |
+| Błąd odczytu flow przy starcie połykany (`runtime/lib/index.js:245`, `.catch` obejmuje tylko `loadFlows`) | instancja „działa” bez flow | E-02: stan `failed` i `/ready` 503 |
+| Zmiana samych poświadczeń nie zmienia rewizji (`storage/index.js:80`) | przeładowanie pominięte jako „własny zapis” | Z-09: pole `credentialsChanged` w powiadomieniu |
+
 ## 5. Uwagi do wymagań ogólnych zlecenia
 
 | # | Wymaganie | Uwaga | Propozycja |
@@ -168,7 +195,7 @@ Spójny zestaw: obiekt `deploy` (P-01, Z-04, Z-05), `editorTheme.deploy` (P-02),
 | 3.5 | `npm test` bez błędów | w środowisku bez `ssh-keygen` 5 testów projektów pada (niezwiązane) | środowisko CI z `ssh-keygen` (jak w `.github/workflows/tests.yml`) |
 | 3.5 | testy edytora | brak harnessu jednostkowego edytora | E-03, D-03 |
 | 3.8 | DCO `Signed-off-by` | projekt Node-RED wymaga podpisania **CLA OpenJS** (`CONTRIBUTING.md:48`); podpis DCO musi złożyć osoba odpowiedzialna za wkład (praca z AI – osoba z Wykonawcy przegląda i podpisuje) | D-04: kto podpisuje CLA/DCO; polityka oznaczania pracy wspomaganej AI |
-| 3.8 | jeden pakiet = jedna gałąź | pakiety potoku wdrożenia zależą od siebie | gałęzie pakietów **warstwowo** (E-01 → P-01 → Z-05 → Z-04 → Z-06 → Z-09) + gałąź integracyjna z pełnym `npm test` |
+| 3.8 | jeden pakiet = jedna gałąź | pakiety potoku wdrożenia zależą od siebie | gałęzie pakietów toru A **warstwowo** (E-01 → P-04 → P-01 → Z-04 → Z-05 → Z-06 → Z-08 → Z-10 → Z-09 → Z-11 → Z-15), tor B od bazy; gałąź integracyjna z pełnym `npm test` |
 | 7 | poza zakresem: wiele replik edytora | zgodne z naszą architekturą (1 pod edytora na tenanta) | – |
 
 ## 6. Plan
@@ -177,27 +204,31 @@ Spójny zestaw: obiekt `deploy` (P-01, Z-04, Z-05), `editorTheme.deploy` (P-02),
 
 | ID | Zadanie | Wynik |
 |---|---|---|
-| D-01…D-06 | decyzje Zamawiającego (sekcja 7) | zapis decyzji w tym pliku |
+| D-01…D-16 | decyzje Zamawiającego (sekcja 7) | zapis decyzji w tym pliku |
 | E-01 | kontrakt potoku wdrożenia (ADR) | zatwierdzona kolejność kroków, punkty hooków, stany, mutex |
 | E-02 | model stanu instancji | specyfikacja przejść + testy (implementacja w Z-08) |
 | E-03 | harness testów edytora | szablon testu jednostkowego klienta + decyzja E2E |
 | E-04 | dostosowanie istniejącej gałęzi | usunięcie atrybucji z kodu, podział na gałęzie pakietów, ustawienie `editorTheme.flowLayout.enabled` |
-| E-05 | środowisko weryfikacji | CI z pełnym `npm test` (w tym `ssh-keygen`), szablon raportu pakietu |
+| E-05 | środowisko weryfikacji | CI z pełnym `npm test` (w tym `ssh-keygen`), szablon raportu pakietu – karta w [backlog/etap-4.md](backlog/etap-4.md) |
 
-### 6.2 Kolejność realizacji (maks. 2 pakiety równolegle, bez wspólnych plików w parze)
+### 6.2 Kolejność realizacji – dwa tory (maks. 2 pakiety równolegle, bez wspólnych plików)
 
-| Krok | Para A | Para B | Uzasadnienie pary |
-|---|---|---|---|
-| 0 | E-01 + E-02 | E-03 + E-05 | dokumenty vs infrastruktura |
-| 1.1 | **P-04** (editor-api auth/comms) | **Z-01** (editor-client comms) | różne pakiety; obie poprawki błędów |
-| 1.2 | **P-03** (telemetria) | **Z-02** (trasy admin) | rozłączne pliki |
-| 1.3 | **P-01** (potok wdrożenia) | **P-02** (edytor deploy.js) | P-01 na kontrakcie E-01; P-02 po stronie klienta |
-| 2.1 | **Z-05** (rewizja) | **Z-03** (instalator) | rozłączne |
-| 2.2 | **Z-04** (API flow) | **Z-07** (trasy HTTP) | rozłączne; Z-04 po Z-05 (wspólna kontrola rewizji) |
-| 2.3 | **Z-06** (hooki) | E-04 / Z-14 (dostosowanie układu flow) | Z-06 po Z-04/Z-05 (wszystkie ścieżki) |
-| 3.1 | **Z-08** (sondy, stan) | **Z-11** (userDir) | rozłączne |
-| 3.2 | **Z-09** (przeładowanie) | **Z-10** (koordynacja) | Z-09 po Z-08 i Z-06 (stan, hooki) |
-| 4 | **Z-13** (polski – długie) | **Z-12** (punkty edytora, po załączniku B) → **Z-15** | tłumaczenie równolegle z kodem |
+Zasada: tor **A** = potok wdrożenia i runtime (zmiany w `runtime/lib/api/flows.js`, `runtime/lib/flows/*`,
+`runtime/lib/index.js`, `node-red/red.js` – **sekwencyjnie**); tor **B** = pakiety rozłączne plikowo z torem A.
+Wspólne pliki dokumentacyjne (`packages/node_modules/node-red/settings.js`, `CHANGELOG.md`, `locales/*`) są wyłączone
+z reguły – scalane w kolejności zakończenia pakietów.
+
+| Etap odbioru | Tor A (sekwencyjnie) | Tor B (równolegle do A) |
+|---|---|---|
+| 0 | E-01, E-02 (dokumenty) | E-03 (harness testów edytora), E-05 (środowisko CI) |
+| 1 | **P-04** → **P-01** | **Z-01** → **P-03** → **Z-02** → **P-02** (właściciel `deploy.js`, poprawka `nns`) |
+| 2 | **Z-04** → **Z-05** → **Z-06** (Z-05 zależy od Z-04; Z-14 część runtime – razem z Z-04) | **Z-03** → **Z-07** → **E-04/Z-14** (część edytora) |
+| 3 | **Z-08** (z implementacją E-02) → **Z-10** → **Z-09** (po Z-06, Z-08, Z-10 – limit równoległości przeładowań) → **Z-11** | **Z-13** (tłumaczenie – start) |
+| 4 | **Z-15** | **Z-13** (domknięcie, w tym klucze nowych pakietów) → **Z-12** (po załączniku B) |
+
+Zależności miękkie (bez cykli): P-02 → Z-05 (po dostarczeniu Z-05 edytor w `reload-only` korzysta z wymogu
+rewizji; integracja edytora w Z-05 dotyka `deploy.js` po scaleniu P-02); Z-06 i Z-08 udostępniają punkty
+integracji, z których korzysta Z-09 (nie odwrotnie).
 
 ### 6.3 Weryfikacja na każdym kroku
 Test czerwony → implementacja → testy pakietu → `npm test` → niezależny przegląd diffu (agent przeglądu wg [ZASADY.md](ZASADY.md) §5)
@@ -216,27 +247,6 @@ przy którym runtime wczytuje flow, ale ich nie uruchamia, **bez zapisu stanu do
 trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od działającego runtime (debug, status, przycisk
 `inject`) – opis ograniczeń; przekazywanie zdarzeń z workerów pozostaje wtyczką (K8S-T-003).
 
-### 4.9 Dodatkowe błędy ujawnione przy pisaniu kart (wnioski z kodu, nieuruchamiane)
-
-| Błąd | Miejsce | Karta | Propozycja |
-|---|---|---|---|
-| `restart()` używa niezdefiniowanej zmiennej `nns` – przy 409 możliwy `ReferenceError` | `editor-client/src/js/ui/deploy.js:390` | Z-05 / P-02 | poprawka z testem w P-02 |
-| `installTarball` zapisuje `.tgz` przed sprawdzeniem wersji (ta sama wersja → plik zostaje/nadpisuje); pomija `pending_version` | `registry/lib/installer.js:443` | Z-03 | w zakresie skorygowanego Z-03 |
-| Zamknięcie jednego węzła `http in` usuwa trasy innych węzłów z tą samą ścieżką i metodą; `splice` w `forEach` | `nodes/core/network/21-httpin.js:356-365` | Z-07 | testy regresji na 5.0.7 przed zmianą (brak testów `http in` w repozytorium) |
-| `updateFlow` nie sprawdza duplikatów id względem innych flow | `runtime/lib/flows/index.js` | Z-04 | do potwierdzenia, test kontraktu |
-| Błąd startu zapisuje konfigurację – odpowiedź z błędem musi zawierać `rev`, inaczej kolejne wdrożenie edytora dostanie 409 | `runtime/lib/flows/index.js` | P-01 | w specyfikacji P-01 |
-| Hook `preDeploy` wykonywany pod blokadą API – długi hook blokuje wszystkie wdrożenia | `runtime/lib/api/flows.js:67` | Z-06 | limit czasu hooka |
-
-### 4.10 Przeładowanie i zatrzymanie w wielu replikach (ryzyko z karty Z-09/Z-08)
-
-| Problem | Skutek | Propozycja |
-|---|---|---|
-| Powiadomienie `watchFlows` trafia **jednocześnie do wszystkich workerów**; każdy w drenażu zwraca `/ready` 503 | przy rozmowach do ~15–20 min **cały Deployment wypada z load balancera** | (1) **przeładowanie rozłożone w czasie** – runtime przed przeładowaniem zajmuje „slot przeładowania” przez koordynację Z-10 (`claim("reload:<rev>", T)` z limitem równoległości, np. 1 lub 25% replik); domyślna wtyczka lokalna = brak ograniczeń (jak dziś); (2) **przeładowanie różnicowe** – restart tylko zmienionych flow, `/ready` 503 tylko gdy przeładowanie dotyczy flow obsługujących ruch (do decyzji); (3) alternatywa operacyjna: wydania niezmienne + rolling update (K8S-T-006) |
-| SIGTERM natychmiast zatrzymuje flow (`node-red/red.js:543-558` → `RED.stop()`) | `terminationGracePeriodSeconds` nie chroni rozmów – flow giną na początku okresu | Z-08: po SIGTERM najpierw `/ready` 503 i **drenaż** (hook `preShutdown` lub ten sam mechanizm co `preReload`, z limitem), dopiero potem `RED.stop()`; zamknięcie serwera HTTP; globalny limit czasu |
-| `readOnly` istniejącego magazynu plikowego pomija zapis flow po cichu – wdrożenie „udaje się”, zmiany giną po restarcie | utrata zmian | Z-11: przy `readOnlyUserDir` z magazynem plikowym – wdrożenie zwraca błąd zamiast cichego pominięcia (decyzja) |
-| Błąd odczytu flow przy starcie połykany (`runtime/lib/index.js:247`) | instancja „działa” bez flow | E-02: stan `failed` i `/ready` 503 |
-| Zmiana samych poświadczeń nie zmienia rewizji (`storage/index.js:80`) | przeładowanie pominięte jako „własny zapis” | Z-09: pole `credentialsChanged` w powiadomieniu |
-
 ## 7. Decyzje do podjęcia przez Zamawiającego
 
 | ID | Decyzja | Rekomendacja |
@@ -250,8 +260,16 @@ trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od dzia
 | D-07 | kontrola nagłówka `Origin` dla `/comms` (ochrona przed obcymi stronami) | tak, jako ustawienie z bezpieczną listą domyślną (do uzgodnienia w zgłoszeniu bezpieczeństwa) |
 | D-08 | Z-04: kolizja pola `configs` (dziś z zasięgiem flow) – nowe pole `globalConfigs[]` vs zmiana znaczenia | `globalConfigs[]` (zgodność wstecz) |
 | D-09 | Z-04: `rev` w `GET /flow/:id` tylko dla `Node-RED-API-Version: v2` (klienci v1 robiący GET→PUT nie dostaną nagle 409) | tak |
-| D-10 | Z-09: przeładowanie rozłożone w czasie przez koordynację (Z-10) i/lub różnicowe | oba: różnicowe domyślnie przy włączonym Z-09, limit równoległości przez koordynację |
-| D-11 | Z-08: drenaż przy SIGTERM przed zatrzymaniem flow (hook `preShutdown`, limit czasu) | tak – warunek ochrony rozmów w K8s |
+| D-10 | Z-09: przeładowanie rozłożone w czasie i/lub różnicowe | `deploy.reload.type` domyślnie `"full"` (jak dziś), **rekomendowane `"diff"`** dla wdrożeń z długimi rozmowami; limit równoległości `deploy.reload.concurrency` przez koordynację (Z-10) |
+| D-11 | Z-08: drenaż przy SIGTERM przed zatrzymaniem flow (hook `preShutdown`, `health.shutdownTimeout`) | tak – w rdzeniu (niezależnie od `preStop` orkiestratora, który można stosować dodatkowo) |
+| D-12 | P-02/Z-05: „Overwrite” w edytorze przy `deploy.requireRevision` | wymuszone nadpisanie wysyła aktualną rewizję po potwierdzeniu w oknie; w `reload-only` niedostępne |
+| D-13 | Z-08/Z-15: `/ready` instancji tylko edycyjnej | 200 po wczytaniu flow (stan `loaded`) – instancja gotowa do edycji |
+| D-14 | Z-10: semantyka „tylko jedna instancja” w `inject` | harmonogram cron: zajęcie klucza `<id>:<czas zaplanowany>` (dokładnie raz); interwał: lider |
+| D-15 | Z-11: kontekst `localfilesystem` przy `readOnlyUserDir` | błąd startu z czytelnym komunikatem (bez cichej zmiany na `memory`) |
+| D-16 | Z-13: zakres – `runtime.json` i pomoc HTML węzłów (~13,3 tys. słów) | `runtime.json` tak; pomoc HTML – osobna wycena |
+
+Pozostałe pytania z kart (ok. 35, pogrupowane i bez duplikatów) – [PRZEGLAD.md](PRZEGLAD.md) §7; każda karta
+ma też sekcję „Pytania do Zamawiającego”.
 
 ## 8. Backlog
 
@@ -260,7 +278,7 @@ trafia do wspólnych ustawień i zatrzymałby workery). Funkcje zależne od dzia
 | 1 | [backlog/etap-1.md](backlog/etap-1.md) | E-01, P-01, P-02, P-03, P-04, Z-01, Z-02 |
 | 2 | [backlog/etap-2.md](backlog/etap-2.md) | Z-03, Z-04, Z-05, Z-06, Z-07 |
 | 3 | [backlog/etap-3.md](backlog/etap-3.md) | E-02, Z-08, Z-09, Z-10, Z-11 |
-| 4 | [backlog/etap-4.md](backlog/etap-4.md) | Z-12, Z-13, Z-14, Z-15 |
+| 4 | [backlog/etap-4.md](backlog/etap-4.md) | Z-12, Z-13, Z-14, Z-15, E-03, E-04, E-05 |
 
 Każda karta zawiera: weryfikację stanu, specyfikację, projekt, kryteria akceptacji BDD (kryteria odbioru ze
 zlecenia + uzupełnienia), testy, DoD specyficzne, ryzyka, podzadania. Wspólne DoD i ewaluacje – [ZASADY.md](ZASADY.md) §3.
