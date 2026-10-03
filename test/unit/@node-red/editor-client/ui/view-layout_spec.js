@@ -4,6 +4,7 @@
  *   FL-B-005: tests for the select option of an unknown layout value
  *   Z-14: tests for the editorTheme.flowLayout.enabled setting and the layout options of a flow
  *   FL-B-007: tests for the position of port label tooltips
+ *   FL-B-008: tests for the geometry of links to other flows
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
@@ -483,6 +484,78 @@ describe("editor-client/ui/view-layout", function() {
         it("treats an unknown orientation as horizontal", function() {
             layout.getPortTooltipPosition([0, 0], layout.PORT_TYPE_OUTPUT, undefined)
                 .should.eql({ x: 12, y: 5, direction: "right" });
+        });
+    });
+
+    describe("getOffFlowLinkGeometry (FL-B-008)", function() {
+        // The geometry drawn by the base version for a horizontal node
+        function originalBranches(s, count) {
+            const stemLength = s * 30;
+            const branchLength = s * 20;
+            const result = [];
+            let y = -(count - 1) * 30 / 2;
+            for (let i = 0; i < count; i++) {
+                result.push({
+                    path: "M " + stemLength + " 0 " +
+                        "C " + (stemLength + (1.7 * branchLength)) + " " + 0 +
+                        " " + (stemLength + (0.1 * branchLength)) + " " + y + " " +
+                        (stemLength + branchLength * 1.5) + " " + y + " ",
+                    x: stemLength + branchLength * 1.5,
+                    y: y
+                });
+                y += 30;
+            }
+            return result;
+        }
+
+        it("keeps the geometry of a horizontal link out node", function() {
+            [1, 2, 3].forEach(function(count) {
+                const g = layout.getOffFlowLinkGeometry(1, count, "LR");
+                g.stem.should.equal("M 0 0 h 30");
+                g.branches.should.eql(originalBranches(1, count));
+            });
+        });
+
+        it("keeps the geometry of a horizontal link in node", function() {
+            const g = layout.getOffFlowLinkGeometry(-1, 2, "LR");
+            g.stem.should.equal("M 0 0 h -30");
+            g.branches.should.eql(originalBranches(-1, 2));
+        });
+
+        it("draws the stem of a vertical link out node down from the node", function() {
+            const g = layout.getOffFlowLinkGeometry(1, 1, "TB");
+            g.stem.should.equal("M 0 0 v 30");
+            const points = pathPoints(g.branches[0].path);
+            points[0].point.should.eql([0, 30]);
+        });
+
+        it("draws the stem of a vertical link in node up from the node", function() {
+            const g = layout.getOffFlowLinkGeometry(-1, 1, "TB");
+            g.stem.should.equal("M 0 0 v -30");
+            pathPoints(g.branches[0].path)[0].point.should.eql([0, -30]);
+        });
+
+        it("ends each branch of a vertical node at its horizontal label, away from the node", function() {
+            [1, -1].forEach(function(s) {
+                const g = layout.getOffFlowLinkGeometry(s, 3, "TB");
+                g.branches.should.have.length(3);
+                g.branches.forEach(function(b, i) {
+                    // The label is at the side of the stem, past its end
+                    (b.x * s).should.be.above(0);
+                    (b.y * s).should.be.above(30);
+                    const points = pathPoints(b.path);
+                    points[points.length - 1].point.should.eql([b.x, b.y]);
+                    if (i > 0) {
+                        // The labels are stacked, one node height apart
+                        (b.y - g.branches[i - 1].y).should.equal(s * 30);
+                        b.x.should.equal(g.branches[i - 1].x);
+                    }
+                });
+            });
+        });
+
+        it("treats an unknown orientation as horizontal", function() {
+            layout.getOffFlowLinkGeometry(1, 2, undefined).should.eql(layout.getOffFlowLinkGeometry(1, 2, "LR"));
         });
     });
 

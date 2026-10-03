@@ -18,6 +18,7 @@
  *   Z-14, FL-B-010: end-to-end tests of flow layouts and import of flows with the same ids
  *   Z-14: run with editorTheme.flowLayout.enabled set; tests with the setting not set
  *   FL-B-007: test of the position of port label tooltips
+ *   FL-B-008: test of the labels of links to other flows
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -450,6 +451,67 @@ function contextMenuLabels(page, nodeId) {
             } finally {
                 await clearLabels("h1");
             }
+        });
+    });
+
+    describe("links to other flows (FL-B-008)", function() {
+        async function addLinkNodes() {
+            // Imported nodes are added to the active flow
+            await page.evaluate(() => {
+                RED.workspaces.show("tLR");
+                RED.nodes.import([{ id: "li1", type: "link in", z: "tLR", name: "", links: [], x: 120, y: 300, wires: [] }]);
+                RED.workspaces.show("tTB");
+                RED.nodes.import([{ id: "lo1", type: "link out", z: "tTB", name: "", mode: "link", links: ["li1"], x: 600, y: 60, wires: [] }]);
+                RED.nodes.node("li1").links = ["lo1"];
+            });
+        }
+
+        /** Select a link node and get the bounding boxes of the node and the labels of its links */
+        async function offFlowLabels(id) {
+            await page.evaluate(id => {
+                RED.view.select({ nodes: [RED.nodes.node(id)] });
+                RED.view.redraw(true);
+            }, id);
+            await page.waitForSelector(".red-ui-flow-link-off-flow .red-ui-flow-port-label");
+            return page.evaluate(id => {
+                const box = el => {
+                    const r = el.getBoundingClientRect();
+                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+                };
+                const group = document.querySelector(".red-ui-flow-link-off-flow");
+                return {
+                    transform: group.getAttribute("transform"),
+                    node: box(document.getElementById(id).__mainRect__),
+                    labels: Array.from(group.querySelectorAll(".red-ui-flow-port-label")).map(el => Object.assign(box(el), { text: el.textContent }))
+                };
+            }, id);
+        }
+
+        it("shows horizontal labels below a top to bottom link out node", async function() {
+            await addLinkNodes();
+            await showFlow("tTB");
+            const result = await offFlowLabels("lo1");
+            result.transform.should.not.match(/rotate/);
+            result.labels.should.have.length(1);
+            const label = result.labels[0];
+            label.text.should.equal("Horizontal");
+            label.w.should.be.above(label.h);
+            label.y.should.be.aboveOrEqual(result.node.y + result.node.h);
+            // Clicking the label shows the flow of the linked node
+            await page.mouse.click(label.x + label.w / 2, label.y + label.h / 2);
+            await page.waitForTimeout(300);
+            (await page.evaluate(() => RED.workspaces.active())).should.equal("tLR");
+        });
+
+        it("keeps the labels at the side of a left to right link in node", async function() {
+            await addLinkNodes();
+            await showFlow("tLR");
+            const result = await offFlowLabels("li1");
+            result.transform.should.not.match(/rotate/);
+            const label = result.labels[0];
+            label.text.should.equal("Vertical");
+            label.w.should.be.above(label.h);
+            (label.x + label.w).should.be.belowOrEqual(result.node.x);
         });
     });
 
