@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   E-01: tests of the project switch under the shared deploy lock
+ *   E-01: project operations that change the flow files run with the reload under the lock (R-11)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -136,5 +137,175 @@ describe("storage/localfilesystem/projects - deploy lock (E-01)", function() {
         runtime.nodes.stopFlows = sinon.spy(async function() { throw new Error("stop failed") });
         await projects._reloadActiveProject("loaded").should.be.rejectedWith("stop failed");
         lock.isLocked().should.be.false();
+    });
+});
+
+describe("storage/localfilesystem/projects - operations under the deploy lock (E-01)", function() {
+    const os = require("os");
+    const projects = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/projects");
+    const Project = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/projects/Project");
+    const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
+    let order;
+    let runtime;
+    let project;
+    let pending;
+
+    // A project operation that records whether it runs under the lock and
+    // can be held open by the test
+    function operation(name, result) {
+        return sinon.spy(function() {
+            order.push(name + (lock.isLocked() ? ":locked" : ":unlocked"));
+            if (pending && pending.name === name) {
+                return new Promise(resolve => { pending.release = () => { order.push(name + ":end"); resolve(result) } });
+            }
+            return Promise.resolve(result);
+        });
+    }
+    function wait() {
+        return new Promise(resolve => setTimeout(resolve, 10));
+    }
+
+    beforeEach(async function() {
+        order = [];
+        pending = null;
+        runtime = {
+            nodes: {
+                stopFlows: sinon.spy(async function() { order.push("stopFlows") }),
+                clearContext: sinon.spy(async function() { order.push("clearContext") }),
+                loadFlows: sinon.spy(async function() { order.push("loadFlows") }),
+                setCredentialSecret: sinon.spy(),
+                clearCredentials: sinon.spy(),
+                exportCredentials: sinon.spy(async function() { return {} })
+            },
+            storage: {
+                saveCredentials: sinon.spy(async function() {})
+            }
+        };
+        let projectSettings = {};
+        // Projects enabled without git, ssh and file system access (readOnly)
+        sinon.stub(gitTools, "init").resolves({ version: "2.40.0" });
+        sinon.stub(NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/projects/ssh"), "init").resolves();
+        sinon.stub(Project, "init");
+        await projects.init({
+            userDir: os.tmpdir(),
+            readOnly: true,
+            flowFile: "e01-test-flows.json",
+            editorTheme: { projects: { enabled: true } },
+            get: function(key) { return projectSettings[key] },
+            set: async function(key, value) { projectSettings[key] = value }
+        }, runtime);
+        project = {
+            name: "p1",
+            credentialSecretInvalid: false,
+            merging: false,
+            isMerging: function() { return project.merging },
+            getFlowFile: () => "flows.json",
+            getFlowFileBackup: () => ".flows.json.backup",
+            getCredentialsFile: () => "flows_cred.json",
+            getCredentialsFileBackup: () => ".flows_cred.json.backup",
+            setBranch: operation("setBranch"),
+            pull: operation("pull"),
+            revertFile: operation("revertFile"),
+            abortMerge: operation("abortMerge"),
+            resolveMerge: operation("resolveMerge"),
+            commit: sinon.spy(function() {
+                order.push("commit" + (lock.isLocked() ? ":locked" : ":unlocked"));
+                project.merging = false;
+                return Promise.resolve();
+            }),
+            update: operation("update", { flowFilesChanged: true }),
+            initialise: operation("initialise")
+        };
+        sinon.stub(Project, "load").callsFake(async function() {
+            order.push("load" + (lock.isLocked() ? ":locked" : ":unlocked"));
+            return project;
+        });
+        sinon.stub(console, "log");
+        await projects.setActiveProject(null, "p1");
+        order = [];
+    });
+    afterEach(function() {
+        sinon.restore();
+    });
+
+    it("a deploy waits for a running branch change and its reload", async function() {
+        pending = { name: "setBranch" };
+        const change = projects.setBranch(null, "p1", "dev", false);
+        const deploy = lock.runExclusive(async function() { order.push("deploy") });
+        await wait();
+        order.should.eql(["setBranch:locked"]);
+        pending.release();
+        await change;
+        await deploy;
+        order.should.eql(["setBranch:locked", "setBranch:end", "stopFlows", "loadFlows", "deploy"]);
+        // Internal call: no deployOpts
+        runtime.nodes.loadFlows.firstCall.args.should.eql([true]);
+    });
+    it("a branch change waits for a running deploy", async function() {
+        let release;
+        const deploy = lock.runExclusive(function() {
+            order.push("deploy:start");
+            return new Promise(resolve => { release = () => { order.push("deploy:end"); resolve() } });
+        });
+        const change = projects.setBranch(null, "p1", "dev", false);
+        await wait();
+        order.should.eql(["deploy:start"]);
+        release();
+        await deploy;
+        await change;
+        order.should.eql(["deploy:start", "deploy:end", "setBranch:locked", "stopFlows", "loadFlows"]);
+    });
+    [
+        ["pull", () => projects.pull(null, "p1", "origin/main", false, false), true],
+        ["revertFile", () => projects.revertFile(null, "p1", "flows.json"), true],
+        ["abortMerge", () => projects.abortMerge(null, "p1"), true],
+        ["resolveMerge", () => projects.resolveMerge(null, "p1", "flows.json", "ours"), false],
+        ["update", () => projects.updateProject(null, "p1", {}), true],
+        ["initialise", () => projects.initialiseProject(null, "p1", {}), true]
+    ].forEach(function([name, run, reloads]) {
+        it(name + " runs under the lock" + (reloads ? " with the reload" : "") + " and waits for a deploy", async function() {
+            pending = { name: name };
+            const change = run();
+            const deploy = lock.runExclusive(async function() { order.push("deploy") });
+            await wait();
+            order.should.eql([name + ":locked"]);
+            pending.release();
+            await change;
+            await deploy;
+            const expected = [name + ":locked", name + ":end"];
+            if (reloads) {
+                expected.push("stopFlows", "loadFlows");
+            }
+            expected.push("deploy");
+            order.should.eql(expected);
+        });
+    });
+    it("a credential secret change of the project runs under the lock with the reload", async function() {
+        project.credentialSecretInvalid = true;
+        project.update = operation("update", { credentialSecretChanged: true });
+        pending = { name: "update" };
+        const change = projects.updateProject(null, "p1", { resetCredentialSecret: true });
+        const deploy = lock.runExclusive(async function() { order.push("deploy") });
+        await wait();
+        pending.release();
+        await change;
+        await deploy;
+        order.should.eql(["update:locked", "update:end", "stopFlows", "loadFlows", "deploy"]);
+        runtime.storage.saveCredentials.calledOnce.should.be.true();
+    });
+    it("a commit that completes a merge runs under the lock with the reload", async function() {
+        project.merging = true;
+        await projects.commit(null, "p1", {message: "merge"});
+        order.should.eql(["commit:locked", "stopFlows", "loadFlows"]);
+    });
+    it("a project switch loads the project under the lock", async function() {
+        await projects.setActiveProject(null, "p1");
+        order.should.eql(["load:locked", "stopFlows", "loadFlows"]);
+    });
+    it("releases the lock when the operation fails", async function() {
+        project.setBranch = sinon.spy(async function() { throw new Error("checkout failed") });
+        await projects.setBranch(null, "p1", "dev", false).should.be.rejectedWith("checkout failed");
+        lock.isLocked().should.be.false();
+        order.should.eql([]);
     });
 });

@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   E-01: tests of the shared deploy lock
+ *   E-01: tests of holdUntil - the lock is held until the start of the flows completes (R-43)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -53,6 +54,50 @@ describe("flows/lock", function() {
         }).should.be.rejectedWith("fail");
         lock.isLocked().should.be.false();
         (await lock.runExclusive(async () => "next")).should.equal("next");
+    });
+    it("keeps the lock after the section until a held promise settles (R-43)", async function() {
+        let finishStart;
+        const result = await lock.runExclusive(async function() {
+            lock.holdUntil(new Promise(resolve => { finishStart = resolve }));
+            return "deployed";
+        });
+        // The result is returned before the held promise settles
+        result.should.equal("deployed");
+        lock.isLocked().should.be.true();
+        const order = [];
+        const next = lock.runExclusive(async function() { order.push("next") });
+        await new Promise(resolve => setTimeout(resolve, 10));
+        order.should.eql([]);
+        finishStart();
+        await next;
+        order.should.eql(["next"]);
+        lock.isLocked().should.be.false();
+    });
+    it("releases the lock when a held promise rejects", async function() {
+        let failStart;
+        await lock.runExclusive(async function() {
+            lock.holdUntil(new Promise((resolve, reject) => { failStart = reject }));
+        });
+        lock.isLocked().should.be.true();
+        failStart(new Error("start failed"));
+        (await lock.runExclusive(async () => "next")).should.equal("next");
+        lock.isLocked().should.be.false();
+    });
+    it("releases the lock when a section with a held promise throws", async function() {
+        let finishStart;
+        await lock.runExclusive(async function() {
+            lock.holdUntil(new Promise(resolve => { finishStart = resolve }));
+            throw new Error("fail");
+        }).should.be.rejectedWith("fail");
+        lock.isLocked().should.be.true();
+        finishStart();
+        (await lock.runExclusive(async () => "next")).should.equal("next");
+    });
+    it("ignores holdUntil outside a section", async function() {
+        lock.holdUntil(new Promise(() => {}));
+        lock.isLocked().should.be.false();
+        (await lock.runExclusive(async () => "next")).should.equal("next");
+        lock.isLocked().should.be.false();
     });
     it("releases lock when a synchronous section throws", async function() {
         await lock.runExclusive(function() {

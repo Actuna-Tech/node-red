@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-02: tests of the httpAdmin guard (httpAdminNodeRoutes) in the node api
+ *   Z-02: tests of use() without a path and of the position of the permission marker
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -168,6 +169,19 @@ describe("red/nodes/registry/util",function() {
             await request(adminApp).get("/z02/perm").set("x-token","any").expect(401);
             await request(adminApp).get("/z02/perm").set("x-token","z02.read").expect(200);
         });
+        it("guards a route whose permission marker follows a handler (D1)", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.get("/z02/order", ok, RED.auth.needsPermission("z02.read"));
+            await request(adminApp).get("/z02/order").expect(401);
+            fakeAuth.needsPermission.calledWith("").should.be.true();
+            await request(adminApp).get("/z02/order").set("x-token","any").expect(200);
+        });
+        it("accepts several markers before the first handler", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.get("/z02/two", [RED.auth.needsPermission("z02.read")], RED.auth.needsPermission("z02.read"), ok);
+            fakeAuth.needsPermission.callCount.should.equal(2);
+            await request(adminApp).get("/z02/two").set("x-token","z02.read").expect(200);
+        });
         it("finds the marker in an array of handlers", async function() {
             const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
             RED.httpAdmin.get("/z02/perm", [RED.auth.needsPermission("z02.read"), ok]);
@@ -203,11 +217,50 @@ describe("red/nodes/registry/util",function() {
             await request(adminApp).get("/z02/route").set("x-token","any").expect(200);
             await request(adminApp).put("/z02/route").set("x-token","any").expect(200);
         });
-        it("guards use without a path", async function() {
+        it("skips use without a path for a request without authentication", async function() {
             const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
             RED.httpAdmin.use(ok);
-            await request(adminApp).get("/anything").expect(401);
+            await request(adminApp).get("/anything").expect(404);
             await request(adminApp).get("/anything").set("x-token","any").expect(200);
+        });
+        it("use without a path does not block routes of other modules (W1)", async function() {
+            const A = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"}, {id: "a/a", module: "a", namespace: "a"});
+            let globalCalls = 0;
+            A.httpAdmin.use(function(req,res,next) { globalCalls++; res.set("x-global","1"); next() });
+            A.httpAdmin.use("/", function(req,res,next) { globalCalls++; next() });
+            const B = registryUtil.createNodeApi({id: "b/b", module: "b", namespace: "b"});
+            B.httpAdmin.get("/b/view/x", B.auth.publicRoute(), ok);
+            B.httpAdmin.get("/b/protected", ok);
+            const pub = await request(adminApp).get("/b/view/x").expect(200);
+            should.not.exist(pub.headers["x-global"]);
+            globalCalls.should.equal(0);
+            await request(adminApp).get("/b/protected").expect(401);
+            await request(adminApp).get("/nonexistent").expect(404);
+            const authed = await request(adminApp).get("/b/protected").set("x-token","any").expect(200);
+            authed.headers["x-global"].should.equal("1");
+            globalCalls.should.equal(2);
+            // The authentication check runs once per request for one use() call
+            fakeAuth.needsPermission.callCount.should.equal(3);
+        });
+        it("keeps the arity of an error handler given to use without a path", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            RED.httpAdmin.get("/z02/fail", function(req,res,next) { next(new Error("boom")) });
+            RED.httpAdmin.use(function(err,req,res,next) { res.status(418).end() });
+            await request(adminApp).get("/z02/fail").expect(401);
+            await request(adminApp).get("/z02/fail").set("x-token","any").expect(418);
+        });
+        it("mounts a sub-application given to use without a path", async function() {
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            const sub = express();
+            sub.get("/sub2/x", function(req,res) { res.send(String(req.app === sub)) });
+            RED.httpAdmin.use(sub);
+            sub.parent.should.equal(adminApp);
+            adminApp.get("/after", function(req,res) { res.send(String(req.app === adminApp)) });
+            await request(adminApp).get("/sub2/x").expect(404);
+            const res = await request(adminApp).get("/sub2/x").set("x-token","any").expect(200);
+            res.text.should.equal("true");
+            const after = await request(adminApp).get("/after").set("x-token","any").expect(200);
+            after.text.should.equal("true");
         });
         it("guards a mounted sub-application", async function() {
             const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
