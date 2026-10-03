@@ -1112,6 +1112,17 @@ Funkcja: Wykonanie na jednej instancji
 - [ ] Test dwóch instancji w jednym procesie (atrapa koordynatora) w `npm test`; wariant wieloprocesowy w osobnym podzbiorze (R-21) – L
 - [ ] Dokumentacja API, szablon `settings.js`, CHANGELOG – S
 
+#### Realizacja (2026-10-03, gałąź `feature/p3-database`)
+- Commity: `7efceb5` (API koordynacji, wtyczka lokalna, kolejność start/stop, `RED.coordination` w `createNodeApi`), `34c5e67` (`inject` – `singleInstance`, test dwóch instancji w jednym procesie), commit dokumentacji (`settings.js`, CHANGELOG, MODIFICATIONS, ta notka).
+- Weryfikacja stanu: callback `cronosjs.scheduleTask` dostaje **czas zaplanowany** (`dist-node/index.js` – `_runTask()` emituje `_timestamp`) – potwierdzone.
+- Rozstrzygnięcia „do potwierdzenia” przyjęte w implementacji (do akceptacji):
+  - TTL zajęcia crona = okres wyrażenia ograniczony do **[1 min, 1 h]** (karta: `min(okres, 1 h)`) – dolna granica 1 min daje tolerancję rozjazdu zegarów przy cronie co sekundę;
+  - eksport flow: `singleInstance` zapisywane przez edytor tylko przy `true` (`defaults` bez wartości, pole poza wiązaniem `node-input-*`) – istniejące flow eksportują się bez zmian;
+  - dwie wtyczki o tym samym id – bez zmian w rejestrze (ostatnia rejestracja wygrywa, jak dotąd);
+  - status „standby” – tylko dla wyzwoleń bramkowanych przywództwem (interwał, „raz po starcie”); cron (zajęcie klucza) nie pokazuje statusu, bo może wyzwolić się na dowolnej instancji.
+- Uzupełnienia względem karty: `ctx.processId` (losowy na proces) obok `instanceId` – `instanceId` z ustawień jest wspólny dla instancji na wspólnym magazynie; `runtime.coordination.claimSlot(name, limit, ttlMs)` (klucze `slot:<name>:<i>`) jako punkt dla `deploy.reload.concurrency` (Z-09); błąd `coordination.plugin-invalid` dla wtyczki bez wymaganych funkcji; `err.code` błędów startu = `coordination.plugin-not-found` / `coordination.plugin-invalid`.
+- Rozbieżności / poza zakresem: `resign()` wołane na początku `runtime.stop()` (stan `stopping` z E-02 jeszcze nie na gałęzi – przy scaleniu z E-02 przenieść do `markStopping`); teksty `inject` w `nodes/locales/en-US/messages.json` (brak pliku `locales/en-US/common/20-inject.json`), pomoc w `locales/en-US/common/20-inject.html`; klucz zarezerwowany `coordination` dla `registerNodeSettings` (D-02 U8) – nie w tym pakiecie (`runtime/lib/settings.js`); wariant wieloprocesowy testu – niezrealizowany (opcjonalny podzbiór poza `npm test`, R-21); pole w edytorze nie sprawdzone w przeglądarce.
+
 ---
 
 ### Z-11 – Praca z katalogiem użytkownika tylko do odczytu

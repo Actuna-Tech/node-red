@@ -1,3 +1,22 @@
+#### Unreleased: Instances and reload
+
+Features
+
+ - New API for the coordination of instances that run the same flows: `RED.coordination`
+   for nodes (`isLeader()`, `onLeaderChange(node, listener)`, `claim(key, ttlMs)`,
+   `info()`) and a plugin type `node-red-coordination` for coordination plugins installed
+   from outside the core. The plugin is selected only explicitly with the new setting
+   `coordination: {plugin, options}`; without it the built-in local coordination is used
+   (a single instance: always the leader, claims in memory) and the behaviour is unchanged.
+   An unknown plugin or a failing plugin start fails the start of the runtime. The
+   coordination starts before the flows start; `RED.stop()` resigns the leadership before
+   the flows stop and stops the plugin after them.
+ - Inject node: new option "Run only on one instance" (`singleInstance`, off by default).
+   With a coordination plugin a scheduled trigger ("at a specific time", "interval between
+   times") fires on the instance that claims it, an "interval" and "inject once" fire only
+   on the leader and the node shows the "standby" status on the other instances. The button
+   of the node is not affected. Nodes without the option are exported as before.
+
 #### Unreleased: Security and fixes
 
 Security
