@@ -362,6 +362,40 @@ subflow zaktualizowany (przełącznik oferowany dla `sfImp` i `tImp`, domyślnie
 najpierw pole wyboru elementu). Uwaga: poprzednia wersja tego testu zaznaczała zablokowany przełącznik subflow, co dawało
 import „as-is” zamiast „replace” (nadpisanie definicji bez przypisania instancji) – ścieżka niedostępna z UI.
 
+**Poprawki po przeglądzie (2026-10-03):**
+- **B1 (blokujące) – kolejność:** zakładki są zastępowane **po** głównym imporcie (`replaceNodes` obsługuje jak dotąd
+  subflow i węzły konfiguracyjne, a zakładki zwraca w `flows`; `importNodes` woła `replaceWorkspace` na końcu, przed
+  `RED.workspaces.refresh`). Zawartość zastępowanej zakładki widzi nowe subflow i nowe globalne węzły konfiguracyjne
+  z tego samego importu (instancja ma typ `subflow:…` i jest w `instances`; konfiguracja ma węzeł w `users`). Uwaga:
+  w przeglądarce instancja nowego subflow była „naprawiana” przez mechanizm podmiany nieznanych typów
+  (`registry:node-type-added`), więc błąd był widoczny E2E tylko dla konfiguracji (`users` puste).
+- **Historia (skutek B1):** w `view.js` przy zastąpieniu zakładki zdarzenie `replace` jest umieszczane w `multi` **po**
+  zdarzeniu `add` (cofnięcie: najpierw przywrócenie flow, potem usunięcie nowych subflow/konfiguracji; ponowienie:
+  najpierw ponowne dodanie, potem zastąpienie). Bez tego ponowienie (redo) zostawiało w `users` konfiguracji nieaktualny
+  obiekt węzła. Kolejność dla zastąpienia samego subflow – bez zmian (upstream).
+- **W2 – kopie:** zawartość zastępowanej zakładki wskazuje kopię, gdy dla konfiguracji/subflow wybrano „kopia”
+  (mapy `node_map`, `subflow_map` i `subflow_denylist` – dopasowany istniejący subflow – przekazywane do `replaceWorkspace`).
+- **D1 – flagi `changed`:** migawka zapisuje `changed`/`moved` zakładki i węzłów; bez `markChanged` (cofnięcie/ponowienie
+  – `history.js` woła `RED.nodes.import(config, {importMap})` bez `markChanged`, a import użytkownika z `view.js` – z
+  `markChanged: true`) flagi są odtwarzane z migawki zamiast ustawiania `changed = true`. `history.js` bez zmian.
+- **D2 – błąd importu:** gdy wewnętrzny import zawartości rzuci wyjątek, zawartość i właściwości flow są przywracane
+  z migawki, a wyjątek rzucany dalej (flow nie zostaje pusty bez wpisu w historii). Węzły głównego importu dodane przed
+  błędem zostają (zachowanie jak dotąd dla każdego błędu importu).
+- **D3 – przemapowanie id:** tylko pola referencyjne: `id`, `wires`, `g`, `nodes` (grupa), `links` (węzły `link`),
+  `scope` (tablica), właściwości z `_def.defaults[x].type`, wartości `conf-type` w `env` instancji subflow oraz typ
+  instancji subflow. Inne napisy (np. `name`, `topic`) bez zmian. Odwołania w nieznanych typach węzłów (brak definicji)
+  nie są przemapowywane poza polami wymienionymi wyżej.
+- **D5:** usunięte zdublowane przełączanie klas `#red-ui-workspace` w `workspaces.js` (robi to `view.js`); zostało
+  odświeżanie klas zakładki.
+- **W1** (zablokowana zakładka) – bez zmian, czeka na decyzję Zamawiającego.
+
+Testy: `nodes_spec.js` – 6 nowych (wszystkie padały przed poprawką): nowe subflow i nowa konfiguracja z tego samego
+importu, kopia konfiguracji/subflow, przemapowanie tylko odwołań, flagi `changed` po cofnięciu i ponowieniu,
+przywrócenie flow po błędzie. E2E – 2 nowe scenariusze: „zastąp flow z nowym subflow z innej instancji” (z cofnięciem
+i ponowieniem; przechodził też przed poprawką dzięki podmianie nieznanych typów) oraz „zastąp flow z nowym węzłem
+konfiguracyjnym z innej instancji” (padał przed poprawką: `users` puste; ponowienie padało przed zmianą kolejności
+w `view.js`: nieaktualny obiekt w `users`).
+
 ## 6. Karty – zadania i funkcjonalności (`FL-T`)
 
 ### FL-T-001 – Automatyczne rozmieszczanie węzłów
