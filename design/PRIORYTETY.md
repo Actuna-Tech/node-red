@@ -89,6 +89,29 @@ punkty rozszerzeń (Z-09, Z-10, Z-11, Z-15). Nasze K8S-T-* to te implementacje.
 Zależności techniczne zachowane z [ANALIZA.md](engine-extensions/ANALIZA.md) §6.2 (np. Z-04 przed Z-05, E-01 przed P-01,
 Z-06/Z-08/Z-10 przed Z-09). Uzupełnienie zlecenia (zapowiedziane) może zmienić zakres – plan zostanie zaktualizowany.
 
+## Budżet i zakres po F3 (2026-10-03)
+
+Stan: z 250 jednostek pozostało 90 (z F3 w toku). Szacunki względne (kalibracja na F1–F2: pakiet M ≈ 7, L ≈ 13; ±30%);
+zapas 5% całego budżetu ≈ 12,5. F3 ≈ 33 (bez Z-06) → **na F4/F5 ≈ 44**. Pełny pozostały zakres (~190) się nie mieści.
+
+**Decyzje (Zamawiający, 2026-10-03):**
+- Z-06 (hooki `preDeploy`/`postDeploy`) – **odłożone** poza F3.
+- `main` = zakończony etap F3 (kamień milowy). **F4/F5 prowadzone w osobnej gałęzi** (`feature/p3-database`, od `main`
+  po kamieniu milowym F3); scalenie do `main` dopiero po akceptacji.
+- Zakres priorytetu 3 w budżecie – „jedna instancja na tenanta, wszystko w bazie”:
+
+| # | Pakiet | Szac. | Zysk |
+|---|---|---|---|
+| 1 | K8S-T-001 – magazyn PostgreSQL (flow, poświadczenia, ustawienia, sesje, biblioteka) | 15 | rdzeń priorytetu 3 |
+| 2 | K8S-T-004 – kontekst węzłów w PostgreSQL (Redis opcjonalnie) | 12 | dane zbierane przez węzły w bazie |
+| 3 | Z-11 – katalog użytkownika tylko do odczytu | 6 | kontener bez zapisywalnego dysku |
+| 4 | Z-08 – sondy zdrowia, poprawne zamykanie | 7 | gotowość i restart w Kubernetes |
+| – | jeśli zostanie budżet: Z-15 (~7), K8S-T-009 (~10) | | |
+
+Poza budżetem (osobny etap): Z-10, Z-09 (wiele workerów na tenanta), Z-07, Z-06, Z-03, Z-12, Z-13, K8S-T-005…015,
+FL-B-011. Zasady oszczędności: jedna runda przeglądu na fazę (druga tylko przy zmianach bezpieczeństwa), dokumentacja
+w kartach i CHANGELOG, pełna propagacja przy kamieniu milowym; przeliczenie planu po F3 na podstawie rzeczywistego zużycia.
+
 ## Decyzje
 
 | ID | Decyzja | Rekomendacja |
