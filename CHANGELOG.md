@@ -26,8 +26,9 @@ Security
  - In `"authenticated"` mode, `RED.httpAdmin.use()` without a path is skipped for requests
    without authentication (instead of returning 401 for every later admin route, including
    public routes of other modules), and `RED.auth.needsPermission()` counts only when it comes
-   before the first handler of a route. The guard is a safer default for well-behaved nodes,
-   not a sandbox
+   before the first handler of a route. The same applies to `RED.httpAdmin.use()` with a path
+   that matches every path (such as `""`, `"*"`, `"/*"`, `["/"]` or a regular expression
+   matching everything). The guard is a safer default for well-behaved nodes, not a sandbox
  - New setting `telemetry.locked`: with `locked: true` the telemetry state is fixed to
    `telemetry.enabled` (missing means disabled) and cannot be changed by users - the saved user
    choice is ignored but kept, a `telemetryEnabled` value sent to `POST /settings/user` is ignored

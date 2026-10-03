@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-02: tests of the httpAdmin guard (httpAdminNodeRoutes) in the node api
  *   Z-02: tests of use() without a path and of the position of the permission marker
+ *   Z-02: tests of use() with paths that match every path
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -241,6 +242,57 @@ describe("red/nodes/registry/util",function() {
             globalCalls.should.equal(2);
             // The authentication check runs once per request for one use() call
             fakeAuth.needsPermission.callCount.should.equal(3);
+        });
+        // every form that express matches against every path, as use() without a path
+        [["\"\"", ""], ["\"/\"", "/"], ["[\"/\"]", ["/"]], ["/.*/", /.*/], ["\"*\"", "*"], ["\"/*\"", "/*"],
+         ["\"**\"", "**"], ["\"/*/\"", "/*/"], ["\"*/*\"", "*/*"], ["\"/:any?\"", "/:any?"], ["/^\\/.*/", /^\/.*/],
+         ["[\"/a\", \"/*\"]", ["/a", "/*"]]].forEach(function(form) {
+            it("use(" + form[0] + ") does not block routes of other modules (W1)", async function() {
+                const A = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"}, {id: "a/a", module: "a", namespace: "a"});
+                let globalCalls = 0;
+                A.httpAdmin.use(form[1], function(req,res,next) { globalCalls++; next() });
+                const B = registryUtil.createNodeApi({id: "b/b", module: "b", namespace: "b"});
+                B.httpAdmin.get("/b/view/x", B.auth.publicRoute(), ok);
+                B.httpAdmin.get("/b/protected", ok);
+                await request(adminApp).get("/b/view/x").expect(200);
+                globalCalls.should.equal(0);
+                await request(adminApp).get("/b/protected").expect(401);
+                await request(adminApp).get("/nonexistent").expect(404);
+                await request(adminApp).get("/b/protected").set("x-token","any").expect(200);
+                globalCalls.should.equal(1);
+            });
+        });
+        // paths that do not match every path keep the guard (401 without authentication);
+        // express mounts a use() regexp only at a "/" or "." after the matched part, so /^\// matches "/" only
+        [["\"/a\"", "/a"], ["\"/a*\"", "/a*"], ["[\"/a\"]", ["/a"]], ["/^\\/a/", /^\/a/], ["\"//\"", "//", true], ["/^\\//", /^\//, true]].forEach(function(form) {
+            it("use(" + form[0] + ") is guarded and does not affect other routes", async function() {
+                const A = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"}, {id: "a/a", module: "a", namespace: "a"});
+                A.httpAdmin.use(form[1], ok);
+                const B = registryUtil.createNodeApi({id: "b/b", module: "b", namespace: "b"});
+                B.httpAdmin.get("/b/view/x", B.auth.publicRoute(), ok);
+                await request(adminApp).get("/b/view/x").expect(200);
+                if (!form[2]) {
+                    await request(adminApp).get("/a").expect(401);
+                    await request(adminApp).get("/a").set("x-token","any").expect(200);
+                }
+            });
+        });
+        it("recognises paths matching every path from their text without the express matcher", function() {
+            // an app without the express 4 router (no layer class to test the path with)
+            const used = [];
+            adminApp = { use: function() { used.push(Array.prototype.slice.call(arguments)) } };
+            const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
+            const fn = function(req,res,next) { next() };
+            const isGuarded = call => call.flat().some(h => typeof h === "function" && h[ADMIN_ROUTE_AUTH] === "permission");
+            ["", "/", "*", "/*", "**", "/*/", "(.*)", /.*/, /^\/.*/, ["/a", "*"]].forEach(function(p, i) {
+                RED.httpAdmin.use(p, fn);
+                isGuarded(used[i]).should.be.false(String(p));
+            });
+            const n = used.length;
+            ["/a", "/a*", /^\/a/, /^\//, ["/a"]].forEach(function(p, i) {
+                RED.httpAdmin.use(p, fn);
+                isGuarded(used[n + i]).should.be.true(String(p));
+            });
         });
         it("keeps the arity of an error handler given to use without a path", async function() {
             const RED = createApi({adminAuth: {}, httpAdminNodeRoutes: "authenticated"});
