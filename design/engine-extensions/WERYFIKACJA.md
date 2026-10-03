@@ -26,7 +26,7 @@ Metoda: przegląd kodu (4 niezależne przeglądy tylko do odczytu), gałąź na 
 | Z-10 | **potwierdzone** | wzorzec typu wtyczki runtime istnieje (`node-red-library-source`), kolejność startu wymaga gotowości koordynacji przed `startFlows` |
 | Z-11 | **potwierdzone** | 16 miejsc zapisu; przy własnym magazynie `userDir` może być nieustawiony → instalator pisze do `NODE_RED_HOME` lub katalogu bieżącego; CLI kopiuje `settings.js` do `~/.node-red` niezależnie od magazynu |
 | Z-12 | **potwierdzone** | brak API dla elementów nagłówka i przycisku Deploy; brak ogólnego okna modalnego; plakietki węzłów są (nieudokumentowane `RED.view.annotations`) |
-| Z-13 | **częściowo** | `editor.json` en-US ma **1140** kluczy (nie 1089); łącznie ~2310 tekstów JSON + 36 plików pomocy (~13,3 tys. słów); język wykrywany automatycznie z katalogu `locales/pl` |
+| Z-13 | **częściowo** | `editor.json` en-US w czystym 5.0.7 ma **1126** kluczy (nie 1089; na naszej gałęzi 1140 – w tym 14 kluczy `layout.*` z Z-14); łącznie ~2300 tekstów JSON + 36 plików pomocy (~13,3 tys. słów); język wykrywany automatycznie z katalogu `locales/pl`; klucze `_plural` z en-US nie działają dla `pl` w i18next 25 – potrzebne sufiksy `_one/_few/_many/_other` (sprawdzone skryptem poza edytorem) |
 
 ## Szczegóły (fakty dla implementacji)
 
@@ -148,10 +148,10 @@ Dodatkowo: `localfilesystem.init` ustawia `settings.userDir` (`storage/localfile
 | Menu kontekstowe, panele ustawień, panele edycji, kategorie palety | `RED.contextMenu.show`, `RED.userSettings.add`, `RED.editor.registerEditPane`, `RED.palette.registerCategory` |
 | **Brak** | elementy nagłówka (core dopisuje do `.red-ui-header-toolbar` jQuery), przycisk Deploy (`RED.deploy` eksportuje tylko `init`, `setDeployInflight`), ogólne okno modalne |
 
-Brak katalogu testów jednostkowych edytora w `test/unit/@node-red/` (poza dodanym przez nas `editor-client/ui/*`).
+Testy jednostkowe edytora w `test/unit/@node-red/editor-client/ui/`: `search_spec.js` (upstream) i nasz `view-layout_spec.js` – wzorzec dla E-03.
 
 ### Z-13
-- Brak `pl`. Klucze en-US: `editor.json` 1140, `jsonata.json` 138, `infotips.json` 19, `nodes/messages.json` 872, `runtime.json` 141; pomoc węzłów: 36 plików HTML (~13 340 słów).
+- Brak `pl`. Klucze en-US: `editor.json` 1126 (czyste 5.0.7; 1140 z Z-14), `jsonata.json` 138, `infotips.json` 19, `nodes/messages.json` 872, `runtime.json` 141; pomoc węzłów: 36 plików HTML (~13 340 słów).
 - Języki wykrywane z katalogów (`util/lib/i18n.js:49-67,221`); w selektorze nazwa z `languages.<kod>` w `editor.json` każdego języka (`userSettings.js:105,186`).
 - Do dodania: `editor-client/locales/pl/{editor,jsonata,infotips}.json`, `nodes/locales/pl/messages.json` + pomoc, `runtime/locales/pl/runtime.json`, `"pl": "Polski"` w `languages` wszystkich `editor.json`.
 - Testy: `util/lib/i18n_spec.js`, `editor-api/lib/editor/locales_spec.js`.

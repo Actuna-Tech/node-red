@@ -17,7 +17,7 @@ dokumenty powiązane: [ZASADY.md](ZASADY.md) (nazwy, kontrakt potoku wdrożenia,
    - **Z-03 w większości nieaktualny:** aktualizacja z `.tgz` jest wykrywana; brakuje semver, potwierdzenia i poprzedniej wersji w hookach;
    - **Z-01:** subskrypcja nie ginie po cichu – serwer zamyka połączenie; poprawka jest prostsza;
    - **Z-04:** pole `configs` już istnieje (z zasięgiem flow) – nowe znaczenie „globalne” koliduje z kontraktem;
-   - **Z-13:** 1140 kluczy edytora (nie 1089), łącznie ~2310 tekstów + 36 plików pomocy.
+   - **Z-13:** 1126 kluczy edytora w czystym 5.0.7 (nie 1089), łącznie ~2300 tekstów + 36 plików pomocy; polska liczba mnoga wymaga innych sufiksów niż en-US.
 3. **Sześć pakietów zmienia ten sam potok wdrożenia** (P-01, Z-04, Z-05, Z-06, Z-08, Z-09 + nasze FL-B-001/002).
    Bez wspólnego kontraktu (zadanie **E-01**) etapy 1–3 będą się wzajemnie przerabiać.
 4. **Proponujemy etap 0** (decyzje + zadania przekrojowe E-01…E-05) i dodatkowe pakiety
@@ -133,8 +133,8 @@ Spójny zestaw: obiekt `deploy` (P-01, Z-04, Z-05), `editorTheme.deploy` (P-02),
 - Wtyczki magazynu: opcjonalne `watchFlows` (Z-09) – kontrakt opcjonalny, wykrywany jak `getSettings`.
 
 ### 4.6 Edytor i testy edytora
-- Pakiety edytora: P-02, Z-01, Z-12, Z-13, Z-14. **Brak testów jednostkowych edytora w projekcie** (poza naszymi
-  `test/unit/@node-red/editor-client/ui/*`, ładowanymi przez `require` z atrapą `RED`).
+- Pakiety edytora: P-02, Z-01, Z-12, Z-13, Z-14. **Testy jednostkowe edytora prawie nie istnieją** – jest `search_spec.js` (upstream)
+  i nasz `view-layout_spec.js`, oba ładujące moduł przez `require` z atrapą `RED`.
 - **E-03:** uzgodnić harness testów edytora: (a) jednostkowe w stylu istniejących `search_spec.js`/`view-layout_spec.js`
   dla logiki wydzielonej z DOM; (b) E2E (Playwright – **nie jest zależnością projektu**; nasze testy pomijają się bez niego) →
   decyzja **D-03**: czy Playwright może być zależnością deweloperską (wymóg 3.7 zlecenia).
