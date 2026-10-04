@@ -69,7 +69,7 @@ nowego flow tuż po wdrożeniu (wraca zachowanie 5.0.7).
 | Z-02 | `httpAdminNodeRoutes` | `httpAdminNodeRoutes` | `"open"` | bez zmian |
 | Z-08 | `health: {enabled, path}` | `health: {enabled, path, port, host}` + **`shutdownTimeout`** (płasko) | wyłączone | `shutdownTimeout` < `terminationGracePeriodSeconds` w K8s |
 | Z-09 | – | `deploy.reload: {watch, type, preReloadTimeout, concurrency}` (kontrakt wtyczek – §5.2) | `watch: false`, `type: "full"`, `preReloadTimeout: 1200000` (20 min) | to samo przeładowanie, co typ wdrożenia `reload` w Admin API; rekomendowane `type: "diff"`; `concurrency` – tylko liczba; bez łączności z koordynatorem przeładowanie czeka (działa stara konfiguracja) (R-20) |
-| Z-09 | – | `deploy.reload.retry: { min, max, attempts }` | `min: 1000`, `max: 60000` (ms), `attempts: 10` (~8 min) (R-36) | ponowienia odczytu magazynu; po wyczerpaniu `attempts` → stan `failed`, `/ready` 503 (R-20, D-18, R-36); przy `watch: true` błąd rejestracji `watchFlows` → błąd startu (R-36) |
+| Z-09 | – | `deploy.reload.retry: { min, max, attempts }` | `min: 1000`, `max: 60000` (ms), `attempts: 10` (~8 min) (R-36) | ponowienia nieudanych cykli przeładowania (odczyt magazynu, ponowny odczyt pod blokadą, samo przeładowanie); licznik zeruje się dopiero po udanym cyklu (#17); po wyczerpaniu `attempts` → stan `failed`, `/ready` 503 (R-20, D-18, R-36); przy `watch: true` błąd rejestracji `watchFlows` → błąd startu (R-36) |
 | #8 | – | `deploy.holdHttpNodeRequests: {enabled, timeout, maxPending, retryAfter}` | `enabled: false`, `timeout: 5000` ms, `maxPending: 1000`, `retryAfter: 1` s | żądania do tras węzłów (`httpNode`) bez istniejącej trasy (trasy niezmienionych węzłów odpowiadają od razu) czekają na koniec restartu flow (wdrożenie, przeładowanie z magazynu) zamiast 404; po limicie 503 `http_hold_timeout` / `http_hold_queue_full` z `Retry-After`; klienci powinni ponawiać 503 po `Retry-After` |
 | P-01 / Z-08 | – | `deploy.startTimeout` (ms) | wyłączony | limit czasu startu w trybie `deploy.response: "started"`; po przekroczeniu 500 `deploy_start_failed` z `errors[].code: "start_timeout"`, flow startują dalej w tle (R-38) |
 | Z-06 | – | `deploy.hookTimeout` | 30000 ms | |
@@ -198,8 +198,8 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   działa jak dotąd. `/live` bez zmian. Draft IETF health-check: `warn` → 2xx.
 - **Przeładowanie z magazynu** (Z-09, R-20): `preReload` nie ma prawa weta (tylko opóźnia, limit `preReloadTimeout`);
   przy dodatkowych flow zmienionych po drenażu – ponowny `preReload` dla nich (D-17), poza blokadą, najwyżej jedna
-  runda, potem przeładowanie z ostrzeżeniem w logu (R-36); błąd odczytu magazynu → ponowienia wg `deploy.reload.retry`
-  (domyślnie 10 prób, ~8 min), po wyczerpaniu `failed` i 503 (D-18, R-36), a dalej odczyt co `retry.max` – po odzyskaniu dostępu powrót do `ready` bez nowego powiadomienia; przy `deploy.reload.watch: true` błąd
+  runda, potem przeładowanie z ostrzeżeniem w logu (R-36); błąd odczytu magazynu lub samego przeładowania → ponowienia wg `deploy.reload.retry`
+  (domyślnie 10 prób, ~8 min; próby liczone do udanego cyklu, nie do udanego pierwszego odczytu – #17), po wyczerpaniu `failed` i 503 (D-18, R-36), a dalej odczyt co `retry.max` – po odzyskaniu dostępu powrót do `ready` bez nowego powiadomienia; przy `deploy.reload.watch: true` błąd
   rejestracji `watchFlows` → błąd startu instancji (R-36).
 - **Instancja tylko edycyjna** (`editorOnly: true`, R-19): przyciski węzłów (m.in. `inject`) i akcja „Restart flows”
   w edytorze nieaktywne z podpowiedzią (R-39); `POST /flows/state` start → 409 `editor_only`; wdrożenie w trybie
