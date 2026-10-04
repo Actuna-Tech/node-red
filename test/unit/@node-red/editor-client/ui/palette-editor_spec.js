@@ -16,10 +16,13 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #34: a failed install, update, remove or enable of a module shows the module name and the message of the server escaped
+ *   #37: the confirmations and the progress message show the module name escaped; a failed enable or disable of a
+ *   module names the action (enable / disable) and the module; a failed upload shows the file name escaped
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
 const should = require("should");
+const cheerio = require("cheerio");
 
 const NR_TEST_UTILS = require("nr-test-utils");
 const catalog = require("../helpers/catalog");
@@ -193,6 +196,82 @@ describe("editor-client/ui/palette-editor (#34)", function() {
             const n = lastNotification();
             n.msg.should.equal("<p>Failed to install: node-red-contrib-x</p><p>&lt;img src=x onerror=alert(1)&gt;</p><p>Check the log for more information</p>");
             catalog.assertNoMarkup(n.msg);
+        });
+    });
+
+    describe("the confirmations and the progress message show the module name as text (#37)", function() {
+        function assertNameAsText(html) {
+            catalog.assertNoMarkup(html);
+            catalog.assertNoElement(html, "img");
+            html.should.containEql("&lt;img src=x onerror=alert(1)&gt;");
+        }
+
+        it("install", function() {
+            editor.install({ id: INJECTION, version: "1.0.0" }, {}, function() {});
+            assertNameAsText(lastNotification().msg);
+            lastNotification().msg.should.startWith("<p>Installing '&lt;img");
+        });
+
+        it("update", function() {
+            editor.nodeEntries[INJECTION] = { info: { version: "1.0.0" } };
+            editor.update({ name: INJECTION }, "2.0.0", undefined, {}, function() {});
+            assertNameAsText(lastNotification().msg);
+        });
+
+        it("remove", function() {
+            editor.remove({ name: INJECTION }, {}, function() {});
+            assertNameAsText(lastNotification().msg);
+        });
+
+        it("the name with quotes stays in the quotes of the text", function() {
+            editor.remove({ name: "a\"b'c" }, {}, function() {});
+            lastNotification().msg.should.startWith("<p>Removing 'a&quot;b&#39;c'</p>");
+        });
+
+        it("the progress message of the automatic install", function() {
+            editor.autoInstallModules({ [INJECTION]: "1.0.0" });
+            const n = notifier.notifications[0];
+            n.msg.should.startWith("<p>Module installation in progress: &lt;img src=x onerror=alert(1)&gt;</p>");
+            // the only element <img> is the spinner of the message
+            const images = cheerio.load(n.msg)("img");
+            images.length.should.equal(1);
+            images.attr("src").should.equal("red/images/spin.svg");
+            n.msg.should.not.containEql("onerror=alert(1)>");
+        });
+    });
+
+    describe("a failed enable or disable of a module (#37)", function() {
+        it("names the action: enable for true, disable for false (it was always \"install\")", function() {
+            editor.stateChangeFailedMessage(true, "node-red-contrib-x", "no").should.startWith("<p>Failed to enable: node-red-contrib-x</p>");
+            editor.stateChangeFailedMessage(false, "node-red-contrib-x", "no").should.startWith("<p>Failed to disable: node-red-contrib-x</p>");
+        });
+
+        it("shows the module and the message as text", function() {
+            editor.notifyStateChangeFailed(true, INJECTION, errorResponse(INJECTION));
+            const n = lastNotification();
+            n.msg.should.equal("<p>Failed to enable: &lt;img src=x onerror=alert(1)&gt;</p><p>&lt;img src=x onerror=alert(1)&gt;</p><p>Check the log for more information</p>");
+            catalog.assertNoElement(n.msg, "img");
+        });
+
+        it("shows nothing when the change succeeded or the answer has no JSON body", function() {
+            editor.notifyStateChangeFailed(false, "m", undefined);
+            editor.notifyStateChangeFailed(false, "m", { status: 502 });
+            notifier.notifications.should.have.length(0);
+        });
+    });
+
+    describe("a failed upload of a module file (#37)", function() {
+        it("shows the file name and the message of the server as text", function() {
+            editor.notifyUploadFailed(INJECTION + ".tgz", "error", errorResponse(INJECTION));
+            const n = lastNotification();
+            n.msg.should.equal("<p>Failed to install: &lt;img src=x onerror=alert(1)&gt;.tgz</p><p>&lt;img src=x onerror=alert(1)&gt;</p><p>Check the log for more information</p>");
+            catalog.assertNoElement(n.msg, "img");
+            n.options.type.should.equal("error");
+        });
+
+        it("shows the status text of the request when the server sent no JSON", function() {
+            editor.notifyUploadFailed("x.tgz", "timeout <b>", { status: 0 });
+            lastNotification().msg.should.containEql("<p>timeout &lt;b&gt;</p>");
         });
     });
 });

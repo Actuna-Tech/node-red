@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   user menu: tests for the username rendered as text and the user details refreshed after re-login
+ *   #37: the stand-in of RED.utils.sanitize escapes the quotes like the real one
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -106,9 +107,9 @@ describe("editor-client/user", function() {
                 }
             },
             utils: {
-                // Same implementation as RED.utils.sanitize (ui/utils.js)
+                // Same implementation as RED.utils.sanitize (ui/utils.js, #37: the quotes too)
                 sanitize: function(m) {
-                    return m.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+                    return m.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
                 }
             },
             notify: sinon.stub(),

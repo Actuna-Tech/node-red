@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #34: tests of RED.errors, the shared escaping of error texts shown as HTML
+ *   #37: notifyGitError, shared by the projects and the version control
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -49,7 +50,7 @@ describe("editor-client/ui/common/errors (#34)", function() {
 
     it("is RED.errors", function() {
         errors.should.equal(RED.errors);
-        ["escape", "parseResponse", "translateEscaped", "translateResponse", "translateException"]
+        ["escape", "notifyGitError", "parseResponse", "translateEscaped", "translateResponse", "translateException"]
             .forEach(name => errors.should.have.property(name).which.is.a.Function());
     });
 
@@ -137,6 +138,29 @@ describe("editor-client/ui/common/errors (#34)", function() {
             error.code = "NODE_RED";
             const html = errors.translateException("notification.error", error);
             catalog.assertNoMarkup(html);
+        });
+    });
+
+    describe("notifyGitError (#37; the projects and the version control)", function() {
+        let notifier;
+        beforeEach(function() {
+            notifier = catalog.createNotifier();
+            global.RED.notify = notifier.notify;
+        });
+
+        it("shows the message of the server as text in a red notification", function() {
+            errors.notifyGitError({ code: "git_connection_failed", message: INJECTION });
+            notifier.notifications.should.have.length(1);
+            notifier.notifications[0].msg.should.equal("&lt;img src=x onerror=alert(1)&gt;");
+            notifier.notifications[0].options.should.equal("error");
+            catalog.assertNoElement(notifier.notifications[0].msg, "img");
+        });
+
+        it("escapes the quotes and shows nothing for a missing message", function() {
+            errors.notifyGitError({ message: "a \"b\" 'c'" });
+            notifier.notifications[0].msg.should.equal("a &quot;b&quot; &#39;c&#39;");
+            errors.notifyGitError({});
+            notifier.notifications[1].msg.should.equal("");
         });
     });
 });

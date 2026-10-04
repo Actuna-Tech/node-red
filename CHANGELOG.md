@@ -316,6 +316,20 @@ Fixes
    stays HTML. The shared escaping moved from `RED.deploy` to the new `RED.errors` module (`ui/common/errors.js`,
    loaded before the modules that use it); `RED.deploy.translateErrorResponse` and `RED.deploy.formatStartErrors`
    work as before, and the library no longer depends on the deploy module. No change of the API (#34)
+ - Editor: more places inserted text that is not from the message catalog into HTML without escaping (#37). The
+   module name in the confirmations of install, update and remove and in the progress message of the automatic
+   install, the URL of the remote in the dialog of the git authentication, the file name in the confirmation of a
+   revert, the names of a project, a branch, a remote and a key in the confirmations of their removal, the type and
+   the error of a node that could not be registered, the module and the version of an upgraded module, the message
+   of an import error and the library type of a saved item are now escaped. `RED.utils.sanitize` escapes the quotes
+   too (`" '`; it did `& < >` only), so it is safe in an attribute; the text that is processed further keeps the
+   old escaping in the new `RED.utils.sanitizeContent` (the about text is markdown, a palette label is cut into
+   words). Two places that escaped text for a plain-text sink no longer show entities (the tooltip of a tab, the
+   title of the edit dialog of a node, which was escaped twice). Enabling or disabling a module showed "Failed to
+   install" with an undefined name (or failed with a ReferenceError); it names the action and the module now, and the
+   texts are in the Polish catalog. `notifyGitError` of the projects and the version control is one function,
+   `RED.errors.notifyGitError`; the thin delegates of `RED.deploy` (`translateErrorResponse` and the copies of the
+   `RED.errors` helpers) are removed, nothing used them. No change of the API
  - Editor: a start result (`deploy-start-result`) that was ignored because its revision was not the one of the
    editor is dropped when the editor starts a deployment. Revisions are content hashes, so a result kept
    long before could be applied to a later deployment of the same content that ended in `start_timeout`:

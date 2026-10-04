@@ -89,6 +89,7 @@ module.exports = {
 | Nazwa użytkownika wstawiana jako tekst (XSS), odświeżenie danych po ponownym logowaniu | R-08, R-41 | poprawka |
 | Odpowiedź serwera przy błędzie zapisu/eksportu do biblioteki pokazywana jako escapowany tekst, nie jako HTML (XSS) | #30 | poprawka |
 | Komunikaty błędów palety, projektów, kontroli wersji, ładowania modułu węzła, importu i grup pokazywane jako escapowany tekst, nie jako HTML (XSS) | #34 | poprawka |
+| Dalsze komunikaty z tekstem spoza katalogu (nazwa modułu w potwierdzeniach palety, adres zdalny git, nazwa pliku przy `revert`, nazwy projektu/gałęzi/zdalnego/klucza, błędy rejestracji węzła i importu) escapowane; `RED.utils.sanitize` escapuje też cudzysłowy | #37 | poprawka |
 | Subskrypcje `/comms` dopiero po uwierzytelnieniu | Z-01 | poprawka |
 | Trasy admin węzłów wymagają logowania: `httpAdminNodeRoutes: "authenticated"`, `RED.auth.publicRoute()` | Z-02 | `"open"` |
 | Telemetria blokowana przez administratora: `telemetry.locked` (także w edytorze) | P-03 | wyłączone |
@@ -280,6 +281,21 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   do nowego modułu `RED.errors` (`ui/common/errors.js`: `escape`, `parseResponse`, `translateEscaped`,
   `translateResponse`, `translateException`); `RED.deploy.translateErrorResponse` i `RED.deploy.formatStartErrors`
   działają jak dotąd, a biblioteka nie zależy już od modułu wdrożenia. Bez zmian API.
+- Edytor, dalsze miejsca z tekstem spoza katalogu w HTML (#37): escapowane są teraz nazwa modułu w potwierdzeniach
+  instalacji, aktualizacji i usunięcia oraz w komunikacie postępu instalacji automatycznej, adres zdalnego repozytorium
+  w oknie uwierzytelnienia git, nazwa pliku w potwierdzeniu `revert`, nazwy projektu, gałęzi, zdalnego repozytorium i
+  klucza w potwierdzeniach usunięcia, typ i błąd węzła, którego nie dało się zarejestrować, moduł i wersja
+  zaktualizowanego modułu, komunikat błędu importu i typ biblioteki przy zapisie. `RED.utils.sanitize` escapuje też
+  cudzysłowy (`" '`), więc jest bezpieczne w atrybucie; tekst przetwarzany dalej (opis „o programie” to markdown,
+  etykieta węzła w palecie jest łamana na słowa) używa nowego `RED.utils.sanitizeContent` (jak dotąd tylko `& < >`).
+  Dwa miejsca, które escapowały tekst dla miejsca wyświetlającego czysty tekst (podpowiedź zakładki, tytuł okna edycji
+  węzła – escapowany dwukrotnie), nie pokazują już encji. Włączenie i wyłączenie modułu pokazywało „Nie udało się
+  zainstalować” z niezdefiniowaną nazwą (albo kończyło się błędem `ReferenceError`); teraz podaje właściwą czynność i
+  moduł, a teksty są też w polskim katalogu. `notifyGitError` projektów i kontroli wersji to jedna funkcja
+  `RED.errors.notifyGitError`; cienkie delegaty w `RED.deploy` (`translateErrorResponse` i kopie funkcji `RED.errors`)
+  usunięte – nic z nich nie korzystało. Nie zrobione (opcjonalne, R2 przeglądu #36): maskowanie `//user:pass@` w
+  stderr gita – właściwe miejsce to runtime (komunikat błędu jest budowany w `projects/git`, trafia do odpowiedzi API i
+  logów), a nie wyświetlanie w edytorze; do osobnego zgłoszenia. Bez zmian API.
 
 ## 7. Testy i proces
 
