@@ -18,11 +18,12 @@
  *   P-01: contract test of the deploy_start_failed response (status 500, rev, errors)
  *   Z-05: contract tests of version_required for v1 and v2 deployments
  *   Z-15: contract test of POST /flows/state 409 editor_only
+ *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
 var should = require("should");
-var request = require('supertest');
+var request = require("nr-test-utils/supertest");
 var express = require('express');
 var bodyParser = require('body-parser');
 var sinon = require('sinon');

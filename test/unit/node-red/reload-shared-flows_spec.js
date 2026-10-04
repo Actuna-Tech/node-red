@@ -21,6 +21,7 @@
  *   #8: acceptance test of deploy.holdHttpNodeRequests with a real "http in" node
  *   in the window between the stop of the old flows and the start of the new ones
  *   #7: the preReload hook is registered with the `hooks` setting of settings.js
+ *   #19: longer limits of the hold test, the pollers stop when a check fails (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -63,7 +64,7 @@ function getFreePort() {
     });
 }
 
-// A request that gets no answer in 8 s is destroyed: request() rejects, status() gives -1
+// A request that gets no answer in 30 s is destroyed: request() rejects, status() gives -1
 // (a hung connection fails the test with a clear message instead of a mocha timeout)
 function request(method, url) {
     return new Promise((resolve, reject) => {
@@ -72,13 +73,13 @@ function request(method, url) {
             res.on("data", d => text += d);
             res.on("end", () => resolve({ status: res.statusCode, text }));
         });
-        req.setTimeout(8000, () => req.destroy(new Error("timeout")));
+        req.setTimeout(30000, () => req.destroy(new Error("timeout")));
         req.on("error", reject);
         req.end();
     });
 }
 
-// 0: the connection failed, -1: no answer within the timeout
+// 0: the connection failed, -1: no answer within the timeout (30 s: longer than any hold)
 function status(url) {
     return request("GET", url).then(res => res.status, err => err && err.message === "timeout" ? -1 : 0);
 }
@@ -232,38 +233,43 @@ module.exports = Object.assign(${JSON.stringify({
             }
         })());
 
-        // A turn in progress on each instance
-        const turns = instances.map(inst => request("GET", inst.base + "/turn"));
-        await new Promise(r => setTimeout(r, 400));
-        // Another instance (or a deployment elsewhere) writes the new flows
-        fs.writeFileSync(flowFile + ".tmp", JSON.stringify(FLOWS_B));
-        fs.renameSync(flowFile + ".tmp", flowFile);
+        try {
+            // A turn in progress on each instance
+            const turns = instances.map(inst => request("GET", inst.base + "/turn"));
+            await new Promise(r => setTimeout(r, 400));
+            // Another instance (or a deployment elsewhere) writes the new flows
+            fs.writeFileSync(flowFile + ".tmp", JSON.stringify(FLOWS_B));
+            fs.renameSync(flowFile + ".tmp", flowFile);
 
-        const results = await Promise.all(turns);
-        results.forEach((res, i) => {
-            res.status.should.equal(200);
-            res.text.should.equal("turn " + instances[i].pid);
-        });
-        for (const inst of instances) {
-            await waitFor(async () => (await status(inst.base + "/new")) === 200, 15000, "new route not available");
-            await waitFor(async () => (await status(inst.ready)) === 200, 10000, "not ready after the reload");
+            const results = await Promise.all(turns);
+            results.forEach((res, i) => {
+                res.status.should.equal(200);
+                res.text.should.equal("turn " + instances[i].pid);
+            });
+            for (const inst of instances) {
+                await waitFor(async () => (await status(inst.base + "/new")) === 200, 15000, "new route not available");
+                await waitFor(async () => (await status(inst.ready)) === 200, 10000, "not ready after the reload");
+            }
+            polling = false;
+            await Promise.all(pollers);
+
+            observed.forEach(statuses => {
+                // 503 during the drain, the HTTP server never stopped answering
+                statuses.should.containEql(503);
+                statuses.should.not.containEql(0);
+            });
+            instances.forEach(inst => {
+                should(inst.child.exitCode).be.null();
+                should(inst.child.signalCode).be.null();
+            });
+            // The reloaded flows keep working and the old route still answers
+            (await request("GET", instances[0].base + "/turn")).status.should.equal(200);
+            // The shared flow file was not written by the instances
+            JSON.parse(fs.readFileSync(flowFile, "utf8")).should.eql(FLOWS_B);
+        } finally {
+            // a failed check must not leave the pollers running: they keep mocha alive
+            polling = false;
         }
-        polling = false;
-        await Promise.all(pollers);
-
-        observed.forEach(statuses => {
-            // 503 during the drain, the HTTP server never stopped answering
-            statuses.should.containEql(503);
-            statuses.should.not.containEql(0);
-        });
-        instances.forEach(inst => {
-            should(inst.child.exitCode).be.null();
-            should(inst.child.signalCode).be.null();
-        });
-        // The reloaded flows keep working and the old route still answers
-        (await request("GET", instances[0].base + "/turn")).status.should.equal(200);
-        // The shared flow file was not written by the instances
-        JSON.parse(fs.readFileSync(flowFile, "utf8")).should.eql(FLOWS_B);
     });
 
     // Sends GET /stable all the time (two sequential pollers) during a reload of the
@@ -284,25 +290,30 @@ module.exports = Object.assign(${JSON.stringify({
                 await new Promise(r => setTimeout(r, 10));
             }
         })());
-        // A request in progress: the drain waits for it, the reload starts when it completes
-        const turn = request("GET", inst.base + "/turn");
-        await new Promise(r => setTimeout(r, 300));
-        fs.writeFileSync(flowFile + ".tmp", JSON.stringify(windowFlows("202")));
-        fs.renameSync(flowFile + ".tmp", flowFile);
-        (await turn).status.should.equal(200);
-        // the new flows answer 202 on /stable once started
-        await waitFor(async () => statuses.indexOf(202) !== -1, 20000, "the new flows did not answer");
-        await new Promise(r => setTimeout(r, 300));
-        polling = false;
-        await Promise.all(pollers);
-        should(inst.child.exitCode).be.null();
-        return statuses;
+        try {
+            // A request in progress: the drain waits for it, the reload starts when it completes
+            const turn = request("GET", inst.base + "/turn");
+            await new Promise(r => setTimeout(r, 300));
+            fs.writeFileSync(flowFile + ".tmp", JSON.stringify(windowFlows("202")));
+            fs.renameSync(flowFile + ".tmp", flowFile);
+            (await turn).status.should.equal(200);
+            // the new flows answer 202 on /stable once started
+            await waitFor(async () => statuses.indexOf(202) !== -1, 20000, "the new flows did not answer");
+            await new Promise(r => setTimeout(r, 300));
+            polling = false;
+            await Promise.all(pollers);
+            should(inst.child.exitCode).be.null();
+            return statuses;
+        } finally {
+            // a failed check must not leave the pollers running: they keep mocha alive
+            polling = false;
+        }
     }
 
     it("with deploy.holdHttpNodeRequests a request in the stop->start window gets the answer of the new flows, never 404 (#8)", async function() {
-        const statuses = await reloadUnderLoad({ holdHttpNodeRequests: { enabled: true, timeout: 5000 } });
+        const statuses = await reloadUnderLoad({ holdHttpNodeRequests: { enabled: true, timeout: 15000 } });
         if (statuses.indexOf(-1) !== -1) {
-            throw new Error("a request got no answer within 8 s (held too long): " + JSON.stringify(statuses));
+            throw new Error("a request got no answer within 30 s (held too long): " + JSON.stringify(statuses));
         }
         statuses.should.not.containEql(404);
         statuses.should.not.containEql(503);

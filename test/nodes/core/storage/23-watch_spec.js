@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #19: ignores the macOS event of the preparation of the test and cancels the pending change of an ended test (flaky tests)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var fs = require("fs-extra");
 var os = require("os");
@@ -44,8 +49,10 @@ describe('watch Node', function() {
         }
     }
 
+    var changeTimer;
+
     function wait(msec, func) {
-        setTimeout(func, msec);
+        return setTimeout(func, msec);
     }
 
     before(function(done) {
@@ -59,6 +66,8 @@ describe('watch Node', function() {
     });
 
     afterEach(function(done) {
+        // a change of a test that has already ended must not touch the removed directory
+        clearTimeout(changeTimer);
         helper.unload();
         done();
     });
@@ -76,6 +85,14 @@ describe('watch Node', function() {
                     msg.should.have.property('file');
 
                     var file = msg.file;
+                    if (platform === "darwin" && msg.event === "remove" && msg.filename === path.join(msg.topic, path.basename(msg.topic))) {
+                        // On macOS the file system events of the preparation of the test (the
+                        // directories created just before the watch starts) can be delivered
+                        // after the watch has started, as a "remove" of the watched directory
+                        // itself under its own name inside it (<dir>/<dir>). It is no change
+                        // of any watched file.
+                        return;
+                    }
                     if (file in processed) {
                         // multiple messages come in rare case
                         return;
@@ -108,7 +125,7 @@ describe('watch Node', function() {
                 }
             });
             // wait for preparation
-            wait(500, change_func);
+            changeTimer = wait(500, change_func);
         });
     }
 

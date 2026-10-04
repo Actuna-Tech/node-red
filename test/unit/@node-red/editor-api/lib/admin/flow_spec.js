@@ -20,11 +20,12 @@
  *   R-46: an invalid Node-RED-API-Version on /flow is treated as v1 with a warning
  *   W-3: contract of the deploy errors of the single-flow api (rev, revAll, errors)
  *   Z-15: PUT v2 passes started: false of an editor-only instance (R-39)
+ *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
 var should = require("should");
-var request = require('supertest');
+var request = require("nr-test-utils/supertest");
 var express = require('express');
 var bodyParser = require('body-parser');
 var sinon = require('sinon');

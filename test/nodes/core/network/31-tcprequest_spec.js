@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #19: the test server hook calls done exactly once, retries on a taken port and answers with one ACK per connection, whatever the split of the chunks (flaky tests)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var net = require("net");
 var should = require("should");
@@ -26,17 +31,38 @@ describe('TCP Request Node', function() {
     var server = undefined;
     var port = 9000;
 
+    // Starts the test server on the next free port and calls done exactly once:
+    // without an error when it listens, with the error when listening fails for
+    // a reason other than the port being taken (a taken port is skipped).
     function startServer(done) {
         port += 1;
-        server = stoppable(net.createServer(function(c) {
+        const candidate = stoppable(net.createServer(function(c) {
+            // "ACK:" starts the answer of a connection once. The messages of a test arrive
+            // in one or more chunks, depending on the timing of the sockets; a prefix on
+            // every chunk would make the answer depend on that split.
+            let acknowledged = false;
             c.on('data', function(data) {
-                var rdata = "ACK:"+data.toString();
+                var rdata = (acknowledged ? "" : "ACK:")+data.toString();
+                acknowledged = true;
                 c.write(rdata);
             });
             c.on('error', function(err) {
-                startServer(done);
+                // The client side of a connection was reset or closed while the
+                // test shuts it down. It ends this connection only; the server and
+                // the hook must not be started again here.
+                c.destroy();
             });
-        })).listen(port, "127.0.0.1", function(err) {
+        }));
+        candidate.once('error', function(err) {
+            if (err.code === 'EADDRINUSE') {
+                startServer(done);
+            } else {
+                done(err);
+            }
+        });
+        candidate.listen(port, "127.0.0.1", function() {
+            candidate.removeAllListeners('error');
+            server = candidate;
             done();
         });
     }
