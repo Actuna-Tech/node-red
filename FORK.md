@@ -119,6 +119,25 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `invalid_flow_id`, `invalid_node_type`, `deploy_start_failed`, `deploy_stop_failed` – katalog:
   [design/engine-extensions/ZASADY.md](design/engine-extensions/ZASADY.md) §2.4.
 
+### Wynik startu w trybie `"started"` – fakty i późny wynik (#22, R-48)
+- Wpis `errors[]` o `code: "start_timeout"` ma dodatkowe pola (addytywne, tylko tryb `"started"`): `timeout` (ms, wartość
+  `deploy.startTimeout`), `phase` (`"modules"` – sprawdzanie i instalacja modułów flow; `"flows"` – uruchamianie flow),
+  `startedAt` (ms od epoki), `elapsed` (ms w chwili limitu), `pending` (id flow jeszcze niewystartowanych, razem z bieżącym; przy wdrożeniu
+  „flows”/„nodes” tylko flow, w których wdrożenie coś uruchamia – utworzone przez nie, zawierające dodane, zmienione, przepięte
+  lub powiązane węzły albo zmienione same; niezmienione flow działają dalej i nie są wymieniane; w fazie `"modules"` pusta lista) i `current` (id flow uruchamianego w chwili limitu; tylko w fazie `"flows"` i tylko gdy uruchamiane jest flow z `pending` – gdy start czeka na flow, w którym wdrożenie nic nie uruchamia, np. niezmienione flow lub `global` przy wdrożeniu „flows”/„nodes”, `current` nie ma). Przy wdrożeniu „nodes” przepięte i powiązane węzły nie liczą się jako uruchamiane (stop zostawia je działające, start je tylko przepina); przy „flows” liczą się.
+  Wpis `flow_start_failed` z odrzuconego startu ma `flow` (id), gdy wiadomo, którego flow dotyczył błąd. Nie ma nowego kodu
+  najwyższego poziomu – nadal 500 `deploy_start_failed`. Brak kontraktu gotowości węzłów i klasyfikacji przyczyn po kodach
+  systemowych (R-10 bez zmian): dodajemy wyłącznie fakty.
+- Gdy odpowiedź wróciła z `start_timeout`, a start flow skończył się później, runtime publikuje zdarzenie `deploy-start-result`
+  (`notification/deploy-start-result` w `/comms`, bez retencji): `{type: "success", text, timeout, revision}` albo
+  `{type: "error", error: "deploy_start_failed", text, revision, errors[]}`. Zdarzenie dostają tylko zalogowane sesje edytora
+  (jak inne zdarzenia środowiska; `/comms` wymaga uwierzytelnienia przy `adminAuth`); edytor pokazuje „Flow zostały uruchomione”
+  albo czerwony błąd z przyczynami. Nie jest emitowane po wdrożeniu, które odpowiedziało w czasie, ani w trybie domyślnym.
+  Edytor pokazuje wynik tylko, gdy `revision` zdarzenia jest rewizją tego edytora (nowsze wdrożenie lub inna sesja z inną
+  rewizją go pomija) i zamyka wtedy otwarty czerwony błąd `start_timeout` tego wdrożenia. **Zasięg (SEC-003):** zdarzenie,
+  razem z komunikatami błędów i nazwami flow w `errors[]`, trafia do **wszystkich** zalogowanych użytkowników edytora (sesje
+  `/comms` z uprawnieniem odczytu), tak samo jak `runtime-state` i zdarzenia debug – nie tylko do użytkownika, który wdrażał.
+
 ### Wstrzymywanie żądań HTTP węzłów podczas restartu flow (#8)
 - **Surowe ciało (`skipBodyParsing`), tylko przy `enabled: true`:** żądanie do trasy `http in` z „surowym ciałem”, które przeszło przez
   `rawBodyCapture` w oknie stop→start (klucz trasy chwilowo nieobecny), po wypuszczeniu dostałoby ciało sparsowane (obiekt/tekst zamiast
@@ -233,6 +252,14 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   więc czytany jest identyfikator z magazynu (wcześniej start padał). Odrzucony zapis identyfikatora jest ostrzeżeniem
   w logu, a nie nieobsłużonym odrzuceniem obietnicy; start trwa z wygenerowanym identyfikatorem.
 - Przeładowanie z magazynu (`deploy.reload.watch: true`), w którym zawodzi ponowny odczyt pod blokadą lub samo przeładowanie (np. `credentials_load_failed`), wyczerpuje teraz `deploy.reload.retry.attempts` i kończy się stanem `failed` (503) – wcześniej licznik był zerowany po każdym udanym pierwszym odczycie i instancja ponawiała próby w nieskończoność, nie osiągając `failed` (#17). Dotyczy też trybu domyślnego; z `"keepReady"` rosną `attempts` warunku `reload` i pojawiają się okresowe logi `error`. Nowe powiadomienie o zmianie w magazynie skraca tylko opóźnienie kolejnej próby (backoff zaczyna od `retry.min`), nie zeruje licznika prób – inaczej instancja, która dostaje powiadomienia częściej niż trwa seria prób (np. wtyczka magazynu powiadamiająca po ponownym połączeniu), nigdy nie osiągałaby `failed`. Po wyczerpaniu prób i powrocie instancji do `ready` przez wdrożenie lokalne nowy błąd konfiguracji lub przeładowania (np. `credentials_load_failed` nowej rewizji) rozpoczyna nową serię i znów kończy się `failed` po `retry.attempts` próbach; sam błąd odczytu magazynu zachowuje się jak dotąd (okresowe próby, bez nowego `failed`). Logowanie po wyczerpaniu: w trybie `"fail"` instancja w stanie `failed` ponawia cykl co `retry.max` i loguje to na poziomie `debug` (bez ostrzeżeń `read-failed`); z `"keepReady"` błąd konfiguracji lub przeładowania po warunku `storage_error` powoduje natychmiastowe `failed` (log `error` `reload.not-kept-ready`). Udany cykl przeładowania kończy też ponowienie zaplanowane przez wcześniejszy nieudany cykl – wcześniej po sukcesie startował jeszcze jeden zbędny cykl (dodatkowy odczyt magazynu), zarówno gdy timer ponowienia jeszcze nie wystrzelił, jak i gdy wystrzelił w trakcie udanego cyklu (np. podczas wolnego drenażu `preReload`). Ponowienie, które wystrzeli w trakcie trwającego cyklu, nie uruchamia już natychmiastowego dodatkowego cyklu: gdy ten cykl się nie powiedzie, następna próba następuje po opóźnieniu (backoff) tej porażki, a nie od razu. Powiadomienie z magazynu nadal uruchamia cykl od razu, jak dotąd (#26).
+- Edytor, błędy wdrożenia (#22, R-48): (1) odpowiedź 500 `deploy_start_failed` / `deploy_stop_failed` z `rev` oznacza, że konfiguracja
+  **jest zapisana** (tryb `deploy.response: "started"`) – edytor przejmuje nowy `rev`, oznacza zmiany jako wdrożone i pokazuje
+  czerwony błąd z listą przyczyn (wcześniej: zmiany niewdrożone, nieaktualny `rev` i 409 `version_mismatch` przy kolejnym
+  wdrożeniu, fałszywe „flow zmienione w tle” przy późnym `runtime-deploy`, w `reload-only` blokujące okno); (2) **także w trybie
+  domyślnym** błędy wdrożenia, „Restart flow” i „Start/Stop” pokazują czytelny komunikat zbudowany z pola `message` odpowiedzi
+  (albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”) zamiast surowego JSON-a wstawianego jako HTML – zmiana tylko
+  wyświetlania, bez wpływu na zapis i API; wartości z odpowiedzi i nazwy flow są escapowane. Zmiany zachowania dla 409
+  (`version_mismatch`, `version_required`) i dla błędów bez `rev` (zmiany zostają niewdrożone) nie ma.
 
 ## 7. Testy i proces
 

@@ -18,6 +18,7 @@
  *   P-01: tests of rejectHandler passing rev and errors of a deployment error
  *   W-3: revAll of a deployment error of the single-flow api
  *   P-01: rev, revAll and errors are passed only for deploy_start_failed/deploy_stop_failed
+ *   #22: the additive fields of a start_timeout and of a flow_start_failed entry reach the response
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -129,6 +130,17 @@ describe("api/util", function() {
                 err.errors = [{code:"missing_types", message:"Missing node types", types:["missing"]}];
                 apiUtil.rejectHandler(req,res,err);
             });
+            app.get("/startTimeout", function(req,res) {
+                var err = new Error("Deployment saved, but the flows did not start");
+                err.code = "deploy_start_failed";
+                err.status = 500;
+                err.rev = "abc";
+                err.errors = [
+                    {code:"start_timeout", message:"The flows did not start within 30 ms", timeout:30, phase:"flows", startedAt:1759536000000, elapsed:31, pending:["t1","t2"], current:"t1"},
+                    {code:"flow_start_failed", message:"boom", flow:"t2"}
+                ];
+                apiUtil.rejectHandler(req,res,err);
+            });
             app.get("/flowStopFailed", function(req,res) {
                 var err = new Error("stop failed");
                 err.code = "deploy_stop_failed";
@@ -165,6 +177,14 @@ describe("api/util", function() {
                 rev: "abc",
                 errors: [{code:"missing_types", message:"Missing node types", types:["missing"]}]
             });
+        });
+        it("rejectHandler passes the additive fields of the error entries on (#22)", async function() {
+            const res = await request(app).get("/startTimeout").expect(500);
+            res.body.rev.should.equal("abc");
+            res.body.errors.should.eql([
+                {code:"start_timeout", message:"The flows did not start within 30 ms", timeout:30, phase:"flows", startedAt:1759536000000, elapsed:31, pending:["t1","t2"], current:"t1"},
+                {code:"flow_start_failed", message:"boom", flow:"t2"}
+            ]);
         });
         it("rejectHandler includes revAll and a null rev of the single-flow api (W-3)", async function() {
             const res = await request(app).get("/flowStopFailed").expect(500);

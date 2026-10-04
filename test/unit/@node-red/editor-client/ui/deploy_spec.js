@@ -18,11 +18,14 @@
  *   P-02: tests of the stale flows handling (editorTheme.deploy.staleFlows) and of restart on 409
  *   W-4: 409 version_required does not loop the conflict dialog
  *   Z-15: editor-only instance - no Start/Stop items, "Restart flows" disabled
+ *   #22: a saved deployment whose flows did not start takes over the revision; readable, escaped
+ *   messages instead of the raw JSON of the response (deploy, restart, start/stop flows)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
 const should = require("should");
 const sinon = require("sinon");
+const fs = require("fs");
 
 const NR_TEST_UTILS = require("nr-test-utils");
 
@@ -403,6 +406,503 @@ describe("editor-client/ui/deploy", function() {
             const event = { preventDefault: sinon.stub(), stopImmediatePropagation: sinon.stub() };
             windowListeners.beforeunload(event);
             event.preventDefault.calledOnce.should.be.true();
+        });
+    });
+    describe("failed deployment (#22)", function() {
+        const enUS = JSON.parse(fs.readFileSync(NR_TEST_UTILS.resolve("@node-red/editor-client/locales/en-US/editor.json")));
+        const INJECTION = "<img src=x onerror=alert(1)>";
+        let version;
+        let workspaces;
+
+        // The real en-US catalog: a missing key fails the test, the parameters are interpolated
+        function translate(key, params) {
+            let value = enUS;
+            key.split(".").forEach(function(part) {
+                if (value === undefined || value === null || !Object.prototype.hasOwnProperty.call(value, part)) {
+                    throw new Error("missing translation key " + key);
+                }
+                value = value[part];
+            });
+            return String(value).replace(/__([^_\s]+?)__/g, function(match, name) {
+                return params && params[name] !== undefined ? params[name] : match;
+            });
+        }
+        function notificationType(n) {
+            return typeof n.options === "string" ? n.options : n.options.type;
+        }
+        function assertNoRawResponse(n) {
+            n.msg.should.not.containEql("<img");
+            n.msg.should.not.containEql("<script");
+            n.msg.should.not.containEql("onerror=alert(1)>");
+            n.msg.should.not.containEql('{"');
+            n.msg.should.not.containEql("responseText");
+        }
+        function fail(xhr) {
+            return $.requests[$.requests.length - 1]._fail(xhr);
+        }
+        function body(obj) {
+            return { status: 500, responseJSON: obj, responseText: JSON.stringify(obj) };
+        }
+        function startFailed(errors, rev) {
+            const obj = { code: "deploy_start_failed", message: "Deployment saved, but the flows did not start", errors: errors };
+            if (rev !== undefined) { obj.rev = rev }
+            return body(obj);
+        }
+
+        beforeEach(function() {
+            version = "rev-1";
+            workspaces = {
+                t1: { id: "t1", label: INJECTION },
+                t2: { id: "t2", label: "Flow 2" },
+                t3: { id: "t3", label: "Flow 3" }
+            };
+            mockRED._ = translate;
+            mockRED.nodes.version = sinon.spy(function(v) { if (v !== undefined) { version = v } return version; });
+            mockRED.nodes.workspace = function(id) { return workspaces[id]; };
+            mockRED.nodes.subflow = function() { return null; };
+        });
+
+        describe("saved but the flows did not start (deploy_start_failed with rev)", function() {
+            beforeEach(function() {
+                load();
+                actions["core:deploy-flows"](true);
+            });
+
+            it("takes over the revision and marks the changes as deployed", function() {
+                dirty.should.be.true();
+                fail(startFailed([{ code: "flow_start_failed", message: "boom", flow: "t2" }], "rev-2"));
+                dirty.should.be.false();
+                version.should.equal("rev-2");
+                mockRED.nodes.originalFlow.calledOnce.should.be.true();
+                mockRED.history.markAllDirty.calledOnce.should.be.true();
+                mockRED.events.emit.calledWith("deploy").should.be.true();
+            });
+            it("shows one red error notification with the causes, escaped, without raw JSON", function() {
+                fail(startFailed([
+                    { code: "flow_start_failed", message: "boom " + INJECTION, flow: "t1" },
+                    { code: "flow_start_failed", message: "no flow" },
+                    { code: "missing_types", message: "Missing node types", types: ["a-type", INJECTION] },
+                    { code: "missing_modules", message: "Missing modules", modules: [{ module: "mod-x", error: "E" }] },
+                    { code: "safe_mode", message: "Flows not started in safe mode" }
+                ], "rev-2"));
+                notifications.should.have.length(1);
+                const n = lastNotification();
+                notificationType(n).should.equal("error");
+                n.options.should.have.property("fixed", true);
+                assertNoRawResponse(n);
+                n.msg.should.containEql(translate("deploy.errors.savedWithErrors"));
+                // the label of the tab and the message are escaped
+                n.msg.should.containEql('Flow "&lt;img src=x onerror=alert(1)&gt;" failed to start: boom &lt;img src=x onerror=alert(1)&gt;');
+                n.msg.should.containEql("A flow failed to start: no flow");
+                n.msg.should.containEql("Missing node types: a-type, &lt;img src=x onerror=alert(1)&gt;");
+                n.msg.should.containEql("Missing modules: mod-x");
+                n.msg.should.containEql("safe mode");
+                (n.msg.match(/<li>/g) || []).should.have.length(5);
+                // closeable
+                n.options.buttons.should.have.length(1);
+                n.options.buttons[0].click();
+                n.close.calledOnce.should.be.true();
+            });
+            it("the next deploy sends the new revision", function() {
+                fail(startFailed([{ code: "flow_start_failed", message: "boom", flow: "t2" }], "rev-2"));
+                deployButton().removeClass("disabled");
+                actions["core:deploy-flows"](true);
+                $.requests.should.have.length(2);
+                JSON.parse($.requests[1].opts.data).should.have.property("rev", "rev-2");
+            });
+            it("a late runtime-deploy with the revision of the editor shows no 'changed in background' notice", function() {
+                const clock = sinon.useFakeTimers();
+                fail(startFailed([{ code: "start_timeout", message: "t", timeout: 30, phase: "flows", pending: ["t2"] }], "rev-2"));
+                $.requests[0]._always();
+                clock.tick(400);
+                const count = notifications.length;
+                commsHandlers["notification/runtime-deploy"]("notification/runtime-deploy", { revision: "rev-2" });
+                notifications.should.have.length(count);
+                // a revision of somebody else is still reported
+                commsHandlers["notification/runtime-deploy"]("notification/runtime-deploy", { revision: "rev-3" });
+                notifications.should.have.length(count + 1);
+                lastNotification().options.should.have.property("id", "background-update");
+            });
+            it("deploy_start_failed without errors[] shows the message", function() {
+                fail(body({ code: "deploy_start_failed", message: "Deployment saved " + INJECTION, rev: "rev-2" }));
+                dirty.should.be.false();
+                assertNoRawResponse(lastNotification());
+                lastNotification().msg.should.containEql("Deployment saved &lt;img");
+            });
+        });
+
+        describe("saved but the flows did not start - reload-only", function() {
+            it("a late runtime-deploy with the revision of the editor shows no reload dialog", function() {
+                editorTheme = { deploy: { staleFlows: "reload-only" } };
+                load();
+                const clock = sinon.useFakeTimers();
+                actions["core:deploy-flows"](true);
+                fail(startFailed([{ code: "start_timeout", message: "t" }], "rev-2"));
+                $.requests[0]._always();
+                clock.tick(400);
+                const count = notifications.length;
+                commsHandlers["notification/runtime-deploy"]("notification/runtime-deploy", { revision: "rev-2" });
+                notifications.should.have.length(count);
+                notifications.filter(n => n.options && n.options.modal).should.have.length(0);
+                // a revision of somebody else still blocks the editor
+                commsHandlers["notification/runtime-deploy"]("notification/runtime-deploy", { revision: "rev-3" });
+                lastNotification().options.should.have.property("modal", true);
+            });
+        });
+
+        describe("start_timeout", function() {
+            beforeEach(function() {
+                load();
+                actions["core:deploy-flows"](true);
+            });
+            it("lists the flows not started, the current one and the phase", function() {
+                fail(startFailed([{ code: "start_timeout", message: "The flows did not start within 30000 ms", timeout: 30000, phase: "flows", startedAt: 1, elapsed: 30001, pending: ["t1", "t2", "t3"], current: "t1" }], "rev-2"));
+                dirty.should.be.false();
+                const n = lastNotification();
+                notificationType(n).should.equal("error");
+                assertNoRawResponse(n);
+                n.msg.should.containEql("The start takes longer than 30 s and continues in the background.");
+                n.msg.should.containEql("Phase: starting the flows.");
+                n.msg.should.containEql("Starting now: &lt;img src=x onerror=alert(1)&gt;.");
+                n.msg.should.containEql("Not started yet: &lt;img src=x onerror=alert(1)&gt;, Flow 2, Flow 3.");
+                n.msg.should.containEql("The result will be shown when the start ends.");
+            });
+            it("names the phase modules and has no flows to list", function() {
+                fail(startFailed([{ code: "start_timeout", message: "t", timeout: 500, phase: "modules", pending: [] }], "rev-2"));
+                const n = lastNotification();
+                n.msg.should.containEql("The start takes longer than 0.5 s");
+                n.msg.should.containEql("Phase: checking the modules required by the flows.");
+                n.msg.should.not.containEql("Not started yet");
+                n.msg.should.not.containEql("Starting now");
+            });
+            it("crops a long list of pending flows and shows the global nodes by name", function() {
+                const ids = ["global"];
+                for (let i = 0; i < 8; i++) { ids.push("x" + i) }
+                fail(startFailed([{ code: "start_timeout", message: "t", phase: "flows", pending: ids, current: "global" }], "rev-2"));
+                const n = lastNotification();
+                n.msg.should.containEql("The start takes longer than the limit for the response");
+                n.msg.should.containEql("Starting now: global nodes.");
+                n.msg.should.containEql("+ 4 more");
+            });
+            it("without current (the start waits for a flow that is not pending) no flow is named as being started", function() {
+                fail(startFailed([{ code: "start_timeout", message: "t", timeout: 30000, phase: "flows", pending: ["t2"] }], "rev-2"));
+                const n = lastNotification();
+                n.msg.should.containEql("Not started yet: Flow 2.");
+                n.msg.should.not.containEql("Starting now");
+            });
+            it("an old runtime without the additive fields still gives a readable message", function() {
+                fail(startFailed([{ code: "start_timeout", message: "The flows did not start within 30000 ms" }], "rev-2"));
+                lastNotification().msg.should.containEql("continues in the background");
+            });
+        });
+
+        describe("hostile or malformed entries of errors[]", function() {
+            beforeEach(function() {
+                load();
+                actions["core:deploy-flows"](true);
+            });
+            it("missing_modules with a malicious module name and error is escaped", function() {
+                fail(startFailed([{ code: "missing_modules", message: "m", modules: [{ module: INJECTION, error: INJECTION }, INJECTION, null] }], "rev-2"));
+                const n = lastNotification();
+                assertNoRawResponse(n);
+                n.msg.should.containEql("Missing modules: &lt;img src=x onerror=alert(1)&gt;, &lt;img src=x onerror=alert(1)&gt;, null");
+            });
+            it("types, modules, pending and flow that are not what they should be do not throw", function() {
+                (function() {
+                    fail(startFailed([
+                        { code: "missing_types", types: "<b>x</b>" },
+                        { code: "missing_modules", modules: { a: 1 } },
+                        { code: "start_timeout", pending: "<b>y</b>", current: { a: INJECTION }, phase: 5, timeout: "30" },
+                        { code: "flow_start_failed", flow: { id: INJECTION }, message: 7 },
+                        null,
+                        "a string"
+                    ], "rev-2"));
+                }).should.not.throw();
+                const n = lastNotification();
+                assertNoRawResponse(n);
+                n.msg.should.not.containEql("<b>");
+                n.msg.should.containEql("Missing node types: ");
+                n.msg.should.containEql("Missing modules: ");
+                n.msg.should.containEql("[object Object]");
+            });
+            it("a flow label that is not a string falls back to the id", function() {
+                workspaces.t2 = { id: "t2", label: { toString: function() { return INJECTION } } };
+                fail(startFailed([{ code: "flow_start_failed", message: "m", flow: "t2" }], "rev-2"));
+                lastNotification().msg.should.containEql('Flow "t2" failed to start');
+            });
+        });
+
+        describe("saved but the previous nodes could not be stopped (deploy_stop_failed with rev)", function() {
+            beforeEach(function() {
+                load();
+                actions["core:deploy-flows"](true);
+            });
+            it("takes over the revision and shows a red error", function() {
+                fail(body({ code: "deploy_stop_failed", message: "stop failed " + INJECTION, rev: "rev-2" }));
+                dirty.should.be.false();
+                version.should.equal("rev-2");
+                const n = lastNotification();
+                notificationType(n).should.equal("error");
+                assertNoRawResponse(n);
+                n.msg.should.containEql("The previous nodes could not be stopped: stop failed &lt;img");
+            });
+            it("without a message", function() {
+                fail(body({ code: "deploy_stop_failed", rev: "rev-2" }));
+                lastNotification().msg.should.containEql("The previous nodes could not be stopped.");
+            });
+        });
+
+        describe("other errors", function() {
+            beforeEach(function() {
+                load();
+                actions["core:deploy-flows"](true);
+            });
+            it("400 without rev keeps the changes dirty and shows the message, not the JSON", function() {
+                fail({ status: 400, responseJSON: { code: "invalid_flow", message: "Invalid flow " + INJECTION }, responseText: '{"code":"invalid_flow","message":"Invalid flow <img src=x onerror=alert(1)>"}' });
+                dirty.should.be.true();
+                version.should.equal("rev-1");
+                deployButton().hasClass("disabled").should.be.false();
+                const n = lastNotification();
+                notificationType(n).should.equal("error");
+                assertNoRawResponse(n);
+                n.msg.should.equal("Deploy failed: Invalid flow &lt;img src=x onerror=alert(1)&gt;");
+            });
+            it("reads the message from responseText when there is no responseJSON", function() {
+                fail({ status: 400, responseText: '{"code":"x","message":"plain message"}' });
+                lastNotification().msg.should.equal("Deploy failed: plain message");
+            });
+            it("deploy_start_failed without a rev keeps the changes dirty", function() {
+                fail(startFailed([{ code: "missing_types", message: "m", types: ["t"] }]));
+                dirty.should.be.true();
+                version.should.equal("rev-1");
+                mockRED.nodes.originalFlow.called.should.be.false();
+                lastNotification().msg.should.containEql("Missing node types: t");
+            });
+            it("a deploy_start_failed with a rev but another status than 500 is not a saved deployment", function() {
+                fail({ status: 400, responseJSON: { code: "deploy_start_failed", message: "m", rev: "rev-2", errors: [{ code: "safe_mode" }] }, responseText: "{}" });
+                dirty.should.be.true();
+                version.should.equal("rev-1");
+                mockRED.nodes.originalFlow.called.should.be.false();
+            });
+            it("escapes the quotes of a message as well", function() {
+                fail({ status: 400, responseJSON: { message: "a \"b\" 'c'" }, responseText: "{}" });
+                lastNotification().msg.should.equal("Deploy failed: a &quot;b&quot; &#39;c&#39;");
+            });
+            it("a response that is not JSON gives a generic message and no HTML from it", function() {
+                fail({ status: 502, responseText: "<html><body>Bad Gateway " + INJECTION + "</body></html>" });
+                dirty.should.be.true();
+                const n = lastNotification();
+                n.msg.should.equal("Deploy failed: unexpected response from the server (HTTP 502)");
+                assertNoRawResponse(n);
+                n.msg.should.not.containEql("<html>");
+            });
+            it("a JSON response without a message gives a generic message", function() {
+                fail({ status: 500, responseJSON: { code: "unexpected_error" }, responseText: '{"code":"unexpected_error"}' });
+                lastNotification().msg.should.equal("Deploy failed: unexpected response from the server (HTTP 500)");
+            });
+            it("no response keeps the message of before", function() {
+                fail({ status: 0 });
+                dirty.should.be.true();
+                lastNotification().msg.should.equal("Deploy failed: no response from server");
+            });
+            it("409 version_mismatch is unchanged: the conflict dialog, changes dirty", function() {
+                fail({ status: 409, responseJSON: { code: "version_mismatch", message: "m" }, responseText: '{"code":"version_mismatch"}' });
+                dirty.should.be.true();
+                mockRED.diff.getRemoteDiff.calledOnce.should.be.true();
+                lastNotification().options.should.have.property("modal", true);
+            });
+        });
+
+        describe("restart", function() {
+            beforeEach(function() {
+                load();
+                actions["core:restart-flows"]();
+            });
+            it("shows the causes of a failed start as a red error and does not take over a revision", function() {
+                fail(startFailed([{ code: "flow_start_failed", message: "boom", flow: "t2" }], "rev-2"));
+                version.should.equal("rev-1");
+                dirty.should.be.true();
+                const n = lastNotification();
+                notificationType(n).should.equal("error");
+                n.msg.should.containEql(translate("deploy.errors.startFailed"));
+                n.msg.should.not.containEql(translate("deploy.errors.savedWithErrors"));
+                n.msg.should.containEql('Flow "Flow 2" failed to start: boom');
+            });
+            it("shows a readable, escaped message instead of the raw JSON", function() {
+                fail({ status: 400, responseJSON: { message: "bad " + INJECTION }, responseText: '{"message":"bad <img src=x onerror=alert(1)>"}' });
+                const n = lastNotification();
+                notificationType(n).should.equal("error");
+                assertNoRawResponse(n);
+                n.msg.should.equal("Deploy failed: bad &lt;img src=x onerror=alert(1)&gt;");
+            });
+            it("a response that is not JSON gives a generic message", function() {
+                fail({ status: 503, responseText: "<h1>unavailable</h1>" });
+                lastNotification().msg.should.equal("Deploy failed: unexpected response from the server (HTTP 503)");
+            });
+        });
+
+        describe("start and stop flows", function() {
+            beforeEach(function() {
+                mockRED.settings.runtimeState = { enabled: true, ui: true };
+                load();
+                actions["core:start-flows"]();
+            });
+            it("does not throw on a response that is not JSON and shows a generic message", function() {
+                (function() {
+                    fail({ status: 502, responseText: "<h1>Bad gateway</h1>" });
+                }).should.not.throw();
+                lastNotification().msg.should.equal("<strong>Error</strong>: unexpected response from the server (HTTP 502)");
+            });
+            it("shows the message of the response, escaped", function() {
+                fail({ status: 400, responseJSON: { message: "nope " + INJECTION }, responseText: '{"message":"nope <img src=x onerror=alert(1)>"}' });
+                const n = lastNotification();
+                notificationType(n).should.equal("error");
+                n.msg.should.equal("<strong>Error</strong>: nope &lt;img src=x onerror=alert(1)&gt;");
+            });
+            it("lists the causes of a failed start", function() {
+                fail(startFailed([{ code: "missing_types", message: "m", types: ["t1"] }], "rev-9"));
+                lastNotification().msg.should.containEql("Missing node types: t1");
+                // no deployment: nothing is taken over
+                version.should.equal("rev-1");
+            });
+        });
+
+        describe("RED.deploy.showStartResult (the final result of a start)", function() {
+            beforeEach(function() {
+                load();
+            });
+            function result(extra) {
+                return Object.assign({ type: "error", error: "deploy_start_failed", revision: "rev-1", errors: [] }, extra);
+            }
+            it("success: a green notification that closes itself", function() {
+                deploy.showStartResult({ type: "success", revision: "rev-1", timeout: 8000, text: "ignored" });
+                notifications.should.have.length(1);
+                const n = lastNotification();
+                n.msg.should.equal("<p>The flows have started.</p>");
+                n.options.should.have.property("type", "success");
+                n.options.should.have.property("fixed", false);
+                n.options.should.have.property("timeout", 8000);
+                should(n.options.buttons).be.undefined();
+            });
+            it("failure: the causes are listed, escaped, with a Close button, until closed", function() {
+                deploy.showStartResult(result({ errors: [
+                    { code: "flow_start_failed", message: "boom " + INJECTION, flow: "t1" },
+                    { code: "missing_types", types: [INJECTION] },
+                    { code: "missing_modules", modules: [{ module: INJECTION }] }
+                ] }));
+                const n = lastNotification();
+                n.options.should.have.property("type", "error");
+                n.options.should.have.property("fixed", true);
+                n.msg.should.startWith(translate("notification.errors.deploy-start-failed"));
+                assertNoRawResponse(n);
+                (n.msg.match(/<li>/g) || []).should.have.length(3);
+                n.msg.should.containEql("boom &lt;img src=x onerror=alert(1)&gt;");
+                n.options.buttons.should.have.length(1);
+                n.options.buttons[0].click();
+                n.close.calledOnce.should.be.true();
+            });
+            it("never takes the text of the notification from the event", function() {
+                deploy.showStartResult(result({ text: INJECTION, errors: [{ code: "x", message: "m" }] }));
+                assertNoRawResponse(lastNotification());
+            });
+            it("failure without errors[] shows only the text", function() {
+                deploy.showStartResult(result({ errors: "<b>x</b>" }));
+                lastNotification().msg.should.equal(translate("notification.errors.deploy-start-failed"));
+            });
+            it("ignores the result of another revision (a newer deployment)", function() {
+                deploy.showStartResult({ type: "success", revision: "rev-9" });
+                deploy.showStartResult(result({ revision: "rev-9" }));
+                notifications.should.have.length(0);
+            });
+            it("a result that is not an object is ignored", function() {
+                deploy.showStartResult(undefined);
+                deploy.showStartResult("x");
+                notifications.should.have.length(0);
+            });
+            it("updates the notification of an earlier result of the same type instead of stacking a second one", function() {
+                deploy.showStartResult(result({ errors: [{ code: "safe_mode" }] }));
+                const first = lastNotification();
+                deploy.showStartResult(result({ errors: [{ code: "missing_types", types: ["t"] }] }));
+                notifications.should.have.length(1);
+                first.update.calledOnce.should.be.true();
+                first.close.called.should.be.false();
+            });
+            it("a result of another type replaces the notification (it must not keep the auto-close of the first)", function() {
+                deploy.showStartResult({ type: "success", revision: "rev-1" });
+                const green = lastNotification();
+                deploy.showStartResult(result({ errors: [{ code: "safe_mode" }] }));
+                green.close.calledOnce.should.be.true();
+                green.update.called.should.be.false();
+                notifications.should.have.length(2);
+                const red = lastNotification();
+                red.options.should.have.property("fixed", true);
+                // and back
+                deploy.showStartResult({ type: "success", revision: "rev-1" });
+                red.close.calledOnce.should.be.true();
+                notifications.should.have.length(3);
+            });
+            it("the Close button of an updated notification closes it", function() {
+                deploy.showStartResult(result({ errors: [{ code: "safe_mode" }] }));
+                const first = lastNotification();
+                deploy.showStartResult(result({ errors: [{ code: "safe_mode" }] }));
+                first.update.args[0][1].buttons[0].click();
+                first.close.calledOnce.should.be.true();
+            });
+            it("a result that arrives before the response of its deployment is shown once the response is handled", function() {
+                actions["core:deploy-flows"](true);
+                // the editor still has rev-1
+                deploy.showStartResult({ type: "success", revision: "rev-2" });
+                notifications.should.have.length(0);
+                fail(startFailed([{ code: "start_timeout", message: "t", timeout: 30, phase: "flows", pending: ["t2"] }], "rev-2"));
+                notifications.should.have.length(2);
+                notifications[0].close.calledOnce.should.be.true();
+                notifications[1].options.should.have.property("type", "success");
+                // applied once
+                deploy.showStartResult({ type: "success", revision: "rev-2" });
+                notifications.should.have.length(2);
+            });
+            it("keeps only the latest ignored result and drops it when it is for another revision", function() {
+                actions["core:deploy-flows"](true);
+                deploy.showStartResult({ type: "success", revision: "rev-7" });
+                deploy.showStartResult(result({ revision: "rev-8", errors: [{ code: "safe_mode" }] }));
+                fail(startFailed([{ code: "start_timeout", message: "t" }], "rev-7"));
+                // rev-7 was superseded by rev-8: nothing is shown besides the start_timeout error
+                notifications.should.have.length(1);
+                notifications[0].close.called.should.be.false();
+            });
+            it("closes the open start_timeout error of the same deployment", function() {
+                actions["core:deploy-flows"](true);
+                fail(startFailed([{ code: "start_timeout", message: "t", timeout: 30, phase: "flows", pending: ["t2"] }], "rev-2"));
+                const timeoutNotice = lastNotification();
+                deploy.showStartResult({ type: "success", revision: "rev-2" });
+                timeoutNotice.close.calledOnce.should.be.true();
+                notifications.should.have.length(2);
+                lastNotification().options.should.have.property("type", "success");
+            });
+            it("leaves the start_timeout error of another revision open", function() {
+                actions["core:deploy-flows"](true);
+                fail(startFailed([{ code: "start_timeout", message: "t" }], "rev-2"));
+                const timeoutNotice = lastNotification();
+                version = "rev-3";
+                deploy.showStartResult({ type: "success", revision: "rev-3" });
+                timeoutNotice.close.called.should.be.false();
+            });
+        });
+
+        describe("RED.deploy.formatStartErrors", function() {
+            beforeEach(function() {
+                load();
+            });
+            it("shows the message of an unknown code, escaped", function() {
+                deploy.formatStartErrors([{ code: "something_new", message: "new " + INJECTION }]).should.equal(
+                    '<ul class="red-ui-deploy-dialog-confirm-list"><li>new &lt;img src=x onerror=alert(1)&gt;</li></ul>');
+            });
+            it("shows the code of an unknown entry without a message", function() {
+                deploy.formatStartErrors([{ code: "something_new" }]).should.containEql("something_new");
+            });
+            it("tolerates a missing list", function() {
+                deploy.formatStartErrors(undefined).should.equal('<ul class="red-ui-deploy-dialog-confirm-list"></ul>');
+            });
         });
     });
     describe("editor-only instance (Z-15, R-39)", function() {
