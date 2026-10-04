@@ -3,8 +3,9 @@
  - Documentation only (#43, R4): the `type` field of the `preReload` payload is the **configured** type
    (`deploy.reload.type`), not the actual one, and the contract does not change. The scope of a reload is
    decided by `changedFlows` (`null` = all flows): with `type: "diff"` the reload is a full one when the
-   credentials changed, and also in the extra round of the drain, so the event is then
-   `{type: "diff", changedFlows: null}`. Described in the `settings.js` template, `MIGRACJA.md` and `FORK.md`
+   credentials changed (also during the drain - the extra round then has `changedFlows: null`) or on a
+   global change, so the event is then `{type: "diff", changedFlows: null}`; the extra round after a change of
+   the flows alone has the list of the new flows and the reload stays a diff. Described in the `settings.js` template, `MIGRACJA.md` and `FORK.md`
  - Reload from storage (`deploy.reload.watch: true`) compares the credentials like the flow
    revision (#2): the runtime computes a digest (HMAC-SHA256 with a per-process random key, of the canonical JSON with sorted keys) of the
    **decrypted** credentials read from storage and compares it with the digest of the running
@@ -266,7 +267,8 @@ Security
    `credentials_digest_failed` and a fixed message, so the reload log (`reload.read-failed`) cannot quote
    a secret from the message of the cause. The rule of #2 does not change: a failed digest of the running
    configuration is "no change" only for the same revision with an unknown digest, otherwise the error goes on
-   (as `reload_failed`). A key that does not decrypt still gives `credentials_load_failed`
+   (as `reload_failed` in the comparison of the cycle, as `storage_error` in the reread under the deploy
+   lock - with `keepReady` the instance then stays ready). A key that does not decrypt still gives `credentials_load_failed`
  - Prevent crash on websocket auth packet when admin auth is disabled
  - Render the username as text in the editor user menu and login notification
  - Do not return `credentialSecret` and the remote URLs with their credentials in `GET /settings`
