@@ -341,9 +341,11 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   z parametrem sam czyta strumień ciała, ustawia `skipRawBodyParser` i nie zużywa go do końca, nie wyklucza odczytu przez trasę węzła –
   ciało może być wtedy przeczytane dwa razy (przez middleware i przez trasę); strumień zużyty do końca trasa pomija (`readableEnded`). Ładowanie modułu ponownie na tej samej
   aplikacji (`RED.stop()` i `RED.start()` w jednym procesie) zastępuje warstwę przechwycenia na jej miejscu, zamiast dodawać drugą.
-  **Autoryzacja w `httpNodeMiddleware` działa po odczycie ciała** (do limitu): powyżej limitu klient dostaje 413 zamiast 401. Żeby nie czytać
-  ciała żądań nieuwierzytelnionych, autoryzację należy umieścić w `httpNodeAuth` albo w middleware aplikacji przed `RED.httpNode`. 413
-  z przechwycenia dostaje nagłówki CORS z globalnego `httpNodeCors`, także na trasie obcej z własnym CORS.
+  **Nie opieraj autoryzacji na `httpNodeMiddleware` ani na `RED.httpNode.use(auth)` dodanym po `RED.start()` (tryb osadzony):** ciało trasy
+  `skipBodyParsing` jest czytane przed nimi (do limitu), a powyżej limitu klient dostaje 413 zamiast 401. Żeby nie czytać ciała żądań
+  nieuwierzytelnionych, użyj `httpNodeAuth` albo middleware aplikacji zewnętrznej przed `RED.httpNode`. 413 z przechwycenia dostaje
+  nagłówki CORS z globalnego `httpNodeCors`, także na trasie obcej z własnym CORS. Węzeł bez `skipBodyParsing` na tej samej ścieżce
+  i metodzie co węzeł z tą opcją dostaje 413 dla ciała większego niż limit tamtego węzła.
 
 ## 7. Testy i proces
 
