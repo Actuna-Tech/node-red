@@ -16,10 +16,12 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #34: the real en-US catalog as RED._ and a recorder of RED.notify for the unit tests of the editor
+ *   #37: assertNoElement - parses the HTML the way the browser does and finds no element of a name
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
 const fs = require("fs");
+const cheerio = require("cheerio");
 
 const NR_TEST_UTILS = require("nr-test-utils");
 
@@ -69,4 +71,12 @@ function assertNoMarkup(msg) {
     msg.should.not.containEql("onerror=alert(1)>");
 }
 
-module.exports = { translate, createNotifier, assertNoMarkup, INJECTION };
+/**
+ * The HTML is parsed as the browser does (what RED.notify does with a message): the injection must
+ * not create an element, whatever the way it is put in (content or the value of an attribute).
+ */
+function assertNoElement(html, name) {
+    cheerio.load(String(html))(name).length.should.equal(0, "an element <" + name + "> was created by: " + html);
+}
+
+module.exports = { translate, createNotifier, assertNoMarkup, assertNoElement, INJECTION };

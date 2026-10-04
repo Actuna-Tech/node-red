@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #34: tests of RED.errors, the shared escaping of error texts shown as HTML
+ *   #37: notifyGitError, shared by the projects and the version control; httpUrl; translateEscaped keeps numbers
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -49,7 +50,7 @@ describe("editor-client/ui/common/errors (#34)", function() {
 
     it("is RED.errors", function() {
         errors.should.equal(RED.errors);
-        ["escape", "parseResponse", "translateEscaped", "translateResponse", "translateException"]
+        ["escape", "httpUrl", "notifyGitError", "parseResponse", "translateEscaped", "translateResponse", "translateException"]
             .forEach(name => errors.should.have.property(name).which.is.a.Function());
     });
 
@@ -137,6 +138,77 @@ describe("editor-client/ui/common/errors (#34)", function() {
             error.code = "NODE_RED";
             const html = errors.translateException("notification.error", error);
             catalog.assertNoMarkup(html);
+        });
+    });
+
+    describe("notifyGitError (#37; the projects and the version control)", function() {
+        let notifier;
+        beforeEach(function() {
+            notifier = catalog.createNotifier();
+            global.RED.notify = notifier.notify;
+        });
+
+        it("shows the message of the server as text in a red notification", function() {
+            errors.notifyGitError({ code: "git_connection_failed", message: INJECTION });
+            notifier.notifications.should.have.length(1);
+            notifier.notifications[0].msg.should.equal("&lt;img src=x onerror=alert(1)&gt;");
+            notifier.notifications[0].options.should.equal("error");
+            catalog.assertNoElement(notifier.notifications[0].msg, "img");
+        });
+
+        it("escapes the quotes and shows nothing for a missing message", function() {
+            errors.notifyGitError({ message: "a \"b\" 'c'" });
+            notifier.notifications[0].msg.should.equal("a &quot;b&quot; &#39;c&#39;");
+            errors.notifyGitError({});
+            notifier.notifications[1].msg.should.equal("");
+        });
+    });
+
+    describe("httpUrl (#37; a link or window.open from the remote catalog)", function() {
+        it("gives an http or https address, normalized", function() {
+            errors.httpUrl("https://example.org/a b?x=1").should.equal("https://example.org/a%20b?x=1");
+            errors.httpUrl("http://example.org").should.equal("http://example.org/");
+            errors.httpUrl("HTTPS://Example.org/").should.equal("https://example.org/");
+        });
+
+        it("gives null for a javascript:, data:, vbscript:, file: or blob: address, also written in a way a browser accepts", function() {
+            [
+                "javascript:alert(1)", "JaVaScRiPt:alert(1)", " javascript:alert(1)", "\tjava\nscript:alert(1)",
+                "data:text/html,<img src=x onerror=alert(1)>", "vbscript:msgbox(1)", "file:///etc/passwd",
+                "blob:https://example.org/1", "ftp://example.org/", "//example.org/x", "mailto:a@b.c"
+            ].forEach(function(value) {
+                should(errors.httpUrl(value)).equal(null, value);
+            });
+        });
+
+        it("gives null for no address, an empty text and what is no text", function() {
+            [undefined, null, "", 5, {}, ["https://example.org"], true].forEach(function(value) {
+                should(errors.httpUrl(value)).equal(null);
+            });
+        });
+
+        it("resolves a relative address against the address of the editor", function() {
+            global.window = { location: { href: "https://editor.example/red/" } };
+            try {
+                errors.httpUrl("docs/x").should.equal("https://editor.example/red/docs/x");
+                should(errors.httpUrl("javascript:alert(1)")).equal(null);
+            } finally {
+                delete global.window;
+            }
+            should(errors.httpUrl("docs/x")).equal(null);
+        });
+    });
+
+    describe("translateEscaped (#37)", function() {
+        it("keeps a number and a boolean as they are, escapes the rest", function() {
+            const seen = [];
+            global.RED._ = function(key, params) { seen.push(params); return key; };
+            errors.translateEscaped("k", { count: 3, flag: false, name: "<b>", missing: undefined, nothing: null });
+            seen[0].count.should.equal(3);
+            seen[0].flag.should.equal(false);
+            seen[0].name.should.equal("&lt;b&gt;");
+            seen[0].missing.should.equal("");
+            seen[0].nothing.should.equal("");
         });
     });
 });

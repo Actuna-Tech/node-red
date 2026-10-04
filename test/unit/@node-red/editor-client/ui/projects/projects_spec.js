@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #34: the message and the code of a server error shown in a notification are escaped (projects)
+ *   #37: the URL of the remote in the dialog of the git authentication is escaped
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -87,12 +88,23 @@ describe("editor-client/ui/projects/projects (#34)", function() {
         });
     });
 
-    describe("notifyGitError (git_connection_failed, git_not_a_repository, git_repository_not_found)", function() {
-        it("shows the message of the server as text", function() {
-            projects.notifyGitError({ code: "git_connection_failed", message: INJECTION });
-            notifier.notifications.should.have.length(1);
-            notifier.notifications[0].msg.should.equal("&lt;img src=x onerror=alert(1)&gt;");
-            notifier.notifications[0].options.should.equal("error");
+    describe("authRequiredHtml (the dialog of the git authentication, #37)", function() {
+        it("shows the URL of the remote as text", function() {
+            const html = projects.authRequiredHtml("https://example.org/" + INJECTION);
+            html.should.containEql("Authentication required for repository:");
+            html.should.containEql("https://example.org/&lt;img src=x onerror=alert(1)&gt;</div>");
+            catalog.assertNoMarkup(html);
+            catalog.assertNoElement(html, "img");
+        });
+
+        it("does not let the quotes of the URL out of the text", function() {
+            const html = projects.authRequiredHtml("https://a/\"><img src=x onerror=alert(1)>'");
+            catalog.assertNoElement(html, "img");
+            html.should.containEql("&quot;&gt;&lt;img");
+        });
+
+        it("keeps a normal URL as it is", function() {
+            projects.authRequiredHtml("git@example.org:team/repo.git").should.containEql(">git@example.org:team/repo.git</div>");
         });
     });
 });
