@@ -20,6 +20,7 @@
  *   Z-15: editor-only instance - no Start/Stop items, "Restart flows" disabled
  *   #22: a saved deployment whose flows did not start takes over the revision; readable, escaped
  *   messages instead of the raw JSON of the response (deploy, restart, start/stop flows)
+ *   #34: RED.errors (the escaping shared with the deploy module) is loaded with the deploy module
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -30,6 +31,7 @@ const fs = require("fs");
 const NR_TEST_UTILS = require("nr-test-utils");
 
 const deployModulePath = NR_TEST_UTILS.resolve("@node-red/editor-client/src/js/ui/deploy.js");
+const errorsModulePath = NR_TEST_UTILS.resolve("@node-red/editor-client/src/js/ui/common/errors.js");
 
 /**
  * Minimal jQuery stand-in: elements selected by a selector string are kept
@@ -102,6 +104,8 @@ describe("editor-client/ui/deploy", function() {
 
     function load() {
         delete require.cache[deployModulePath];
+        delete require.cache[errorsModulePath];
+        require(errorsModulePath);
         deploy = require(deployModulePath);
         deploy.init({});
     }
@@ -182,6 +186,7 @@ describe("editor-client/ui/deploy", function() {
     afterEach(function() {
         sinon.restore();
         delete require.cache[deployModulePath];
+        delete require.cache[errorsModulePath];
         Object.keys(savedGlobals).forEach(function(key) {
             if (savedGlobals[key] === undefined) {
                 delete global[key];
