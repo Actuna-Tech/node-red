@@ -584,6 +584,12 @@ describe("editor-client/ui/deploy", function() {
                 n.msg.should.containEql("Starting now: global nodes.");
                 n.msg.should.containEql("+ 4 more");
             });
+            it("without current (the start waits for a flow that is not pending) no flow is named as being started", function() {
+                fail(startFailed([{ code: "start_timeout", message: "t", timeout: 30000, phase: "flows", pending: ["t2"] }], "rev-2"));
+                const n = lastNotification();
+                n.msg.should.containEql("Not started yet: Flow 2.");
+                n.msg.should.not.containEql("Starting now");
+            });
             it("an old runtime without the additive fields still gives a readable message", function() {
                 fail(startFailed([{ code: "start_timeout", message: "The flows did not start within 30000 ms" }], "rev-2"));
                 lastNotification().msg.should.containEql("continues in the background");
@@ -813,12 +819,56 @@ describe("editor-client/ui/deploy", function() {
                 deploy.showStartResult("x");
                 notifications.should.have.length(0);
             });
-            it("updates the notification of an earlier result instead of stacking a second one", function() {
+            it("updates the notification of an earlier result of the same type instead of stacking a second one", function() {
                 deploy.showStartResult(result({ errors: [{ code: "safe_mode" }] }));
                 const first = lastNotification();
-                deploy.showStartResult({ type: "success", revision: "rev-1" });
+                deploy.showStartResult(result({ errors: [{ code: "missing_types", types: ["t"] }] }));
                 notifications.should.have.length(1);
                 first.update.calledOnce.should.be.true();
+                first.close.called.should.be.false();
+            });
+            it("a result of another type replaces the notification (it must not keep the auto-close of the first)", function() {
+                deploy.showStartResult({ type: "success", revision: "rev-1" });
+                const green = lastNotification();
+                deploy.showStartResult(result({ errors: [{ code: "safe_mode" }] }));
+                green.close.calledOnce.should.be.true();
+                green.update.called.should.be.false();
+                notifications.should.have.length(2);
+                const red = lastNotification();
+                red.options.should.have.property("fixed", true);
+                // and back
+                deploy.showStartResult({ type: "success", revision: "rev-1" });
+                red.close.calledOnce.should.be.true();
+                notifications.should.have.length(3);
+            });
+            it("the Close button of an updated notification closes it", function() {
+                deploy.showStartResult(result({ errors: [{ code: "safe_mode" }] }));
+                const first = lastNotification();
+                deploy.showStartResult(result({ errors: [{ code: "safe_mode" }] }));
+                first.update.args[0][1].buttons[0].click();
+                first.close.calledOnce.should.be.true();
+            });
+            it("a result that arrives before the response of its deployment is shown once the response is handled", function() {
+                actions["core:deploy-flows"](true);
+                // the editor still has rev-1
+                deploy.showStartResult({ type: "success", revision: "rev-2" });
+                notifications.should.have.length(0);
+                fail(startFailed([{ code: "start_timeout", message: "t", timeout: 30, phase: "flows", pending: ["t2"] }], "rev-2"));
+                notifications.should.have.length(2);
+                notifications[0].close.calledOnce.should.be.true();
+                notifications[1].options.should.have.property("type", "success");
+                // applied once
+                deploy.showStartResult({ type: "success", revision: "rev-2" });
+                notifications.should.have.length(2);
+            });
+            it("keeps only the latest ignored result and drops it when it is for another revision", function() {
+                actions["core:deploy-flows"](true);
+                deploy.showStartResult({ type: "success", revision: "rev-7" });
+                deploy.showStartResult(result({ revision: "rev-8", errors: [{ code: "safe_mode" }] }));
+                fail(startFailed([{ code: "start_timeout", message: "t" }], "rev-7"));
+                // rev-7 was superseded by rev-8: nothing is shown besides the start_timeout error
+                notifications.should.have.length(1);
+                notifications[0].close.called.should.be.false();
             });
             it("closes the open start_timeout error of the same deployment", function() {
                 actions["core:deploy-flows"](true);

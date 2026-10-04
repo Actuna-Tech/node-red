@@ -143,7 +143,7 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   innym błędzie startu (R-38).
 - Pola wpisu `start_timeout` (#22, R-48, addytywne): `timeout` (ms), `phase` (`"modules"` | `"flows"`), `startedAt` (ms od epoki),
   `elapsed` (ms), `pending` (id flow jeszcze niewystartowanych, razem z bieżącym; przy wdrożeniu „flows”/„nodes” tylko flow, w których wdrożenie coś uruchamia; w fazie `"modules"` `[]`) i `current` (id
-  uruchamianego flow, tylko w fazie `"flows"`). Wpis `flow_start_failed` z odrzuconego startu ma `flow`, gdy znany (wpisy
+  uruchamianego flow, tylko w fazie `"flows"` i tylko dla flow z `pending`; bez `current`, gdy start czeka na flow, którego wdrożenie nie uruchamia; „nodes” nie liczy przepiętych/powiązanych węzłów). Wpis `flow_start_failed` z odrzuconego startu ma `flow`, gdy znany (wpisy
   z samego startu flow miały je już wcześniej). Pola nie zmieniają kodów ani statusów; klient, który ich nie zna, je pomija.
 - Późny wynik (#22, R-48): po odpowiedzi `start_timeout` runtime publikuje po zakończeniu startu zdarzenie `deploy-start-result`
   (`/comms`, temat `notification/deploy-start-result`, bez retencji; tylko zalogowane sesje – wszystkie, razem z treścią błędów, SEC-003): `{type: "success"|"error",

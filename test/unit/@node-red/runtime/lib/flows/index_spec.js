@@ -1307,7 +1307,50 @@ describe('flows/index', function() {
                             entry.should.have.property("phase","flows");
                             // t1 and global keep running: neither is started by this deployment
                             entry.pending.should.eql(["t2"]);
-                            entry.should.have.property("current","t2");
+                            // the start waits for global, which is not in pending: no current flow
+                            entry.should.not.have.property("current");
+                        } finally {
+                            finishStart();
+                            await tick();
+                        }
+                    });
+                });
+                ["flows","nodes"].forEach(function(type) {
+                    it('start_timeout of a "' + type + '" deploy names the changed flow as current when it is the one being started', async function() {
+                        await initFlows({deploy: {startTimeout: 30}});
+                        let finishStart;
+                        const pendingStart = new Promise(resolve => { finishStart = resolve });
+                        flowCreate.flows.t2.start = function() { return pendingStart };
+                        replaceFlowCreate(function(id) { return id === "t2" ? pendingStart : Promise.resolve() });
+                        const changed = clone(baseConfig);
+                        changed.find(n => n.id === "t2-1").foo = "bar";
+                        try {
+                            const err = await flows.setFlows(changed, null, type, false, false, null, waitForStart).should.be.rejected();
+                            err.errors[0].pending.should.eql(["t2"]);
+                            err.errors[0].should.have.property("current","t2");
+                        } finally {
+                            finishStart();
+                            await tick();
+                        }
+                    });
+                });
+                ["nodes","flows"].forEach(function(type) {
+                    it('start_timeout of a "' + type + '" deploy ' + (type === "nodes" ? 'does not list' : 'lists') + ' a flow with only rewired nodes', async function() {
+                        await initFlows({deploy: {startTimeout: 1000}});
+                        const wired = baseConfig.concat([{id:"t1-2",x:10,y:10,z:"t1",type:"test",wires:[]}]);
+                        await flows.setFlows(clone(wired), null, "full", false, false, null, waitForStart);
+                        const rewired = clone(wired);
+                        rewired.find(n => n.id === "t1-1").wires = [["t1-2"]];
+                        settings.deploy.startTimeout = 30;
+                        let finishStart;
+                        const pendingStart = new Promise(resolve => { finishStart = resolve });
+                        // the start waits for global (first); t1 would be the one listed
+                        flowCreate.flows._GLOBAL_.start = function() { return pendingStart };
+                        replaceFlowCreate(function(id) { return id === "t1" ? pendingStart : Promise.resolve() });
+                        try {
+                            const err = await flows.setFlows(rewired, null, type, false, false, null, waitForStart).should.be.rejected();
+                            // "nodes" does not restart the rewired nodes (only rewires them); "flows" does
+                            err.errors[0].pending.should.eql(type === "flows" ? ["t1"] : []);
                         } finally {
                             finishStart();
                             await tick();

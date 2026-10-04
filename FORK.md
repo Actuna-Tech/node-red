@@ -124,7 +124,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `deploy.startTimeout`), `phase` (`"modules"` – sprawdzanie i instalacja modułów flow; `"flows"` – uruchamianie flow),
   `startedAt` (ms od epoki), `elapsed` (ms w chwili limitu), `pending` (id flow jeszcze niewystartowanych, razem z bieżącym; przy wdrożeniu
   „flows”/„nodes” tylko flow, w których wdrożenie coś uruchamia – utworzone przez nie, zawierające dodane, zmienione, przepięte
-  lub powiązane węzły albo zmienione same; niezmienione flow działają dalej i nie są wymieniane; w fazie `"modules"` pusta lista) i `current` (id flow uruchamianego w chwili limitu; tylko w fazie `"flows"`).
+  lub powiązane węzły albo zmienione same; niezmienione flow działają dalej i nie są wymieniane; w fazie `"modules"` pusta lista) i `current` (id flow uruchamianego w chwili limitu; tylko w fazie `"flows"` i tylko gdy uruchamiane jest flow z `pending` – gdy start czeka na flow, w którym wdrożenie nic nie uruchamia, np. niezmienione flow lub `global` przy wdrożeniu „flows”/„nodes”, `current` nie ma). Przy wdrożeniu „nodes” przepięte i powiązane węzły nie liczą się jako uruchamiane (stop zostawia je działające, start je tylko przepina); przy „flows” liczą się.
   Wpis `flow_start_failed` z odrzuconego startu ma `flow` (id), gdy wiadomo, którego flow dotyczył błąd. Nie ma nowego kodu
   najwyższego poziomu – nadal 500 `deploy_start_failed`. Brak kontraktu gotowości węzłów i klasyfikacji przyczyn po kodach
   systemowych (R-10 bez zmian): dodajemy wyłącznie fakty.

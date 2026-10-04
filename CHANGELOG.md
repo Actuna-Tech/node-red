@@ -279,7 +279,7 @@ Features
 
  - With `deploy.response: "started"` the `start_timeout` entry of `errors[]` has the additive fields `timeout`,
    `phase` (`"modules"` while the modules of the flows are checked, `"flows"` while they start), `startedAt`,
-   `elapsed`, `pending` (flows not started yet; for a "flows" or "nodes" deployment only the flows it starts something in) and `current`; a `flow_start_failed` entry of a rejected start has
+   `elapsed`, `pending` (flows not started yet; for a "flows" or "nodes" deployment only the flows it starts something in) and `current` (only while a flow of `pending` is being started); a `flow_start_failed` entry of a rejected start has
    `flow` when known. No new code - still 500 `deploy_start_failed`; the default mode is unchanged (#22, R-48)
  - When a deployment answered `start_timeout` and the start of the flows ends later, the runtime publishes
    the event `deploy-start-result` to the logged-in editor sessions (`/comms`, not retained) and the editor
