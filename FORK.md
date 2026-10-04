@@ -198,6 +198,18 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   pojawia się dopiero po załadowaniu wtyczek.
 - Instancja `editorOnly` nie uczestniczy w koordynacji klastra (nie uruchamia wybranej wtyczki koordynacji) i nigdy
   nie jest liderem – przywództwo obejmują tylko instancje wykonujące flow (zgłoszenie #4).
+- Klaster współdzielący magazyn wymaga **jawnego `instanceId`, takiego samego na wszystkich instancjach** (`settings.js`,
+  np. `instanceId: process.env.NODE_RED_INSTANCE_ID`; w Bot-Engine – ustawiane per tenant). Bez niego każda instancja
+  generuje identyfikator i zapisuje go w magazynie; przy równoczesnym starcie zapis nie jest bezpieczny (magazyny nie
+  mają compare-and-set, `storage-postgres` nadpisuje cały wiersz ustawień), więc instancje mogą zakończyć z różnymi
+  identyfikatorami – ponowny odczyt po zapisie tego nie naprawia. Wygenerowany identyfikator przy wtyczce koordynacji
+  innej niż lokalna daje ostrzeżenie w logu (`coordination.instance-id-generated`). Jawny `instanceId` z `settings.js`
+  ma pierwszeństwo przed magazynem. `instanceId: process.env.X` przy braku zmiennej daje `undefined`: wartość jest
+  traktowana jak brak klucza (używany jest identyfikator z magazynu albo generowany i zapisywany); wcześniej start
+  kończył się błędem `property-read-only` (zgłoszenie #3). Identyfikator generuje i zapisuje tylko pierwsza instancja
+  (albo instancje ścigające się przy pierwszym starcie); pozostałe czytają go z magazynu. Ostrzeżenie o wygenerowanym
+  identyfikatorze pojawia się tylko przy starcie, który go wygenerował. Przy `readOnly`/`readOnlyUserDir` (ustawienia
+  tylko w pamięci) identyfikator zmienia się przy każdym starcie, więc w klastrze jest tam wymagany jawny `instanceId`.
 
 ## 6. Zmiany zachowania względem 5.0.7 (poprawki błędów)
 
@@ -210,6 +222,11 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 - Nieudane zatrzymanie po sygnale (np. odrzucone `RED.stop()`) – log `Shutdown failed: …` i kod wyjścia 1 (wcześniej nieobsłużone odrzucenie obietnicy, Z-08).
 - Przy `readOnly`/`readOnlyUserDir` pusty plik flow lub poświadczeń nie jest nadpisywany kopią `.backup` – kopia jest tylko czytana (Z-09/Z-11).
 - Przy `deploy.reload.retry.onExhausted: "keepReady"` (domyślnie wyłączone) `/health/ready` może odpowiedzieć 200 z treścią `{"status":"warn","reason":"reload_failed"}` zamiast `{"status":"ok"}`; monitoring dopasowujący treść `"ok"` zobaczy `"warn"` tylko po włączeniu opcji. Zdarzenie `instance:state` jest emitowane także przy zmianie samego warunku `reload` (bez zmiany `state`) – to nowa reguła kontraktu (R-47, MIGRACJA §4.5); odbiorca reagujący tylko na zmiany stanu porównuje `state`, `reason` i `since`. W trybie domyślnym (`"fail"`) nic się nie zmienia: brak warunku `reload`, dodatkowych zdarzeń, logów i powiadomień – ta sama sekwencja zdarzeń `instance:state` i te same odpowiedzi `/ready` co przed R-47 (R-36).
+- `instanceId` (#3): start czeka na zapis wygenerowanego identyfikatora w magazynie, **bez limitu czasu** (tak samo jak
+  na odczyt ustawień z magazynu) – zapis, który się nie kończy, wstrzymuje start. `instanceId: undefined` w `settings.js`
+  (np. `process.env.X` bez zmiennej) nie kończy już startu błędem `property-read-only`; jest traktowane jak brak klucza,
+  więc czytany jest identyfikator z magazynu (wcześniej start padał). Odrzucony zapis identyfikatora jest ostrzeżeniem
+  w logu, a nie nieobsłużonym odrzuceniem obietnicy; start trwa z wygenerowanym identyfikatorem.
 - Przeładowanie z magazynu (`deploy.reload.watch: true`), w którym zawodzi ponowny odczyt pod blokadą lub samo przeładowanie (np. `credentials_load_failed`), wyczerpuje teraz `deploy.reload.retry.attempts` i kończy się stanem `failed` (503) – wcześniej licznik był zerowany po każdym udanym pierwszym odczycie i instancja ponawiała próby w nieskończoność, nie osiągając `failed` (#17). Dotyczy też trybu domyślnego; z `"keepReady"` rosną `attempts` warunku `reload` i pojawiają się okresowe logi `error`. Nowe powiadomienie o zmianie w magazynie skraca tylko opóźnienie kolejnej próby (backoff zaczyna od `retry.min`), nie zeruje licznika prób – inaczej instancja, która dostaje powiadomienia częściej niż trwa seria prób (np. wtyczka magazynu powiadamiająca po ponownym połączeniu), nigdy nie osiągałaby `failed`. Po wyczerpaniu prób i powrocie instancji do `ready` przez wdrożenie lokalne nowy błąd konfiguracji lub przeładowania (np. `credentials_load_failed` nowej rewizji) rozpoczyna nową serię i znów kończy się `failed` po `retry.attempts` próbach; sam błąd odczytu magazynu zachowuje się jak dotąd (okresowe próby, bez nowego `failed`). Logowanie po wyczerpaniu: w trybie `"fail"` instancja w stanie `failed` ponawia cykl co `retry.max` i loguje to na poziomie `debug` (bez ostrzeżeń `read-failed`); z `"keepReady"` błąd konfiguracji lub przeładowania po warunku `storage_error` powoduje natychmiastowe `failed` (log `error` `reload.not-kept-ready`).
 
 ## 7. Testy i proces
