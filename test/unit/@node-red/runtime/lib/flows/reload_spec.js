@@ -425,7 +425,7 @@ describe("flows/reload (Z-09)", function() {
                 function initCredentials(secretSettings) {
                     credentialsModule.init({
                         log: { _: k => k, warn() {}, debug() {}, info() {}, error() {}, trace() {} },
-                        settings: { get: key => secretSettings[key], set: async () => {}, delete: async () => {} },
+                        settings: { get: key => secretSettings[key], set: async () => {}, delete: async key => { delete secretSettings[key] } },
                         nodes: { getType: () => function() {} }
                     });
                 }
@@ -449,6 +449,36 @@ describe("flows/reload (Z-09)", function() {
                         return loaded.rev;
                     });
                 }
+                it("a notification during a pending migration from the default key to a user key: no credentials_load_failed, no reload", async function() {
+                    const defaultKey = "e3a36f47f005bf2aaa51ce3fc6fcaafd79da8d03f2b1a9281f8fb0a285e6255a";
+                    // {"node":{user1:"abc",password1:"123"}} encrypted with the default key
+                    const old = { "$": "5b89d8209b5158a3c313675561b1a5b5phN1gDBe81Zv98KqS/hVDmc9EKvaKqRIvcyXYvBlFNzzzJtvN7qfw06i" };
+                    const migrating = { _credentialSecret: defaultKey, credentialSecret: "a user key that replaces the default one" };
+                    env = createEnv({ reload: { retry: { min: 2, max: 60000, attempts: 1, onExhausted: "keepReady" } } });
+                    initCredentials(migrating);
+                    await credentialsModule.load(old);
+                    credentialsModule.dirty().should.be.true();
+                    digestOfActive = credentialsModule.digest(old);
+                    useRealDigest(env);
+                    await env.start();
+                    env.change("A", { credentials: old });
+                    env.notify({ credentialsChanged: true });
+                    env.notify();
+                    await waitFor(() => env.getFlowsCalls >= 1);
+                    await delay(30);
+                    env.applied.should.have.length(0);
+                    states.should.eql([]);
+                    state.get().should.not.have.property("reload");
+                    // the first save migrates; storage then holds the same content under the user key
+                    const saved = await credentialsModule.export();
+                    saved["$"].should.not.equal(old["$"]);
+                    env.change("A", { credentials: saved });
+                    env.notify({ credentialsChanged: true });
+                    await waitFor(() => env.getFlowsCalls >= 3);
+                    await delay(30);
+                    env.applied.should.have.length(0);
+                    state.get().should.not.have.property("reload");
+                });
                 it("re-encryption (a new iv, another ciphertext) is no reload; another content is one; a wrong key is credentials_load_failed", async function() {
                     env = createEnv({ reload: { retry: { min: 2, max: 60000, attempts: 1, onExhausted: "keepReady" } } });
                     const first = await encryptedWith({ n1: { user: "abc", password: "123" } }, settingsValues);

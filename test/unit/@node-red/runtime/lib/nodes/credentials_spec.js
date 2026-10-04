@@ -15,7 +15,8 @@
  **/
 /*
  * Modified by Actuna Sp. z o.o.:
- *   #2: tests of digest() - the digest of the credentials read from storage
+ *   #2: tests of digest() - the digest of the credentials read from storage, also
+ *   during a pending migration from the default key to a user key
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -664,6 +665,108 @@ describe('red/runtime/nodes/credentials', function() {
             return credentials.load({"a":{"b":1}}).then(function() {
                 (function() { credentials.digest(CRYPTED) }).should.throw({ code: "credentials_load_failed" });
                 credentials.get("a").should.have.property("b", 1);
+            });
+        });
+        describe("key selection of load() (a pending migration)", function() {
+            var DEFAULT_KEY = "e3a36f47f005bf2aaa51ce3fc6fcaafd79da8d03f2b1a9281f8fb0a285e6255a";
+            var NEW_USER_KEY = "aaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbcccccccccccccddddddddddddeeeee";
+            // {"node":{user1:"abc",password1:"123"}} encrypted with the DEFAULT key
+            var OLD = CRYPTED;
+            var PLAIN_DIGEST;
+
+            beforeEach(function() {
+                settingsValues = { _credentialSecret: DEFAULT_KEY, credentialSecret: NEW_USER_KEY };
+                credentials.init(runtime);
+                PLAIN_DIGEST = credentials.digest({"node":{"user1":"abc","password1":"123"}});
+            });
+
+            it("during the migration the credentials still encrypted with the old key have a digest, nothing is changed", function() {
+                return credentials.load(OLD).then(function() {
+                    // load() migrates: dirty, the default key waits to be removed by the export
+                    credentials.dirty().should.be.true();
+                    var cache = JSON.stringify(credentials.get("node"));
+                    var settingsBefore = JSON.stringify(settingsValues);
+                    var logBefore = logCalls();
+                    credentials.digest(OLD).should.equal(PLAIN_DIGEST);
+                    credentials.digest(OLD).should.equal(PLAIN_DIGEST);
+                    credentials.dirty().should.be.true();
+                    JSON.stringify(credentials.get("node")).should.equal(cache);
+                    JSON.stringify(settingsValues).should.equal(settingsBefore);
+                    settingsValues.should.have.property("_credentialSecret", DEFAULT_KEY);
+                    settingsSet.called.should.be.false();
+                    logCalls().should.equal(logBefore);
+                    // the migration is still done by the export, as without digest()
+                    return credentials.export().then(function(result) {
+                        result.should.have.property("$");
+                        settingsValues.should.not.have.property("_credentialSecret");
+                        credentials.digest(result).should.equal(PLAIN_DIGEST);
+                    });
+                });
+            });
+            it("before load() the same key is used (the instance did not read the credentials yet)", function() {
+                credentials.digest(OLD).should.equal(PLAIN_DIGEST);
+            });
+            it("after the first save the digest is stable: the same content, the new key", function() {
+                return credentials.load(OLD).then(function() {
+                    return credentials.export();
+                }).then(function(saved) {
+                    // the default key is gone, the user key reads what was saved
+                    credentials.digest(saved).should.equal(PLAIN_DIGEST);
+                    // another save of the same content (a new iv) is the same digest
+                    credentials.delete("nothing");
+                    return credentials.export().then(function(again) {
+                        again["$"].should.not.equal(saved["$"]);
+                        credentials.digest(again).should.equal(PLAIN_DIGEST);
+                    });
+                });
+            });
+            it("the digest during the migration equals the digest after it (no reload caused by the migration)", function() {
+                return credentials.load(OLD).then(function() {
+                    var before = credentials.digest(OLD);
+                    return credentials.export().then(function(saved) {
+                        credentials.digest(saved).should.equal(before);
+                    });
+                });
+            });
+            it("a truly wrong key still gives credentials_load_failed during the migration", function() {
+                return credentials.load(OLD).then(function() {
+                    var foreign = encrypt("a key that was never used", JSON.stringify({"node":{"user1":"abc"}}));
+                    (function() { credentials.digest(foreign) }).should.throw({ code: "credentials_load_failed", message: "Failed to decrypt credentials" });
+                    // not encrypted with the new user key either: load() does not try it with the default key present
+                    var withUserKey = encrypt(NEW_USER_KEY, JSON.stringify({"node":{"user1":"abc"}}));
+                    (function() { credentials.digest(withUserKey) }).should.throw({ code: "credentials_load_failed" });
+                    credentials.dirty().should.be.true();
+                    credentials.get("node").should.have.property("user1", "abc");
+                });
+            });
+            it("migration to unencrypted (credentialSecret false, default key present): the old key reads them", function() {
+                settingsValues = { _credentialSecret: DEFAULT_KEY, credentialSecret: false };
+                credentials.init(runtime);
+                return credentials.load(OLD).then(function() {
+                    credentials.digest(OLD).should.equal(PLAIN_DIGEST);
+                    credentials.digest({"node":{"user1":"abc","password1":"123"}}).should.equal(PLAIN_DIGEST);
+                });
+            });
+            it("an active project: the key of the project", function() {
+                var projectKey = "a project key";
+                var projectRuntime = Object.assign({}, runtime, {
+                    storage: { projects: { getActiveProject: function() { return { credentialSecret: projectKey } } } }
+                });
+                credentials.init(projectRuntime);
+                var stored = encrypt(projectKey, JSON.stringify({"node":{"user1":"abc","password1":"123"}}));
+                credentials.digest(stored).should.equal(PLAIN_DIGEST);
+                (function() { credentials.digest(OLD) }).should.throw({ code: "credentials_load_failed" });
+                // a project without a key: the credentials cannot be encrypted
+                var noKey = Object.assign({}, runtime, {
+                    storage: { projects: { getActiveProject: function() { return {} } } }
+                });
+                credentials.init(noKey);
+                (function() { credentials.digest(stored) }).should.throw({ code: "credentials_load_failed" });
+            });
+            it("no user key, the default key is the key", function() {
+                settingsValues = { _credentialSecret: DEFAULT_KEY };
+                credentials.init(runtime);
+                credentials.digest(OLD).should.equal(PLAIN_DIGEST);
             });
         });
         it("empty or missing credentials have a digest", function() {

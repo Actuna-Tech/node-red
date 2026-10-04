@@ -267,7 +267,7 @@ watchFlows(callback)
   zaszyfrowanie tych samych poświadczeń nie jest zmianą. Przeładowanie następuje, gdy różni się rewizja **lub** skrót
   poświadczeń – zmiana samych poświadczeń wymaga tylko powiadomienia (z flagą lub bez), a zgubione powiadomienie
   naprawia kolejne. Skrót jest wewnętrzny: nie jest logowany ani zwracany przez żadne API (`GET /flows` zwraca tylko
-  `{flows, rev}`). Poświadczenia, których nie da się odszyfrować bieżącym kluczem, to błąd `credentials_load_failed`
+  `{flows, rev}`). Poświadczenia są odczytywane kluczem, którego użyłoby wczytanie poświadczeń (także starym wygenerowanym kluczem w trakcie migracji do `credentialSecret`, bez migrowania i zapisu); te, których nie da się odszyfrować, to błąd `credentials_load_failed`
   (ta sama ścieżka co błąd przeładowania: ponowienia `retry`, `failed`; `onExhausted: "keepReady"` go nie utrzymuje).
 - **`credentialsChanged` w powiadomieniu jest tylko wskazówką** do odczytu magazynu (każde powiadomienie go wywołuje).
   Samo nie wymusza przeładowania (dawniej wymuszało, z pominięciem porównania rewizji) i nie blokuje go. **Zmiana

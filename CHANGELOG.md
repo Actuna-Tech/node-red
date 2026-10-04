@@ -12,7 +12,9 @@
    hint to read storage - it no longer forces a drain and a reload by itself (and does not prevent
    one); a plugin only has to return the changed content from `getCredentials()`. The
    `credentialsChanged` field of the `preReload` payload is computed from the comparison. Stored
-   credentials that the current key cannot decrypt fail with `credentials_load_failed` (the same
+   credentials are read with the key the credentials load would use - also the old generated key
+   while a migration to `credentialSecret` is pending - without migrating, saving or logging
+   anything; credentials that this key cannot decrypt fail with `credentials_load_failed` (the same
    path as a failed reload). The digest is internal: never logged and not part of the result of
    `GET /flows` (still `{flows, rev}`). New `credentials.digest()` of the runtime is pure (it
    changes no cache, key or setting). Nothing changes without `deploy.reload.watch`
