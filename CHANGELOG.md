@@ -40,6 +40,13 @@
    error `invalid_hook_setting` that names the key, and nothing is registered. Hooks of
    `settings.js` are registered before the plugins load, so they run first; the same label added by a plugin is
    "already registered" (#7)
+ - A hook of the `hooks` setting that would never be called now logs a warning at start (#15):
+   `preShutdown.<label>` without `shutdownTimeout` (the hook is not called, R-37; `health.unreadyGrace`
+   alone only delays the stop) and `preReload.<label>` without `deploy.reload.watch: true` (the flows
+   are never reloaded from the storage). The warning names the hook and the missing setting. It is a
+   pure diagnostic: the hooks stay registered, nothing else changes; no warning without the `hooks`
+   setting, when the setting is there, or for hooks added by plugins. Test of `hooks` with
+   `health.unreadyGrace` (the hook is called, the stop takes at least the grace)
  - An editor-only instance (`editorOnly`) does not start the coordination plugin and is never the
    leader, so `inject` nodes with "Run only on one instance" fire on the instances that run the flows (#4)
  - Documented: health probes without `health.port` are public on the main server; `preReload` and
@@ -245,6 +252,14 @@ Fixes
    unchanged; a new notification from storage only shortens the delay of the next retry and no
    longer resets the count, and a new failing reload after a recovery by a local deployment is
    counted as a new series (#17)
+ - A successful cycle of the reload from storage (`deploy.reload`) now ends the retry scheduled by
+   an earlier failed cycle: before, one useless extra cycle (a read of storage) followed the
+   success, both when the retry timer had not fired yet and when it fired while the successful
+   cycle was still running (for example during a slow `preReload` drain). A retry that fires
+   while a cycle is running no longer starts an immediate extra cycle either: if that cycle
+   fails, the next retry follows the backoff of the failure instead of being run at once. A
+   notification from storage still starts a cycle at once, as before. The counters of a new
+   series after a recovery by a local deployment are reset explicitly (#26)
  - Editor: a deployment that was saved although the flows did not start (500 `deploy_start_failed` or
    `deploy_stop_failed` with a `rev`, `deploy.response: "started"`) now takes over the new revision and
    marks the changes as deployed; it is shown as one red error that lists the causes (a flow that failed
