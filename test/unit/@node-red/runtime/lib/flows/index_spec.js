@@ -26,6 +26,8 @@
  *   Z-15: tests of the editor-only instance (editorOnly)
  *   #22: tests of the facts of start_timeout (phase, pending, current), of the flow in
  *   flow_start_failed and of the runtime event deploy-start-result after a start_timeout response
+ *   #2: tests of credentialsChanged (the digest of the credentials of the active configuration,
+ *   kept apart from getFlows())
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1833,6 +1835,163 @@ describe('flows/index', function() {
             await flows.reloadFromStorage({flows: next, rev:"B", credentials:{}}, {type:"diff"});
             await new Promise(r => setTimeout(r, 10));
             flowCreate.flows["t2"].should.not.equal(before["t2"]);
+        });
+    });
+    describe('credentials of the active configuration (#2)', function() {
+        const base = [
+            {id:"t1",type:"tab"},
+            {id:"t1-1",z:"t1",type:"test",foo:"a",wires:[]}
+        ];
+        const CREDS = {n1:{user:"abc",password:"123"},n2:{token:"xyz"}};
+        async function startWith(creds) {
+            storage.getFlows = function() {
+                return Promise.resolve({flows:clone(base), rev:"A", credentials:clone(creds)});
+            };
+            flows.init({log:mockLog, settings:{}, storage:storage});
+            await flows.load();
+            await flows.startFlows();
+        }
+
+        it('getFlows() returns only {flows, rev} - the digest is not a property of the active configuration', async function() {
+            await startWith(CREDS);
+            Object.keys(flows.getFlows()).sort().should.eql(["flows","rev"]);
+            const digest = credentials.digest(CREDS);
+            JSON.stringify(flows.getFlows()).should.not.containEql(digest);
+            // after a deployment too
+            await flows.setFlows(clone(base));
+            Object.keys(flows.getFlows()).sort().should.eql(["flows","rev"]);
+            JSON.stringify(flows.getFlows()).should.not.containEql(digest);
+            // after a reload from storage too
+            await flows.reloadFromStorage({flows:clone(base), rev:"B", credentials:{n1:{user:"other"}}}, {type:"full"});
+            Object.keys(flows.getFlows()).sort().should.eql(["flows","rev"]);
+        });
+        it('credentialsChanged compares the content: the same (any order of keys) - false, another - true', async function() {
+            await startWith(CREDS);
+            flows.credentialsChanged({credentials:clone(CREDS)}).should.be.false();
+            flows.credentialsChanged({credentials:{n2:{token:"xyz"},n1:{password:"123",user:"abc"}}}).should.be.false();
+            flows.credentialsChanged({credentials:{n1:{user:"abc",password:"124"},n2:{token:"xyz"}}}).should.be.true();
+            flows.credentialsChanged({credentials:{n1:CREDS.n1}}).should.be.true();
+            flows.credentialsChanged({credentials:{}}).should.be.true();
+            flows.credentialsChanged({}).should.be.true();
+        });
+        it('credentialsChanged loads and changes nothing', async function() {
+            await startWith(CREDS);
+            credentialsLoad.resetHistory();
+            credentialsAdd.resetHistory();
+            flows.credentialsChanged({credentials:{n1:{user:"other"}}}).should.be.true();
+            credentialsLoad.called.should.be.false();
+            credentialsAdd.called.should.be.false();
+            credentialsClean.called.should.be.false();
+        });
+        it('reloadFromStorage: the credentials of the reloaded configuration are the active ones', async function() {
+            await startWith(CREDS);
+            const next = {n1:{user:"other"}};
+            flows.credentialsChanged({credentials:next}).should.be.true();
+            await flows.reloadFromStorage({flows:clone(base), rev:"A", credentials:clone(next)}, {type:"full"});
+            flows.credentialsChanged({credentials:next}).should.be.false();
+            flows.credentialsChanged({credentials:CREDS}).should.be.true();
+        });
+        it('an own save with credentials: they are the active ones, the notification of it is not a change', async function() {
+            await startWith(CREDS);
+            const saved = {n1:{user:"own"}};
+            const exportStub = sinon.stub(credentials, "export").callsFake(async () => clone(saved));
+            const dirtyStub = sinon.stub(credentials, "dirty").returns(true);
+            try {
+                await flows.setFlows(clone(base));
+                storage.conf.credentialsDirty.should.be.true();
+                storage.conf.credentials.should.eql(saved);
+            } finally {
+                exportStub.restore();
+                dirtyStub.restore();
+            }
+            flows.credentialsChanged({credentials:saved}).should.be.false();
+            flows.credentialsChanged({credentials:CREDS}).should.be.true();
+        });
+        it('an own save without credentials: storage keeps its credentials, the active ones do not change', async function() {
+            await startWith(CREDS);
+            // not dirty: the export may return anything, it is not saved
+            const exportStub = sinon.stub(credentials, "export").callsFake(async () => null);
+            const dirtyStub = sinon.stub(credentials, "dirty").returns(false);
+            try {
+                await flows.setFlows(clone(base));
+                should(storage.conf.credentialsDirty).not.be.ok();
+            } finally {
+                exportStub.restore();
+                dirtyStub.restore();
+            }
+            flows.credentialsChanged({credentials:clone(CREDS)}).should.be.false();
+        });
+        it('stored credentials that cannot be decrypted: credentials_load_failed', async function() {
+            await startWith(CREDS);
+            (function() { flows.credentialsChanged({credentials:{"$":"not a valid ciphertext"}}) }).should.throw({code:"credentials_load_failed"});
+        });
+        it('a start with credentials that failed to load (reset): the flows load, the digest is unknown - any stored credentials differ', async function() {
+            credentialsLoad.callsFake(function() {
+                return Promise.reject(Object.assign(new Error("Failed to decrypt credentials"), {code:"credentials_load_failed"}));
+            });
+            await startWith({"$":"not a valid ciphertext"});
+            flows.getFlows().rev.should.equal("A");
+            flows.credentialsChanged({credentials:{}}).should.be.true();
+            flows.credentialsChanged({credentials:CREDS}).should.be.true();
+        });
+        it('hasCredentialsRevision: true with a digest, false when the credentials could not be digested', async function() {
+            await startWith(CREDS);
+            flows.hasCredentialsRevision().should.be.true();
+            await flows.stopFlows();
+            credentialsLoad.callsFake(function() {
+                return Promise.reject(Object.assign(new Error("Failed to decrypt credentials"), {code:"credentials_load_failed"}));
+            });
+            await startWith({"$":"not a valid ciphertext"});
+            flows.hasCredentialsRevision().should.be.false();
+            // a deployment with credentials that can be digested gives it back
+            const exportStub = sinon.stub(credentials, "export").callsFake(async () => clone(CREDS));
+            const dirtyStub = sinon.stub(credentials, "dirty").returns(true);
+            try {
+                await flows.setFlows(clone(base));
+            } finally {
+                exportStub.restore();
+                dirtyStub.restore();
+            }
+            flows.hasCredentialsRevision().should.be.true();
+        });
+        it('any error of the digest of the active configuration: the deployment is not failed, the digest is unknown, only the code is logged', async function() {
+            await startWith(CREDS);
+            mockLog.debug.resetHistory();
+            const secret = "secret-password-from-an-unexpected-error";
+            const digestStub = sinon.stub(credentials, "digest").callsFake(function() {
+                throw Object.assign(new TypeError(secret), {code:"unexpected_code"});
+            });
+            try {
+                // an own save that is already stored must not fail because of the digest
+                const exportStub = sinon.stub(credentials, "export").callsFake(async () => clone(CREDS));
+                const dirtyStub = sinon.stub(credentials, "dirty").returns(true);
+                try {
+                    await flows.setFlows(clone(base)).should.be.fulfilled();
+                } finally {
+                    exportStub.restore();
+                    dirtyStub.restore();
+                }
+                // and a reload from storage
+                await flows.reloadFromStorage({flows:clone(base), rev:"B", credentials:clone(CREDS)}, {type:"full"});
+            } finally {
+                digestStub.restore();
+            }
+            flows.getFlows().rev.should.equal("B");
+            flows.hasCredentialsRevision().should.be.false();
+            // unknown = changed
+            flows.credentialsChanged({credentials:clone(CREDS)}).should.be.true();
+            const logged = JSON.stringify(mockLog.debug.args);
+            logged.should.containEql("unexpected_code");
+            logged.should.not.containEql(secret);
+        });
+        it('without an active configuration (failed start) the credentials differ', async function() {
+            storage.getFlows = function() {
+                return Promise.reject(Object.assign(new Error("no flows"), {code:"invalid_flows"}));
+            };
+            flows.init({log:mockLog, settings:{}, storage:storage});
+            await flows.load().should.be.rejected();
+            should(flows.getFlows()).be.null();
+            flows.credentialsChanged({credentials:{}}).should.be.true();
         });
     });
     describe('editor-only instance (Z-15)', function() {

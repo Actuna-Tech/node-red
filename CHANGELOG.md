@@ -1,5 +1,26 @@
 #### Unreleased: Instances and reload
 
+ - Reload from storage (`deploy.reload.watch: true`) compares the credentials like the flow
+   revision (#2): the runtime computes a digest (HMAC-SHA256 with a per-process random key, of the canonical JSON with sorted keys) of the
+   **decrypted** credentials read from storage and compares it with the digest of the running
+   configuration (computed after the credentials were loaded - on start, on a reload and on an
+   own save); the ciphertext is never compared (a random IV changes it on every save). A reload
+   happens when the revision or the credentials digest differ, so a change of the credentials
+   alone is reloaded after any notification, a lost notification is healed by the next one, and
+   re-encrypting the same content or an own save is not a change. **Behaviour change for storage
+   plugins that used the flag:** `credentialsChanged` of a `watchFlows` notification is now only a
+   hint to read storage - it no longer forces a drain and a reload by itself (and does not prevent
+   one); a plugin only has to return the changed content from `getCredentials()`. The
+   `credentialsChanged` field of the `preReload` payload is computed from the comparison. Stored
+   credentials are read with the key the credentials load would use - also the old generated key
+   while a migration to `credentialSecret` is pending - without migrating, saving or logging
+   anything; credentials that this key cannot decrypt fail with `credentials_load_failed` (the same
+   path as a failed reload). An instance that started with credentials it could not decrypt has no
+   digest: with the running revision in storage that is not an error (as before), a new revision
+   goes the normal way. A change of the credentials during the drain of a `diff` reload gets an
+   extra `preReload` round for all flows (`changedFlows: null`), like a change of the flows. The digest is internal: never logged and not part of the result of
+   `GET /flows` (still `{flows, rev}`). New `credentials.digest()` of the runtime is pure (it
+   changes no cache, key or setting). Nothing changes without `deploy.reload.watch`
  - New settings `deploy.reload.retry.onExhausted` (`"fail"` by default - nothing changes: after
    the retries the instance is `failed` and `/ready` is 503) and `deploy.reload.retry.maxStaleTime`
    (ms, default 1800000, used only with `"keepReady"`; 0 - no limit). With `"keepReady"` a failure

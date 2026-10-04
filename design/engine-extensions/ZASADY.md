@@ -134,7 +134,7 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
 
 **B. Przeładowanie po zmianie w magazynie** (Z-09, `watchFlows`):
 ```
- 1. powiadomienie (rewizja != aktywna lub credentialsChanged) – koalescencja: kolejne powiadomienia w trakcie = jedno następne przeładowanie
+ 1. powiadomienie (sygnał do odczytu; przeładowanie, gdy rewizja != aktywna lub skrót poświadczeń != aktywny, #2) – koalescencja: kolejne powiadomienia w trakcie = jedno następne przeładowanie
  2. stan = "reloadPending" (bez blokady); koordynacja: zajęcie slotu przeładowania (deploy.reload.concurrency, Z-10)
  3. hook preReload (bez blokady) – czeka na zakończenie pracy w toku, limit deploy.reload.preReloadTimeout;
        /ready → 503 od tej chwili (drenaż)

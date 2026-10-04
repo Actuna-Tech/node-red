@@ -123,7 +123,7 @@ describe("flows/reload - concurrency with three instances (Z-09, Z-10)", functio
                 watchFlows: async cb => { inst.notify = cb },
                 getFlows: async () => ({ rev: store.rev, flows: store.flows })
             },
-            flows: { getFlows: () => inst.active, getChangedFlows: () => null },
+            flows: { getFlows: () => inst.active, getChangedFlows: () => null, credentialsChanged: () => false },
             coordination: coordination,
             hooks: hooks,
             log: log
