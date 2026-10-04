@@ -17,11 +17,12 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-11: contract test - DELETE /nodes/:module with readOnlyUserDir is rejected
  *   with 400 read_only_user_dir (no npm remove)
+ *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
 const should = require("should");
-const request = require("supertest");
+const request = require("nr-test-utils/supertest");
 const express = require("express");
 const sinon = require("sinon");
 const NR_TEST_UTILS = require("nr-test-utils");

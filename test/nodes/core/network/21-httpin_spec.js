@@ -18,11 +18,12 @@
  *   new test file (#8): the raw body of an "http in" route with skipBodyParsing,
  *   with and without deploy.holdHttpNodeRequests
  *   #11: tests of the removal of the routes of an "http in" node on close
+ *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
 const should = require("should");
-const supertest = require("supertest");
+const supertest = require("nr-test-utils/supertest");
 const helper = require("node-red-node-test-helper");
 const httpInNode = require("nr-test-utils").require("@node-red/nodes/core/network/21-httpin.js");
 

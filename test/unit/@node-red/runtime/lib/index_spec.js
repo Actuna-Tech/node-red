@@ -28,6 +28,7 @@
  *   #3: the generated instanceId (an undefined value of settings.js, a failed save)
  *   and the warning for a generated id with a coordination plugin of a cluster
  *   #15: the warning at start for a hook of the `hooks` setting that is never called
+ *   #19: supertest bound to 127.0.0.1; a limit of the hold test independent of the machine speed (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -167,7 +168,7 @@ describe("runtime", function() {
         });
 
         describe("deploy.holdHttpNodeRequests (#8)", function() {
-            const request = require("supertest");
+            const request = require("nr-test-utils/supertest");
             const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
             const httpHold = NR_TEST_UTILS.require("@node-red/runtime/lib/httpHold");
             beforeEach(function() {
@@ -195,12 +196,14 @@ describe("runtime", function() {
                 res.headers["retry-after"].should.equal("1");
             });
             it("does not hold the requests of the httpNode app for a route that exists during a deployment and a reload", async function() {
-                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: { holdHttpNodeRequests: { enabled: true, timeout: 50 } }});
+                // a long hold: a request that was held would take about 1 s, so the limit below
+                // does not depend on the speed of a loaded machine
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: { holdHttpNodeRequests: { enabled: true, timeout: 1000 } }});
                 runtime._.nodeApp.get("/hello", (req, res) => res.send("hello"));
                 instanceState.begin("deploy");
                 const start = Date.now();
                 (await request(runtime.httpNode).get("/hello")).text.should.equal("hello");
-                (Date.now() - start).should.be.below(40);
+                (Date.now() - start).should.be.below(900);
                 httpHold.pending().should.equal(0);
                 instanceState.reset();
                 instanceState.markStarting();
@@ -634,7 +637,7 @@ describe("runtime", function() {
         const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
         const health = NR_TEST_UTILS.require("@node-red/runtime/lib/health");
         const express = require("express");
-        const request = require("supertest");
+        const request = require("nr-test-utils/supertest");
         const net = require("net");
         let stubs;
         beforeEach(function() {

@@ -291,6 +291,11 @@ Fixes
    long before could be applied to a later deployment of the same content that ended in `start_timeout`:
    it closed that error at once and showed the outcome of the earlier start. A result that arrives
    during the request, before its response, is still shown after the response (#31)
+ - Tests only, no change of the product: flaky tests fixed. The HTTP tests no longer reach a foreign server
+   on the same machine (supertest started the app on all interfaces but connected to `127.0.0.1`; the
+   shared helper `nr-test-utils/supertest` listens on `127.0.0.1`), the `tcp request` test server hook calls
+   `done` once, the `watch` test ignores a macOS event of the test preparation and the limits of the
+   time-dependent hold tests are wider (#19)
 
 #### Unreleased: Engine extensions
 

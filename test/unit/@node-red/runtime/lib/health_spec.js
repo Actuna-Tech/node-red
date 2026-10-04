@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-08: tests of the health probes /live and /ready
  *   #1 (R-47): tests of the readiness policy with the condition `reload` (warn)
+ *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -25,7 +26,7 @@ const sinon = require("sinon");
 const http = require("http");
 const net = require("net");
 const express = require("express");
-const request = require("supertest");
+const request = require("nr-test-utils/supertest");
 const NR_TEST_UTILS = require("nr-test-utils");
 const health = NR_TEST_UTILS.require("@node-red/runtime/lib/health");
 const state = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
