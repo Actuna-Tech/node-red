@@ -276,7 +276,9 @@ Fixes
    dialog of the clipboard) inserted the raw body of the server response into the notification as HTML
    (`library.saveFailed`). It now shows the `message` of a JSON response (or a generic text with the HTTP
    status) with `& < > " '` escaped, never the raw body; the message is built by the same function as
-   the deploy errors (`RED.deploy.translateErrorResponse`). No new texts, no change of the API (#30)
+   the deploy errors (`RED.deploy.translateErrorResponse`). A request with no HTTP response (status 0)
+   shows "no response from server". Polish editor: `library.saveFailed` and `user.notAuthorized` are
+   translated (the message no longer mixes languages). No change of the API (#30)
 
 #### Unreleased: Engine extensions
 

@@ -264,8 +264,9 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 - Edytor, błąd zapisu do biblioteki (okno biblioteki) i eksportu do biblioteki (okno eksportu schowka) (#30): komunikat
   `library.saveFailed` wstawiał surową treść odpowiedzi serwera jako HTML (XSS przy odpowiedzi z znacznikami). Teraz
   pokazuje pole `message` odpowiedzi JSON (albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”) z escapowaniem
-  `& < > " '`, nigdy surową treść; ten sam formater co błędy wdrożenia (`RED.deploy.translateErrorResponse`). Bez nowych
-  tekstów i bez zmian API.
+  `& < > " '`, nigdy surową treść; ten sam formater co błędy wdrożenia (`RED.deploy.translateErrorResponse`). Brak odpowiedzi
+  HTTP (status 0) daje „brak odpowiedzi z serwera”. Polski edytor: przetłumaczone `library.saveFailed` i `user.notAuthorized`
+  (komunikat nie miesza języków). Bez zmian API.
 
 ## 7. Testy i proces
 
