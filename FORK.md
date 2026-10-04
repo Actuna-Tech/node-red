@@ -87,6 +87,7 @@ module.exports = {
 |---|---|---|
 | Pakiet `auth` przez `/comms` bez `adminAuth` nie zatrzymuje procesu (odpowiedź `auth ok`) | P-04 | poprawka |
 | Nazwa użytkownika wstawiana jako tekst (XSS), odświeżenie danych po ponownym logowaniu | R-08, R-41 | poprawka |
+| Odpowiedź serwera przy błędzie zapisu/eksportu do biblioteki pokazywana jako escapowany tekst, nie jako HTML (XSS) | #30 | poprawka |
 | Subskrypcje `/comms` dopiero po uwierzytelnieniu | Z-01 | poprawka |
 | Trasy admin węzłów wymagają logowania: `httpAdminNodeRoutes: "authenticated"`, `RED.auth.publicRoute()` | Z-02 | `"open"` |
 | Telemetria blokowana przez administratora: `telemetry.locked` (także w edytorze) | P-03 | wyłączone |
@@ -261,6 +262,12 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   wyświetlania, bez wpływu na zapis i API; wartości z odpowiedzi i nazwy flow są escapowane. Zmiany zachowania dla 409
   (`version_mismatch`, `version_required`) i dla błędów bez `rev` (zmiany zostają niewdrożone) nie ma.
 - `http in` (#11): przy zamknięciu węzła (wdrożenie, zatrzymanie) usuwane są **tylko trasy tego węzła**, rozpoznane po jego handlerze. Wcześniej usuwane były wszystkie trasy z tą samą ścieżką i metodą – także innych węzłów `http in` i tras dodanych przez inne moduły przez `RED.httpNode` – a trasa następująca bezpośrednio po usuniętej była pomijana (`splice` w trakcie `forEach`). Klucz trasy „surowego ciała” (`skipBodyParsing`) jest utrzymywany, dopóki korzysta z niego jakikolwiek węzeł (licznik na klucz). Skutek: gdy dwa węzły `http in` mają tę samą ścieżkę i metodę, odpowiada pierwszy zarejestrowany (Express), a po jego zamknięciu odpowiada drugi, zamiast 404. Węzły spoza rdzenia nadal nie mają wspieranego sposobu zdejmowania własnych tras (API tras węzła jest osobnym etapem #11).
+- Edytor, błąd zapisu do biblioteki (okno biblioteki) i eksportu do biblioteki (okno eksportu schowka) (#30): komunikat
+  `library.saveFailed` wstawiał surową treść odpowiedzi serwera jako HTML (XSS przy odpowiedzi z znacznikami). Teraz
+  pokazuje pole `message` odpowiedzi JSON (albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”) z escapowaniem
+  `& < > " '`, nigdy surową treść; ten sam formater co błędy wdrożenia (`RED.deploy.translateErrorResponse`). Brak odpowiedzi
+  HTTP (status 0) daje „brak odpowiedzi z serwera”. Polski edytor: przetłumaczone `library.saveFailed` i `user.notAuthorized`
+  (komunikat nie miesza języków). Bez zmian API.
 
 ## 7. Testy i proces
 
