@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-08: tests of the health probes /live and /ready
+ *   #1 (R-47): tests of the readiness policy with the condition `reload` (warn)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -153,6 +154,123 @@ describe("runtime/health (Z-08)", function() {
             const app2 = express();
             app2.use(health.getPath(), health.handler);
             (await request(app2).get("/probes/live")).status.should.equal(200);
+        });
+    });
+
+    describe("readiness policy with the condition reload (R-47)", function() {
+        const OK = { status: 200, body: '{"status":"ok"}' };
+        const WARN = { status: 200, body: '{"status":"warn","reason":"reload_failed"}' };
+        const UNAVAILABLE = { status: 503, body: '{"status":"unavailable"}' };
+        function cond(keepReady, staleDeadline) {
+            return { error: { code: "storage_error" }, since: 0, attempts: 10, activeRev: "A", rev: null, keepReady: keepReady, staleDeadline: staleDeadline === undefined ? null : staleDeadline };
+        }
+
+        describe("readiness(info, now) - a pure function", function() {
+            it("ready without a condition - ok", function() {
+                health.readiness({ ready: true }, 0).should.eql(OK);
+            });
+            it("ready, condition keepReady false - ok (the default mode, also past a deadline)", function() {
+                health.readiness({ ready: true, reload: cond(false) }, 0).should.eql(OK);
+                health.readiness({ ready: true, reload: cond(false, 10) }, 100).should.eql(OK);
+            });
+            it("ready, keepReady, no deadline - warn", function() {
+                health.readiness({ ready: true, reload: cond(true, null) }, 1e15).should.eql(WARN);
+            });
+            it("ready, keepReady, before the deadline - warn", function() {
+                health.readiness({ ready: true, reload: cond(true, 1000) }, 999).should.eql(WARN);
+            });
+            it("ready, keepReady, at and after the deadline - 503", function() {
+                health.readiness({ ready: true, reload: cond(true, 1000) }, 1000).should.eql(UNAVAILABLE);
+                health.readiness({ ready: true, reload: cond(true, 1000) }, 5000).should.eql(UNAVAILABLE);
+            });
+            it("not ready - 503, whatever the condition", function() {
+                health.readiness({ ready: false }, 0).should.eql(UNAVAILABLE);
+                health.readiness({ ready: false, reload: cond(true) }, 0).should.eql(UNAVAILABLE);
+                health.readiness({ ready: false, reload: cond(false) }, 0).should.eql(UNAVAILABLE);
+            });
+            it("the bodies are constant: no revision, no error text", function() {
+                const result = health.readiness({ ready: true, reload: Object.assign(cond(true), { activeRev: "secret-rev", rev: "other", error: { code: "storage_error", message: "secret message" } }) }, 0);
+                result.body.should.not.match(/secret/);
+            });
+        });
+
+        describe("handler", function() {
+            it("ready + condition keepReady - 200 warn with a constant body, /live 200", async function() {
+                drive.ready();
+                state.markReloadFailed({ error: "storage_error", attempts: 10, activeRev: "secret-rev", keepReady: true });
+                const res = await request(app).get("/health/ready");
+                res.status.should.equal(200);
+                res.text.should.equal('{"status":"warn","reason":"reload_failed"}');
+                res.headers["content-type"].should.match(/^application\/json/);
+                res.headers["cache-control"].should.equal("no-store");
+                (await request(app).get("/health/live")).text.should.equal('{"status":"ok"}');
+            });
+            it("HEAD gives the status and headers of warn without a body", async function() {
+                drive.ready();
+                state.markReloadFailed({ error: "storage_error", keepReady: true });
+                const res = await request(app).head("/health/ready");
+                res.status.should.equal(200);
+                res.headers["content-type"].should.match(/^application\/json/);
+                res.headers["cache-control"].should.equal("no-store");
+                should(res.text).be.undefined();
+            });
+            it("ready + condition keepReady false - ok, as without the condition (default mode)", async function() {
+                drive.ready();
+                state.markReloadFailed({ error: "storage_error", keepReady: false });
+                const res = await request(app).get("/health/ready");
+                res.status.should.equal(200);
+                res.text.should.equal('{"status":"ok"}');
+            });
+            it("editor-only (loaded) + condition keepReady false - ok", async function() {
+                drive.loaded();
+                state.markReloadFailed({ error: "storage_error", keepReady: false });
+                const res = await request(app).get("/health/ready");
+                res.status.should.equal(200);
+                res.text.should.equal('{"status":"ok"}');
+            });
+            it("the condition cleared - ok again", async function() {
+                drive.ready();
+                state.markReloadFailed({ error: "storage_error", keepReady: true });
+                state.clearReloadFailed();
+                const res = await request(app).get("/health/ready");
+                res.text.should.equal('{"status":"ok"}');
+            });
+            it("keepReady past staleDeadline - 503", async function() {
+                drive.ready();
+                state.markReloadFailed({ error: "storage_error", keepReady: true, staleDeadline: Date.now() - 1 });
+                const res = await request(app).get("/health/ready");
+                res.status.should.equal(503);
+                res.text.should.equal('{"status":"unavailable"}');
+                (await request(app).get("/health/live")).status.should.equal(200);
+            });
+            it("keepReady before staleDeadline - warn, then 503 when the time passes (no I/O, evaluated per request)", async function() {
+                const clock = sinon.useFakeTimers({ toFake: ["Date"] });
+                try {
+                    drive.ready();
+                    state.markReloadFailed({ error: "storage_error", keepReady: true, staleDeadline: 1000 });
+                    health.readiness({ ready: state.isReady(), reload: state.get().reload }, Date.now()).status.should.equal(200);
+                    clock.tick(1000);
+                    health.readiness({ ready: state.isReady(), reload: state.get().reload }, Date.now()).status.should.equal(503);
+                } finally {
+                    clock.restore();
+                }
+            });
+            ["idle", "failed", "draining", "reloading", "deploying", "starting"].forEach(function(name) {
+                it("a condition keepReady does not make " + name + " ready - 503", async function() {
+                    drive[name]();
+                    state.markReloadFailed({ error: "storage_error", keepReady: true });
+                    const res = await request(app).get("/health/ready");
+                    res.status.should.equal(503);
+                    res.text.should.equal('{"status":"unavailable"}');
+                });
+            });
+            it("reloadPending before draining + condition keepReady - warn", async function() {
+                drive.reloadPending();
+                state.markReloadFailed({ error: "storage_error", keepReady: true });
+                const res = await request(app).get("/health/ready");
+                res.status.should.equal(200);
+                res.text.should.equal('{"status":"warn","reason":"reload_failed"}');
+            });
         });
     });
 

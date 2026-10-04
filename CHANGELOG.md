@@ -1,5 +1,20 @@
 #### Unreleased: Instances and reload
 
+ - New settings `deploy.reload.retry.onExhausted` (`"fail"` by default - nothing changes: after
+   the retries the instance is `failed` and `/ready` is 503) and `deploy.reload.retry.maxStaleTime`
+   (ms, default 1800000, used only with `"keepReady"`; 0 - no limit). With `"keepReady"` a failure
+   to read the shared storage after the retries no longer takes a ready instance out of rotation:
+   it stays ready on the previous revision and `/ready` answers 200
+   `{"status":"warn","reason":"reload_failed"}` (a constant body); an idle instance stays idle, errors
+   of the configuration (`credentials_load_failed`, `invalid_flows`) and a failed start still give
+   `failed` / 503, and after `maxStaleTime` `/ready` is 503. The situation is reported as an error:
+   an error log when it starts and once per `retry.max` while it lasts, a persistent notification in
+   the editor, the new `reload` condition in the `instance:state` event (`error.code`, `since`,
+   `attempts`, `activeRev`, `rev`, `keepReady`, `staleDeadline`) and an info log `reload.recovered`.
+   The condition ends when storage holds the running revision again (no drain, no restart), when a
+   reload of a new revision succeeds or on a successful deployment on the instance. New contract
+   rule: `instance:state` is also emitted when only the `reload` condition changes (the states of
+   R-23 and their transitions are unchanged). Decision R-47 (#1)
  - New setting `health.unreadyGrace` (ms, not set by default - nothing changes without it): for a
    planned stop - a stop signal (SIGTERM) and a reload of the flows after a change in storage
    (`deploy.reload`) - `/ready` answers 503 for at least this long, counted from the start of the planned stop or
