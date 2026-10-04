@@ -121,6 +121,17 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 | hook `preReload` | brak | `{rev, activeRev, type, changedFlows, credentialsChanged, deadline, signal}` – drenaż pracy w toku z limitem `preReloadTimeout`, bez prawa weta; dodatkowa runda dla flow zmienionych w trakcie drenażu (najwyżej jedna) | Z-09 |
 | `editorOnly` | `false` | instancja tylko do edycji: flow wczytane, nigdy nie startują (stan `loaded`, `/ready` 200 – także przy brakujących typach, tylko ostrzeżenie w logu; moduły węzła Function nie są instalowane); wdrożenie tylko zapisuje (`{rev, started: false}` przy `deploy.response: "started"`); `POST /flows/state` start → 409 `editor_only`; w edytorze bez Start/Stop, „Restart Flows” i przyciski węzłów (inject) nieaktywne z podpowiedzią | Z-15 |
 
+**Uwagi konfiguracyjne (wiele instancji):**
+- Sondy bez `health.port` są montowane na głównym serwerze HTTP **przed uwierzytelnieniem** – na instancji wystawionej
+  przez reverse proxy `/health/live` i `/health/ready` są publiczne. Zalecenie: osobny `health.port` dostępny tylko
+  w sieci wewnętrznej (zgłoszenie #5).
+- Hooki `preReload` i `preShutdown` muszą mieć **dokładnie jeden parametr** (`payload`) i zwracać obietnicę, np.
+  `RED.hooks.add("preReload", async (payload) => { … })`. Hook z innym parametrem jest wołany jako
+  `(payload, done)` (mechanizm hooków Node-RED), a zwrócona obietnica jest ignorowana – bez wywołania `done`
+  przeładowanie czeka do `preReloadTimeout` (domyślnie 20 min), zamykanie do `shutdownTimeout` (zgłoszenie #5).
+- Instancja `editorOnly` nie uczestniczy w koordynacji klastra (nie uruchamia wybranej wtyczki koordynacji) i nigdy
+  nie jest liderem – przywództwo obejmują tylko instancje wykonujące flow (zgłoszenie #4).
+
 ## 6. Zmiany zachowania względem 5.0.7 (poprawki błędów)
 
 - Restart flow przy 409 i przyciski „Merge”/„Ignore & deploy” nie kończą się błędem skryptu.

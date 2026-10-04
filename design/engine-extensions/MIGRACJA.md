@@ -323,3 +323,10 @@ Nagłówki „Modified by Actuna Sp. z o.o.” – zachowane w forku (D-19); pli
 | – | `DELETE /flow/:id` z wymogiem rewizji | **rozstrzygnięte – R-14** (§4.1) |
 | R-01…R-32 | pozostałe decyzje wpływające na przewodnik | **rozstrzygnięte** – [REJESTR-DECYZJI.md](REJESTR-DECYZJI.md) |
 | R-33…R-42 | doprecyzowania (nazwy robocze, 201/`If-Match`, listy źródeł, `retry`, `startTimeout`, `editorOnly`, listy typów) | **rozstrzygnięte** – [REJESTR-DECYZJI.md](REJESTR-DECYZJI.md), naniesione powyżej |
+
+### Uzupełnienie (zgłoszenia #4, #5)
+- Kształt hooków `preReload`/`preShutdown`: `async (payload) => { … }` – dokładnie jeden parametr; inna liczba
+  parametrów oznacza wywołanie `(payload, done)` i ignorowanie zwróconej obietnicy.
+- Sondy bez `health.port` są publiczne na głównym serwerze – używaj osobnego portu w sieci wewnętrznej.
+- Wtyczka koordynacji nie jest uruchamiana na instancji `editorOnly`; fasada zwraca tam `isLeader() === false`,
+  a `info().plugin === "editor-only"`.

@@ -1,5 +1,10 @@
 #### Unreleased: Instances and reload
 
+ - An editor-only instance (`editorOnly`) does not start the coordination plugin and is never the
+   leader, so `inject` nodes with "Run only on one instance" fire on the instances that run the flows (#4)
+ - Documented: health probes without `health.port` are public on the main server; `preReload` and
+   `preShutdown` hooks must take exactly one parameter (#5)
+
 Features
 
  - New API for the coordination of instances that run the same flows: `RED.coordination`

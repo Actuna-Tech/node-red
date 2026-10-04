@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-10: two instances of the coordination facade with a shared coordinator
  *   in one process, each running an inject node (R-21)
+ *   Z-10/Z-15: an editor-only instance never takes the leadership (issue #4)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -230,5 +231,54 @@ describe("runtime/coordination - local plugin with an inject node", function() {
         cron.sent.length.should.equal(1);
         once.sent.length.should.equal(1);
         interval.statuses.length.should.equal(0);
+    });
+});
+
+describe("runtime/coordination - editor-only instance and two instances that run the flows (issue #4)", function() {
+    let clock;
+    let editor;
+    let instanceA;
+    let instanceB;
+
+    beforeEach(async function() {
+        sinon.stub(log, "info");
+        sinon.stub(log, "warn");
+        clock = sinon.useFakeTimers({
+            now: Date.UTC(2026, 0, 1, 0, 0, 30),
+            toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"]
+        });
+        const coordinator = createCoordinator();
+        const pluginE = Object.assign(coordinator.createPlugin("E"), {id: "cluster"});
+        const pluginA = Object.assign(coordinator.createPlugin("A"), {id: "cluster"});
+        const pluginB = Object.assign(coordinator.createPlugin("B"), {id: "cluster"});
+        // the editor starts first - without the fix it would take the leadership
+        editor = coordination.createCoordination();
+        await editor.start(createRuntime({editorOnly: true, coordination: {plugin: "cluster"}}, [pluginE]));
+        const facadeA = coordination.createCoordination();
+        const facadeB = coordination.createCoordination();
+        await facadeA.start(createRuntime({coordination: {plugin: "cluster"}}, [pluginA]));
+        await facadeB.start(createRuntime({coordination: {plugin: "cluster"}}, [pluginB]));
+        instanceA = createInstance(facadeA);
+        instanceB = createInstance(facadeB);
+    });
+    afterEach(async function() {
+        await instanceA.stop();
+        await instanceB.stop();
+        await editor.stop();
+        clock.restore();
+        sinon.restore();
+    });
+
+    it("the editor-only instance is never the leader", function() {
+        editor.isLeader().should.be.false();
+        editor.info().should.have.property("plugin", "editor-only");
+    });
+
+    it("an interval inject with singleInstance fires on exactly one instance that runs the flows", async function() {
+        const a = instanceA.createInject({repeat: 1, singleInstance: true});
+        const b = instanceB.createInject({repeat: 1, singleInstance: true});
+        await clock.tickAsync(3000);
+        (a.sent.length + b.sent.length).should.equal(3);
+        [a.sent.length, b.sent.length].should.containEql(0);
     });
 });
