@@ -84,14 +84,13 @@
    requests for which the httpNode app has no route at that moment are held: the routes of unchanged nodes
    (a partial deployment) are served at once. If the start fails, the requests are released to the normal routing. The Admin API and the editor are not held; static files under
    `httpNodeRoot` and CORS preflight requests are held, and the 503 has no `Access-Control-*` headers.
-   `http in` with "skipBodyParsing" (only with this setting enabled; without it nothing changes): a request that
-   bypassed the capture of the raw body (it arrived while the route was replaced) is read raw by the route itself,
-   so the handler still gets a `Buffer`. With the setting, a skipBodyParsing route with parameters (`/hook/:id`) or
-   another letter case, which the capture never matched, also gets a `Buffer` instead of a parsed body
+   `http in` with "skipBodyParsing": a request that bypassed the capture of the raw body (it arrived while
+   the route was replaced) is read raw by the route itself, so the handler still gets a `Buffer` (this no longer
+   depends on the setting, see #16)
 
 Features
  - Polish (`pl`) translation of the editor (`editor.json`, 317 keys) and of the core nodes
-   (`messages.json`, 98 keys), partial: keys without a translation fall back to English.
+   (`messages.json`, 102 keys), partial: keys without a translation fall back to English.
    The runtime messages, the JSONata and info-tip catalogs and the help of the other nodes are not
    translated yet. The language is listed in the language selector of the user settings and is
    used by a browser set to Polish when the user has not selected a language.
@@ -328,7 +327,7 @@ Fixes
    dialog of the clipboard) inserted the raw body of the server response into the notification as HTML
    (`library.saveFailed`). It now shows the `message` of a JSON response (or a generic text with the HTTP
    status) with `& < > " '` escaped, never the raw body; the message is built by the same function as
-   the deploy errors (`RED.deploy.translateErrorResponse`). A request with no HTTP response (status 0)
+   the deploy errors (`RED.deploy.translateErrorResponse`, today `RED.errors.translateResponse`). A request with no HTTP response (status 0)
    shows "no response from server". Polish editor: `library.saveFailed` and `user.notAuthorized` are
    translated (the message no longer mixes languages). No change of the API (#30)
  - Editor: text from a server response and the module name were inserted into notifications (HTML) without
@@ -338,18 +337,88 @@ Fixes
    shows the `message` of the error instead of "[object Object]"), when a node module fails to load, on import
    and drop errors (the message of a failed import quotes the pasted text) and for groups. The catalog text
    stays HTML. The shared escaping moved from `RED.deploy` to the new `RED.errors` module (`ui/common/errors.js`,
-   loaded before the modules that use it); `RED.deploy.translateErrorResponse` and `RED.deploy.formatStartErrors`
-   work as before, and the library no longer depends on the deploy module. No change of the API (#34)
+   loaded before the modules that use it); `RED.deploy.formatStartErrors` works as before, the library no
+   longer depends on the deploy module. `RED.deploy.translateErrorResponse` was kept as an alias at that time
+   and is removed in #37 (use `RED.errors.translateResponse`). No change of the HTTP API (#34)
+ - Editor: more places inserted text that is not from the message catalog into HTML without escaping (#37).
+   - Escaped: the module name in the confirmations of install, update and remove and in the progress message
+     of the automatic install; the remote URL in the dialog of the git authentication; the file name in the
+     confirmation of a revert and in the title of the window with the changes of a file; the names of a project,
+     a branch, a remote and a key in the confirmations of their removal; the type and the error of a node that
+     could not be registered; the module and the version of an upgraded module; the message of an import
+     error; the library type of a saved item; the values of the notifications of the runtime (`red.js`,
+     `runtime.js`); the conflict hint of the install button and the pending version of a module.
+   - Set as text, not parsed as HTML: the version of a module, the name of a catalog and the options of the
+     catalog filter of the Install tab (they came from the remote catalog and ran when the tab opened, with no
+     click), the name of an item of the library.
+   - Only an `http:` or `https:` address of the remote catalog is a link or a "Open node information" button of
+     a module (a `javascript:` address was a link); the page opens with `noopener`. New `RED.errors.httpUrl`.
+   - **Changes of the editor API for the code that uses it (a node module, a plugin):**
+     `RED.utils.sanitize` now also escapes `"` and `'` (it did `& < >` only) and gives an empty text for
+     `null`/`undefined` (it threw a TypeError). A module that puts the result into `.text()` or `.attr()` will now
+     show `&quot;`/`&#39;` for a quote - it never should have escaped for a plain-text sink. New
+     `RED.utils.sanitizeContent` keeps the old `& < >` escaping (for markdown and for text cut by characters).
+     New `RED.errors.notifyGitError` (the function of the projects and of the version control, which were two
+     copies). `RED.errors.translateEscaped` keeps a number and a boolean as they are.
+     **`RED.deploy.translateErrorResponse` is removed** - the replacement is `RED.errors.translateResponse`
+     (the same arguments, the same result); it was never in a release. The HTTP API and the settings do not change.
+   - Two places that escaped text for a plain-text sink no longer show entities (the tooltip of a tab, the title
+     of the edit dialog of a node, which was escaped twice). Enabling or disabling a module showed "Failed to
+     install" with an undefined name (or failed with a ReferenceError); it names the action and the module and
+     is shown as an error now, and the texts are in the Polish catalog.
  - Editor: a start result (`deploy-start-result`) that was ignored because its revision was not the one of the
    editor is dropped when the editor starts a deployment. Revisions are content hashes, so a result kept
    long before could be applied to a later deployment of the same content that ended in `start_timeout`:
    it closed that error at once and showed the outcome of the earlier start. A result that arrives
    during the request, before its response, is still shown after the response (#31)
+ - `http in` with "Do not parse request body" (`skipBodyParsing`): a route with a parameter (`/hook/:id`) or
+   addressed in another letter case than its path (`/HOOK`) now gets the raw body as a `Buffer`, as the option
+   promises, regardless of `deploy.holdHttpNodeRequests`. Before, the raw body was captured only for the literal
+   `METHOD:url` of the node, so such a route got a parsed body (an object or text; for example it broke the
+   verification of a signature of the body). Every route of a node with the option now reads the raw body
+   itself (before: only with `deploy.holdHttpNodeRequests`), also when a `httpNodeMiddleware` sets
+   `req.skipRawBodyParser` (the example of the settings template; the flag means "skip the parser", not "body
+   read"). Behaviour change (#16)
  - Tests only, no change of the product: flaky tests fixed. The HTTP tests no longer reach a foreign server
    on the same machine (supertest started the app on all interfaces but connected to `127.0.0.1`; the
    shared helper `nr-test-utils/supertest` listens on `127.0.0.1`), the `tcp request` test server hook calls
    `done` once, the `watch` test ignores a macOS event of the test preparation and the limits of the
    time-dependent hold tests are wider (#19)
+
+Features
+
+ - `http in`: the raw body (`skipBodyParsing`) is now limited, on by default: the limit is `apiMaxLength`
+   (5mb by default), the same setting as for the JSON and URL-encoded bodies; a larger body is answered
+   with 413 `Payload Too Large` (also without `Content-Length`) and the flow does not run. Before, the raw
+   body had no limit. An integration that sends more than 5mb raw gets 413 until the limit is raised
+   (`apiMaxLength` or the node option below). The 413 is sent after the authentication and with the CORS
+   headers. The rest of a rejected body is read and discarded (up to 64mb), so the client
+   receives the 413 instead of a reset connection; a declared `Content-Length` above 64mb gets the 413 and
+   `Connection: close` at once (#16)
+ - `http in` with "Do not parse request body": `rawBodyCapture` now runs on the httpNode app, behind
+   `httpNodeAuth` and the hold of the requests (`deploy.holdHttpNodeRequests`), instead of the top of the
+   root app, so a request that the authentication rejects (or the hold keeps) no longer makes the runtime
+   buffer its body first. It still runs before `httpNodeMiddleware` and the routes, so they find the raw
+   body in `req.body` as before, up to the highest limit of the nodes on the key (upstream had no limit): a
+   larger body is answered with 413 (with the CORS headers) at once and nothing else on the route sees it,
+   neither a middleware, nor another route, nor a node without the option. Loading the module again on the same
+   app (`RED.stop()` and `RED.start()` in one process) replaces the capture instead of adding another. Do not base authorization on
+   `httpNodeMiddleware`, or on `RED.httpNode.use(auth)` added after `RED.start()` (embedded mode): the body of a
+   skip route is read before them (up to the limit) and above the limit the client gets 413 instead of 401.
+   To avoid reading the body of unauthenticated requests use `httpNodeAuth` or the outer application in front
+   of `RED.httpNode`. A node without the option on the same path and method as a node with it gets 413 for a body
+   larger than that node's limit.
+   The 413 carries the CORS headers of the global `httpNodeCors`, also on a foreign route with its own CORS (#16)
+ - `http in`: new optional field "Max body size" (`maxBodySize`) replaces the limit for one node, higher or
+   lower, for routes that receive large files or images. A number with an optional unit `b`, `kb`, `mb`
+   `gb`, `tb` or `pb` (1024 based, for example `50mb`; a number alone is bytes; up to 32 characters). It applies to
+   the raw body and, with "Accept file uploads", to the whole body of a multipart request (all files and fields; 413
+   above it, at once when `Content-Length` is above the limit, and by the received bytes for a chunked body).
+   Without the field an upload stays unlimited, as before. An empty value uses the default; an invalid one
+   logs a warning (`httpin.errors.invalid-max-body-size`) and uses the default. An `apiMaxLength` that is not a size
+   above 0 logs one warning (`httpin.errors.invalid-api-max-length`) and uses 5mb. No new global setting. The field
+   is shown, and validated by the editor, only with one of the two options. English help and the English and
+   Polish messages (#16)
 
 #### Unreleased: Engine extensions
 

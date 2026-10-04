@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #34: the message of a git error of the server shown in a notification is escaped (version control)
+ *   #37: the file name in the confirmation of a revert is escaped; notifyGitError moved to RED.errors
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -56,12 +57,32 @@ describe("editor-client/ui/projects/tab-versionControl (#34)", function() {
         });
     });
 
-    describe("notifyGitError (remote branches: git_connection_failed, git_not_a_repository, git_repository_not_found)", function() {
-        it("shows the message of the server as text", function() {
-            versionControl.notifyGitError({ code: "git_not_a_repository", message: INJECTION });
-            notifier.notifications.should.have.length(1);
-            notifier.notifications[0].msg.should.equal("&lt;img src=x onerror=alert(1)&gt;");
-            notifier.notifications[0].options.should.equal("error");
+    describe("diffTitle (the window with the changes of a file; the tray shows its title as HTML, #37)", function() {
+        it("shows the file name as text in every state", function() {
+            [["unstaged", "Unstaged changes"], ["staged", "Staged changes"], ["unmerged", "Resolve conflicts"]].forEach(function(pair) {
+                const title = versionControl.diffTitle(pair[0], "dir/" + INJECTION + ".json");
+                title.should.equal(pair[1] + " : dir/&lt;img src=x onerror=alert(1)&gt;.json");
+                catalog.assertNoElement(title, "img");
+            });
+        });
+
+        it("keeps a normal file name and escapes the quotes", function() {
+            versionControl.diffTitle("staged", "flows.json").should.endWith(" : flows.json");
+            versionControl.diffTitle("staged", "a\"b'c").should.endWith(" : a&quot;b&#39;c");
+        });
+    });
+
+    describe("revertConfirmMessage (#37)", function() {
+        it("shows the file name as text", function() {
+            const html = versionControl.revertConfirmMessage("flows/" + INJECTION + ".json");
+            html.should.equal("Are you sure you want to revert the changes to 'flows/&lt;img src=x onerror=alert(1)&gt;.json'? This cannot be undone.");
+            catalog.assertNoMarkup(html);
+            catalog.assertNoElement(html, "img");
+        });
+
+        it("keeps a normal file name and escapes the quotes", function() {
+            versionControl.revertConfirmMessage("flows.json").should.containEql("'flows.json'");
+            versionControl.revertConfirmMessage("a\"b'c").should.containEql("'a&quot;b&#39;c'");
         });
     });
 

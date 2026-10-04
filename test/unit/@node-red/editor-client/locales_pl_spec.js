@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-13: consistency tests of the partial Polish (pl) message catalogs
+ *   #37: the texts of a failed install, update, remove, enable and disable of a module are in pl
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -82,6 +83,13 @@ describe("locales/pl", function() {
                 });
                 empty.should.eql([]);
             });
+        });
+    });
+
+    it("has the texts of the failures of the palette (install, update, remove, enable, disable; #37)", function() {
+        const pl = flatten(load(catalogs["editor.json"], "pl", "editor.json"), "", {});
+        ["install", "update", "remove", "enable", "disable"].forEach(function(action) {
+            pl.should.have.property("palette.editor.errors." + action + "Failed");
         });
     });
 

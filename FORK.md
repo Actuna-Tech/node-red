@@ -60,7 +60,7 @@ module.exports = {
 
 ### Język polski – częściowo (Z-13)
 
-- Dodane `locales/pl/editor.json` (317 z 1151 kluczy en-US, ok. 28%, oraz 8 form liczby mnogiej) i `locales/pl/messages.json` (98 z 869, ok. 11%) –
+- Dodane `locales/pl/editor.json` (317 z 1151 kluczy en-US, ok. 28%, oraz 8 form liczby mnogiej) i `locales/pl/messages.json` (102 z 873, ok. 12%) –
   tłumaczenie częściowe od Zamawiającego; brakujące klucze wracają do en-US (`fallbackLng`). Słownik: „węzeł”,
   `flow`/`subflow` bez tłumaczenia, „Wdróż”; forma bezosobowa. Liczba mnoga: `_one/_few/_many/_other` (i18next 25).
 - Pomoc węzłów (#12): `locales/pl/common/21-debug.html`, `function/10-function.html`, `function/15-change.html`
@@ -89,6 +89,7 @@ module.exports = {
 | Nazwa użytkownika wstawiana jako tekst (XSS), odświeżenie danych po ponownym logowaniu | R-08, R-41 | poprawka |
 | Odpowiedź serwera przy błędzie zapisu/eksportu do biblioteki pokazywana jako escapowany tekst, nie jako HTML (XSS) | #30 | poprawka |
 | Komunikaty błędów palety, projektów, kontroli wersji, ładowania modułu węzła, importu i grup pokazywane jako escapowany tekst, nie jako HTML (XSS) | #34 | poprawka |
+| Dalsze komunikaty z tekstem spoza katalogu (nazwa modułu w potwierdzeniach palety, adres zdalny git, nazwa pliku przy `revert`, nazwy projektu/gałęzi/zdalnego/klucza, błędy rejestracji węzła i importu) escapowane; `RED.utils.sanitize` escapuje też cudzysłowy | #37 | poprawka |
 | Subskrypcje `/comms` dopiero po uwierzytelnieniu | Z-01 | poprawka |
 | Trasy admin węzłów wymagają logowania: `httpAdminNodeRoutes: "authenticated"`, `RED.auth.publicRoute()` | Z-02 | `"open"` |
 | Telemetria blokowana przez administratora: `telemetry.locked` (także w edytorze) | P-03 | wyłączone |
@@ -141,14 +142,14 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `/comms` z uprawnieniem odczytu), tak samo jak `runtime-state` i zdarzenia debug – nie tylko do użytkownika, który wdrażał.
 
 ### Wstrzymywanie żądań HTTP węzłów podczas restartu flow (#8)
-- **Surowe ciało (`skipBodyParsing`), tylko przy `enabled: true`:** żądanie do trasy `http in` z „surowym ciałem”, które przeszło przez
+- **Surowe ciało (`skipBodyParsing`) w oknie stop→start:** żądanie do trasy `http in` z „surowym ciałem”, które przeszło przez
   `rawBodyCapture` w oknie stop→start (klucz trasy chwilowo nieobecny), po wypuszczeniu dostałoby ciało sparsowane (obiekt/tekst zamiast
-  `Buffer`, np. psuje weryfikację podpisu HMAC). Przy włączonym ustawieniu trasa takiego węzła czyta więc surowe ciało sama, jeśli nie
-  zostało jeszcze odczytane (`21-httpin.js`, `rawBodyFallback`); gdy `rawBodyCapture` zadziałał (normalny przypadek), zachowanie jest
-  bez zmian. **Bez ustawienia zachowanie jest takie jak w 5.0.7** (bez zapasowego odczytu).
-- **Ograniczenie (surowe ciało):** `rawBodyCapture` dopasowuje dosłowny klucz `METODA:url`, więc trasa `skipBodyParsing` z parametrem
-  (`/hook/:id`) lub inną wielkością liter nigdy nie była przechwytywana i dostawała ciało sparsowane. Przy `enabled: true` taka trasa
-  dostaje `Buffer` – to, co obiecuje `skipBodyParsing`; bez ustawienia zachowanie upstream (ciało sparsowane) pozostaje.
+  `Buffer`, np. psuje weryfikację podpisu HMAC). Trasa takiego węzła czyta więc surowe ciało sama, jeśli nie zostało jeszcze odczytane
+  (`21-httpin.js`, `createRawBodyFallback`). W #8 robiła to tylko trasa przy `enabled: true`; od #16 robi to każda trasa `skipBodyParsing`,
+  **niezależnie od tego ustawienia** (zob. §6).
+- **Surowe ciało tras z parametrem i inną wielkością liter (#16):** `rawBodyCapture` dopasowuje dosłowny klucz `METODA:url`, więc trasa
+  `skipBodyParsing` z parametrem (`/hook/:id`) lub inną wielkością liter nigdy nie była przechwytywana i dostawała ciało sparsowane.
+  Teraz taka trasa dostaje `Buffer` zawsze (zapasowy odczyt wyżej) – zob. §6 (limit rozmiaru surowego ciała i opcja węzła `Max body size`).
 - **Problem:** trasy węzłów (`http in` i każdy węzeł rejestrujący trasę w `RED.httpNode`) są usuwane przy zatrzymaniu węzła
   i dodawane przy starcie nowych; żądanie w oknie stop→start dostaje 404, nieodróżnialne od nieistniejącego zasobu.
 - **Rozwiązanie:** `runtime/lib/httpHold.js` – middleware montowany na aplikacji `httpNode` **przed** trasami węzłów
@@ -267,7 +268,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 - Edytor, błąd zapisu do biblioteki (okno biblioteki) i eksportu do biblioteki (okno eksportu schowka) (#30): komunikat
   `library.saveFailed` wstawiał surową treść odpowiedzi serwera jako HTML (XSS przy odpowiedzi z znacznikami). Teraz
   pokazuje pole `message` odpowiedzi JSON (albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”) z escapowaniem
-  `& < > " '`, nigdy surową treść; ten sam formater co błędy wdrożenia (`RED.deploy.translateErrorResponse`). Brak odpowiedzi
+  `& < > " '`, nigdy surową treść; ten sam formater co błędy wdrożenia (`RED.deploy.translateErrorResponse`, dziś `RED.errors.translateResponse`). Brak odpowiedzi
   HTTP (status 0) daje „brak odpowiedzi z serwera”. Polski edytor: przetłumaczone `library.saveFailed` i `user.notAuthorized`
   (komunikat nie miesza języków). Bez zmian API.
 - Edytor, błędy z serwera i błędy importu w powiadomieniach (#34): tekst z odpowiedzi serwera i nazwa modułu
@@ -278,8 +279,73 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   (`red.js`), imporcie i upuszczaniu węzłów (`view.js`; komunikat błędu importu zawiera fragment wklejonego tekstu) i
   grupach (`group.js`). Tekst katalogu nadal jest HTML-em. Wspólny kod escapowania przeniesiony z `RED.deploy`
   do nowego modułu `RED.errors` (`ui/common/errors.js`: `escape`, `parseResponse`, `translateEscaped`,
-  `translateResponse`, `translateException`); `RED.deploy.translateErrorResponse` i `RED.deploy.formatStartErrors`
-  działają jak dotąd, a biblioteka nie zależy już od modułu wdrożenia. Bez zmian API.
+  `translateResponse`, `translateException`); `RED.deploy.formatStartErrors` działa jak dotąd, a biblioteka nie zależy już od
+  modułu wdrożenia. `RED.deploy.translateErrorResponse` został wtedy jako alias, a w #37 jest usunięty (zamiennik:
+  `RED.errors.translateResponse`). Bez zmian API HTTP.
+- Edytor, dalsze miejsca z tekstem spoza katalogu w HTML (#37):
+  - Escapowane: nazwa modułu w potwierdzeniach instalacji, aktualizacji i usunięcia oraz w komunikacie postępu instalacji
+    automatycznej; adres zdalnego repozytorium w oknie uwierzytelnienia git; nazwa pliku w potwierdzeniu `revert` i w
+    tytule okna ze zmianami pliku; nazwy projektu, gałęzi, zdalnego repozytorium i klucza w potwierdzeniach usunięcia;
+    typ i błąd węzła, którego nie dało się zarejestrować; moduł i wersja zaktualizowanego modułu; komunikat błędu
+    importu; typ biblioteki przy zapisie; wartości powiadomień runtime (`red.js`, `runtime.js`); podpowiedź konfliktu
+    na przycisku instalacji i wersja modułu oczekująca na restart.
+  - Ustawiane jako tekst, nie jako HTML: wersja modułu, nazwa katalogu i opcje filtra katalogów na zakładce Install
+    (pochodzą ze zdalnego katalogu i uruchamiały się przy samym otwarciu zakładki, bez kliknięcia), nazwa elementu
+    biblioteki.
+  - Linkiem i przyciskiem „Open node information” jest tylko adres `http:` lub `https:` ze zdalnego katalogu (adres
+    `javascript:` był linkiem); strona otwiera się z `noopener`. Nowe `RED.errors.httpUrl`.
+  - **Zmiany API edytora dla kodu, który z niego korzysta (moduł węzła, wtyczka):** `RED.utils.sanitize` escapuje teraz
+    także `"` i `'` (dotąd tylko `& < >`) i dla `null`/`undefined` zwraca pusty tekst (dotąd błąd TypeError). Moduł, który
+    wynik wstawia do `.text()` lub `.attr()`, pokaże teraz `&quot;`/`&#39;` zamiast cudzysłowu – do czystego tekstu nie
+    wolno escapować. Nowe `RED.utils.sanitizeContent` zachowuje dawne escapowanie `& < >` (markdown, tekst dzielony po
+    znakach). Nowe `RED.errors.notifyGitError` (dawniej dwie kopie w projektach i kontroli wersji);
+    `RED.errors.translateEscaped` zostawia liczby i wartości logiczne bez zmian. **`RED.deploy.translateErrorResponse`
+    jest usunięty** – zamiennik: `RED.errors.translateResponse` (te same argumenty i wynik); nie było go w żadnym
+    wydaniu. API HTTP i ustawienia bez zmian.
+  - Dwa miejsca, które escapowały tekst dla miejsca wyświetlającego czysty tekst (podpowiedź zakładki, tytuł okna edycji
+    węzła – escapowany dwukrotnie), nie pokazują już encji. Włączenie i wyłączenie modułu pokazywało „Nie udało się
+    zainstalować” z niezdefiniowaną nazwą (albo kończyło się błędem `ReferenceError`); teraz podaje właściwą czynność i
+    moduł, jako błąd, a teksty są też w polskim katalogu.
+  - Nie zrobione (opcjonalne, R2 przeglądu #36): maskowanie `//user:pass@` w stderr gita – właściwe miejsce to runtime
+    (komunikat błędu jest budowany w `projects/git`, trafia do odpowiedzi API i logów), osobne zgłoszenie (#45).
+- `http in`, surowe ciało „Do not parse request body” (`skipBodyParsing`, #16): (1) trasa z parametrem (`/hook/:id`) lub adresowana inną
+  wielkością liter (`/HOOK`) dostaje teraz `Buffer` **niezależnie od `deploy.holdHttpNodeRequests`** (wcześniej – obiekt lub tekst,
+  bo `rawBodyCapture` zna tylko dosłowny klucz `METODA:url`; psuło to np. weryfikację podpisu ciała); każda trasa z tą opcją czyta
+  surowe ciało sama. (2) **Surowe ciało ma limit, domyślnie włączony:** wartość `apiMaxLength`
+  (domyślnie 5 MB; to samo ustawienie co parsery JSON i urlencoded); większe ciało → **413** (także bez `Content-Length`; z nagłówkami
+  CORS, bo odpowiedź wysyła trasa), flow się nie wykonuje. **Integracja wysyłająca surowe ciało powyżej 5 MB dostanie 413**, dopóki nie podniesie się limitu (`apiMaxLength` albo
+  pole węzła). Reszta odrzuconego ciała jest czytana i odrzucana (do 64 MB), żeby klient dostał 413, a nie reset połączenia; gdy `Content-Length`
+  deklaruje ponad 64 MB (albo odrzucone ciało przekroczy 64 MB), odpowiedź 413 z `Connection: close` idzie od razu.
+  (3) **Pole węzła „Max body size” (`maxBodySize`):** zastępuje limit dla jednego węzła (wyższy lub niższy), dla tras przyjmujących duże
+  pliki lub obrazy; liczba z opcjonalną jednostką `b`/`kb`/`mb`/`gb`/`tb`/`pb` (1024; np. `50mb`; sama liczba to bajty; tekst do 32 znaków). Dotyczy surowego
+  ciała oraz – przy „Accept file uploads” – **całego ciała żądania multipart** (wszystkie pliki i pola razem, z ramkami multipart, więc
+  pojedynczy plik przechodzi do nieco poniżej limitu); 413 po przekroczeniu: od razu, gdy `Content-Length` przekracza limit, a przy
+  `Transfer-Encoding: chunked` po przekroczeniu liczby odebranych bajtów (multer nie dostaje reszty); bez pola upload pozostaje **bez
+  limitu**, jak dotąd. Żądanie niebędące multipart na trasie z uploadem nie jest limitowane tym polem (jak dotąd). Puste pole = domyślny
+  limit; nieprawidłowa wartość → ostrzeżenie węzła i limit domyślny (pole jest brane pod uwagę tylko przy `skipBodyParsing` lub
+  uploadzie; w edytorze jest walidowane tylko, gdy widoczne). Nieprawidłowe `apiMaxLength` (liczba ≤ 0 albo tekst niebędący rozmiarem, np. `abc`) → jedno ostrzeżenie w logu
+  (nie na każdy węzeł) i 5 MB. Brak nowego ustawienia globalnego. Na trasie dzielonej przez kilka węzłów obowiązuje limit węzła, który
+  odpowiada (pierwszy zarejestrowany). Bez zmian: parsery JSON/urlencoded (nadal `apiMaxLength`) oraz `rawBodyParser` (ciało
+  tekstowe i binarne trasy bez `skipBodyParsing`, nadal bez limitu).
+  (4) **Miejsce odczytu (bezpieczeństwo):** `rawBodyCapture` jest zamontowany na aplikacji `httpNode` (`RED.httpNode`), a nie na aplikacji
+  głównej. `httpNodeAuth` jest zamontowany na aplikacji głównej przed `httpNode` (`red.js`), a wstrzymanie żądań (#8) jest pierwszą warstwą
+  `httpNode` (montowane przy inicjalizacji runtime, przed załadowaniem węzłów), więc **nic nie jest czytane przed uwierzytelnieniem ani
+  w czasie wstrzymania** (wcześniej bufor do najwyższego limitu rósł przed odmową 401). Odczyt jest **przed** `httpNodeMiddleware` i trasami,
+  więc middleware i obce trasy na tym samym kluczu nadal dostają `Buffer` w `req.body`, jak w upstream – **ale tylko do najwyższego limitu
+  węzłów `skipBodyParsing` na kluczu** (upstream nie miał limitu): ciało większe dostaje 413 od razu z przechwycenia (z nagłówkami CORS
+  węzłów) i **nic więcej** – ani middleware, ani obca trasa, ani węzeł bez `skipBodyParsing` na tym kluczu – go nie widzi (strumień jest
+  już wstrzymany; reszta jest czytana i odrzucana, zob. wyżej). Klucz trasy jest względem `httpNodeRoot` (bez prefiksu). Na wspólnym
+  kluczu przechwycenie czyta do najwyższego z limitów, a trasa każdego węzła sprawdza własny. Trasa węzła czyta ciało, gdy przechwycenie tego nie zrobiło (trasa
+  z parametrem, inna wielkość liter, okno #8), **także gdy middleware ustawił `req.skipRawBodyParser = true`** (przykład z `settings.js`;
+  flaga oznacza „pomiń parser”, nie „ciało przeczytane” – do tego służy osobna flaga `_rawBodyRead`). Uwaga (dwa odczyty): middleware, który na trasie
+  z parametrem sam czyta strumień ciała, ustawia `skipRawBodyParser` i nie zużywa go do końca, nie wyklucza odczytu przez trasę węzła –
+  ciało może być wtedy przeczytane dwa razy (przez middleware i przez trasę); strumień zużyty do końca trasa pomija (`readableEnded`). Ładowanie modułu ponownie na tej samej
+  aplikacji (`RED.stop()` i `RED.start()` w jednym procesie) zastępuje warstwę przechwycenia na jej miejscu, zamiast dodawać drugą.
+  **Nie opieraj autoryzacji na `httpNodeMiddleware` ani na `RED.httpNode.use(auth)` dodanym po `RED.start()` (tryb osadzony):** ciało trasy
+  `skipBodyParsing` jest czytane przed nimi (do limitu), a powyżej limitu klient dostaje 413 zamiast 401. Żeby nie czytać ciała żądań
+  nieuwierzytelnionych, użyj `httpNodeAuth` albo middleware aplikacji zewnętrznej przed `RED.httpNode`. 413 z przechwycenia dostaje
+  nagłówki CORS z globalnego `httpNodeCors`, także na trasie obcej z własnym CORS. Węzeł bez `skipBodyParsing` na tej samej ścieżce
+  i metodzie co węzeł z tą opcją dostaje 413 dla ciała większego niż limit tamtego węzła.
 - `GET /settings` (#45, SEC-001): z aktywnym projektem odpowiedź zawierała cały obiekt projektu (`runtime/lib/api/settings.js`), a w nim `credentialSecret` projektu (klucz do zaszyfrowanych poświadczeń flow) i `remotes` z `user:hasło` adresów repozytoriów – dla każdego z uprawnieniem `settings.read` (także rola tylko do odczytu). Teraz `project` w tej odpowiedzi to `export()` projektu, ten sam co w `GET /projects/:id` (bez `credentialSecret`, adresy zamaskowane). Kod jest taki sam w upstream, więc to najpewniej luka odziedziczona. Zserializowany przez pomyłkę `Project` (`JSON.stringify`) też daje `export()`. Edytor nie czyta `RED.settings.project`.
 - Projekty/git (#45): dane logowania z adresu URL repozytorium (`https://user:haslo@host/...`, `https://token@host/...`, `ssh://user:haslo@host/...`) są zastępowane przez `//***@` w runtime, w miejscu tworzenia błędu: w treści błędu polecenia git (`message`, `stderr`, `stdout`, `value`, a więc także w odpowiedzi API i logu audytu), w logu `trace` polecenia i w zdarzeniach `event-log` polecenia uruchomionego przez `exec.run` (linia polecenia i wyjście; to obejmuje też `npm install` z adresu z hasłem, ale wyłącznie w `event-log` – log `trace` i błąd instalatora modułów (`registry/lib/installer.js`) nie są maskowane). Wyjście w `event-log` jest zapisywane liniami (jedno zdarzenie na linię i strumień zamiast jednego na fragment), więc adres rozcięty między fragmentami też jest rozpoznany (linia dłuższa niż 64 KB jest najpierw maskowana w całości, potem ucinana na ostatnim białym znaku co najmniej 4 KB przed końcem; ostatnie 4 KB czeka na kolejny fragment, więc adres lub sekret niekompletny w chwili cięcia jest dokończony i zamaskowany później). `remotes[].fetch` i `push` zwracane przez API projektów (`GET /projects/:id`, `GET /projects/:id/remotes`) są maskowane tak samo; git, `.git/config` i pamięć podręczna poświadczeń (klucz = adres `fetch`) zachowują prawdziwy adres, więc działanie gita się nie zmienia. Adres scp (`git@github.com:org/repo`) i sam użytkownik `ssh://git@host` (bez hasła) nie są zmieniane. Dodatkowo identyfikator użytkownika i hasło zdalnego, który już jest w `.git/config`, a którego wzorzec nie rozpoznaje (hasło z nieescapowanym `/` lub spacją), są ukrywane dosłownie, tylko w tekście operacji tego projektu: sekrety są trzymane per projekt, podmieniane przy każdym `git remote -v`, czyszczone przy usunięciu zdalnego lub projektu i ograniczone liczbowo; zwykłe hasło nigdy nie trafia na tę listę, więc maskowanie tekstu wpisanego przez użytkownika (np. wiadomości commita) niczego nie zdradza. Treść odrzuconego argumentu gita nie zawiera już samego argumentu. Kod błędu gita (`git_auth_failed`, `git_pull_merge_conflict` …) jest ustalany na surowym wyjściu, maskowany jest tylko tekst błędu. **Ograniczenie (SEC-011):** stary zdalny adres wpisany ręcznie do `.git/config`, w którym hasło zaczyna się od cyfr przed `/` (`user:2024/abc@host`) albo token zawiera `/` (`tok/en@host`), nie jest maskowany – wzorzec go nie rozpoznaje, a nie da się go odróżnić od portu lub ścieżki, więc nie jest też zapamiętywany jako sekret. Dotyczy tylko adresów wpisanych ręcznie; nowe takie adresy odrzuca walidacja przy klonowaniu i dodawaniu zdalnego. Zalecenie: zakodować hasło (`%2F`) w `.git/config`. **Zmiana zachowania:** adres zdalny z białym znakiem lub znakiem sterującym albo z danymi logowania, których nie da się odróżnić od ścieżki (hasło z `/`, `?`, `#`; `@` w ścieżce), jest odrzucany przy klonowaniu i dodawaniu zdalnego (`git_invalid_argument`) – znaki specjalne w haśle trzeba zakodować (`%2F`, `%40`, `%20`). Funkcja `maskUrlCredentials` jest wewnętrzna (`require("@node-red/util").maskUrlCredentials`, poza `util.util`, więc nie jest `RED.util` w węzłach). `exec.run` przyjmuje opcjonalny piąty argument z dosłownymi sekretami dla `event-log`. **Znane ograniczenie (SEC-004):** adres z hasłem jest argumentem procesu `git`, więc na hoście wielodostępnym jest widoczny w `ps` dla innych użytkowników systemu – maskowanie dotyczy błędów, logów i API, nie listy procesów; zalecane są klucze SSH albo poświadczenia z pamięci podręcznej zamiast hasła w adresie. Bez nowych ustawień.
 
