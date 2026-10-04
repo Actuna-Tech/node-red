@@ -257,6 +257,30 @@ Security
 
  - Prevent crash on websocket auth packet when admin auth is disabled
  - Render the username as text in the editor user menu and login notification
+ - Do not return `credentialSecret` and the remote URLs with their credentials in `GET /settings`
+   (permission `settings.read`, so also for a read-only role). With an active project the response contained the
+   whole project object (`runtime/lib/api/settings.js`): the project's `credentialSecret` (the key to the encrypted
+   flow credentials) and `remotes` with `user:password` of the remote URLs. It now contains the same `export()` of
+   the project as `GET /projects/:id` (no `credentialSecret`, credentials of the URLs hidden). The code is the same
+   in upstream Node-RED, so this is probably a leak inherited from it. A `Project` that is serialized by accident
+   (`JSON.stringify`) now gives its `export()` as well (#45)
+ - Hide the credentials of a git URL (`https://user:pass@host`, `https://token@host`, `ssh://user:pass@host`)
+   as `//***@` in the projects runtime: in the error of a git command (`message`, `stderr`, `stdout`, `value`) and so in
+   the API response and the audit log, in the trace log of the command, and in the `event-log` of `exec.run` (command
+   line and output; the output is logged by lines, one event per line and stream instead of one per chunk, so a URL
+   split between two chunks is recognised; a line longer than 64 KB is masked as a whole first and then cut at a white space at least 4 KB before its end, so a complete URL or secret is never cut). The `remotes[].fetch` / `push` returned by the projects API
+   (`GET /projects/:id`, `GET /projects/:id/remotes`) are masked the same way; git, `.git/config` and the
+   credentials cache keep the real URL. The scp-like form `git@host:org/repo` and a user of `ssh://git@host`
+   are not changed. The user info of a remote that is already in `.git/config` and that the pattern cannot recognise
+   (a password with an unescaped `/` or a space) is also hidden literally, only in the text of the operations of
+   that project: the secrets are kept per project, replaced at every `git remote -v`, cleared when the remote or the
+   project is removed and limited in number; a normal password is never kept, so masking of a text supplied by a
+   user (a commit message) cannot reveal it. The text of a rejected git argument no longer contains the argument.
+   The code of a git error (`git_auth_failed`, `git_pull_merge_conflict` ...) is decided on the raw output. A remote URL with white space or control
+   characters, or with a user info that cannot be told from the path (a password with `/`, `?`, `#`; an `@` in the path)
+   is now rejected on clone and on adding a remote (`git_invalid_argument`) - encode such characters in the password
+   (`%2F`, `%40`, `%20`). `exec.run` takes an optional fifth argument with literal secrets for the `event-log`. The helper
+   is internal (`require("@node-red/util").maskUrlCredentials`, not a member of `util.util`, so not `RED.util`) (#45)
 
 Fixes
 

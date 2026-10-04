@@ -18,6 +18,8 @@
  *   P-03: tests of telemetryLocked and of ignoring telemetryEnabled while locked
  *   Z-05: test of the deploy.requireRevision flag in the runtime settings
  *   Z-15: test of the editorOnly flag in the runtime settings
+ *   #45: the active project in the runtime settings is its export(); test with a real Project (no
+ *   credentialSecret, no credentials of the remote URLs)
  *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
@@ -150,7 +152,7 @@ describe("runtime-api/settings", function() {
                 library: {getLibraries: () => { ["lib1"]} },
                 storage: {
                     projects: {
-                        getActiveProject: () => 'test-active-project',
+                        getActiveProject: () => ({name: 'test-active-project', credentialSecret: 'must-not-be-sent', export: () => ({name: 'test-active-project'})}),
                         getFlowFilename:  () => 'test-flow-file',
                         getCredentialsFilename:  () => 'test-creds-file',
                         getGlobalGitUser: () => {return {name:'foo',email:'foo@example.com'}}
@@ -208,7 +210,7 @@ describe("runtime-api/settings", function() {
                 library: {getLibraries: () => { ["lib1"]} },
                 storage: {
                     projects: {
-                        getActiveProject: () => 'test-active-project',
+                        getActiveProject: () => ({name: 'test-active-project', credentialSecret: 'must-not-be-sent', export: () => ({name: 'test-active-project'})}),
                         getFlowFilename:  () => 'test-flow-file',
                         getCredentialsFilename:  () => 'test-creds-file',
                         getGlobalGitUser: () => {return {name:'foo',email:'foo@example.com'}}
@@ -225,10 +227,82 @@ describe("runtime-api/settings", function() {
                     private: "secret"
                 }
             }).then(result => {
-                result.should.have.property("project","test-active-project");
+                // the export() of the project, not the project itself (#45)
+                result.should.have.property("project",{name: "test-active-project"});
+                JSON.stringify(result).should.not.containEql("must-not-be-sent");
                 result.should.not.have.property("files");
                 result.should.have.property("git");
                 result.git.should.have.property("globalUser",{name:'foo',email:'foo@example.com'});
+            });
+        });
+
+        describe('active project from a real Project (#45)', function() {
+            var fs = require("fs-extra");
+            var os = require("os");
+            var path = require("path");
+            var child_process = require("child_process");
+            var Project = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/projects/Project");
+            var tmpDir;
+            var project;
+
+            beforeEach(async function() {
+                tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "nr-settings-spec-"));
+                var dir = path.join(tmpDir, "p1");
+                await fs.mkdirp(dir);
+                child_process.execFileSync("git", ["init", "-q"], {cwd: dir});
+                child_process.execFileSync("git", ["remote", "add", "origin", "https://user:s3cret@host.example/org/repo.git"], {cwd: dir});
+                await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({name: "p1", "node-red": {settings: {flowFile: "flow.json", credentialsFile: "flow_cred.json"}}}));
+                await fs.writeFile(path.join(dir, "flow.json"), "[]");
+                Project.init({
+                    userDir: tmpDir,
+                    editorTheme: {projects: {}},
+                    get: function(key) { return key === "projects" ? {projects: {p1: {credentialSecret: "CREDSECRET-0123"}}} : undefined; },
+                    set: function() { return Promise.resolve(); }
+                }, {});
+                project = await Project.load(dir);
+            });
+            afterEach(async function() {
+                await fs.remove(tmpDir);
+            });
+
+            function initWithProject() {
+                settings.init({
+                    settings: { version: "testVersion", exportNodeSettings: () => {} },
+                    library: {getLibraries: () => []},
+plugins: { exportPluginSettings: () => {} },
+                    nodes: {
+                        listContextStores: () => { return {stores:["memory"], default: "memory"} },
+                        installerEnabled: () => false,
+                        getCredentialKeyType: () => "test-key-type"
+                    },
+                    storage: {
+                        projects: {
+                            getActiveProject: () => project,
+                            getFlowFilename: () => 'flow.json',
+                            getCredentialsFilename: () => 'flow_cred.json',
+                            getGlobalGitUser: () => null
+                        }
+                    },
+                    telemetry: { isEnabled: () => true }
+                });
+            }
+
+            it('the real project has the secrets that must not be sent', function() {
+                // guards the test itself: the project object holds them
+                project.credentialSecret.should.equal("CREDSECRET-0123");
+                project.remotes.origin.fetch.should.containEql("s3cret");
+            });
+
+            it('has neither the credentialSecret nor the credentials of the remote URLs', async function() {
+                initWithProject();
+                var result = await settings.getRuntimeSettings({user: {username: "nick", anonymous: false, permissions: "*"}});
+                var text = JSON.stringify(result);
+                text.should.not.containEql("CREDSECRET-0123");
+                text.should.not.containEql("credentialSecret\"");
+                text.should.not.containEql("s3cret");
+                result.project.name.should.equal("p1");
+                result.project.git.remotes.origin.fetch.should.equal("https://***@host.example/org/repo.git");
+                result.project.settings.should.have.property("credentialsEncrypted", true);
             });
         });
 
