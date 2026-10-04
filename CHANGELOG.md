@@ -1,5 +1,10 @@
 #### Unreleased: Instances and reload
 
+ - Documentation only (#43, R4): the `type` field of the `preReload` payload is the **configured** type
+   (`deploy.reload.type`), not the actual one, and the contract does not change. The scope of a reload is
+   decided by `changedFlows` (`null` = all flows): with `type: "diff"` the reload is a full one when the
+   credentials changed, and also in the extra round of the drain, so the event is then
+   `{type: "diff", changedFlows: null}`. Described in the `settings.js` template, `MIGRACJA.md` and `FORK.md`
  - Reload from storage (`deploy.reload.watch: true`) compares the credentials like the flow
    revision (#2): the runtime computes a digest (HMAC-SHA256 with a per-process random key, of the canonical JSON with sorted keys) of the
    **decrypted** credentials read from storage and compares it with the digest of the running
@@ -255,6 +260,13 @@ Documentation
 
 Security
 
+ - `credentials.digest()` (the digest of the credentials read from storage, #2) wraps the canonical JSON
+   and the HMAC in the same `try` as the decryption (SEC-004, #43): an unusual object of a storage plugin (a
+   getter or a Proxy that throws) no longer passes its error on - the digest throws a fixed error with the code
+   `credentials_digest_failed` and a fixed message, so the reload log (`reload.read-failed`) cannot quote
+   a secret from the message of the cause. The rule of #2 does not change: a failed digest of the running
+   configuration is "no change" only for the same revision with an unknown digest, otherwise the error goes on
+   (as `reload_failed`). A key that does not decrypt still gives `credentials_load_failed`
  - Prevent crash on websocket auth packet when admin auth is disabled
  - Render the username as text in the editor user menu and login notification
  - Do not return `credentialSecret` and the remote URLs with their credentials in `GET /settings`

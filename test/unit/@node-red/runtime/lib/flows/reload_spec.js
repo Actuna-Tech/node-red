@@ -34,6 +34,9 @@
  *   hint, re-encryption, an own save, a key that does not decrypt; credentials changed
  *   during the drain of a diff reload (the extra preReload round for all flows); a running
  *   configuration without a digest (credentials that could not be decrypted at start)
+ *   #43: `type` of the preReload payload is the configured one - the scope is decided by
+ *   changedFlows (documented); an unusual object of the storage in digest() (SEC-004):
+ *   credentials_digest_failed without the message of the cause in the log, the R2 rule
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -316,6 +319,20 @@ describe("flows/reload (Z-09)", function() {
                 should(payload.changedFlows).be.null();
                 env.activeCredentials.should.equal("new");
             });
+            it("the preReload payload of a diff reload with changed credentials: type is the configured one, the scope is changedFlows null (#43)", async function() {
+                // documented contract: `type` is the configured type, not the actual one; the scope
+                // of the reload is decided by `changedFlows` (null = all flows)
+                env = createEnv({ reload: { type: "diff" } });
+                let payload;
+                hooks.add("preReload", p => { payload = p });
+                await env.start();
+                env.change("A", { credentials: { $: "new:iv1" } });
+                env.notify();
+                await waitFor(() => env.applied.length === 1);
+                payload.type.should.equal("diff");
+                should(payload.changedFlows).be.null();
+                env.applied[0].type.should.equal("full");
+            });
             it("a change of the credentials alone, a notification with the flag false - a reload", async function() {
                 env = createEnv();
                 await env.start();
@@ -594,6 +611,64 @@ describe("flows/reload (Z-09)", function() {
                     await delay(30);
                     env.applied.should.have.length(0);
                     state.get().should.not.have.property("reload");
+                });
+                describe("an unusual object of the storage in digest() (SEC-004, #43)", function() {
+                    const SECRET = "secret-getter-0123456789";
+                    const retry = { min: 2, max: 60000, attempts: 1, onExhausted: "keepReady" };
+                    const throwing = () => ({ n1: { get password() { throw new Error("boom " + SECRET) } } });
+                    function useObjectStorage(e) {
+                        // the storage hands over the object itself (the mock clones through JSON)
+                        e.storage.getFlows = async function() {
+                            e.getFlowsCalls++;
+                            return e.stored;
+                        };
+                    }
+                    it("a new revision: the error goes on as reload_failed, the log has no secret", async function() {
+                        env = createEnv({ reload: { retry: retry } });
+                        initCredentials(settingsValues);
+                        digestOfActive = credentialsModule.digest({ n1: { user: "abc" } });
+                        useRealDigest(env);
+                        useObjectStorage(env);
+                        await env.start();
+                        env.change("B", { credentials: throwing() });
+                        env.notify();
+                        await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                        state.get().reload.should.containEql({ error: { code: "reload_failed" } });
+                        env.applied.should.have.length(0);
+                        JSON.stringify(env.logs).should.not.containEql(SECRET);
+                        JSON.stringify(state.get()).should.not.containEql(SECRET);
+                        env.logs.warn.some(m => m.indexOf("reload.read-failed") === 0 && m.indexOf("Failed to compute the credentials digest") !== -1).should.be.true();
+                    });
+                    it("the same revision with a known digest of the running credentials: still an error", async function() {
+                        env = createEnv({ reload: { retry: retry } });
+                        initCredentials(settingsValues);
+                        digestOfActive = credentialsModule.digest({ n1: { user: "abc" } });
+                        useRealDigest(env);
+                        useObjectStorage(env);
+                        await env.start();
+                        env.change("A", { credentials: throwing() });
+                        env.notify();
+                        await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                        state.get().reload.should.containEql({ error: { code: "reload_failed" } });
+                        JSON.stringify(env.logs).should.not.containEql(SECRET);
+                    });
+                    it("the same revision, the running credentials have no digest (R2 of #2): not an error, nothing happens", async function() {
+                        env = createEnv({ reload: { retry: retry } });
+                        env.credentialsKnown = false;
+                        initCredentials(settingsValues);
+                        useRealDigest(env);
+                        useObjectStorage(env);
+                        await env.start();
+                        env.change("A", { credentials: throwing() });
+                        env.notify();
+                        await waitFor(() => env.getFlowsCalls >= 1);
+                        await delay(30);
+                        env.applied.should.have.length(0);
+                        states.should.eql([]);
+                        state.get().should.not.have.property("reload");
+                        env.logs.debug.some(m => m.indexOf("(credentials_digest_failed)") !== -1).should.be.true();
+                        JSON.stringify(env.logs).should.not.containEql(SECRET);
+                    });
                 });
                 it("re-encryption (a new iv, another ciphertext) is no reload; another content is one; a wrong key is credentials_load_failed", async function() {
                     env = createEnv({ reload: { retry: { min: 2, max: 60000, attempts: 1, onExhausted: "keepReady" } } });

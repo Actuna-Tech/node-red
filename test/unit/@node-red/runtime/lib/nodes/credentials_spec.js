@@ -17,6 +17,8 @@
  * Modified by Actuna Sp. z o.o.:
  *   #2: tests of digest() - the digest of the credentials read from storage, also
  *   during a pending migration from the default key to a user key
+ *   #43 (SEC-004): digest() of an unusual object (a getter, a Proxy that throws) -
+ *   a fixed error credentials_digest_failed without the message of the cause
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -664,6 +666,46 @@ describe('red/runtime/nodes/credentials', function() {
                 JSON.stringify(error).should.not.containEql("secret-value");
                 String(error.stack).should.not.containEql("secret-value");
                 (function() { credentials.digest({"$":"zz"}) }).should.throw({ code: "credentials_load_failed" });
+            });
+        });
+        describe("an unusual object of a storage plugin (SEC-004, #43)", function() {
+            var SECRET = "secret-getter-0123456789";
+            var cases = {
+                "a getter that throws": function() {
+                    return { "node": { get password1() { throw new Error("boom " + SECRET) } } };
+                },
+                "a Proxy whose get trap throws": function() {
+                    return new Proxy({ "node": { "user1": "abc" } }, { get: function() { throw new Error("boom " + SECRET) } });
+                },
+                "a Proxy whose ownKeys trap throws": function() {
+                    return new Proxy({ "node": { "user1": "abc" } }, { ownKeys: function() { throw new Error("boom " + SECRET) } });
+                },
+                "a Proxy whose getOwnPropertyDescriptor trap throws": function() {
+                    return new Proxy({ "node": { "user1": "abc" } }, { getOwnPropertyDescriptor: function() { throw new Error("boom " + SECRET) } });
+                }
+            };
+            Object.keys(cases).forEach(function(name) {
+                it(name + ": credentials_digest_failed, a fixed message, no cause, nothing logged", function() {
+                    credentials.init(runtime);
+                    return credentials.load(CRYPTED).then(function() {
+                        var logBefore = logCalls();
+                        var error;
+                        try {
+                            credentials.digest(cases[name]());
+                        } catch(err) {
+                            error = err;
+                        }
+                        should.exist(error);
+                        error.should.have.property("code", "credentials_digest_failed");
+                        error.should.have.property("message", "Failed to compute the credentials digest");
+                        error.should.not.have.property("cause");
+                        JSON.stringify(error).should.not.containEql(SECRET);
+                        String(error.stack).should.not.containEql(SECRET);
+                        credentials.get("node").should.have.property("user1", "abc");
+                        credentials.dirty().should.be.false();
+                        logCalls().should.equal(logBefore);
+                    });
+                });
             });
         });
         it("encrypted credentials while the encryption is disabled: credentials_load_failed", function() {
