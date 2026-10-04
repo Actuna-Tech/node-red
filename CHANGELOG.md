@@ -197,6 +197,28 @@ Runtime
    credentials file without copying it over the file (before, the backup was copied also with
    `readOnly`)
 
+Fixes
+
+ - A missing `instanceId` no longer breaks the start or leaves an unhandled rejection (#3).
+   `instanceId: process.env.X` without the variable gives `undefined`; the start failed with
+   `property-read-only`. Now such a value counts as absent and an id is generated (kept in memory,
+   not saved - `settings.set` rejects a key of `settings.js`). A generated id is saved to the storage
+   settings with the save awaited; a failed save logs a warning (`runtime.instance-id-save-failed`)
+   and the start continues with the generated id (before, the rejected save was unhandled).
+   An explicit `instanceId` of `settings.js` already won over the storage and still does. Other
+   keys of `settings.js` keep their behaviour (`settings.set` still rejects them)
+ - A warning is logged when the `instanceId` was generated and the coordination plugin is not the
+   local one: instances that share a storage need the same explicit `instanceId`
+   (`coordination.instance-id-generated`). The generated id is not made safe against instances that
+   start at the same time (the storages have no compare-and-set; a re-read after the save would not
+   help), so only an explicit id is a solution for a cluster
+
+Documentation
+
+ - `instanceId` is described in the `coordination` section of the settings template
+   (`instanceId: process.env.NODE_RED_INSTANCE_ID`) and in `FORK.md`: a cluster that shares a
+   storage needs the same explicit id on all instances (#3)
+
 #### Unreleased: Security and fixes
 
 Security

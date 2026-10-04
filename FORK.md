@@ -198,6 +198,16 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   pojawia się dopiero po załadowaniu wtyczek.
 - Instancja `editorOnly` nie uczestniczy w koordynacji klastra (nie uruchamia wybranej wtyczki koordynacji) i nigdy
   nie jest liderem – przywództwo obejmują tylko instancje wykonujące flow (zgłoszenie #4).
+- Klaster współdzielący magazyn wymaga **jawnego `instanceId`, takiego samego na wszystkich instancjach** (`settings.js`,
+  np. `instanceId: process.env.NODE_RED_INSTANCE_ID`; w Bot-Engine – ustawiane per tenant). Bez niego każda instancja
+  generuje identyfikator i zapisuje go w magazynie; przy równoczesnym starcie zapis nie jest bezpieczny (magazyny nie
+  mają compare-and-set, `storage-postgres` nadpisuje cały wiersz ustawień), więc instancje mogą zakończyć z różnymi
+  identyfikatorami – ponowny odczyt po zapisie tego nie naprawia. Wygenerowany identyfikator przy wtyczce koordynacji
+  innej niż lokalna daje ostrzeżenie w logu (`coordination.instance-id-generated`). Jawny `instanceId` z `settings.js`
+  ma pierwszeństwo przed magazynem. `instanceId: process.env.X` przy braku zmiennej daje `undefined`: wartość jest
+  traktowana jak brak i identyfikator jest generowany tylko w pamięci (nie jest zapisywany, zmienia się przy każdym
+  starcie); wcześniej start kończył się błędem `property-read-only`. Błąd zapisu wygenerowanego identyfikatora
+  jest logowany jako ostrzeżenie, start trwa dalej (wcześniej nieobsłużone odrzucenie obietnicy; zgłoszenie #3).
 
 ## 6. Zmiany zachowania względem 5.0.7 (poprawki błędów)
 

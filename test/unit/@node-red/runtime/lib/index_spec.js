@@ -25,6 +25,8 @@
  *   #8: the hold of the requests to the routes of the nodes is mounted on the
  *   httpNode app only with deploy.holdHttpNodeRequests.enabled
  *   #7: the `hooks` setting is registered by init()
+ *   #3: the generated instanceId (an undefined value of settings.js, a failed save)
+ *   and the warning for a generated id with a coordination plugin of a cluster
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -787,6 +789,182 @@ describe("runtime", function() {
             userSettings.should.eql({testSettings: true, httpAdminRoot:"/", externalModules: {autoInstall: true}, version: userSettings.version});
             await runtime.start();
             log._.calledWithMatch("readonly-userdir.enabled").should.be.false();
+        });
+    });
+
+    describe("instanceId (#3)", function() {
+        let stubs;
+        let getSettings;
+        let saveSettings;
+        let coordStart;
+        let coordInfo;
+        let seenByCoordination;
+        const GENERATED = /^[0-9a-f]{16}$/;
+
+        beforeEach(function() {
+            seenByCoordination = undefined;
+            getSettings = sinon.stub(storage,"getSettings").callsFake(function() {return Promise.resolve({})});
+            saveSettings = sinon.stub(storage,"saveSettings").callsFake(function() {return Promise.resolve()});
+            coordInfo = sinon.stub(coordination,"info").callsFake(function() {return {plugin: "local", local: true}});
+            coordStart = sinon.stub(coordination,"start").callsFake(function(rt) {
+                seenByCoordination = rt.settings.get("instanceId");
+                return Promise.resolve();
+            });
+            stubs = [
+                getSettings, saveSettings, coordInfo, coordStart,
+                sinon.stub(storage,"init").callsFake(function() {return Promise.resolve();}),
+                sinon.stub(redNodes,"init").callsFake(function() {}),
+                sinon.stub(redNodes,"load").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"cleanModuleList").callsFake(function(){}),
+                sinon.stub(redNodes,"getNodeList").callsFake(function() {return []}),
+                sinon.stub(redNodes,"loadContextsPlugin").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"loadFlows").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"startFlows").callsFake(function() {return Promise.resolve({errors:[]})})
+            ];
+            mockUtil();
+        });
+        afterEach(function() {
+            stubs.forEach(s => s.restore());
+            unmockUtil();
+            // removes the accessors that settings.init() defined for the keys of the test settings
+            settings.reset();
+            NR_TEST_UTILS.require("@node-red/runtime/lib/state").reset();
+        });
+
+        function generatedWarning() {
+            return log._.withArgs("coordination.instance-id-generated");
+        }
+
+        it("generates and saves an id when there is none", async function() {
+            const userSettings = {testSettings: true, httpAdminRoot:"/"};
+            runtime.init(userSettings);
+            await runtime.start();
+            userSettings.instanceId.should.match(GENERATED);
+            saveSettings.calledOnce.should.be.true();
+            saveSettings.firstCall.args[0].should.have.property("instanceId", userSettings.instanceId);
+            settings.get("instanceId").should.equal(userSettings.instanceId);
+        });
+
+        it("keeps the id of the storage", async function() {
+            getSettings.callsFake(function() {return Promise.resolve({instanceId: "stored"})});
+            const userSettings = {testSettings: true, httpAdminRoot:"/"};
+            runtime.init(userSettings);
+            await runtime.start();
+            userSettings.instanceId.should.equal("stored");
+            saveSettings.called.should.be.false();
+        });
+
+        it("an explicit id of settings.js wins over the storage and nothing is saved", async function() {
+            getSettings.callsFake(function() {return Promise.resolve({instanceId: "stored"})});
+            const userSettings = {testSettings: true, httpAdminRoot:"/", instanceId: "cluster-1"};
+            runtime.init(userSettings);
+            await runtime.start();
+            userSettings.instanceId.should.equal("cluster-1");
+            settings.get("instanceId").should.equal("cluster-1");
+            saveSettings.called.should.be.false();
+        });
+
+        it("an undefined value of settings.js (a missing environment variable) does not fail the start and counts as absent", async function() {
+            const userSettings = {testSettings: true, httpAdminRoot:"/", instanceId: process.env.NODE_RED_TEST_INSTANCE_ID_NOT_SET};
+            userSettings.should.have.property("instanceId", undefined);
+            runtime.init(userSettings);
+            await runtime.start();
+            userSettings.instanceId.should.match(GENERATED);
+            settings.get("instanceId").should.equal(userSettings.instanceId);
+            // settings.set rejects the keys of settings.js: the generated id stays in memory
+            saveSettings.called.should.be.false();
+            log._.calledWith("runtime.instance-id-save-failed").should.be.false();
+        });
+
+        it("other keys of settings.js that are undefined stay read-only", async function() {
+            runtime.init({testSettings: true, httpAdminRoot:"/", credentialSecret: undefined});
+            await runtime.start();
+            (function() { settings.set("credentialSecret", "x") }).should.throw();
+            should.not.exist(settings.get("credentialSecret"));
+        });
+
+        it("a failed save logs a warning, keeps the generated id and does not fail the start", async function() {
+            saveSettings.callsFake(function() {return Promise.reject(new Error("disk full"))});
+            const userSettings = {testSettings: true, httpAdminRoot:"/"};
+            runtime.init(userSettings);
+            await runtime.start();
+            userSettings.instanceId.should.match(GENERATED);
+            settings.get("instanceId").should.equal(userSettings.instanceId);
+            log._.calledWithMatch("runtime.instance-id-save-failed", {message: "disk full"}).should.be.true();
+            log.warn.called.should.be.true();
+            redNodes.loadFlows.called.should.be.true();
+        });
+
+        it("waits for the save before the start continues", async function() {
+            let finishSave;
+            saveSettings.callsFake(function() {return new Promise(resolve => { finishSave = resolve })});
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            const started = runtime.start();
+            await new Promise(resolve => setTimeout(resolve, 50));
+            saveSettings.calledOnce.should.be.true();
+            coordStart.called.should.be.false();
+            finishSave();
+            await started;
+            coordStart.calledOnce.should.be.true();
+        });
+
+        it("passes the generated id to the coordination", async function() {
+            const userSettings = {testSettings: true, httpAdminRoot:"/"};
+            runtime.init(userSettings);
+            await runtime.start();
+            seenByCoordination.should.equal(userSettings.instanceId);
+            seenByCoordination.should.match(GENERATED);
+        });
+
+        it("passes the generated id to the coordination when settings.js has it undefined", async function() {
+            const userSettings = {testSettings: true, httpAdminRoot:"/", instanceId: undefined};
+            runtime.init(userSettings);
+            await runtime.start();
+            seenByCoordination.should.equal(userSettings.instanceId);
+            seenByCoordination.should.match(GENERATED);
+        });
+
+        it("passes the explicit id to the coordination", async function() {
+            runtime.init({testSettings: true, httpAdminRoot:"/", instanceId: "cluster-1"});
+            await runtime.start();
+            seenByCoordination.should.equal("cluster-1");
+        });
+
+        it("warns about a generated id when the coordination is not the local one", async function() {
+            coordInfo.callsFake(function() {return {plugin: "cluster", local: false}});
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start();
+            generatedWarning().calledOnce.should.be.true();
+            generatedWarning().firstCall.args[1].should.eql({plugin: "cluster"});
+            log.warn.called.should.be.true();
+        });
+
+        it("warns about a generated id of an undefined value of settings.js with a coordination of a cluster", async function() {
+            coordInfo.callsFake(function() {return {plugin: "cluster", local: false}});
+            runtime.init({testSettings: true, httpAdminRoot:"/", instanceId: undefined});
+            await runtime.start();
+            generatedWarning().calledOnce.should.be.true();
+        });
+
+        it("does not warn when the id is explicit, also with a coordination of a cluster", async function() {
+            coordInfo.callsFake(function() {return {plugin: "cluster", local: false}});
+            runtime.init({testSettings: true, httpAdminRoot:"/", instanceId: "cluster-1"});
+            await runtime.start();
+            generatedWarning().called.should.be.false();
+        });
+
+        it("does not warn when the id comes from the storage, with a coordination of a cluster", async function() {
+            getSettings.callsFake(function() {return Promise.resolve({instanceId: "stored"})});
+            coordInfo.callsFake(function() {return {plugin: "cluster", local: false}});
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start();
+            generatedWarning().called.should.be.false();
+        });
+
+        it("does not warn about a generated id with the local coordination", async function() {
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            await runtime.start();
+            generatedWarning().called.should.be.false();
         });
     });
 });
