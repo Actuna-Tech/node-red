@@ -22,6 +22,8 @@
  *   Z-11: readOnlyUserDir - effective settings and the log at start
  *   Z-09: the observer of storage (watchFlows) registered before the flows are
  *   read, a failed registration fails the start, unregistered on stop
+ *   #8: the hold of the requests to the routes of the nodes is mounted on the
+ *   httpNode app only with deploy.holdHttpNodeRequests.enabled
  *   #7: the `hooks` setting is registered by init()
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
@@ -159,6 +161,66 @@ describe("runtime", function() {
             const auth = runtime._.adminApi.auth;
             auth.needsPermission("foo").should.be.a.Function();
             auth.publicRoute()({},{},done);
+        });
+
+        describe("deploy.holdHttpNodeRequests (#8)", function() {
+            const request = require("supertest");
+            const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+            const httpHold = NR_TEST_UTILS.require("@node-red/runtime/lib/httpHold");
+            beforeEach(function() {
+                instanceState.reset();
+                instanceState.markStarting();
+                instanceState.report({ errors: [] });
+            });
+            afterEach(function() {
+                httpHold.dispose();
+                instanceState.reset();
+            });
+            function removeRoute(path) {
+                const stack = runtime._.nodeApp._router.stack;
+                stack.splice(0, stack.length, ...stack.filter(layer => !(layer.route && layer.route.path === path)));
+            }
+            it("holds the requests of the httpNode app for a route that is missing during a deployment when enabled", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: { holdHttpNodeRequests: { enabled: true, timeout: 50 } }});
+                runtime._.nodeApp.get("/hello", (req, res) => res.send("hello"));
+                (await request(runtime.httpNode).get("/hello")).text.should.equal("hello");
+                instanceState.begin("deploy");
+                // the route of the node is removed while the node restarts
+                removeRoute("/hello");
+                const res = await request(runtime.httpNode).get("/hello");
+                res.status.should.equal(503);
+                res.headers["retry-after"].should.equal("1");
+            });
+            it("does not hold the requests of the httpNode app for a route that exists during a deployment and a reload", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: { holdHttpNodeRequests: { enabled: true, timeout: 50 } }});
+                runtime._.nodeApp.get("/hello", (req, res) => res.send("hello"));
+                instanceState.begin("deploy");
+                const start = Date.now();
+                (await request(runtime.httpNode).get("/hello")).text.should.equal("hello");
+                (Date.now() - start).should.be.below(40);
+                httpHold.pending().should.equal(0);
+                instanceState.reset();
+                instanceState.markStarting();
+                instanceState.report({ errors: [] });
+                instanceState.markReloadPending();
+                instanceState.markDraining();
+                instanceState.begin("reload");
+                (await request(runtime.httpNode).get("/hello")).text.should.equal("hello");
+                httpHold.pending().should.equal(0);
+            });
+            it("does not change the httpNode app when the setting is off", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/"});
+                runtime._.nodeApp.get("/hello", (req, res) => res.send("hello"));
+                instanceState.begin("deploy");
+                (await request(runtime.httpNode).get("/hello")).text.should.equal("hello");
+                (await request(runtime.httpNode).get("/missing")).status.should.equal(404);
+            });
+            it("the admin app is not held", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: { holdHttpNodeRequests: { enabled: true, timeout: 50 } }});
+                runtime.httpAdmin.get("/admin-probe", (req, res) => res.send("admin"));
+                instanceState.begin("deploy");
+                (await request(runtime.httpAdmin).get("/admin-probe")).text.should.equal("admin");
+            });
         });
 
         it("returns version", function() {
