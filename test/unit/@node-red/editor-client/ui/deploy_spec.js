@@ -590,6 +590,42 @@ describe("editor-client/ui/deploy", function() {
             });
         });
 
+        describe("hostile or malformed entries of errors[]", function() {
+            beforeEach(function() {
+                load();
+                actions["core:deploy-flows"](true);
+            });
+            it("missing_modules with a malicious module name and error is escaped", function() {
+                fail(startFailed([{ code: "missing_modules", message: "m", modules: [{ module: INJECTION, error: INJECTION }, INJECTION, null] }], "rev-2"));
+                const n = lastNotification();
+                assertNoRawResponse(n);
+                n.msg.should.containEql("Missing modules: &lt;img src=x onerror=alert(1)&gt;, &lt;img src=x onerror=alert(1)&gt;, null");
+            });
+            it("types, modules, pending and flow that are not what they should be do not throw", function() {
+                (function() {
+                    fail(startFailed([
+                        { code: "missing_types", types: "<b>x</b>" },
+                        { code: "missing_modules", modules: { a: 1 } },
+                        { code: "start_timeout", pending: "<b>y</b>", current: { a: INJECTION }, phase: 5, timeout: "30" },
+                        { code: "flow_start_failed", flow: { id: INJECTION }, message: 7 },
+                        null,
+                        "a string"
+                    ], "rev-2"));
+                }).should.not.throw();
+                const n = lastNotification();
+                assertNoRawResponse(n);
+                n.msg.should.not.containEql("<b>");
+                n.msg.should.containEql("Missing node types: ");
+                n.msg.should.containEql("Missing modules: ");
+                n.msg.should.containEql("[object Object]");
+            });
+            it("a flow label that is not a string falls back to the id", function() {
+                workspaces.t2 = { id: "t2", label: { toString: function() { return INJECTION } } };
+                fail(startFailed([{ code: "flow_start_failed", message: "m", flow: "t2" }], "rev-2"));
+                lastNotification().msg.should.containEql('Flow "t2" failed to start');
+            });
+        });
+
         describe("saved but the previous nodes could not be stopped (deploy_stop_failed with rev)", function() {
             beforeEach(function() {
                 load();
@@ -635,6 +671,16 @@ describe("editor-client/ui/deploy", function() {
                 version.should.equal("rev-1");
                 mockRED.nodes.originalFlow.called.should.be.false();
                 lastNotification().msg.should.containEql("Missing node types: t");
+            });
+            it("a deploy_start_failed with a rev but another status than 500 is not a saved deployment", function() {
+                fail({ status: 400, responseJSON: { code: "deploy_start_failed", message: "m", rev: "rev-2", errors: [{ code: "safe_mode" }] }, responseText: "{}" });
+                dirty.should.be.true();
+                version.should.equal("rev-1");
+                mockRED.nodes.originalFlow.called.should.be.false();
+            });
+            it("escapes the quotes of a message as well", function() {
+                fail({ status: 400, responseJSON: { message: "a \"b\" 'c'" }, responseText: "{}" });
+                lastNotification().msg.should.equal("Deploy failed: a &quot;b&quot; &#39;c&#39;");
             });
             it("a response that is not JSON gives a generic message and no HTML from it", function() {
                 fail({ status: 502, responseText: "<html><body>Bad Gateway " + INJECTION + "</body></html>" });
@@ -712,6 +758,84 @@ describe("editor-client/ui/deploy", function() {
                 lastNotification().msg.should.containEql("Missing node types: t1");
                 // no deployment: nothing is taken over
                 version.should.equal("rev-1");
+            });
+        });
+
+        describe("RED.deploy.showStartResult (the final result of a start)", function() {
+            beforeEach(function() {
+                load();
+            });
+            function result(extra) {
+                return Object.assign({ type: "error", error: "deploy_start_failed", revision: "rev-1", errors: [] }, extra);
+            }
+            it("success: a green notification that closes itself", function() {
+                deploy.showStartResult({ type: "success", revision: "rev-1", timeout: 8000, text: "ignored" });
+                notifications.should.have.length(1);
+                const n = lastNotification();
+                n.msg.should.equal("<p>The flows have started.</p>");
+                n.options.should.have.property("type", "success");
+                n.options.should.have.property("fixed", false);
+                n.options.should.have.property("timeout", 8000);
+                should(n.options.buttons).be.undefined();
+            });
+            it("failure: the causes are listed, escaped, with a Close button, until closed", function() {
+                deploy.showStartResult(result({ errors: [
+                    { code: "flow_start_failed", message: "boom " + INJECTION, flow: "t1" },
+                    { code: "missing_types", types: [INJECTION] },
+                    { code: "missing_modules", modules: [{ module: INJECTION }] }
+                ] }));
+                const n = lastNotification();
+                n.options.should.have.property("type", "error");
+                n.options.should.have.property("fixed", true);
+                n.msg.should.startWith(translate("notification.errors.deploy-start-failed"));
+                assertNoRawResponse(n);
+                (n.msg.match(/<li>/g) || []).should.have.length(3);
+                n.msg.should.containEql("boom &lt;img src=x onerror=alert(1)&gt;");
+                n.options.buttons.should.have.length(1);
+                n.options.buttons[0].click();
+                n.close.calledOnce.should.be.true();
+            });
+            it("never takes the text of the notification from the event", function() {
+                deploy.showStartResult(result({ text: INJECTION, errors: [{ code: "x", message: "m" }] }));
+                assertNoRawResponse(lastNotification());
+            });
+            it("failure without errors[] shows only the text", function() {
+                deploy.showStartResult(result({ errors: "<b>x</b>" }));
+                lastNotification().msg.should.equal(translate("notification.errors.deploy-start-failed"));
+            });
+            it("ignores the result of another revision (a newer deployment)", function() {
+                deploy.showStartResult({ type: "success", revision: "rev-9" });
+                deploy.showStartResult(result({ revision: "rev-9" }));
+                notifications.should.have.length(0);
+            });
+            it("a result that is not an object is ignored", function() {
+                deploy.showStartResult(undefined);
+                deploy.showStartResult("x");
+                notifications.should.have.length(0);
+            });
+            it("updates the notification of an earlier result instead of stacking a second one", function() {
+                deploy.showStartResult(result({ errors: [{ code: "safe_mode" }] }));
+                const first = lastNotification();
+                deploy.showStartResult({ type: "success", revision: "rev-1" });
+                notifications.should.have.length(1);
+                first.update.calledOnce.should.be.true();
+            });
+            it("closes the open start_timeout error of the same deployment", function() {
+                actions["core:deploy-flows"](true);
+                fail(startFailed([{ code: "start_timeout", message: "t", timeout: 30, phase: "flows", pending: ["t2"] }], "rev-2"));
+                const timeoutNotice = lastNotification();
+                deploy.showStartResult({ type: "success", revision: "rev-2" });
+                timeoutNotice.close.calledOnce.should.be.true();
+                notifications.should.have.length(2);
+                lastNotification().options.should.have.property("type", "success");
+            });
+            it("leaves the start_timeout error of another revision open", function() {
+                actions["core:deploy-flows"](true);
+                fail(startFailed([{ code: "start_timeout", message: "t" }], "rev-2"));
+                const timeoutNotice = lastNotification();
+                version = "rev-3";
+                deploy.showStartResult({ type: "success", revision: "rev-3" });
+                timeoutNotice.close.called.should.be.false();
             });
         });
 

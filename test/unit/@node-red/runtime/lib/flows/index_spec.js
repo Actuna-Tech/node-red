@@ -1285,6 +1285,62 @@ describe('flows/index', function() {
                         });
                     }
                 });
+                ["flows","nodes"].forEach(function(type) {
+                    it('start_timeout of a "' + type + '" deploy lists only the flows the deployment starts something in', async function() {
+                        await initFlows({deploy: {startTimeout: 30}});
+                        const oldT2 = flowCreate.flows.t2;
+                        let finishStart;
+                        const pendingStart = new Promise(resolve => { finishStart = resolve });
+                        // the changed flow t2 is started again (a new one after a flows stop, the same after a nodes stop)
+                        oldT2.start = function() { return pendingStart };
+                        replaceFlowCreate(function(id) { return id === "t2" ? pendingStart : Promise.resolve() });
+                        const changed = clone(baseConfig);
+                        changed.find(n => n.id === "t2-1").foo = "bar";
+                        try {
+                            const err = await flows.setFlows(changed, null, type, false, false, null, waitForStart).should.be.rejected();
+                            const entry = err.errors[0];
+                            entry.should.have.property("code","start_timeout");
+                            entry.should.have.property("phase","flows");
+                            // t1 and global keep running: neither is started by this deployment
+                            entry.pending.should.eql(["t2"]);
+                            entry.should.have.property("current","t2");
+                        } finally {
+                            finishStart();
+                            await tick();
+                        }
+                    });
+                });
+                it('start_timeout of a "flows" deploy lists a flow the deployment creates', async function() {
+                    await initFlows({deploy: {startTimeout: 30}});
+                    let finishStart;
+                    const pendingStart = new Promise(resolve => { finishStart = resolve });
+                    replaceFlowCreate(function(id) { return id === "t3" ? pendingStart : Promise.resolve() });
+                    const config = clone(baseConfig).concat([{id:"t3-1",x:10,y:10,z:"t3",type:"test",wires:[]},{id:"t3",type:"tab",label:"Flow 3"}]);
+                    try {
+                        const err = await flows.setFlows(config, null, "flows", false, false, null, waitForStart).should.be.rejected();
+                        err.errors[0].pending.should.eql(["t3"]);
+                        err.errors[0].should.have.property("current","t3");
+                    } finally {
+                        finishStart();
+                        await tick();
+                    }
+                });
+                it('flow_start_failed of a rejected start() does not name a flow created before the failing one', async function() {
+                    await initFlows();
+                    const oldT2 = flowCreate.flows.t2;
+                    oldT2.update = function() { throw new Error("update failed") };
+                    flowCreate.restore();
+                    // replaced stub - restored by the outer afterEach
+                    flowCreate = sinon.stub(Flow,"create").callsFake(function() {
+                        return { start: async function() {}, stop: sinon.spy(async () => {}), update: sinon.spy(), getActiveNodes: () => ({}) };
+                    });
+                    // t0 is created first, then the update of the existing t2 throws
+                    const config = [{id:"t0-1",x:10,y:10,z:"t0",type:"test",wires:[]},{id:"t0",type:"tab",label:"Flow 0"}].concat(clone(baseConfig));
+                    const err = await flows.setFlows(config, null, "flows", false, false, null, waitForStart).should.be.rejected();
+                    err.errors[0].should.have.property("code","flow_start_failed");
+                    err.errors[0].should.have.property("message","update failed");
+                    err.errors[0].should.have.property("flow","t2");
+                });
                 it('the other start errors are unchanged (no extra fields)', async function() {
                     await initFlows({deploy: {startTimeout: 1000}});
                     const config = clone(baseConfig);

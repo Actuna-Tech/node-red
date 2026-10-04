@@ -122,8 +122,9 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 ### Wynik startu w trybie `"started"` – fakty i późny wynik (#22, R-48)
 - Wpis `errors[]` o `code: "start_timeout"` ma dodatkowe pola (addytywne, tylko tryb `"started"`): `timeout` (ms, wartość
   `deploy.startTimeout`), `phase` (`"modules"` – sprawdzanie i instalacja modułów flow; `"flows"` – uruchamianie flow),
-  `startedAt` (ms od epoki), `elapsed` (ms w chwili limitu), `pending` (id flow jeszcze niewystartowanych, razem z bieżącym;
-  w fazie `"modules"` pusta lista) i `current` (id flow uruchamianego w chwili limitu; tylko w fazie `"flows"`).
+  `startedAt` (ms od epoki), `elapsed` (ms w chwili limitu), `pending` (id flow jeszcze niewystartowanych, razem z bieżącym; przy wdrożeniu
+  „flows”/„nodes” tylko flow, w których wdrożenie coś uruchamia – utworzone przez nie, zawierające dodane, zmienione, przepięte
+  lub powiązane węzły albo zmienione same; niezmienione flow działają dalej i nie są wymieniane; w fazie `"modules"` pusta lista) i `current` (id flow uruchamianego w chwili limitu; tylko w fazie `"flows"`).
   Wpis `flow_start_failed` z odrzuconego startu ma `flow` (id), gdy wiadomo, którego flow dotyczył błąd. Nie ma nowego kodu
   najwyższego poziomu – nadal 500 `deploy_start_failed`. Brak kontraktu gotowości węzłów i klasyfikacji przyczyn po kodach
   systemowych (R-10 bez zmian): dodajemy wyłącznie fakty.
@@ -132,6 +133,10 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `{type: "error", error: "deploy_start_failed", text, revision, errors[]}`. Zdarzenie dostają tylko zalogowane sesje edytora
   (jak inne zdarzenia środowiska; `/comms` wymaga uwierzytelnienia przy `adminAuth`); edytor pokazuje „Flow zostały uruchomione”
   albo czerwony błąd z przyczynami. Nie jest emitowane po wdrożeniu, które odpowiedziało w czasie, ani w trybie domyślnym.
+  Edytor pokazuje wynik tylko, gdy `revision` zdarzenia jest rewizją tego edytora (nowsze wdrożenie lub inna sesja z inną
+  rewizją go pomija) i zamyka wtedy otwarty czerwony błąd `start_timeout` tego wdrożenia. **Zasięg (SEC-003):** zdarzenie,
+  razem z komunikatami błędów i nazwami flow w `errors[]`, trafia do **wszystkich** zalogowanych użytkowników edytora (sesje
+  `/comms` z uprawnieniem odczytu), tak samo jak `runtime-state` i zdarzenia debug – nie tylko do użytkownika, który wdrażał.
 
 ### Wstrzymywanie żądań HTTP węzłów podczas restartu flow (#8)
 - **Surowe ciało (`skipBodyParsing`), tylko przy `enabled: true`:** żądanie do trasy `http in` z „surowym ciałem”, które przeszło przez
