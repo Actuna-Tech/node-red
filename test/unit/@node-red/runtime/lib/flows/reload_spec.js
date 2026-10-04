@@ -26,6 +26,8 @@
  *   #17: tests of the counting of the failures until the cycle succeeds (an error
  *   of the reread under the lock or of the reload step exhausts the retries;
  *   notifications reset the delay, not the count)
+ *   #26: tests of the explicit reset of the counters in a new series and of the
+ *   cancelled retry timer after a successful cycle
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1335,6 +1337,23 @@ describe("flows/reload (Z-09)", function() {
                     return original(readOpts);
                 };
             }
+            function attemptsLogged() {
+                return logged("warn", "reload.read-failed").map(m => JSON.parse(m.slice("reload.read-failed ".length)).attempt);
+            }
+            // The first read of the first cycle waits for gate.resolve() and then fails
+            function failFirstReadAfter(gate) {
+                const original = env.storage.getFlows;
+                let first = true;
+                env.storage.getFlows = async function(readOpts) {
+                    if (first) {
+                        first = false;
+                        env.getFlowsCalls++;
+                        await gate.promise;
+                        throw new Error("storage unavailable");
+                    }
+                    return original(readOpts);
+                };
+            }
             function atFailedState() {
                 const seen = { reloads: null, reads: null };
                 const off = state.onChange(info => {
@@ -1666,11 +1685,94 @@ describe("flows/reload (Z-09)", function() {
                 await clock.tickAsync(5000);
                 state.get().state.should.equal("failed");
                 logged("error", "reload.retries-exhausted").should.have.length(2);
+                // the new series is counted from 1 again (#26)
+                attemptsLogged().should.eql([1, 2, 1, 2]);
                 // still failed: the periodic cycles do not start a new series each time
                 const warns = logged("warn", "reload.read-failed").length;
                 await clock.tickAsync(60000);
                 logged("warn", "reload.read-failed").should.have.length(warns);
                 logged("error", "reload.retries-exhausted").should.have.length(2);
+            });
+            it("fail: a new series after a local deployment starts its backoff at retry.min and counts the attempts from 1 (#26)", async function() {
+                fake(retry("fail", { min: 1000, max: 60000, attempts: 2 }));
+                env.reloadError = CREDENTIALS_ERROR();
+                await env.start();
+                env.change("B");
+                env.notify();
+                // failures at 0 and +1000: exhausted, the next cycle is due in retry.max
+                await clock.tickAsync(1500);
+                state.get().state.should.equal("failed");
+                attemptsLogged().should.eql([1, 2]);
+                await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } });
+                await clock.tickAsync(0);
+                state.get().state.should.equal("ready");
+                // no notification (it would reset the delay): the periodic cycle starts the new series
+                env.change("E");
+                await clock.tickAsync(60000);
+                attemptsLogged().should.eql([1, 2, 1]);
+                // the delay of the new series is retry.min (1000), not a continuation of the old backoff
+                await clock.tickAsync(1500);
+                attemptsLogged().should.eql([1, 2, 1, 2]);
+                state.get().state.should.equal("failed");
+                logged("error", "reload.retries-exhausted").should.have.length(2);
+            });
+            it("a successful cycle cancels the retry scheduled by an earlier failed cycle - no useless cycle (#26, probe P7)", async function() {
+                fake(retry("fail", { min: 1000, max: 60000, attempts: 5 }));
+                const gate = deferred();
+                failFirstReadAfter(gate);
+                await env.start();
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(0);
+                env.getFlowsCalls.should.equal(1);
+                // a notification arrives during the failing cycle A: cycle B follows at once
+                env.notify();
+                gate.resolve();
+                await clock.tickAsync(0);
+                // A failed (and scheduled a retry), B read twice (step 2 and under the lock) and applied B
+                logged("warn", "reload.read-failed").should.have.length(1);
+                env.applied.should.have.length(1);
+                env.getFlowsCalls.should.equal(3);
+                // the retry of A is obsolete: it must not start cycle C
+                await clock.tickAsync(5000);
+                env.getFlowsCalls.should.equal(3);
+                env.flows.reloadFromStorage.callCount.should.equal(1);
+                state.get().state.should.equal("ready");
+            });
+            it("a successful cycle ends the periodic cycles of the exhausted state - no more reads of storage (#26)", async function() {
+                fake(retry("fail", { min: 1000, max: 10000, attempts: 2 }));
+                env.failAlways = true;
+                await env.start();
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(1500);
+                state.get().state.should.equal("failed");
+                // storage works again: the periodic cycle applies the revision and ends the series
+                env.failAlways = false;
+                await clock.tickAsync(10000);
+                state.get().state.should.equal("ready");
+                env.applied.should.have.length(1);
+                const reads = env.getFlowsCalls;
+                await clock.tickAsync(60000);
+                env.getFlowsCalls.should.equal(reads);
+            });
+            it("a retry scheduled by a failure after a success is not cancelled by the earlier success (#26)", async function() {
+                fake(retry("fail", { min: 1000, max: 60000, attempts: 5 }));
+                await env.start();
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(0);
+                env.applied.should.have.length(1);
+                // a later failing cycle schedules its own retry, which must run
+                env.reloadError = CREDENTIALS_ERROR();
+                env.change("C");
+                env.notify();
+                await clock.tickAsync(0);
+                env.reloadError = null;
+                attemptsLogged().should.eql([1]);
+                await clock.tickAsync(1000);
+                env.applied.should.have.length(2);
+                env.applied[1].rev.should.equal("C");
             });
             it("fail: after a local deployment a pure read failure of storage still starts no new failed state (unchanged)", async function() {
                 fake(retry("fail", { min: 1000, max: 1000, attempts: 2 }));

@@ -245,6 +245,10 @@ Fixes
    unchanged; a new notification from storage only shortens the delay of the next retry and no
    longer resets the count, and a new failing reload after a recovery by a local deployment is
    counted as a new series (#17)
+ - A successful cycle of the reload from storage now cancels the retry timer scheduled by an
+   earlier failed cycle: before, that timer started one useless extra cycle (a read of storage)
+   after the success, for example when a notification arrived during a failing cycle. The
+   counters of a new series after a recovery by a local deployment are reset explicitly (#26)
 
 #### Unreleased: Engine extensions
 
