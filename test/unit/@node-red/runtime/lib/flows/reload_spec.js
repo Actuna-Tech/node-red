@@ -1086,12 +1086,43 @@ describe("flows/reload (Z-09)", function() {
             }
         });
 
-        it("an editor deployment is not delayed", async function() {
+        it("an editor deployment is not delayed: no drain, no preReload, no grace", async function() {
             setup({ enabled: true, unreadyGrace: 60000 });
+            let hookCalls = 0;
+            hooks.add("preReload", p => { hookCalls++ });
             await env.start();
             const result = await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } });
             result.rev.should.equal("deployed");
+            // the fake clock was not advanced: a grace would never have ended
             Date.now().should.equal(0);
+            hookCalls.should.equal(0);
+            (notReadyAt === null).should.be.true();
+            states.should.not.containEql("reloadPending:draining");
+            states.should.containEql("deploying");
+        });
+
+        it("the second preReload round (D-17) adds no grace and keeps the deadline", async function() {
+            const map = { B: ["t1"], C: ["t1", "t2"] };
+            setup({ enabled: true, unreadyGrace: 500 }, { type: "diff", preReloadTimeout: 5000 }, { changedFlows: loaded => map[loaded.rev] });
+            const calls = [];
+            hooks.add("preReload", p => {
+                calls.push({ rev: p.rev, deadline: p.deadline, at: Date.now() });
+                if (calls.length === 1) {
+                    env.change("C");
+                }
+            });
+            await trigger();
+            await clock.tickAsync(499);
+            env.applied.should.have.length(0);
+            calls.should.have.length(1);
+            await clock.tickAsync(1);
+            // after the grace of the first round: the second round is run at once
+            calls.should.have.length(2);
+            calls[1].at.should.equal(500);
+            calls[1].deadline.should.equal(calls[0].deadline);
+            env.applied.should.have.length(1);
+            env.applied[0].rev.should.equal("C");
+            Date.now().should.equal(500);
         });
     });
 });

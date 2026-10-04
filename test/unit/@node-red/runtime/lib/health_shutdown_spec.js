@@ -256,6 +256,22 @@ describe("runtime/health shutdown (Z-08, D-11)", function() {
             stop.calledOnce.should.be.true();
         });
 
+        it("without shutdownTimeout the hook is not called (R-37) and the shutdown waits exactly the grace", async function() {
+            fakeTime();
+            initWith(500);
+            const hook = sinon.spy(function() { return new Promise(() => {}) });
+            hooks.add("preShutdown", hook);
+            const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+            await clock.tickAsync(499);
+            stop.called.should.be.false();
+            await clock.tickAsync(1);
+            await done;
+            stop.calledOnce.should.be.true();
+            hook.called.should.be.false();
+            Date.now().should.equal(500);
+            log.info.calledWithMatch("health.draining").should.be.false();
+        });
+
         it("is counted inside shutdownTimeout: capped by it", async function() {
             fakeTime();
             initWith(5000, { shutdownTimeout: 300 });
