@@ -16,8 +16,10 @@
    requests for which the httpNode app has no route at that moment are held: the routes of unchanged nodes
    (a partial deployment) are served at once. If the start fails, the requests are released to the normal routing. The Admin API and the editor are not held; static files under
    `httpNodeRoot` and CORS preflight requests are held, and the 503 has no `Access-Control-*` headers.
-   `http in` with "skipBodyParsing": a request that bypassed the capture of the raw body (it arrived while the
-   route was replaced) is read raw by the route itself, so the handler still gets a `Buffer`
+   `http in` with "skipBodyParsing" (only with this setting enabled; without it nothing changes): a request that
+   bypassed the capture of the raw body (it arrived while the route was replaced) is read raw by the route itself,
+   so the handler still gets a `Buffer`. With the setting, a skipBodyParsing route with parameters (`/hook/:id`) or
+   another letter case, which the capture never matched, also gets a `Buffer` instead of a parsed body
 
 Features
  - Polish (`pl`) translation of the editor (`editor.json`, 317 keys) and of the core nodes

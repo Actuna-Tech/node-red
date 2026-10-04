@@ -63,6 +63,8 @@ function getFreePort() {
     });
 }
 
+// A request that gets no answer in 8 s is destroyed: request() rejects, status() gives -1
+// (a hung connection fails the test with a clear message instead of a mocha timeout)
 function request(method, url) {
     return new Promise((resolve, reject) => {
         const req = http.request(url, { method, headers: { "Connection": "close" } }, res => {
@@ -70,13 +72,15 @@ function request(method, url) {
             res.on("data", d => text += d);
             res.on("end", () => resolve({ status: res.statusCode, text }));
         });
+        req.setTimeout(8000, () => req.destroy(new Error("timeout")));
         req.on("error", reject);
         req.end();
     });
 }
 
+// 0: the connection failed, -1: no answer within the timeout
 function status(url) {
-    return request("GET", url).then(res => res.status, () => 0);
+    return request("GET", url).then(res => res.status, err => err && err.message === "timeout" ? -1 : 0);
 }
 
 function waitFor(check, timeout, message) {
@@ -293,6 +297,9 @@ module.exports = ${JSON.stringify({
 
     it("with deploy.holdHttpNodeRequests a request in the stop->start window gets the answer of the new flows, never 404 (#8)", async function() {
         const statuses = await reloadUnderLoad({ holdHttpNodeRequests: { enabled: true, timeout: 5000 } });
+        if (statuses.indexOf(-1) !== -1) {
+            throw new Error("a request got no answer within 8 s (held too long): " + JSON.stringify(statuses));
+        }
         statuses.should.not.containEql(404);
         statuses.should.not.containEql(503);
         statuses.should.not.containEql(0);

@@ -115,10 +115,14 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   [design/engine-extensions/ZASADY.md](design/engine-extensions/ZASADY.md) §2.4.
 
 ### Wstrzymywanie żądań HTTP węzłów podczas restartu flow (#8)
-- **Surowe ciało (`skipBodyParsing`):** żądanie do trasy `http in` z „surowym ciałem”, które przeszło przez `rawBodyCapture` w oknie
-  stop→start (klucz trasy chwilowo nieobecny), po wypuszczeniu dostałoby ciało sparsowane (obiekt/tekst zamiast `Buffer`, np. psuje
-  weryfikację podpisu HMAC). Trasa takiego węzła czyta więc surowe ciało sama, jeśli nie zostało jeszcze odczytane
-  (`21-httpin.js`, `rawBodyFallback`); gdy `rawBodyCapture` zadziałał (normalny przypadek), zachowanie jest bez zmian.
+- **Surowe ciało (`skipBodyParsing`), tylko przy `enabled: true`:** żądanie do trasy `http in` z „surowym ciałem”, które przeszło przez
+  `rawBodyCapture` w oknie stop→start (klucz trasy chwilowo nieobecny), po wypuszczeniu dostałoby ciało sparsowane (obiekt/tekst zamiast
+  `Buffer`, np. psuje weryfikację podpisu HMAC). Przy włączonym ustawieniu trasa takiego węzła czyta więc surowe ciało sama, jeśli nie
+  zostało jeszcze odczytane (`21-httpin.js`, `rawBodyFallback`); gdy `rawBodyCapture` zadziałał (normalny przypadek), zachowanie jest
+  bez zmian. **Bez ustawienia zachowanie jest takie jak w 5.0.7** (bez zapasowego odczytu).
+- **Ograniczenie (surowe ciało):** `rawBodyCapture` dopasowuje dosłowny klucz `METODA:url`, więc trasa `skipBodyParsing` z parametrem
+  (`/hook/:id`) lub inną wielkością liter nigdy nie była przechwytywana i dostawała ciało sparsowane. Przy `enabled: true` taka trasa
+  dostaje `Buffer` – to, co obiecuje `skipBodyParsing`; bez ustawienia zachowanie upstream (ciało sparsowane) pozostaje.
 - **Problem:** trasy węzłów (`http in` i każdy węzeł rejestrujący trasę w `RED.httpNode`) są usuwane przy zatrzymaniu węzła
   i dodawane przy starcie nowych; żądanie w oknie stop→start dostaje 404, nieodróżnialne od nieistniejącego zasobu.
 - **Rozwiązanie:** `runtime/lib/httpHold.js` – middleware montowany na aplikacji `httpNode` **przed** trasami węzłów
