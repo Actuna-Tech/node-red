@@ -60,7 +60,7 @@ module.exports = {
 
 ### Język polski – częściowo (Z-13)
 
-- Dodane `locales/pl/editor.json` (317 z 1151 kluczy en-US, ok. 28%, oraz 8 form liczby mnogiej) i `locales/pl/messages.json` (98 z 869, ok. 11%) –
+- Dodane `locales/pl/editor.json` (317 z 1151 kluczy en-US, ok. 28%, oraz 8 form liczby mnogiej) i `locales/pl/messages.json` (101 z 872, ok. 12%) –
   tłumaczenie częściowe od Zamawiającego; brakujące klucze wracają do en-US (`fallbackLng`). Słownik: „węzeł”,
   `flow`/`subflow` bez tłumaczenia, „Wdróż”; forma bezosobowa. Liczba mnoga: `_one/_few/_many/_other` (i18next 25).
 - Pomoc węzłów (#12): `locales/pl/common/21-debug.html`, `function/10-function.html`, `function/15-change.html`
@@ -142,12 +142,12 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 ### Wstrzymywanie żądań HTTP węzłów podczas restartu flow (#8)
 - **Surowe ciało (`skipBodyParsing`), tylko przy `enabled: true`:** żądanie do trasy `http in` z „surowym ciałem”, które przeszło przez
   `rawBodyCapture` w oknie stop→start (klucz trasy chwilowo nieobecny), po wypuszczeniu dostałoby ciało sparsowane (obiekt/tekst zamiast
-  `Buffer`, np. psuje weryfikację podpisu HMAC). Przy włączonym ustawieniu trasa takiego węzła czyta więc surowe ciało sama, jeśli nie
-  zostało jeszcze odczytane (`21-httpin.js`, `rawBodyFallback`); gdy `rawBodyCapture` zadziałał (normalny przypadek), zachowanie jest
-  bez zmian. **Bez ustawienia zachowanie jest takie jak w 5.0.7** (bez zapasowego odczytu).
-- **Ograniczenie (surowe ciało):** `rawBodyCapture` dopasowuje dosłowny klucz `METODA:url`, więc trasa `skipBodyParsing` z parametrem
-  (`/hook/:id`) lub inną wielkością liter nigdy nie była przechwytywana i dostawała ciało sparsowane. Przy `enabled: true` taka trasa
-  dostaje `Buffer` – to, co obiecuje `skipBodyParsing`; bez ustawienia zachowanie upstream (ciało sparsowane) pozostaje.
+  `Buffer`, np. psuje weryfikację podpisu HMAC). Trasa takiego węzła czyta więc surowe ciało sama, jeśli nie zostało jeszcze odczytane
+  (`21-httpin.js`, `createRawBodyFallback`); gdy `rawBodyCapture` zadziałał (normalny przypadek), zachowanie jest bez zmian.
+  Od #16 robi to każda trasa `skipBodyParsing`, **niezależnie od tego ustawienia** (w #8 tylko przy `enabled: true`).
+- **Surowe ciało tras z parametrem i inną wielkością liter (#16):** `rawBodyCapture` dopasowuje dosłowny klucz `METODA:url`, więc trasa
+  `skipBodyParsing` z parametrem (`/hook/:id`) lub inną wielkością liter nigdy nie była przechwytywana i dostawała ciało sparsowane.
+  Teraz taka trasa dostaje `Buffer` zawsze (zapasowy odczyt wyżej) – zob. §6 (limit rozmiaru surowego ciała i opcja węzła `Max body size`).
 - **Problem:** trasy węzłów (`http in` i każdy węzeł rejestrujący trasę w `RED.httpNode`) są usuwane przy zatrzymaniu węzła
   i dodawane przy starcie nowych; żądanie w oknie stop→start dostaje 404, nieodróżnialne od nieistniejącego zasobu.
 - **Rozwiązanie:** `runtime/lib/httpHold.js` – middleware montowany na aplikacji `httpNode` **przed** trasami węzłów
@@ -268,6 +268,20 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `& < > " '`, nigdy surową treść; ten sam formater co błędy wdrożenia (`RED.deploy.translateErrorResponse`). Brak odpowiedzi
   HTTP (status 0) daje „brak odpowiedzi z serwera”. Polski edytor: przetłumaczone `library.saveFailed` i `user.notAuthorized`
   (komunikat nie miesza języków). Bez zmian API.
+- `http in`, surowe ciało „Do not parse request body” (`skipBodyParsing`, #16): (1) trasa z parametrem (`/hook/:id`) lub adresowana inną
+  wielkością liter (`/HOOK`) dostaje teraz `Buffer` **niezależnie od `deploy.holdHttpNodeRequests`** (wcześniej – obiekt lub tekst,
+  bo `rawBodyCapture` zna tylko dosłowny klucz `METODA:url`; psuło to np. weryfikację podpisu ciała); każda trasa z tą opcją czyta
+  surowe ciało sama, gdy nie zostało przechwycone. (2) **Surowe ciało ma limit, domyślnie włączony:** wartość `apiMaxLength`
+  (domyślnie 5 MB; to samo ustawienie co parsery JSON i urlencoded); większe ciało → **413** (także bez `Content-Length`), flow się
+  nie wykonuje. **Integracja wysyłająca surowe ciało powyżej 5 MB dostanie 413**, dopóki nie podniesie się limitu (`apiMaxLength` albo
+  pole węzła). Reszta odrzuconego ciała jest czytana i odrzucana (do 64 MB), żeby klient dostał 413, a nie reset połączenia.
+  (3) **Pole węzła „Max body size” (`maxBodySize`):** zastępuje limit dla jednego węzła (wyższy lub niższy), dla tras przyjmujących duże
+  pliki lub obrazy; liczba z opcjonalną jednostką `b`/`kb`/`mb`/`gb` (1024; np. `50mb`; sama liczba to bajty). Dotyczy surowego ciała
+  oraz – przy „Accept file uploads” – rozmiaru **każdego** przesyłanego pliku (multer `limits.fileSize`, 413 po przekroczeniu); bez
+  pola pliki pozostają **bez limitu**, jak dotąd. Puste pole = domyślny limit; nieprawidłowa wartość → ostrzeżenie węzła
+  i limit domyślny. Brak nowego ustawienia globalnego. Na trasie dzielonej przez kilka węzłów `skipBodyParsing` przechwycenie czyta do
+  najwyższego z limitów, a trasa każdego węzła sprawdza własny. Bez zmian: parsery JSON/urlencoded (nadal
+  `apiMaxLength`) oraz `rawBodyParser` (ciało tekstowe i binarne trasy bez `skipBodyParsing`, nadal bez limitu).
 
 ## 7. Testy i proces
 

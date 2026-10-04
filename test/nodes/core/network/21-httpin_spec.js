@@ -18,6 +18,8 @@
  *   new test file (#8): the raw body of an "http in" route with skipBodyParsing,
  *   with and without deploy.holdHttpNodeRequests
  *   #11: tests of the removal of the routes of an "http in" node on close
+ *   #16: the raw body of routes with parameters or another letter case without
+ *   deploy.holdHttpNodeRequests, the size limit of the raw body and of an upload
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -150,6 +152,15 @@ describe("HTTP In node - raw body (skipBodyParsing)", function() {
             }, "/hook/:id");
         });
 
+        it("gives a Buffer to a skipBodyParsing route addressed in another letter case", function(done) {
+            load(true, HOLD, function() {
+                post("/HOOK", '{"a": 1}', done, function(payload) {
+                    Buffer.isBuffer(payload).should.be.true();
+                    payload.toString().should.equal('{"a": 1}');
+                });
+            });
+        });
+
         it("still parses a JSON body of a route without skipBodyParsing", function(done) {
             load(false, HOLD, function() {
                 post("/hook", '{"a": 1}', done, function(payload) {
@@ -169,8 +180,9 @@ describe("HTTP In node - raw body (skipBodyParsing)", function() {
         });
     });
 
-    // Without the setting the behaviour is that of 5.0.7 (regression guard)
-    describe("without deploy.holdHttpNodeRequests (behaviour of 5.0.7)", function() {
+    // The raw body does not depend on the setting (#16): before, without it a route with
+    // parameters, another letter case or a bypassed capture got a parsed body
+    describe("without deploy.holdHttpNodeRequests", function() {
         it("gives a Buffer to the handler when the raw body was captured", function(done) {
             load(true, undefined, function() {
                 post("/hook", '{"a": 1}', done, function(payload) {
@@ -180,29 +192,30 @@ describe("HTTP In node - raw body (skipBodyParsing)", function() {
             });
         });
 
-        it("gives the parsed body to a skipBodyParsing route with a parameter (/hook/:id <- /hook/42)", function(done) {
+        it("gives a Buffer to a skipBodyParsing route with a parameter (/hook/:id <- /hook/42)", function(done) {
             load(true, undefined, function() {
                 post("/hook/42", '{"a": 1}', done, function(payload) {
-                    Buffer.isBuffer(payload).should.be.false();
-                    payload.should.eql({ a: 1 });
+                    Buffer.isBuffer(payload).should.be.true();
+                    payload.toString().should.equal('{"a": 1}');
                 });
             }, "/hook/:id");
         });
 
-        it("gives the parsed body to a skipBodyParsing route addressed in another letter case", function(done) {
+        it("gives a Buffer to a skipBodyParsing route addressed in another letter case", function(done) {
             load(true, undefined, function() {
                 post("/HOOK", '{"a": 1}', done, function(payload) {
-                    Buffer.isBuffer(payload).should.be.false();
-                    payload.should.eql({ a: 1 });
+                    Buffer.isBuffer(payload).should.be.true();
+                    payload.toString().should.equal('{"a": 1}');
                 });
             });
         });
 
-        it("does not read the raw body of a skipBodyParsing route that bypassed the capture", function(done) {
+        it("gives a Buffer to a skipBodyParsing route that bypassed the capture", function(done) {
             load(true, undefined, function() {
                 bypassRawBodyCapture();
-                post("/hook", '{"a": 1}', done, function(payload) {
-                    payload.should.eql({ a: 1 });
+                post("/hook", '{"a":   1}', done, function(payload) {
+                    Buffer.isBuffer(payload).should.be.true();
+                    payload.toString().should.equal('{"a":   1}');
                 });
             });
         });
@@ -214,18 +227,27 @@ describe("HTTP In node - raw body (skipBodyParsing)", function() {
                     helper.unload().then(function() {
                         load(true, { holdHttpNodeRequests: true }, function() {
                             post("/hook/42", '{"a": 1}', done, function(payload) {
-                                payload.should.eql({ a: 1 });
+                                Buffer.isBuffer(payload).should.be.true();
                             });
                         }, "/hook/:id");
                     }, done);
                 }, function(payload) {
-                    payload.should.eql({ a: 1 });
+                    Buffer.isBuffer(payload).should.be.true();
                 });
             }, "/hook/:id");
         });
 
         it("still parses a JSON body of a route without skipBodyParsing", function(done) {
             load(false, undefined, function() {
+                post("/hook", '{"a": 1}', done, function(payload) {
+                    payload.should.eql({ a: 1 });
+                });
+            });
+        });
+
+        it("still parses a JSON body of a route without skipBodyParsing when the capture is bypassed", function(done) {
+            load(false, undefined, function() {
+                bypassRawBodyCapture();
                 post("/hook", '{"a": 1}', done, function(payload) {
                     payload.should.eql({ a: 1 });
                 });
@@ -520,6 +542,267 @@ describe("HTTP In node - routes removed on close", function() {
             // both closed: a redeploy of one node with skipBodyParsing captures again
             await redeploy(flowOf(httpIn("a", { skipBodyParsing: true })));
             (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
+        });
+    });
+});
+
+// The size limit of the raw body (skipBodyParsing) and of an uploaded file (#16)
+describe("HTTP In node - size limit of the raw body and of an upload", function() {
+    const http = require("http");
+    let RED;
+    let server;
+    let received;
+
+    function httpInWrapper(_RED) {
+        RED = _RED;
+        return httpInNode(_RED);
+    }
+
+    // The nodes of a flow: [id, extra properties of the "http in" node]; every node
+    // answers 200 through its own sink
+    function flowOf(nodes) {
+        const flow = [];
+        nodes.forEach(function(entry) {
+            flow.push(Object.assign({ id: entry[0], type: "http in", url: "/hook", method: "post", skipBodyParsing: true, wires: [["sink-" + entry[0]]] }, entry[1]));
+            flow.push({ id: "sink-" + entry[0], type: "helper" });
+        });
+        return flow;
+    }
+
+    // settings: the settings of the runtime (for example apiMaxLength)
+    async function load(nodes, settings) {
+        helper.settings(settings || {});
+        await new Promise(function(resolve, reject) {
+            helper.load(httpInWrapper, flowOf(nodes), function() {
+                received = [];
+                nodes.forEach(function(entry) {
+                    helper.getNode("sink-" + entry[0]).on("input", function(msg) {
+                        received.push({ id: entry[0], msg: msg });
+                        msg.req.res.status(200).end();
+                    });
+                });
+                resolve();
+            }, reject);
+        });
+        // a server bound to the loopback address only: supertest(app) on its own
+        // port crosstalks with other processes on a development machine (#19)
+        server = http.createServer(RED.httpNode);
+        await new Promise(function(resolve) { server.listen(0, "127.0.0.1", resolve) });
+    }
+
+    function raw(path, size) {
+        return supertest(server).post(path).set("Content-Type", "application/octet-stream").send(Buffer.alloc(size, 0x61));
+    }
+
+    function upload(path, size) {
+        return supertest(server).post(path).attach("f", Buffer.alloc(size, 0x61), "f.bin");
+    }
+
+    // The warnings of the node about an invalid size (the log carries the message key)
+    function sizeWarnings() {
+        return helper.log().args.filter(function(args) {
+            return args[0] && args[0].msg === "httpin.errors.invalid-max-body-size";
+        });
+    }
+
+    let savedSettings;
+
+    before(function(done) {
+        savedSettings = helper._settings;
+        helper.startServer(done);
+    });
+
+    after(function(done) {
+        helper._settings = savedSettings;
+        helper.stopServer(done);
+    });
+
+    afterEach(async function() {
+        if (server) {
+            // open keep-alive connections would hold close() back
+            server.closeAllConnections();
+            await new Promise(function(resolve) { server.close(resolve) });
+            server = null;
+        }
+        await helper.unload();
+    });
+
+    describe("default limit (apiMaxLength, 5mb)", function() {
+        it("answers 413 to a raw body above 5mb and does not run the flow", async function() {
+            await load([["a"]]);
+            await raw("/hook", 6 * 1024 * 1024).expect(413);
+            received.should.have.length(0);
+        });
+
+        it("accepts a raw body below 5mb", async function() {
+            await load([["a"]]);
+            await raw("/hook", 4 * 1024 * 1024).expect(200);
+            received.should.have.length(1);
+            Buffer.isBuffer(received[0].msg.payload).should.be.true();
+            received[0].msg.payload.length.should.equal(4 * 1024 * 1024);
+        });
+
+        it("limits a route with a parameter and a route addressed in another letter case", async function() {
+            await load([["a", { url: "/hook/:id" }], ["b", { url: "/Other" }]]);
+            await raw("/hook/1", 6 * 1024 * 1024).expect(413);
+            await raw("/OTHER", 6 * 1024 * 1024).expect(413);
+            received.should.have.length(0);
+            await raw("/hook/1", 1024).expect(200);
+            await raw("/OTHER", 1024).expect(200);
+            received.should.have.length(2);
+        });
+
+        it("uses the apiMaxLength setting, in the same format as the body parsers", async function() {
+            await load([["a"], ["b", { url: "/p/:id" }]], { apiMaxLength: "1kb" });
+            await raw("/hook", 2048).expect(413);
+            await raw("/p/1", 2048).expect(413);
+            await raw("/hook", 1000).expect(200);
+            await raw("/p/1", 1000).expect(200);
+            received.should.have.length(2);
+        });
+
+        it("accepts apiMaxLength as a number of bytes", async function() {
+            await load([["a"]], { apiMaxLength: 1024 });
+            await raw("/hook", 2048).expect(413);
+            await raw("/hook", 1000).expect(200);
+        });
+
+        it("limits a body without Content-Length (chunked)", async function() {
+            await load([["a"], ["b", { url: "/p/:id" }]], { apiMaxLength: "1kb" });
+            function chunked(path, size) {
+                return new Promise(function(resolve, reject) {
+                    const req = http.request({ host: "127.0.0.1", port: server.address().port, method: "POST", path: path, agent: false,
+                        headers: { "Content-Type": "application/octet-stream", "Transfer-Encoding": "chunked" } }, function(res) {
+                        res.resume();
+                        res.on("end", function() { resolve(res.statusCode) });
+                    });
+                    req.on("error", reject);
+                    for (let sent = 0; sent < size; sent += 512) { req.write(Buffer.alloc(512, 0x61)) }
+                    req.end();
+                });
+            }
+            (await chunked("/hook", 4096)).should.equal(413);
+            (await chunked("/p/1", 4096)).should.equal(413);
+            (await chunked("/hook", 512)).should.equal(200);
+            (await chunked("/p/1", 512)).should.equal(200);
+            received.should.have.length(2);
+        });
+
+        it("limits the raw body that bypassed the capture", async function() {
+            await load([["a"]], { apiMaxLength: "1kb" });
+            const stack = RED.httpNode._router.stack;
+            stack.splice(stack.findIndex(layer => layer.handle && layer.handle.name === "rawBodyCapture"), 1);
+            await raw("/hook", 2048).expect(413);
+            await raw("/hook", 1000).expect(200);
+        });
+
+        it("uses 5mb and warns for an apiMaxLength that is not a size above 0", async function() {
+            // a negative number is accepted by the body parsers, a string that is not a size is not
+            await load([["a"]], { apiMaxLength: -1 });
+            sizeWarnings().should.have.length(1);
+            await raw("/hook", 1024).expect(200);
+            await raw("/hook", 6 * 1024 * 1024).expect(413);
+        });
+
+        it("does not limit the parsed body of a route without skipBodyParsing by the raw limit", async function() {
+            await load([["a", { skipBodyParsing: false }]], { apiMaxLength: "1kb" });
+            await supertest(server).post("/hook").set("Content-Type", "application/json").send('{"a": 1}').expect(200);
+            received[0].msg.payload.should.eql({ a: 1 });
+        });
+    });
+
+    describe("limit of the node (maxBodySize)", function() {
+        it("raises the limit above the default for the raw body", async function() {
+            await load([["a", { maxBodySize: "8mb" }], ["b", { url: "/p/:id", maxBodySize: "8mb" }]]);
+            await raw("/hook", 6 * 1024 * 1024).expect(200);
+            await raw("/p/1", 6 * 1024 * 1024).expect(200);
+            received.should.have.length(2);
+            received[0].msg.payload.length.should.equal(6 * 1024 * 1024);
+            await raw("/hook", 9 * 1024 * 1024).expect(413);
+            await raw("/p/1", 9 * 1024 * 1024).expect(413);
+        });
+
+        it("lowers the limit below the setting", async function() {
+            await load([["a", { maxBodySize: "1kb" }], ["b", { url: "/p/:id", maxBodySize: 1024 }]], { apiMaxLength: "1mb" });
+            await raw("/hook", 2048).expect(413);
+            await raw("/p/1", 2048).expect(413);
+            await raw("/hook", 1000).expect(200);
+            await raw("/p/1", 1000).expect(200);
+        });
+
+        it("accepts the units b, kb, mb, gb in any case and a plain number of bytes", async function() {
+            await load([["a", { maxBodySize: " 2 KB " }], ["b", { url: "/b", maxBodySize: "1500" }], ["c", { url: "/c", maxBodySize: "0.5kb" }]], { apiMaxLength: "10kb" });
+            await raw("/hook", 2000).expect(200);
+            await raw("/hook", 2100).expect(413);
+            await raw("/b", 1400).expect(200);
+            await raw("/b", 1600).expect(413);
+            await raw("/c", 500).expect(200);
+            await raw("/c", 600).expect(413);
+        });
+
+        it("uses the default for an empty value", async function() {
+            await load([["a", { maxBodySize: "" }], ["b", { url: "/b", maxBodySize: "   " }]], { apiMaxLength: "1kb" });
+            await raw("/hook", 2048).expect(413);
+            await raw("/b", 2048).expect(413);
+            sizeWarnings().should.have.length(0);
+        });
+
+        ["abc", "-5", "0", "5 apples", "1e3", "NaN"].forEach(function(value) {
+            it("uses the default and warns for an invalid value " + JSON.stringify(value), async function() {
+                await load([["a", { maxBodySize: value }]], { apiMaxLength: "1kb" });
+                sizeWarnings().should.have.length(1);
+                await raw("/hook", 2048).expect(413);
+                await raw("/hook", 1000).expect(200);
+            });
+        });
+
+        it("applies the limit of each node on a route shared by nodes", async function() {
+            await load([["a", { maxBodySize: "1kb" }], ["b", { maxBodySize: "10kb" }]]);
+            // the first registered node answers (Express): its limit counts although
+            // the capture read the body with the higher one
+            await raw("/hook", 2048).expect(413);
+            received.should.have.length(0);
+            await raw("/hook", 500).expect(200);
+            received[0].id.should.equal("a");
+            // the node with the lower limit is gone: the other one answers within its limit
+            await helper.getNode("a").close();
+            await raw("/hook", 2048).expect(200);
+            received[1].id.should.equal("b");
+            await raw("/hook", 11 * 1024).expect(413);
+        });
+    });
+
+    describe("file upload (multer)", function() {
+        it("answers 413 to a file above the limit of the node", async function() {
+            await load([["a", { upload: true, skipBodyParsing: false, maxBodySize: "1kb" }]]);
+            await upload("/hook", 2048).expect(413);
+            received.should.have.length(0);
+        });
+
+        it("accepts a file within the limit of the node, in req.files", async function() {
+            await load([["a", { upload: true, skipBodyParsing: false, maxBodySize: "1kb" }]]);
+            await upload("/hook", 500).expect(200);
+            received.should.have.length(1);
+            received[0].msg.req.files.should.have.length(1);
+            received[0].msg.req.files[0].size.should.equal(500);
+        });
+
+        it("accepts a file above the default limit with a raised limit of the node", async function() {
+            await load([["a", { upload: true, skipBodyParsing: false, maxBodySize: "8mb" }]], { apiMaxLength: "1kb" });
+            await upload("/hook", 4096).expect(200);
+            received[0].msg.req.files[0].size.should.equal(4096);
+        });
+
+        it("does not limit the files without the limit of the node, as before", async function() {
+            await load([["a", { upload: true, skipBodyParsing: false }]], { apiMaxLength: "1kb" });
+            await upload("/hook", 4096).expect(200);
+            received[0].msg.req.files[0].size.should.equal(4096);
+        });
+
+        it("uses the default for an invalid limit of the node (the files stay unlimited)", async function() {
+            await load([["a", { upload: true, skipBodyParsing: false, maxBodySize: "abc" }]], { apiMaxLength: "1kb" });
+            sizeWarnings().should.have.length(1);
+            await upload("/hook", 4096).expect(200);
         });
     });
 });

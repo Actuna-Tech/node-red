@@ -63,14 +63,13 @@
    requests for which the httpNode app has no route at that moment are held: the routes of unchanged nodes
    (a partial deployment) are served at once. If the start fails, the requests are released to the normal routing. The Admin API and the editor are not held; static files under
    `httpNodeRoot` and CORS preflight requests are held, and the 503 has no `Access-Control-*` headers.
-   `http in` with "skipBodyParsing" (only with this setting enabled; without it nothing changes): a request that
-   bypassed the capture of the raw body (it arrived while the route was replaced) is read raw by the route itself,
-   so the handler still gets a `Buffer`. With the setting, a skipBodyParsing route with parameters (`/hook/:id`) or
-   another letter case, which the capture never matched, also gets a `Buffer` instead of a parsed body
+   `http in` with "skipBodyParsing": a request that bypassed the capture of the raw body (it arrived while
+   the route was replaced) is read raw by the route itself, so the handler still gets a `Buffer` (this no longer
+   depends on the setting, see #16)
 
 Features
  - Polish (`pl`) translation of the editor (`editor.json`, 317 keys) and of the core nodes
-   (`messages.json`, 98 keys), partial: keys without a translation fall back to English.
+   (`messages.json`, 101 keys), partial: keys without a translation fall back to English.
    The runtime messages, the JSONata and info-tip catalogs and the help of the other nodes are not
    translated yet. The language is listed in the language selector of the user settings and is
    used by a browser set to Polish when the user has not selected a language.
@@ -291,6 +290,29 @@ Fixes
    long before could be applied to a later deployment of the same content that ended in `start_timeout`:
    it closed that error at once and showed the outcome of the earlier start. A result that arrives
    during the request, before its response, is still shown after the response (#31)
+ - `http in` with "Do not parse request body" (`skipBodyParsing`): a route with a parameter (`/hook/:id`) or
+   addressed in another letter case than its path (`/HOOK`) now gets the raw body as a `Buffer`, as the option
+   promises, regardless of `deploy.holdHttpNodeRequests`. Before, the raw body was captured only for the literal
+   `METHOD:url` of the node, so such a route got a parsed body (an object or text; for example it broke the
+   verification of a signature of the body). Every route of a node with the option now reads the raw body
+   itself when it was not captured (before: only with `deploy.holdHttpNodeRequests`). Behaviour change, see
+   the Features below (#16)
+
+Features
+
+ - `http in`: the raw body (`skipBodyParsing`) is now limited, on by default: the limit is `apiMaxLength`
+   (5mb by default), the same setting as for the JSON and URL-encoded bodies; a larger body is answered
+   with 413 `Payload Too Large` (also without `Content-Length`) and the flow does not run. Before, the raw
+   body had no limit. An integration that sends more than 5mb raw gets 413 until the limit is raised
+   (`apiMaxLength` or the node option below). The rest of a rejected body is read and discarded, so the
+   client receives the 413 instead of a reset connection (#16)
+ - `http in`: new optional field "Max body size" (`maxBodySize`) replaces the limit for one node, higher or
+   lower, for routes that receive large files or images. A number with an optional unit `b`, `kb`, `mb`
+   or `gb` (1024 based, for example `50mb`; a number alone is bytes). It applies to the raw body and, with "Accept file
+   uploads", to the size of each uploaded file (413 above it). Without the field the uploaded files stay unlimited, as
+   before. An empty value uses the default; an invalid one logs a warning (`httpin.errors.invalid-max-body-size`)
+   and uses the default. No new global setting. The field is shown only with one of the two options; the editor
+   validates it. English help and the English and Polish messages (#16)
 
 #### Unreleased: Engine extensions
 
