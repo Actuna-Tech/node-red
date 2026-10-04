@@ -20,6 +20,7 @@
  *   Z-09: regression tests of the review - a strict read of the file storage
  *   (an invalid flow file during the reload), lost reloads after a superseded
  *   cycle, the way out of "failed", timers
+ *   Z-16: tests of health.unreadyGrace before a reload
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -934,6 +935,194 @@ describe("flows/reload (Z-09)", function() {
             env.change("B");
             env.notify();
             await waitFor(() => env.applied.length === 1 && env.claims.length === 1 && env.claims[0].release.called);
+        });
+    });
+
+    describe("health.unreadyGrace (Z-16)", function() {
+        let clock;
+        let notReadyAt;
+
+        beforeEach(function() {
+            notReadyAt = null;
+        });
+        afterEach(function() {
+            if (clock) {
+                clock.restore();
+                clock = null;
+            }
+        });
+
+        // Fake time; `health` is the health setting of the runtime
+        function setup(health, reload, extra) {
+            clock = sinon.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+            env = createEnv(Object.assign({ reload: reload || {} }, extra || {}));
+            if (health !== undefined) {
+                env.runtime.settings.health = health;
+            }
+            env.reloader.init(env.runtime);
+            state.onChange(info => {
+                if (info.draining && notReadyAt === null) {
+                    notReadyAt = Date.now();
+                }
+            });
+            return env;
+        }
+        async function trigger() {
+            await env.start();
+            env.change("B");
+            env.notify();
+        }
+
+        it("not set - the flows are reloaded without a wait", async function() {
+            setup({ enabled: true });
+            await trigger();
+            await clock.tickAsync(0);
+            env.applied.should.have.length(1);
+            env.logs.info.some(m => m.indexOf("reload.unready-grace") === 0).should.be.false();
+        });
+
+        it("on - the reload happens no earlier than the grace after /ready turned 503", async function() {
+            setup({ enabled: true, unreadyGrace: 500 });
+            await trigger();
+            await clock.tickAsync(499);
+            notReadyAt.should.equal(0);
+            state.isReady().should.be.false();
+            env.applied.should.have.length(0);
+            await clock.tickAsync(1);
+            env.applied.should.have.length(1);
+            Date.now().should.equal(500);
+            await clock.tickAsync(0);
+            state.get().state.should.equal("ready");
+            env.logs.info.some(m => m.indexOf("reload.unready-grace") === 0).should.be.true();
+        });
+
+        it("on - a hook longer than the grace adds no wait", async function() {
+            setup({ enabled: true, unreadyGrace: 500 });
+            hooks.add("preReload", p => new Promise(resolve => setTimeout(resolve, 800)));
+            await trigger();
+            await clock.tickAsync(799);
+            env.applied.should.have.length(0);
+            await clock.tickAsync(1);
+            env.applied.should.have.length(1);
+            Date.now().should.equal(800);
+        });
+
+        it("on - a hook shorter than the grace still waits for the grace", async function() {
+            setup({ enabled: true, unreadyGrace: 500 });
+            hooks.add("preReload", p => new Promise(resolve => setTimeout(resolve, 100)));
+            await trigger();
+            await clock.tickAsync(499);
+            env.applied.should.have.length(0);
+            await clock.tickAsync(1);
+            env.applied.should.have.length(1);
+        });
+
+        it("on - a failing hook does not shorten the grace", async function() {
+            setup({ enabled: true, unreadyGrace: 500 });
+            hooks.add("preReload", p => { throw new Error("boom") });
+            await trigger();
+            await clock.tickAsync(499);
+            env.applied.should.have.length(0);
+            env.logs.error.some(m => m.indexOf("reload.hook-failed") === 0).should.be.true();
+            await clock.tickAsync(1);
+            env.applied.should.have.length(1);
+        });
+
+        it("is counted inside preReloadTimeout: capped by it", async function() {
+            setup({ enabled: true, unreadyGrace: 5000 }, { preReloadTimeout: 300 });
+            await trigger();
+            await clock.tickAsync(299);
+            env.applied.should.have.length(0);
+            await clock.tickAsync(1);
+            env.applied.should.have.length(1);
+            Date.now().should.equal(300);
+        });
+
+        it("a deployment on this instance ends the grace and supersedes the reload", async function() {
+            setup({ enabled: true, unreadyGrace: 60000 });
+            await trigger();
+            await clock.tickAsync(100);
+            state.get().draining.should.be.true();
+            const result = await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } });
+            result.rev.should.equal("deployed");
+            await clock.tickAsync(0);
+            env.applied.should.have.length(0);
+            clock.countTimers().should.equal(0);
+        });
+
+        it("a stop of the reloader ends the grace without a reload", async function() {
+            setup({ enabled: true, unreadyGrace: 60000 });
+            await trigger();
+            await clock.tickAsync(100);
+            await env.reloader.stop();
+            await clock.tickAsync(0);
+            env.applied.should.have.length(0);
+            clock.countTimers().should.equal(0);
+        });
+
+        it("the stop of the runtime (state stopping) ends the grace", async function() {
+            setup({ enabled: true, unreadyGrace: 60000 });
+            await trigger();
+            await clock.tickAsync(100);
+            state.markStopping("SIGTERM");
+            await clock.tickAsync(0);
+            env.applied.should.have.length(0);
+            clock.countTimers().should.equal(0);
+        });
+
+        it("invalid values and no health.enabled - no wait", async function() {
+            for (const health of [{ enabled: true, unreadyGrace: "500" }, { enabled: true, unreadyGrace: -5 }, { enabled: true, unreadyGrace: NaN }, { unreadyGrace: 500 }, { enabled: true, unreadyGrace: 0 }]) {
+                if (env) {
+                    await env.reloader.stop();
+                    clock.restore();
+                    state.reset();
+                    state.markStarting();
+                    state.report({ errors: [] });
+                }
+                setup(health);
+                await trigger();
+                await clock.tickAsync(0);
+                env.applied.should.have.length(1, JSON.stringify(health));
+            }
+        });
+
+        it("an editor deployment is not delayed: no drain, no preReload, no grace", async function() {
+            setup({ enabled: true, unreadyGrace: 60000 });
+            let hookCalls = 0;
+            hooks.add("preReload", p => { hookCalls++ });
+            await env.start();
+            const result = await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } });
+            result.rev.should.equal("deployed");
+            // the fake clock was not advanced: a grace would never have ended
+            Date.now().should.equal(0);
+            hookCalls.should.equal(0);
+            (notReadyAt === null).should.be.true();
+            states.should.not.containEql("reloadPending:draining");
+            states.should.containEql("deploying");
+        });
+
+        it("the second preReload round (D-17) adds no grace and keeps the deadline", async function() {
+            const map = { B: ["t1"], C: ["t1", "t2"] };
+            setup({ enabled: true, unreadyGrace: 500 }, { type: "diff", preReloadTimeout: 5000 }, { changedFlows: loaded => map[loaded.rev] });
+            const calls = [];
+            hooks.add("preReload", p => {
+                calls.push({ rev: p.rev, deadline: p.deadline, at: Date.now() });
+                if (calls.length === 1) {
+                    env.change("C");
+                }
+            });
+            await trigger();
+            await clock.tickAsync(499);
+            env.applied.should.have.length(0);
+            calls.should.have.length(1);
+            await clock.tickAsync(1);
+            // after the grace of the first round: the second round is run at once
+            calls.should.have.length(2);
+            calls[1].at.should.equal(500);
+            calls[1].deadline.should.equal(calls[0].deadline);
+            env.applied.should.have.length(1);
+            env.applied[0].rev.should.equal("C");
+            Date.now().should.equal(500);
         });
     });
 });

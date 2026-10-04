@@ -89,6 +89,7 @@ nowego flow tuż po wdrożeniu (wraca zachowanie 5.0.7).
 | `health.port`, `health.path` | `readinessProbe.httpGet` (`<path>/ready`), `livenessProbe.httpGet` (`<path>/live`) |
 | `shutdownTimeout: 1140000` (19 min) | `terminationGracePeriodSeconds: 1200` (20 min) – grace period dłuższy niż drenaż; brak osobnego limitu `RED.stop()` – ostatecznym limitem jest grace period (R-37) |
 | `deploy.reload.preReloadTimeout: 1200000` | – |
+| `health.unreadyGrace` (np. 15000; większe niż `periodSeconds` × `failureThreshold` sondy `readiness` lub odpytywania balansera) | `/ready` 503 przez co najmniej tyle ms PRZED zatrzymaniem flow (SIGTERM i przeładowanie z magazynu); mieści się w `shutdownTimeout`/`preReloadTimeout`; bez `shutdownTimeout` zamykanie czeka dokładnie `unreadyGrace` – `terminationGracePeriodSeconds` dłuższy; nie dotyczy wdrożenia z edytora |
 | workery: `disableEditor: true`, `httpAdminRoot: false` (Admin API wyłączone) | sondy na osobnym porcie (`health.port`) |
 | `health.enabled: true` | warunek zamykania serwera HTTP przy zatrzymaniu (R-22); bez sond – zachowanie 5.0.7 |
 | instancja edytora `editorOnly: true` | `readinessProbe` → 200 w stanie `loaded` (R-19) |
