@@ -16,6 +16,8 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-09: tests of the optional watchFlows of the storage plugin
+ *   #2: tests of the contract of getFlows for the comparison of the credentials - the
+ *   revision covers the flows only, the credentials are passed on as stored
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -270,6 +272,50 @@ describe("red/storage/index", function() {
             storage.saveSessions({}).then(function() {
                 done();
             });
+        });
+    });
+
+    describe('getFlows and the credentials (#2)', function() {
+        const FLOWS = [{id: "t1", type: "tab"}];
+        function moduleWith(credentials) {
+            return {
+                init: function() {},
+                getFlows: async function() { return JSON.parse(JSON.stringify(FLOWS)); },
+                getCredentials: async function() { return credentials(); }
+            };
+        }
+        it('the revision is the sha256 of the flows only: it does not depend on the credentials', async function() {
+            let creds = {"$": "0123456789abcdef0123456789abcdef-first"};
+            await storage.init({settings: {storageModule: moduleWith(() => creds)}});
+            const first = await storage.getFlows();
+            creds = {"$": "fedcba9876543210fedcba9876543210-second"};
+            const second = await storage.getFlows();
+            first.rev.should.equal(require("crypto").createHash("sha256").update(JSON.stringify(FLOWS)).digest("hex"));
+            second.rev.should.equal(first.rev);
+            // the credentials are not part of the revision: a change of them alone needs
+            // their own comparison (flows.credentialsChanged)
+            second.credentials.should.not.eql(first.credentials);
+        });
+        it('the credentials are passed on exactly as the plugin returned them (the runtime decrypts and compares)', async function() {
+            const creds = {"$": "0123456789abcdef0123456789abcdef-cipher"};
+            await storage.init({settings: {storageModule: moduleWith(() => creds)}});
+            const result = await storage.getFlows();
+            result.credentials.should.equal(creds);
+            Object.keys(result).sort().should.eql(["credentials", "flows", "rev"]);
+            const strict = await storage.getFlows({strict: true});
+            strict.credentials.should.equal(creds);
+        });
+        it('the notification of watchFlows is passed on with its credentialsChanged hint unchanged', async function() {
+            let registered;
+            const received = [];
+            await storage.init({settings: {storageModule: {
+                init: function() {},
+                watchFlows: function(cb) { registered = cb; }
+            }}});
+            await storage.watchFlows(function(notification) { received.push(notification) });
+            registered({rev: "x", credentialsChanged: true});
+            registered({rev: "y"});
+            received.should.eql([{rev: "x", credentialsChanged: true}, {rev: "y"}]);
         });
     });
 

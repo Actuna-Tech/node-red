@@ -26,6 +26,7 @@
  *   R-45: warnings for deploy.startTimeoutReleasesLock
  *   W-3: revisions of the flow and of the whole configuration in deploy errors of /flow
  *   P-02: warning for editorTheme.deploy.staleFlows "reload-only" without deploy.requireRevision
+ *   #2: the v2 result of getFlows is only {flows, rev} - no digest of the credentials
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -60,6 +61,33 @@ describe("runtime-api/flows", function() {
                 result.should.eql([1,2,3]);
                 done();
             }).catch(done);
+        });
+        it("returns only {flows, rev} of the active configuration - no digest of the credentials (#2)", async function() {
+            const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+            const runtimeFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+            const stored = { n1: { user: "abc", password: "secret-password-123" } };
+            const load = sinon.stub(credentials, "load").callsFake(async function() {});
+            try {
+                const config = [{ id: "t1", type: "tab" }];
+                runtimeFlows.init({
+                    log: mockLog(),
+                    settings: {},
+                    storage: { getFlows: async () => ({ flows: config, rev: "A", credentials: stored }) }
+                });
+                await runtimeFlows.load();
+                flows.init({ log: mockLog(), flows: runtimeFlows });
+                const result = await flows.getFlows({});
+                // what GET /flows (v2) serialises
+                Object.keys(result).sort().should.eql(["flows", "rev"]);
+                result.rev.should.equal("A");
+                const digest = credentials.digest(stored);
+                const json = JSON.stringify(result);
+                json.should.not.containEql(digest);
+                json.should.not.containEql("secret-password-123");
+                runtimeFlows.credentialsChanged({ credentials: stored }).should.be.false();
+            } finally {
+                load.restore();
+            }
         });
     });
 

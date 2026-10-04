@@ -13,10 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #2: tests of digest() - the digest of the credentials read from storage
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require("sinon");
 var util = require("util");
+var crypto = require("crypto");
 
 var NR_TEST_UTILS = require("nr-test-utils");
 var index = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/index");
@@ -485,4 +491,185 @@ describe('red/runtime/nodes/credentials', function() {
             });
         });
     })
+    describe("#digest (#2)", function() {
+        var USER_KEY = "e3a36f47f005bf2aaa51ce3fc6fcaafd79da8d03f2b1a9281f8fb0a285e6255a";
+        // {"node":{user1:"abc",password1:"123"}} encrypted with USER_KEY
+        var CRYPTED = {"$":"5b89d8209b5158a3c313675561b1a5b5phN1gDBe81Zv98KqS/hVDmc9EKvaKqRIvcyXYvBlFNzzzJtvN7qfw06i"};
+        var settingsValues;
+        var settingsSet;
+        var logStub;
+        var runtime;
+
+        function encrypt(secret, text) {
+            var key = crypto.createHash("sha256").update(secret).digest();
+            var iv = crypto.randomBytes(16);
+            var cipher = crypto.createCipheriv("aes-256-ctr", key, iv);
+            return {"$": iv.toString("hex") + cipher.update(text, "utf8", "base64") + cipher.final("base64")};
+        }
+        function logCalls() {
+            return ["warn", "error", "info", "debug", "trace"].reduce(function(n, level) {
+                return n + logStub[level].callCount;
+            }, 0);
+        }
+
+        beforeEach(function() {
+            settingsValues = { credentialSecret: USER_KEY };
+            settingsSet = sinon.spy(function(key, value) { settingsValues[key] = value; return Promise.resolve() });
+            logStub = { _: function(key) { return key } };
+            ["warn", "error", "info", "debug", "trace"].forEach(function(level) { logStub[level] = sinon.spy() });
+            runtime = {
+                log: logStub,
+                settings: {
+                    get: function(key) { return settingsValues[key] },
+                    set: settingsSet,
+                    delete: function(key) { delete settingsValues[key]; return Promise.resolve() }
+                },
+                nodes: { getType: () => function(){} }
+            };
+        });
+
+        it("is the sha256 of the canonical JSON: the order of the keys does not matter", function() {
+            credentials.init(runtime);
+            var a = credentials.digest({"n1":{"user":"abc","password":"123"},"n2":{"k":[1,{"b":2,"a":1}]}});
+            var b = credentials.digest({"n2":{"k":[1,{"a":1,"b":2}]},"n1":{"password":"123","user":"abc"}});
+            a.should.match(/^[0-9a-f]{64}$/);
+            a.should.equal(b);
+            a.should.equal(crypto.createHash("sha256").update('{"n1":{"password":"123","user":"abc"},"n2":{"k":[1,{"a":1,"b":2}]}}').digest("hex"));
+        });
+        it("differs for different content, also the order of an array", function() {
+            credentials.init(runtime);
+            var base = credentials.digest({"n1":{"user":"abc"},"l":[1,2]});
+            credentials.digest({"n1":{"user":"abd"},"l":[1,2]}).should.not.equal(base);
+            credentials.digest({"n1":{"user":"abc"},"l":[2,1]}).should.not.equal(base);
+            credentials.digest({"n1":{"user":"abc"}}).should.not.equal(base);
+            credentials.digest({}).should.not.equal(base);
+        });
+        it("is the digest of the decrypted content: encrypted and plain give the same", function() {
+            credentials.init(runtime);
+            return credentials.load(CRYPTED).then(function() {
+                credentials.digest(CRYPTED).should.equal(credentials.digest({"node":{"password1":"123","user1":"abc"}}));
+            });
+        });
+        it("re-encryption of the same content (a new random iv) gives the same digest", function() {
+            credentials.init(runtime);
+            return credentials.load({}).then(function() {
+                return credentials.add("node", {"user1":"abc","password1":"123"});
+            }).then(function() {
+                return credentials.export();
+            }).then(function(first) {
+                // dirty again without changing the content
+                credentials.delete("nothing");
+                return credentials.export().then(function(second) {
+                    first.should.have.property("$");
+                    second.should.have.property("$");
+                    // the ciphertext changes on every save - it must not be compared
+                    second["$"].should.not.equal(first["$"]);
+                    credentials.digest(second).should.equal(credentials.digest(first));
+                    credentials.digest(first).should.equal(credentials.digest({"node":{"user1":"abc","password1":"123"}}));
+                });
+            });
+        });
+        it("a change of one value changes the digest", function() {
+            credentials.init(runtime);
+            return credentials.load({}).then(function() {
+                return credentials.add("node", {"user1":"abc","password1":"123"});
+            }).then(function() {
+                return credentials.export();
+            }).then(function(first) {
+                return credentials.add("node", {"user1":"abc","password1":"124"}).then(function() {
+                    return credentials.export().then(function(second) {
+                        credentials.digest(second).should.not.equal(credentials.digest(first));
+                    });
+                });
+            });
+        });
+        it("does not change the state of the module: cache, dirty flag, key, settings, log", function() {
+            credentials.init(runtime);
+            return credentials.load(CRYPTED).then(function() {
+                var cache = JSON.stringify(credentials.get("node"));
+                var keyType = credentials.getKeyType();
+                var settingsBefore = JSON.stringify(settingsValues);
+                var logBefore = logCalls();
+                credentials.dirty().should.be.false();
+                // content of another configuration, encrypted with the current key
+                var other = encrypt(USER_KEY, JSON.stringify({"other":{"user1":"x"},"node":{"user1":"y"}}));
+                credentials.digest(other).should.match(/^[0-9a-f]{64}$/);
+                credentials.digest({"third":{"a":1}}).should.match(/^[0-9a-f]{64}$/);
+                should.not.exist(credentials.get("other"));
+                should.not.exist(credentials.get("third"));
+                JSON.stringify(credentials.get("node")).should.equal(cache);
+                credentials.dirty().should.be.false();
+                credentials.getKeyType().should.equal(keyType);
+                JSON.stringify(settingsValues).should.equal(settingsBefore);
+                settingsSet.called.should.be.false();
+                logCalls().should.equal(logBefore);
+                // the same cache is exported as before
+                return credentials.export().then(function(exported) {
+                    exported.should.eql(CRYPTED);
+                });
+            });
+        });
+        it("does not generate or save a key (unlike load): no key yet - credentials_load_failed", function() {
+            settingsValues = {};
+            credentials.init(runtime);
+            (function() { credentials.digest(CRYPTED) }).should.throw({ code: "credentials_load_failed" });
+            settingsSet.called.should.be.false();
+            settingsValues.should.eql({});
+            should.not.exist(credentials.get("node"));
+            credentials.dirty().should.be.false();
+        });
+        it("a wrong key: credentials_load_failed, a fixed message, nothing changed, nothing logged", function() {
+            credentials.init(runtime);
+            return credentials.load(CRYPTED).then(function() {
+                var logBefore = logCalls();
+                var wrong = encrypt("another key", JSON.stringify({"node":{"user1":"secret-user"}}));
+                var error;
+                try {
+                    credentials.digest(wrong);
+                } catch(err) {
+                    error = err;
+                }
+                should.exist(error);
+                error.should.have.property("code", "credentials_load_failed");
+                error.should.have.property("message", "Failed to decrypt credentials");
+                error.should.not.have.property("cause");
+                // the cache of the running configuration is not cleared, the module is not dirty
+                credentials.get("node").should.have.property("user1", "abc");
+                credentials.dirty().should.be.false();
+                logCalls().should.equal(logBefore);
+            });
+        });
+        it("a corrupt value: credentials_load_failed without the content in the message", function() {
+            credentials.init(runtime);
+            return credentials.load(CRYPTED).then(function() {
+                // decrypts, but is not JSON - the message of JSON.parse could quote the text
+                var notJson = encrypt(USER_KEY, "not-json secret-value-0123456789");
+                var error;
+                try {
+                    credentials.digest(notJson);
+                } catch(err) {
+                    error = err;
+                }
+                should.exist(error);
+                error.should.have.property("code", "credentials_load_failed");
+                error.message.should.equal("Failed to decrypt credentials");
+                error.should.not.have.property("cause");
+                JSON.stringify(error).should.not.containEql("secret-value");
+                String(error.stack).should.not.containEql("secret-value");
+                (function() { credentials.digest({"$":"zz"}) }).should.throw({ code: "credentials_load_failed" });
+            });
+        });
+        it("encrypted credentials while the encryption is disabled: credentials_load_failed", function() {
+            credentials.init({ log: logStub, settings: { get: function() { return false } } });
+            return credentials.load({"a":{"b":1}}).then(function() {
+                (function() { credentials.digest(CRYPTED) }).should.throw({ code: "credentials_load_failed" });
+                credentials.get("a").should.have.property("b", 1);
+            });
+        });
+        it("empty or missing credentials have a digest", function() {
+            credentials.init(runtime);
+            credentials.digest({}).should.equal(credentials.digest(undefined));
+            credentials.digest(null).should.equal(credentials.digest({}));
+        });
+    });
 })
