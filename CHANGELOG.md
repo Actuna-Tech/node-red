@@ -1,5 +1,16 @@
 #### Unreleased: Instances and reload
 
+ - New setting `health.unreadyGrace` (ms, not set by default - nothing changes without it): for a
+   planned stop - a stop signal (SIGTERM) and a reload of the flows after a change in storage
+   (`deploy.reload`) - `/ready` answers 503 for at least this long, measured from the first 503,
+   before the flows stop, so a load balancer that polls `/ready` takes the instance out of rotation
+   first. The wait runs at the same time as the `preShutdown` / `preReload` hooks (the flows stop
+   after the longer of the two) and is counted inside `shutdownTimeout` and
+   `deploy.reload.preReloadTimeout`; a second stop signal, a deployment on this instance or the stop
+   of the runtime ends it. Without `shutdownTimeout` a shutdown waits exactly `unreadyGrace` (the
+   hook is still not called). Deployments from the editor or the Admin API are not delayed. Needs
+   `health.enabled: true`; an invalid value or a missing `enabled` logs a warning and uses no grace
+   (#8, #1)
  - An editor-only instance (`editorOnly`) does not start the coordination plugin and is never the
    leader, so `inject` nodes with "Run only on one instance" fire on the instances that run the flows (#4)
  - Documented: health probes without `health.port` are public on the main server; `preReload` and

@@ -28,6 +28,7 @@ module.exports = {
     adminAuth: { /* ... */ },
     httpAdminNodeRoutes: "authenticated",   // trasy admin węzłów tylko po zalogowaniu (Z-02)
     telemetry: { enabled: false, locked: true }, // telemetria wyłączona na stałe (P-03)
+    health: { enabled: true, port: 1881, unreadyGrace: 15000 }, // sondy; /ready 503 min. 15 s przed zatrzymaniem flow (Z-16) – tylko za balanserem
     deploy: {
         response: "started",                // odpowiedź API po starcie flow (P-01)
         requireRevision: true               // każde wdrożenie z aktualną rewizją (Z-05)
@@ -123,6 +124,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 |---|---|---|---|
 | stan instancji `runtime.state`, zdarzenie `instance:state`, `RED.stop(reason)` | zawsze (pasywne) | `init, starting, ready, deploying, reloadPending, reloading, idle, loaded, failed, stopping, stopped` | E-02 |
 | `health: {enabled, path, port, host}` | wyłączone | `/live`, `/ready` (503 `{"status":"unavailable"}` poza stanem gotowości), bez uwierzytelnienia | Z-08 |
+| `health.unreadyGrace` | brak (0) | planowane zatrzymanie (SIGTERM, przeładowanie z magazynu `deploy.reload`): `/ready` odpowiada 503 co najmniej tyle ms, **liczone od chwili pierwszej odpowiedzi 503**, zanim flow zostaną zatrzymane – balanser odpytujący `/ready` zdąży wyłączyć instancję z ruchu. Czeka równolegle z hookami `preShutdown`/`preReload` (zatrzymanie po dłuższym z nich) i mieści się w limicie: ograniczone `shutdownTimeout` (SIGTERM) i `deploy.reload.preReloadTimeout` (przeładowanie). Przerywane drugim sygnałem, wdrożeniem na tej instancji lub zatrzymaniem runtime. Bez `shutdownTimeout` zamykanie czeka dokładnie `unreadyGrace` (hook `preShutdown` nadal nie jest wołany) – `terminationGracePeriodSeconds` musi być dłuższy. **Nie dotyczy** wdrożenia z edytora/Admin API (ta instancja jest edytowana, żądanie nie może czekać). Wymaga `health.enabled: true`; wartość nie będąca liczbą ≥ 0 lub brak `enabled` → ostrzeżenie w logu i brak oczekiwania (zgłoszenia #8, #1) | Z-16 |
 | `shutdownTimeout` + hook `preShutdown` | brak | drenaż przy SIGTERM: `/ready` 503 od razu, hook z limitem, potem zatrzymanie; drugi sygnał = natychmiast | Z-08 |
 | `readOnlyUserDir`, zmienna `NODE_RED_READ_ONLY_USER_DIR` | `false` | brak zapisu do katalogu użytkownika; wdrożenie przy magazynie plikowym i `DELETE /nodes/<moduł>` → 400 `read_only_user_dir`; instalatory palety i modułów function odrzucają zapis niezależnie od innych ustawień | Z-11 |
 | `coordination: {plugin, options}`, `RED.coordination` (węzły), typ wtyczki `node-red-coordination` | wtyczka lokalna | przywództwo i zajęcia z TTL; własna wtyczka wybierana jawnie | Z-10 |
