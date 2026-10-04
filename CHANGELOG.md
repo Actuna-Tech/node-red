@@ -279,6 +279,11 @@ Fixes
    the deploy errors (`RED.deploy.translateErrorResponse`). A request with no HTTP response (status 0)
    shows "no response from server". Polish editor: `library.saveFailed` and `user.notAuthorized` are
    translated (the message no longer mixes languages). No change of the API (#30)
+ - Editor: a start result (`deploy-start-result`) that was ignored because its revision was not the one of the
+   editor is dropped when the editor starts a deployment. Revisions are content hashes, so a result kept
+   long before could be applied to a later deployment of the same content that ended in `start_timeout`:
+   it closed that error at once and showed the outcome of the earlier start. A result that arrives
+   during the request, before its response, is still shown after the response (#31)
 
 #### Unreleased: Engine extensions
 
