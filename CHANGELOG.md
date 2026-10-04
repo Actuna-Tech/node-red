@@ -279,6 +279,11 @@ Fixes
    are now found by the handler of the node and removed from the end of the stack; a missing router is
    tolerated. The key of a raw body route (`skipBodyParsing`) is also kept while another node still uses the
    same method and path (a count per key), instead of being dropped by the first node that closes (#11)
+ - Editor: a start result (`deploy-start-result`) that was ignored because its revision was not the one of the
+   editor is dropped when the editor starts a deployment. Revisions are content hashes, so a result kept
+   long before could be applied to a later deployment of the same content that ended in `start_timeout`:
+   it closed that error at once and showed the outcome of the earlier start. A result that arrives
+   during the request, before its response, is still shown after the response (#31)
 
 #### Unreleased: Engine extensions
 

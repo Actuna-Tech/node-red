@@ -870,6 +870,22 @@ describe("editor-client/ui/deploy", function() {
                 notifications.should.have.length(1);
                 notifications[0].close.called.should.be.false();
             });
+            it("a result ignored before a deployment is not applied to it, even for the same revision (#31)", function() {
+                // the editor has rev-1; the result of an earlier start of rev-2 (the content of rev-2 was deployed
+                // before, e.g. by another editor) is ignored
+                deploy.showStartResult({ type: "success", revision: "rev-2" });
+                notifications.should.have.length(0);
+                // later this editor deploys the same content: the same revision, the start times out
+                actions["core:deploy-flows"](true);
+                fail(startFailed([{ code: "start_timeout", message: "t", timeout: 30, phase: "flows", pending: ["t2"] }], "rev-2"));
+                // only the start_timeout error: it stays open until the real result of this start
+                notifications.should.have.length(1);
+                notifications[0].close.called.should.be.false();
+                // the real result of this start closes it
+                deploy.showStartResult({ type: "success", revision: "rev-2" });
+                notifications[0].close.calledOnce.should.be.true();
+                notifications.should.have.length(2);
+            });
             it("closes the open start_timeout error of the same deployment", function() {
                 actions["core:deploy-flows"](true);
                 fail(startFailed([{ code: "start_timeout", message: "t", timeout: 30, phase: "flows", pending: ["t2"] }], "rev-2"));
