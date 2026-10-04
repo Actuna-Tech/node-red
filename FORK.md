@@ -87,6 +87,7 @@ module.exports = {
 |---|---|---|
 | Pakiet `auth` przez `/comms` bez `adminAuth` nie zatrzymuje procesu (odpowiedź `auth ok`) | P-04 | poprawka |
 | Nazwa użytkownika wstawiana jako tekst (XSS), odświeżenie danych po ponownym logowaniu | R-08, R-41 | poprawka |
+| Odpowiedź serwera przy błędzie zapisu/eksportu do biblioteki pokazywana jako escapowany tekst, nie jako HTML (XSS) | #30 | poprawka |
 | Subskrypcje `/comms` dopiero po uwierzytelnieniu | Z-01 | poprawka |
 | Trasy admin węzłów wymagają logowania: `httpAdminNodeRoutes: "authenticated"`, `RED.auth.publicRoute()` | Z-02 | `"open"` |
 | Telemetria blokowana przez administratora: `telemetry.locked` (także w edytorze) | P-03 | wyłączone |
@@ -260,6 +261,12 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   (albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”) zamiast surowego JSON-a wstawianego jako HTML – zmiana tylko
   wyświetlania, bez wpływu na zapis i API; wartości z odpowiedzi i nazwy flow są escapowane. Zmiany zachowania dla 409
   (`version_mismatch`, `version_required`) i dla błędów bez `rev` (zmiany zostają niewdrożone) nie ma.
+- Edytor, błąd zapisu do biblioteki (okno biblioteki) i eksportu do biblioteki (okno eksportu schowka) (#30): komunikat
+  `library.saveFailed` wstawiał surową treść odpowiedzi serwera jako HTML (XSS przy odpowiedzi z znacznikami). Teraz
+  pokazuje pole `message` odpowiedzi JSON (albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”) z escapowaniem
+  `& < > " '`, nigdy surową treść; ten sam formater co błędy wdrożenia (`RED.deploy.translateErrorResponse`). Brak odpowiedzi
+  HTTP (status 0) daje „brak odpowiedzi z serwera”. Polski edytor: przetłumaczone `library.saveFailed` i `user.notAuthorized`
+  (komunikat nie miesza języków). Bez zmian API.
 
 ## 7. Testy i proces
 
