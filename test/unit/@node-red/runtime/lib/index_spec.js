@@ -27,6 +27,7 @@
  *   #7: the `hooks` setting is registered by init()
  *   #3: the generated instanceId (an undefined value of settings.js, a failed save)
  *   and the warning for a generated id with a coordination plugin of a cluster
+ *   #15: the warning at start for a hook of the `hooks` setting that is never called
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -982,6 +983,124 @@ describe("runtime", function() {
             runtime.init({testSettings: true, httpAdminRoot:"/"});
             await runtime.start();
             generatedWarning().called.should.be.false();
+        });
+    });
+
+    describe("hooks that are never called (#15)", function() {
+        let stubs;
+
+        beforeEach(function() {
+            stubs = [
+                sinon.stub(storage,"getSettings").callsFake(function() {return Promise.resolve({})}),
+                sinon.stub(storage,"saveSettings").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(storage,"init").callsFake(function() {return Promise.resolve();}),
+                sinon.stub(coordination,"info").callsFake(function() {return {plugin: "local", local: true}}),
+                sinon.stub(coordination,"start").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"init").callsFake(function() {}),
+                sinon.stub(redNodes,"load").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"cleanModuleList").callsFake(function(){}),
+                sinon.stub(redNodes,"getNodeList").callsFake(function() {return []}),
+                sinon.stub(redNodes,"loadContextsPlugin").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"loadFlows").callsFake(function() {return Promise.resolve()}),
+                sinon.stub(redNodes,"startFlows").callsFake(function() {return Promise.resolve({errors:[]})})
+            ];
+            mockUtil();
+        });
+        afterEach(function() {
+            stubs.forEach(s => s.restore());
+            unmockUtil();
+            util.hooks.clear();
+            settings.reset();
+            NR_TEST_UTILS.require("@node-red/runtime/lib/state").reset();
+        });
+
+        function warnings(key) {
+            return log._.withArgs("hooks." + key);
+        }
+        function hook(event) {}
+        function base(extra) {
+            return Object.assign({testSettings: true, httpAdminRoot: "/"}, extra);
+        }
+
+        it("warns about a preShutdown hook without shutdownTimeout and names the hook", async function() {
+            runtime.init(base({hooks: {"preShutdown.drain": hook}}));
+            await runtime.start();
+            warnings("preShutdown-not-called").calledOnce.should.be.true();
+            warnings("preShutdown-not-called").firstCall.args[1].should.eql({id: "preShutdown.drain"});
+            warnings("preReload-not-called").called.should.be.false();
+            log.warn.called.should.be.true();
+        });
+
+        it("warns about a preReload hook without deploy.reload.watch and names the hook", async function() {
+            runtime.init(base({hooks: {"preReload.drain": hook}}));
+            await runtime.start();
+            warnings("preReload-not-called").calledOnce.should.be.true();
+            warnings("preReload-not-called").firstCall.args[1].should.eql({id: "preReload.drain"});
+            warnings("preShutdown-not-called").called.should.be.false();
+        });
+
+        it("warns once for each hook of both kinds", async function() {
+            runtime.init(base({hooks: {"preShutdown.a": hook, "preShutdown.b": hook, "preReload.a": hook}}));
+            await runtime.start();
+            warnings("preShutdown-not-called").callCount.should.equal(2);
+            warnings("preShutdown-not-called").args.map(a => a[1].id).should.eql(["preShutdown.a", "preShutdown.b"]);
+            warnings("preReload-not-called").calledOnce.should.be.true();
+        });
+
+        it("warns when shutdownTimeout or deploy.reload.watch is not usable", async function() {
+            runtime.init(base({
+                shutdownTimeout: 0,
+                deploy: {reload: {watch: false}},
+                hooks: {"preShutdown.drain": hook, "preReload.drain": hook}
+            }));
+            await runtime.start();
+            warnings("preShutdown-not-called").calledOnce.should.be.true();
+            warnings("preReload-not-called").calledOnce.should.be.true();
+        });
+
+        it("keeps the hooks registered and the start unchanged", async function() {
+            runtime.init(base({hooks: {"preShutdown.drain": hook, "preReload.drain": hook}}));
+            await runtime.start();
+            util.hooks.has("preShutdown.drain").should.be.true();
+            util.hooks.has("preReload.drain").should.be.true();
+            redNodes.startFlows.called.should.be.true();
+        });
+
+        it("does not warn when shutdownTimeout is set", async function() {
+            runtime.init(base({shutdownTimeout: 1000, hooks: {"preShutdown.drain": hook}}));
+            await runtime.start();
+            warnings("preShutdown-not-called").called.should.be.false();
+            warnings("preReload-not-called").called.should.be.false();
+        });
+
+        it("does not warn when deploy.reload.watch is true", async function() {
+            runtime.init(base({deploy: {reload: {watch: true}}, hooks: {"preReload.drain": hook}}));
+            await runtime.start();
+            warnings("preShutdown-not-called").called.should.be.false();
+            warnings("preReload-not-called").called.should.be.false();
+        });
+
+        it("does not warn without the hooks setting, even with the conditions not met", async function() {
+            runtime.init(base());
+            await runtime.start();
+            warnings("preShutdown-not-called").called.should.be.false();
+            warnings("preReload-not-called").called.should.be.false();
+        });
+
+        it("does not warn for an empty hooks setting", async function() {
+            runtime.init(base({hooks: {}}));
+            await runtime.start();
+            warnings("preShutdown-not-called").called.should.be.false();
+            warnings("preReload-not-called").called.should.be.false();
+        });
+
+        it("does not warn about a hook added by a plugin", async function() {
+            runtime.init(base());
+            util.hooks.add("preShutdown.plugin", hook);
+            util.hooks.add("preReload.plugin", hook);
+            await runtime.start();
+            warnings("preShutdown-not-called").called.should.be.false();
+            warnings("preReload-not-called").called.should.be.false();
         });
     });
 });
