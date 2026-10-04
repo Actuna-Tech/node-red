@@ -453,29 +453,45 @@ describe("HTTP In node - routes removed on close", function() {
             (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
         });
 
-        it("a second close() leaves the count at zero (a new node without skipBodyParsing gets the parsed body)", async function() {
+        // What rawBodyCapture does with a request to the route once no node is on it: a
+        // route that is not a node reports whether it got the raw body (a held key makes
+        // it a Buffer). All inside ONE module instance: a reload of the module (a new
+        // helper.load) would start with an empty set of keys and hide a leaked key.
+        async function bodyOfForeignRoute(path, route) {
+            const foreign = function(req, res) { res.status(200).send(Buffer.isBuffer(req.body) ? "buffer" : "not read") };
+            RED.httpNode.post(route || path, foreign);
+            try {
+                return (await rawPost(path, '{"x":  1}')).text;
+            } finally {
+                RED.httpNode._router.stack = RED.httpNode._router.stack.filter(layer => !(layer.route && layer.route.stack[0].handle === foreign));
+            }
+        }
+
+        // A redeploy of all the flows in the running module (not a new load of the module)
+        async function redeploy(flow) {
+            await helper.setFlows(flow, "full");
+            rawAnswers();
+        }
+
+        it("a second close() leaves the count at zero (no key is held after it)", async function() {
             await load(flowOf(httpIn("a", { skipBodyParsing: true })));
             const a = helper.getNode("a");
             await a.close();
             await a.close();
-            await helper.unload();
-            await load(flowOf(httpIn("a")));
-            rawAnswers();
-            (await rawPost("/same", '{"x":  1}')).text.should.equal("parsed");
+            (await bodyOfForeignRoute("/same")).should.equal("not read");
         });
 
         it("a redeploy toggling skipBodyParsing true -> false -> true on the same route follows the setting", async function() {
-            const expected = ["buffer:{\"x\":  1}", "parsed", "buffer:{\"x\":  1}"];
-            const settings = [true, false, true];
-            for (let i = 0; i < settings.length; i++) {
-                await load(flowOf(httpIn("a", { skipBodyParsing: settings[i] })));
-                rawAnswers();
-                (await rawPost("/same", '{"x":  1}')).text.should.equal(expected[i]);
-                await helper.unload();
-            }
+            await load(flowOf(httpIn("a", { skipBodyParsing: true })));
+            rawAnswers();
+            (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
+            await redeploy(flowOf(httpIn("a", { skipBodyParsing: false })));
+            (await rawPost("/same", '{"x":  1}')).text.should.equal("parsed");
+            await redeploy(flowOf(httpIn("a", { skipBodyParsing: true })));
+            (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
         });
 
-        it("a redeploy of the node with skipBodyParsing next to a node that keeps it leaves the key of the other", async function() {
+        it("repeated close() of one node leaves the key of the other node with skipBodyParsing", async function() {
             await load(flowOf(httpIn("a", { skipBodyParsing: true }), httpIn("b", { skipBodyParsing: true })));
             rawAnswers();
             for (let i = 0; i < 3; i++) {
@@ -485,27 +501,25 @@ describe("HTTP In node - routes removed on close", function() {
         });
 
         it("an invalid path with skipBodyParsing leaves no held key", async function() {
-            // a route that is not a node: reports what rawBodyCapture did with the body of
-            // the request to the path of the invalid route (a held key makes it a Buffer)
             await load(flowOf(httpIn("bad", { url: "/foo(", skipBodyParsing: true })));
-            const foreign = function(req, res) { res.status(200).send(Buffer.isBuffer(req.body) ? "buffer" : "not read") };
-            RED.httpNode.post(/^\/foo\($/, foreign);
-            try {
-                (await rawPost("/foo(", '{"x":  1}')).text.should.equal("not read");
-            } finally {
-                RED.httpNode._router.stack = RED.httpNode._router.stack.filter(layer => !(layer.route && layer.route.stack[0].handle === foreign));
-            }
+            (await bodyOfForeignRoute("/foo(", /^\/foo\($/)).should.equal("not read");
         });
 
         it("stops capturing the raw body when the last node of the route closes", async function() {
             await load(flowOf(httpIn("a", { skipBodyParsing: true }), httpIn("b", { skipBodyParsing: true })));
             await helper.getNode("a").close();
             await helper.getNode("b").close();
-            await helper.unload();
-            // a new node of the same route without skipBodyParsing gets the parsed body
-            await load(flowOf(httpIn("a")));
-            rawAnswers();
-            (await rawPost("/same", '{"x":  1}')).text.should.equal("parsed");
+            (await bodyOfForeignRoute("/same")).should.equal("not read");
+        });
+
+        it("captures the raw body again after a redeploy once all the nodes of the route had closed", async function() {
+            await load(flowOf(httpIn("a", { skipBodyParsing: true }), httpIn("b", { skipBodyParsing: true })));
+            await helper.getNode("a").close();
+            await helper.getNode("b").close();
+            (await bodyOfForeignRoute("/same")).should.equal("not read");
+            // both closed: a redeploy of one node with skipBodyParsing captures again
+            await redeploy(flowOf(httpIn("a", { skipBodyParsing: true })));
+            (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
         });
     });
 });
