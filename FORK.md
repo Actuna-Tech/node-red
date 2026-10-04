@@ -60,7 +60,7 @@ module.exports = {
 
 ### Język polski – częściowo (Z-13)
 
-- Dodane `locales/pl/editor.json` (317 z 1151 kluczy en-US, ok. 28%, oraz 8 form liczby mnogiej) i `locales/pl/messages.json` (101 z 872, ok. 12%) –
+- Dodane `locales/pl/editor.json` (317 z 1151 kluczy en-US, ok. 28%, oraz 8 form liczby mnogiej) i `locales/pl/messages.json` (102 z 873, ok. 12%) –
   tłumaczenie częściowe od Zamawiającego; brakujące klucze wracają do en-US (`fallbackLng`). Słownik: „węzeł”,
   `flow`/`subflow` bez tłumaczenia, „Wdróż”; forma bezosobowa. Liczba mnoga: `_one/_few/_many/_other` (i18next 25).
 - Pomoc węzłów (#12): `locales/pl/common/21-debug.html`, `function/10-function.html`, `function/15-change.html`
@@ -141,11 +141,11 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `/comms` z uprawnieniem odczytu), tak samo jak `runtime-state` i zdarzenia debug – nie tylko do użytkownika, który wdrażał.
 
 ### Wstrzymywanie żądań HTTP węzłów podczas restartu flow (#8)
-- **Surowe ciało (`skipBodyParsing`), tylko przy `enabled: true`:** żądanie do trasy `http in` z „surowym ciałem”, które przeszło przez
+- **Surowe ciało (`skipBodyParsing`) w oknie stop→start:** żądanie do trasy `http in` z „surowym ciałem”, które przeszło przez
   `rawBodyCapture` w oknie stop→start (klucz trasy chwilowo nieobecny), po wypuszczeniu dostałoby ciało sparsowane (obiekt/tekst zamiast
   `Buffer`, np. psuje weryfikację podpisu HMAC). Trasa takiego węzła czyta więc surowe ciało sama, jeśli nie zostało jeszcze odczytane
-  (`21-httpin.js`, `createRawBodyFallback`); gdy `rawBodyCapture` zadziałał (normalny przypadek), zachowanie jest bez zmian.
-  Od #16 robi to każda trasa `skipBodyParsing`, **niezależnie od tego ustawienia** (w #8 tylko przy `enabled: true`).
+  (`21-httpin.js`, `createRawBodyFallback`). W #8 robiła to tylko trasa przy `enabled: true`; od #16 robi to każda trasa `skipBodyParsing`,
+  **niezależnie od tego ustawienia**, a samo ciało czyta zawsze trasa (nie `rawBodyCapture`, zob. §6).
 - **Surowe ciało tras z parametrem i inną wielkością liter (#16):** `rawBodyCapture` dopasowuje dosłowny klucz `METODA:url`, więc trasa
   `skipBodyParsing` z parametrem (`/hook/:id`) lub inną wielkością liter nigdy nie była przechwytywana i dostawała ciało sparsowane.
   Teraz taka trasa dostaje `Buffer` zawsze (zapasowy odczyt wyżej) – zob. §6 (limit rozmiaru surowego ciała i opcja węzła `Max body size`).
@@ -282,17 +282,28 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 - `http in`, surowe ciało „Do not parse request body” (`skipBodyParsing`, #16): (1) trasa z parametrem (`/hook/:id`) lub adresowana inną
   wielkością liter (`/HOOK`) dostaje teraz `Buffer` **niezależnie od `deploy.holdHttpNodeRequests`** (wcześniej – obiekt lub tekst,
   bo `rawBodyCapture` zna tylko dosłowny klucz `METODA:url`; psuło to np. weryfikację podpisu ciała); każda trasa z tą opcją czyta
-  surowe ciało sama, gdy nie zostało przechwycone. (2) **Surowe ciało ma limit, domyślnie włączony:** wartość `apiMaxLength`
-  (domyślnie 5 MB; to samo ustawienie co parsery JSON i urlencoded); większe ciało → **413** (także bez `Content-Length`), flow się
-  nie wykonuje. **Integracja wysyłająca surowe ciało powyżej 5 MB dostanie 413**, dopóki nie podniesie się limitu (`apiMaxLength` albo
-  pole węzła). Reszta odrzuconego ciała jest czytana i odrzucana (do 64 MB), żeby klient dostał 413, a nie reset połączenia.
+  surowe ciało sama. (2) **Surowe ciało ma limit, domyślnie włączony:** wartość `apiMaxLength`
+  (domyślnie 5 MB; to samo ustawienie co parsery JSON i urlencoded); większe ciało → **413** (także bez `Content-Length`; z nagłówkami
+  CORS, bo odpowiedź wysyła trasa), flow się nie wykonuje. **Integracja wysyłająca surowe ciało powyżej 5 MB dostanie 413**, dopóki nie podniesie się limitu (`apiMaxLength` albo
+  pole węzła). Reszta odrzuconego ciała jest czytana i odrzucana (do 64 MB), żeby klient dostał 413, a nie reset połączenia; gdy `Content-Length`
+  deklaruje ponad 64 MB (albo odrzucone ciało przekroczy 64 MB), odpowiedź 413 z `Connection: close` idzie od razu.
   (3) **Pole węzła „Max body size” (`maxBodySize`):** zastępuje limit dla jednego węzła (wyższy lub niższy), dla tras przyjmujących duże
-  pliki lub obrazy; liczba z opcjonalną jednostką `b`/`kb`/`mb`/`gb` (1024; np. `50mb`; sama liczba to bajty). Dotyczy surowego ciała
-  oraz – przy „Accept file uploads” – rozmiaru **każdego** przesyłanego pliku (multer `limits.fileSize`, 413 po przekroczeniu); bez
-  pola pliki pozostają **bez limitu**, jak dotąd. Puste pole = domyślny limit; nieprawidłowa wartość → ostrzeżenie węzła
-  i limit domyślny. Brak nowego ustawienia globalnego. Na trasie dzielonej przez kilka węzłów `skipBodyParsing` przechwycenie czyta do
-  najwyższego z limitów, a trasa każdego węzła sprawdza własny. Bez zmian: parsery JSON/urlencoded (nadal
-  `apiMaxLength`) oraz `rawBodyParser` (ciało tekstowe i binarne trasy bez `skipBodyParsing`, nadal bez limitu).
+  pliki lub obrazy; liczba z opcjonalną jednostką `b`/`kb`/`mb`/`gb`/`tb`/`pb` (1024; np. `50mb`; sama liczba to bajty; tekst do 32 znaków). Dotyczy surowego
+  ciała oraz – przy „Accept file uploads” – **całego ciała żądania multipart** (wszystkie pliki i pola razem, z ramkami multipart, więc
+  pojedynczy plik przechodzi do nieco poniżej limitu); 413 po przekroczeniu: od razu, gdy `Content-Length` przekracza limit, a przy
+  `Transfer-Encoding: chunked` po przekroczeniu liczby odebranych bajtów (multer nie dostaje reszty); bez pola upload pozostaje **bez
+  limitu**, jak dotąd. Żądanie niebędące multipart na trasie z uploadem nie jest limitowane tym polem (jak dotąd). Puste pole = domyślny
+  limit; nieprawidłowa wartość → ostrzeżenie węzła i limit domyślny (pole jest brane pod uwagę tylko przy `skipBodyParsing` lub
+  uploadzie; w edytorze jest walidowane tylko, gdy widoczne). Nieprawidłowe `apiMaxLength` (liczba ≤ 0) → jedno ostrzeżenie w logu
+  (nie na każdy węzeł) i 5 MB. Brak nowego ustawienia globalnego. Na trasie dzielonej przez kilka węzłów obowiązuje limit węzła, który
+  odpowiada (pierwszy zarejestrowany). Bez zmian: parsery JSON/urlencoded (nadal `apiMaxLength`) oraz `rawBodyParser` (ciało
+  tekstowe i binarne trasy bez `skipBodyParsing`, nadal bez limitu).
+  (4) **Kolejność (bezpieczeństwo):** `rawBodyCapture` stoi na szczycie głównej aplikacji, przed `httpNodeAuth` i `httpNodeMiddleware`, więc
+  **tylko oznacza** żądanie (klucz trasy z `skipBodyParsing`: inne warstwy, np. parsery ciała, je pomijają) i nie czyta ciała; ciało czyta
+  trasa węzła po uwierzytelnieniu, CORS i `httpNodeMiddleware` (wcześniej bufor do limitu rósł przed odmową 401). **Skutek zmiany
+  zachowania:** `httpNodeMiddleware` i obce trasy na tej samej metodzie i ścieżce nie znajdują już surowego ciała w `req.body` (tak
+  jak dotąd na trasach z parametrem); trasa bez `skipBodyParsing`, która odpowiada na kluczu trasy z `skipBodyParsing`, parsuje ciało
+  normalnie (wcześniej dostawała `Buffer`).
 
 ## 7. Testy i proces
 

@@ -69,7 +69,7 @@
 
 Features
  - Polish (`pl`) translation of the editor (`editor.json`, 317 keys) and of the core nodes
-   (`messages.json`, 101 keys), partial: keys without a translation fall back to English.
+   (`messages.json`, 102 keys), partial: keys without a translation fall back to English.
    The runtime messages, the JSONata and info-tip catalogs and the help of the other nodes are not
    translated yet. The language is listed in the language selector of the user settings and is
    used by a browser set to Polish when the user has not selected a language.
@@ -304,8 +304,8 @@ Fixes
    promises, regardless of `deploy.holdHttpNodeRequests`. Before, the raw body was captured only for the literal
    `METHOD:url` of the node, so such a route got a parsed body (an object or text; for example it broke the
    verification of a signature of the body). Every route of a node with the option now reads the raw body
-   itself when it was not captured (before: only with `deploy.holdHttpNodeRequests`). Behaviour change, see
-   the Features below (#16)
+   itself (before: only with `deploy.holdHttpNodeRequests`); `rawBodyCapture` no longer reads the body,
+   it only marks the request (see Features). Behaviour change (#16)
  - Tests only, no change of the product: flaky tests fixed. The HTTP tests no longer reach a foreign server
    on the same machine (supertest started the app on all interfaces but connected to `127.0.0.1`; the
    shared helper `nr-test-utils/supertest` listens on `127.0.0.1`), the `tcp request` test server hook calls
@@ -318,15 +318,26 @@ Features
    (5mb by default), the same setting as for the JSON and URL-encoded bodies; a larger body is answered
    with 413 `Payload Too Large` (also without `Content-Length`) and the flow does not run. Before, the raw
    body had no limit. An integration that sends more than 5mb raw gets 413 until the limit is raised
-   (`apiMaxLength` or the node option below). The rest of a rejected body is read and discarded, so the
-   client receives the 413 instead of a reset connection (#16)
+   (`apiMaxLength` or the node option below). The 413 is sent by the route, after the authentication and
+   with the CORS headers. The rest of a rejected body is read and discarded (up to 64mb), so the client
+   receives the 413 instead of a reset connection; a declared `Content-Length` above 64mb gets the 413 and
+   `Connection: close` at once (#16)
+ - `http in` with "Do not parse request body": the raw body is read by the route of the node, after
+   `httpNodeAuth`, CORS and `httpNodeMiddleware`; `rawBodyCapture` (the top of the root app, in front of
+   the authentication) only marks the request, so a rejected request no longer makes the runtime buffer
+   its body first. A `httpNodeMiddleware` or another route on the same method and path no longer finds the
+   raw body in `req.body` (as before for routes with parameters); a node without the option that answers on
+   such a route parses its body normally (before it got a `Buffer`) (#16)
  - `http in`: new optional field "Max body size" (`maxBodySize`) replaces the limit for one node, higher or
    lower, for routes that receive large files or images. A number with an optional unit `b`, `kb`, `mb`
-   or `gb` (1024 based, for example `50mb`; a number alone is bytes). It applies to the raw body and, with "Accept file
-   uploads", to the size of each uploaded file (413 above it). Without the field the uploaded files stay unlimited, as
-   before. An empty value uses the default; an invalid one logs a warning (`httpin.errors.invalid-max-body-size`)
-   and uses the default. No new global setting. The field is shown only with one of the two options; the editor
-   validates it. English help and the English and Polish messages (#16)
+   `gb`, `tb` or `pb` (1024 based, for example `50mb`; a number alone is bytes; up to 32 characters). It applies to
+   the raw body and, with "Accept file uploads", to the whole body of a multipart request (all files and fields; 413
+   above it, at once when `Content-Length` is above the limit, and by the received bytes for a chunked body).
+   Without the field an upload stays unlimited, as before. An empty value uses the default; an invalid one
+   logs a warning (`httpin.errors.invalid-max-body-size`) and uses the default. An `apiMaxLength` that is not a size
+   above 0 logs one warning (`httpin.errors.invalid-api-max-length`) and uses 5mb. No new global setting. The field
+   is shown, and validated by the editor, only with one of the two options. English help and the English and
+   Polish messages (#16)
 
 #### Unreleased: Engine extensions
 

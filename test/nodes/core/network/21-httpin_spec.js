@@ -26,6 +26,8 @@
 
 const should = require("should");
 const supertest = require("nr-test-utils/supertest");
+const express = require("express");
+const bodyParser = require("body-parser");
 const helper = require("node-red-node-test-helper");
 const httpInNode = require("nr-test-utils").require("@node-red/nodes/core/network/21-httpin.js");
 
@@ -457,6 +459,7 @@ describe("HTTP In node - routes removed on close", function() {
             rawAnswers();
             (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
             await helper.getNode("a").close();
+            (await keyOfRoute("/same")).should.equal(HELD);
             (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
         });
 
@@ -464,6 +467,7 @@ describe("HTTP In node - routes removed on close", function() {
             await load(flowOf(httpIn("a", { skipBodyParsing: true }), httpIn("b")));
             rawAnswers();
             await helper.getNode("b").close();
+            (await keyOfRoute("/same")).should.equal(HELD);
             (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
         });
 
@@ -473,20 +477,30 @@ describe("HTTP In node - routes removed on close", function() {
             const a = helper.getNode("a");
             await a.close();
             await a.close();
+            (await keyOfRoute("/same")).should.equal(HELD);
             (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
         });
 
-        // What rawBodyCapture does with a request to the route once no node is on it: a
-        // route that is not a node reports whether it got the raw body (a held key makes
-        // it a Buffer). All inside ONE module instance: a reload of the module (a new
-        // helper.load) would start with an empty set of keys and hide a leaked key.
-        async function bodyOfForeignRoute(path, route) {
-            const foreign = function(req, res) { res.status(200).send(Buffer.isBuffer(req.body) ? "buffer" : "not read") };
-            RED.httpNode.post(route || path, foreign);
+        // Whether rawBodyCapture holds the key of the route: a route that is not a node,
+        // with a JSON body parser, goes before the routes of the nodes (so the nodes of
+        // the route do not answer first, whether they are on it or not). A held key marks the
+        // request as read and the parser skips it ("held"); without the key the parser
+        // parses the body ("released"). All inside ONE module instance: a reload of the
+        // module (a new helper.load) would start with an empty set of keys and hide a
+        // leaked key.
+        const HELD = "held";
+        const RELEASED = "released";
+        async function keyOfRoute(path, route) {
+            const foreign = function(req, res) { res.status(200).send(req.body && req.body.x === 1 ? RELEASED : HELD) };
+            RED.httpNode.post(route || path, bodyParser.json(), foreign);
+            const stack = RED.httpNode._router.stack;
+            const layer = stack.pop();
+            const firstRoute = stack.findIndex(l => l.route);
+            stack.splice(firstRoute < 0 ? stack.length : firstRoute, 0, layer);
             try {
-                return (await rawPost(path, '{"x":  1}')).text;
+                return (await rawPost(path, '{"x": 1}')).text;
             } finally {
-                RED.httpNode._router.stack = RED.httpNode._router.stack.filter(layer => !(layer.route && layer.route.stack[0].handle === foreign));
+                RED.httpNode._router.stack = RED.httpNode._router.stack.filter(layer => !(layer.route && layer.route.stack.some(l => l.handle === foreign)));
             }
         }
 
@@ -501,7 +515,7 @@ describe("HTTP In node - routes removed on close", function() {
             const a = helper.getNode("a");
             await a.close();
             await a.close();
-            (await bodyOfForeignRoute("/same")).should.equal("not read");
+            (await keyOfRoute("/same")).should.equal(RELEASED);
         });
 
         it("a redeploy toggling skipBodyParsing true -> false -> true on the same route follows the setting", async function() {
@@ -519,27 +533,28 @@ describe("HTTP In node - routes removed on close", function() {
             rawAnswers();
             for (let i = 0; i < 3; i++) {
                 await helper.getNode("a").close();
+                (await keyOfRoute("/same")).should.equal(HELD);
                 (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
             }
         });
 
         it("an invalid path with skipBodyParsing leaves no held key", async function() {
             await load(flowOf(httpIn("bad", { url: "/foo(", skipBodyParsing: true })));
-            (await bodyOfForeignRoute("/foo(", /^\/foo\($/)).should.equal("not read");
+            (await keyOfRoute("/foo(", /^\/foo\($/)).should.equal(RELEASED);
         });
 
         it("stops capturing the raw body when the last node of the route closes", async function() {
             await load(flowOf(httpIn("a", { skipBodyParsing: true }), httpIn("b", { skipBodyParsing: true })));
             await helper.getNode("a").close();
             await helper.getNode("b").close();
-            (await bodyOfForeignRoute("/same")).should.equal("not read");
+            (await keyOfRoute("/same")).should.equal(RELEASED);
         });
 
         it("captures the raw body again after a redeploy once all the nodes of the route had closed", async function() {
             await load(flowOf(httpIn("a", { skipBodyParsing: true }), httpIn("b", { skipBodyParsing: true })));
             await helper.getNode("a").close();
             await helper.getNode("b").close();
-            (await bodyOfForeignRoute("/same")).should.equal("not read");
+            (await keyOfRoute("/same")).should.equal(RELEASED);
             // both closed: a redeploy of one node with skipBodyParsing captures again
             await redeploy(flowOf(httpIn("a", { skipBodyParsing: true })));
             (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
@@ -551,11 +566,24 @@ describe("HTTP In node - routes removed on close", function() {
 describe("HTTP In node - size limit of the raw body and of an upload", function() {
     const http = require("http");
     let RED;
+    let outer;
     let server;
     let received;
+    let before401;
 
+    // The httpNode app is mounted on an outer app as in the runtime, where the
+    // authentication of the nodes (httpNodeAuth) is on the outer app in front of it and
+    // rawBodyCapture is on the outer app, in front of the authentication
     function httpInWrapper(_RED) {
         RED = _RED;
+        outer = express();
+        if (before401) {
+            outer.use(function(req, res) {
+                before401.push({ flowing: req.readableFlowing, didRead: req.readableDidRead });
+                res.sendStatus(401);
+            });
+        }
+        outer.use(RED.httpNode);
         return httpInNode(_RED);
     }
 
@@ -587,7 +615,7 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
         });
         // a server bound to the loopback address only: supertest(app) on its own
         // port crosstalks with other processes on a development machine (#19)
-        server = http.createServer(RED.httpNode);
+        server = http.createServer(outer);
         await new Promise(function(resolve) { server.listen(0, "127.0.0.1", resolve) });
     }
 
@@ -605,6 +633,50 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             return args[0] && args[0].msg === "httpin.errors.invalid-max-body-size";
         });
     }
+
+    function apiWarnings() {
+        return helper.log().args.filter(function(args) {
+            return args[0] && args[0].msg === "httpin.errors.invalid-api-max-length";
+        });
+    }
+
+    // The status code (and headers) of a request whose body is written by the test: the
+    // first response counts, a request that is still being sent is reset by a server that
+    // answered early. headers: of the request; chunks: the body, or none (only the
+    // headers are sent)
+    function request(path, headers, chunks, origin) {
+        return new Promise(function(resolve, reject) {
+            let answered = false;
+            const req = http.request({ host: "127.0.0.1", port: server.address().port, method: "POST", path: path, agent: false, headers: headers }, function(res) {
+                answered = true;
+                res.resume();
+                res.on("end", function() { req.destroy(); resolve(res) });
+            });
+            req.on("error", function(err) { answered || reject(err) });
+            if (chunks) {
+                chunks.forEach(function(chunk) { req.write(chunk) });
+                req.end();
+            } else {
+                req.flushHeaders();
+            }
+        });
+    }
+
+    // A multipart body of `count` parts (small files) of `size` bytes, in chunks
+    const BOUNDARY = "XXboundaryXX";
+    function multipartChunks(count, size) {
+        const chunks = [];
+        for (let i = 0; i < count; i++) {
+            chunks.push(Buffer.concat([
+                Buffer.from("--" + BOUNDARY + "\r\nContent-Disposition: form-data; name=\"f" + i + "\"; filename=\"f" + i + ".bin\"\r\nContent-Type: application/octet-stream\r\n\r\n"),
+                Buffer.alloc(size, 0x61),
+                Buffer.from("\r\n")
+            ]));
+        }
+        chunks.push(Buffer.from("--" + BOUNDARY + "--\r\n"));
+        return chunks;
+    }
+    const MULTIPART = { "Content-Type": "multipart/form-data; boundary=" + BOUNDARY };
 
     let savedSettings;
 
@@ -626,6 +698,9 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             server = null;
         }
         await helper.unload();
+        // the helper reuses the httpNode app: it is a root app again
+        RED.httpNode.parent = undefined;
+        before401 = null;
     });
 
     describe("default limit (apiMaxLength, 5mb)", function() {
@@ -691,7 +766,7 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
 
         it("limits the raw body that bypassed the capture", async function() {
             await load([["a"]], { apiMaxLength: "1kb" });
-            const stack = RED.httpNode._router.stack;
+            const stack = outer._router.stack;
             stack.splice(stack.findIndex(layer => layer.handle && layer.handle.name === "rawBodyCapture"), 1);
             await raw("/hook", 2048).expect(413);
             await raw("/hook", 1000).expect(200);
@@ -699,10 +774,17 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
 
         it("uses 5mb and warns for an apiMaxLength that is not a size above 0", async function() {
             // a negative number is accepted by the body parsers, a string that is not a size is not
-            await load([["a"]], { apiMaxLength: -1 });
-            sizeWarnings().should.have.length(1);
+            // one warning for all the nodes
+            await load([["a"], ["b", { url: "/b" }], ["c", { url: "/c", skipBodyParsing: false, upload: true }]], { apiMaxLength: -1 });
+            apiWarnings().should.have.length(1);
+            sizeWarnings().should.have.length(0);
             await raw("/hook", 1024).expect(200);
             await raw("/hook", 6 * 1024 * 1024).expect(413);
+        });
+
+        it("does not warn about apiMaxLength for nodes that have no raw body or upload", async function() {
+            await load([["a", { method: "get", skipBodyParsing: false }], ["b", { url: "/b", skipBodyParsing: false }]], { apiMaxLength: -1 });
+            apiWarnings().should.have.length(0);
         });
 
         it("does not limit the parsed body of a route without skipBodyParsing by the raw limit", async function() {
@@ -759,8 +841,7 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
 
         it("applies the limit of each node on a route shared by nodes", async function() {
             await load([["a", { maxBodySize: "1kb" }], ["b", { maxBodySize: "10kb" }]]);
-            // the first registered node answers (Express): its limit counts although
-            // the capture read the body with the higher one
+            // the first registered node answers (Express): its limit counts
             await raw("/hook", 2048).expect(413);
             received.should.have.length(0);
             await raw("/hook", 500).expect(200);
@@ -771,9 +852,142 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             received[1].id.should.equal("b");
             await raw("/hook", 11 * 1024).expect(413);
         });
+
+        it("applies the limit of the first node on a shared route when it is the higher one", async function() {
+            await load([["a", { maxBodySize: "10kb" }], ["b", { maxBodySize: "1kb" }]]);
+            await raw("/hook", 2048).expect(200);
+            received[0].id.should.equal("a");
+            await raw("/hook", 11 * 1024).expect(413);
+        });
+
+        it("accepts the units tb and pb", async function() {
+            await load([["a", { maxBodySize: "1tb" }], ["b", { url: "/b", maxBodySize: "2 PB" }]], { apiMaxLength: "1kb" });
+            sizeWarnings().should.have.length(0);
+            await raw("/hook", 2048).expect(200);
+            await raw("/b", 2048).expect(200);
+        });
+
+        it("rejects a value that is far too long without a long match, and warns", async function() {
+            // a number, spaces, a character that is not a unit: the case of a pattern with two
+            // neighbouring \s* (quadratic time without a limit of the length)
+            const value = "1" + " ".repeat(40000) + "x";
+            const start = Date.now();
+            await load([["a", { maxBodySize: value }]], { apiMaxLength: "1kb" });
+            (Date.now() - start).should.be.below(1000);
+            sizeWarnings().should.have.length(1);
+            // the warning does not carry the whole text
+            JSON.stringify(sizeWarnings()).length.should.be.below(2000);
+            await raw("/hook", 2048).expect(413);
+        });
+
+        it("ignores the field of a node that has no raw body and no upload", async function() {
+            await load([["a", { skipBodyParsing: false, maxBodySize: "abc" }]]);
+            sizeWarnings().should.have.length(0);
+        });
+    });
+
+    describe("after the authentication and with CORS", function() {
+        it("does not read the body of a request that the authentication in front of the nodes rejects", async function() {
+            before401 = [];
+            await load([["a"], ["b", { url: "/p/:id" }]]);
+            await supertest(server).post("/hook").set("Content-Type", "application/octet-stream").send(Buffer.alloc(100 * 1024, 0x61)).expect(401);
+            await supertest(server).post("/p/1").set("Content-Type", "application/octet-stream").send(Buffer.alloc(100 * 1024, 0x61)).expect(401);
+            before401.should.have.length(2);
+            // the body of the request was neither read nor started to flow
+            before401.forEach(function(seen) {
+                should(seen.flowing).equal(null);
+                seen.didRead.should.be.false();
+            });
+            received.should.have.length(0);
+        });
+
+        it("sends the 413 with the CORS headers, from a route with a literal path and a parameter", async function() {
+            await load([["a"], ["b", { url: "/p/:id" }]], { apiMaxLength: "1kb", httpNodeCors: { origin: "*" } });
+            for (const path of ["/hook", "/p/1"]) {
+                const res = await raw(path, 2048).set("Origin", "http://example.test").expect(413);
+                res.headers["access-control-allow-origin"].should.equal("*");
+            }
+        });
+
+        it("a route without skipBodyParsing on the route of a node with it parses its body", async function() {
+            // rawBodyCapture marks the request for the key; the mark is taken off by the
+            // route that is first (a node without the option)
+            await load([["a", { skipBodyParsing: false }], ["b", { skipBodyParsing: true }]]);
+            await supertest(server).post("/hook").set("Content-Type", "application/json").send('{"x": 1}').expect(200);
+            received[0].id.should.equal("a");
+            received[0].msg.payload.should.eql({ x: 1 });
+        });
+    });
+
+    describe("rejected body that is large", function() {
+        it("answers 413 at once and closes the connection when the declared length is above 64mb", async function() {
+            await load([["a"]]);
+            // only the headers are sent: a server that read the body first would wait
+            const res = await request("/hook", { "Content-Type": "application/octet-stream", "Content-Length": 70 * 1024 * 1024 });
+            res.statusCode.should.equal(413);
+            res.headers.connection.should.equal("close");
+            received.should.have.length(0);
+        });
+
+        it("the same for a multipart upload above the limit of the node", async function() {
+            await load([["a", { upload: true, skipBodyParsing: false, maxBodySize: "1kb" }]]);
+            const res = await request("/hook", Object.assign({ "Content-Length": 70 * 1024 * 1024 }, MULTIPART));
+            res.statusCode.should.equal(413);
+            res.headers.connection.should.equal("close");
+        });
+
+        it("does not read a multipart body of a declared length above the limit of the node, multer does not run", async function() {
+            await load([["a", { upload: true, skipBodyParsing: false, maxBodySize: "1kb" }]]);
+            const chunks = multipartChunks(1, 2000);
+            const res = await request("/hook", Object.assign({ "Content-Length": Buffer.concat(chunks).length }, MULTIPART), chunks);
+            res.statusCode.should.equal(413);
+            received.should.have.length(0);
+        });
+
+        it("answers 413 and closes the connection when a chunked body passes 64mb", async function() {
+            await load([["a"]], { apiMaxLength: "1kb" });
+            const chunk = Buffer.alloc(1024 * 1024, 0x61);
+            const chunks = [];
+            for (let i = 0; i < 66; i++) { chunks.push(chunk) }
+            const res = await request("/hook", { "Content-Type": "application/octet-stream", "Transfer-Encoding": "chunked" }, chunks);
+            res.statusCode.should.equal(413);
+            res.headers.connection.should.equal("close");
+        });
     });
 
     describe("file upload (multer)", function() {
+        it("limits the whole body of an upload: many small files together above the limit", async function() {
+            await load([["a", { upload: true, skipBodyParsing: false, maxBodySize: "100kb" }]]);
+            let req = supertest(server).post("/hook");
+            for (let i = 0; i < 200; i++) { req = req.attach("f" + i, Buffer.alloc(1024, 0x61), "f" + i + ".bin") }
+            await req.expect(413);
+            received.should.have.length(0);
+            // a few files within the limit
+            req = supertest(server).post("/hook");
+            for (let i = 0; i < 10; i++) { req = req.attach("f" + i, Buffer.alloc(1024, 0x61), "f" + i + ".bin") }
+            await req.expect(200);
+            received[0].msg.req.files.should.have.length(10);
+        });
+
+        it("limits a chunked upload (no Content-Length) by the bytes that arrive, multer does not finish", async function() {
+            await load([["a", { upload: true, skipBodyParsing: false, maxBodySize: "100kb" }]]);
+            const chunks = multipartChunks(300, 1024);
+            const res = await request("/hook", Object.assign({ "Transfer-Encoding": "chunked" }, MULTIPART), chunks);
+            res.statusCode.should.equal(413);
+            received.should.have.length(0);
+            // the next chunked upload within the limit works
+            const ok = await request("/hook", Object.assign({ "Transfer-Encoding": "chunked" }, MULTIPART), multipartChunks(10, 1024));
+            ok.statusCode.should.equal(200);
+            received.should.have.length(1);
+            received[0].msg.req.files.should.have.length(10);
+        });
+
+        it("does not limit a request that is not multipart by the limit of the node, as before", async function() {
+            await load([["a", { upload: true, skipBodyParsing: false, maxBodySize: "1kb" }]]);
+            await supertest(server).post("/hook").set("Content-Type", "text/plain").send("x".repeat(5000)).expect(200);
+            received.should.have.length(1);
+        });
+
         it("answers 413 to a file above the limit of the node", async function() {
             await load([["a", { upload: true, skipBodyParsing: false, maxBodySize: "1kb" }]]);
             await upload("/hook", 2048).expect(413);
