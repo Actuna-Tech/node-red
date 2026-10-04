@@ -209,7 +209,7 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 |---|---|---|
 | Wtyczka magazynu | opcjonalna funkcja `watchFlows(callback)` – powiadomienia o zmianie flow z innej instancji | Z-09 |
 | Wtyczka koordynacji | nowy typ wtyczki `node-red-coordination` (lider, zajęcie zadania); wybór tylko jawnie w `coordination.plugin`; `inject` z `singleInstance`: cron – zajęcie klucza `<id>:<czas>` (dokładnie raz), interwał – lider (D-14); węzeł na instancji niebędącej liderem pokazuje status „standby”; `mqtt in` z `singleInstance` – osobny pakiet (R-21) | Z-10 |
-| Hooki | `preDeploy` (tylko walidacja), `postDeploy` (source `api`/`internal`/`storage`, asynchronicznie), `preReload` (bez weta), `preShutdown` (z `reason`); brak hooków wdrożenia przy starcie procesu i operacjach Projektów (R-15, R-20, R-23) | Z-06, Z-09, Z-08 |
+| Hooki | `preDeploy` (tylko walidacja), `postDeploy` (source `api`/`internal`/`storage`, asynchronicznie), `preReload` (bez weta), `preShutdown` (z `reason`); brak hooków wdrożenia przy starcie procesu i operacjach Projektów (R-15, R-20, R-23); `preReload` i `preShutdown` także z ustawienia `hooks` w `settings.js` (rejestracja przy `init`, #7) | Z-06, Z-09, Z-08 |
 | Trasy administracyjne bloczków | przy `httpAdminNodeRoutes: "authenticated"` trasa bez uprawnienia wymaga sesji; publiczne – `RED.auth.publicRoute()` | Z-02 |
 | Trasy HTTP bloczków | `node.registerHttpRoute(method, path, ...handlers)` – automatyczne zdejmowanie przy zamknięciu | Z-07 |
 | Dodatki edytora (15 obecnych) | przeniesienie na API z Z-12.01…Z-12.14 (bez selektorów DOM); kolejność pakietów Z-12c → a → b → d → e; przestarzałe API – min. jedna wersja minor z ostrzeżeniem (R-24) | Z-12 |
@@ -217,7 +217,7 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 | Kod jednorazowy (12.02) | kod wydaje własna strategia `adminAuth`/plugin; rdzeń przyjmuje `#code=<kod>&next=<hash>`; przechowywanie tokena: `editorTheme.auth.tokenStorage` – `"local"` (domyślnie, `localStorage`) lub `"session"` (`sessionStorage`) (R-26, R-33) | Z-12 |
 | Uprawnienia (12.08) | zakresy podrzędne `flows.deploy`, `flows.import`, `flows.export`, `nodes.type.<typ>` dziedziczone z rodzica; wpis z prefiksem `!` odbiera, np. `["*", "!nodes.type.exec"]`; lista dozwolonych: `["!nodes.type.*", "nodes.type.inject", …]` – przyznanie konkretnego typu wygrywa z `!nodes.type.*`, odebranie konkretnego typu wygrywa ze wszystkim (R-42); serwer egzekwuje typy przy wdrożeniu (bez kontroli przy przeładowaniu z magazynu – R-42); `flows.export` – tylko utrudnienie w UI (R-27) | Z-12 |
 | Linki i osadzanie (12.10) | głęboki link `#flow/<flowId>/node/<nodeId>` (obsługa `hashchange`, akcja `core:reveal-node`); `postMessage`, w tym kanał `set-theme`, tylko ze źródeł z `editorTheme.embedding.allowedOrigins` – produkt osadzający edytor musi się tam wpisać (R-28); brak ustawienia = zachowanie 5.0.7 z ostrzeżeniem w logu (R-35) | Z-12 |
-| Klucze zarezerwowane | węzeł nie może zarejestrować ustawienia o nazwie `deploy`, `flows`, `health`, `coordination` | D-02 (U8) |
+| Klucze zarezerwowane | węzeł nie może zarejestrować ustawienia o nazwie `deploy`, `flows`, `health`, `coordination`, `hooks` | D-02 (U8) |
 
 ### 5.2 Kontrakt dla autorów wtyczek magazynu: `watchFlows` i `preReload` (Z-09)
 

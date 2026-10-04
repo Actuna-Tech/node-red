@@ -1,5 +1,14 @@
 #### Unreleased: Instances and reload
 
+ - New setting `hooks: { "preReload.<label>": fn, "preShutdown.<label>": fn }` registers the
+   `preReload` and `preShutdown` hooks from `settings.js` when the runtime is initialised -
+   before the plugins are loaded and before the flows start (not set by default: no hooks,
+   nothing changes). Same semantics as `RED.hooks.add(id, fn)` (a function with one
+   parameter returns a promise). Only these two hooks and functions are accepted; an
+   invalid name, a missing label or a value that is not a function fails the start with an
+   error `invalid_hook_setting` that names the key, and nothing is registered. Hooks of
+   `settings.js` are registered before the plugins load, so they run first; the same label added by a plugin is
+   "already registered" (#7)
  - An editor-only instance (`editorOnly`) does not start the coordination plugin and is never the
    leader, so `inject` nodes with "Run only on one instance" fire on the instances that run the flows (#4)
  - Documented: health probes without `health.port` are public on the main server; `preReload` and

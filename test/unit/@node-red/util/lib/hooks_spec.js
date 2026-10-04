@@ -343,4 +343,159 @@ describe("util/hooks", function() {
             done();
         })
     })
+    describe("addFromSettings (#7)", function() {
+        function codeOf(setting) {
+            try {
+                hooks.addFromSettings(setting);
+            } catch(err) {
+                return err;
+            }
+            throw new Error("addFromSettings did not throw");
+        }
+        it("registers preReload and preShutdown hooks", function() {
+            hooks.addFromSettings({
+                "preReload.drain": function(event) {},
+                "preShutdown.drain": function(event) {}
+            });
+            hooks.has("preReload").should.be.true();
+            hooks.has("preReload.drain").should.be.true();
+            hooks.has("preShutdown.drain").should.be.true();
+        });
+        it("accepts an empty object", function() {
+            hooks.addFromSettings({});
+            hooks.has("preReload").should.be.false();
+        });
+        it("rejects a hook name that is not allowed, naming the key", function() {
+            ["onSend.x", "preDeploy.x", "unknown.x", "x"].forEach(key => {
+                const err = codeOf({[key]: function(event) {}});
+                err.should.have.property("code", "invalid_hook_setting");
+                err.message.should.containEql("'"+key+"'");
+            });
+            hooks.has("onSend").should.be.false();
+        });
+        it("rejects a missing or empty label", function() {
+            ["preReload", "preReload.", "preReload.  "].forEach(key => {
+                const err = codeOf({[key]: function(event) {}});
+                err.should.have.property("code", "invalid_hook_setting");
+                err.message.should.containEql("label");
+                err.message.should.containEql("'"+key+"'");
+            });
+            hooks.has("preReload").should.be.false();
+        });
+        it("rejects a label with a dot", function() {
+            const err = codeOf({"preReload.a.b": function(event) {}});
+            err.should.have.property("code", "invalid_hook_setting");
+            err.message.should.containEql("preReload.a.b");
+        });
+        it("rejects a label that could reach Object.prototype", function() {
+            ["__proto__", "constructor", "a b", "x/y"].forEach(label => {
+                const err = codeOf({["preReload." + label]: function(event) {}});
+                err.should.have.property("code", "invalid_hook_setting");
+            });
+            should.not.exist(({}).preReload);
+            hooks.has("preReload").should.be.false();
+        });
+        it("rejects a value that is not a function", function() {
+            [undefined, null, "x", 1, {}, []].forEach(value => {
+                const err = codeOf({"preShutdown.drain": value});
+                err.should.have.property("code", "invalid_hook_setting");
+                err.message.should.containEql("preShutdown.drain");
+                err.message.should.containEql("function");
+            });
+            hooks.has("preShutdown").should.be.false();
+        });
+        it("rejects a setting that is not an object", function() {
+            [undefined, null, "preReload.x", 1, true, [], function() {}].forEach(setting => {
+                codeOf(setting).should.have.property("code", "invalid_hook_setting");
+            });
+        });
+        it("registers nothing when any key is invalid", function() {
+            const err = codeOf({
+                "preReload.drain": function(event) {},
+                "preShutdown.drain": "not a function"
+            });
+            err.message.should.containEql("preShutdown.drain");
+            hooks.has("preReload").should.be.false();
+            hooks.has("preShutdown").should.be.false();
+        });
+        it("replaces the hooks of a previous call without throwing", function(done) {
+            const calls = [];
+            hooks.addFromSettings({
+                "preReload.drain": function(event) { calls.push("first") },
+                "preShutdown.drain": function(event) { calls.push("old-shutdown") }
+            });
+            (function() {
+                hooks.addFromSettings({"preReload.drain": function(event) { calls.push("second") }});
+            }).should.not.throw();
+            hooks.has("preShutdown").should.be.false();
+            hooks.trigger("preReload", {}).then(() => {
+                calls.should.eql(["second"]);
+                done();
+            }).catch(done);
+        });
+        it("keeps the previous settings hooks when the new setting is invalid", function() {
+            hooks.addFromSettings({"preReload.drain": function(event) {}});
+            codeOf({"preReload.other": "x"});
+            hooks.has("preReload.drain").should.be.true();
+            hooks.has("preReload.other").should.be.false();
+        });
+        it("rejects a label already registered by a plugin and registers nothing", function() {
+            hooks.add("preReload.drain", function(event) {});
+            const err = codeOf({
+                "preShutdown.other": function(event) {},
+                "preReload.drain": function(event) {}
+            });
+            err.should.have.property("code", "invalid_hook_setting");
+            err.message.should.containEql("preReload.drain");
+            err.message.should.containEql("already registered");
+            hooks.has("preShutdown").should.be.false();
+        });
+        it("a plugin hook with the same label is rejected after the settings hook", function() {
+            hooks.addFromSettings({"preReload.drain": function(event) {}});
+            (function() {
+                hooks.add("preReload.drain", function(event) {});
+            }).should.throw(/already registered/);
+        });
+        it("does not remove a plugin hook when the settings hooks are removed", function() {
+            hooks.addFromSettings({"preReload.drain": function(event) {}});
+            hooks.add("preShutdown.plugin", function(event) {});
+            hooks.removeFromSettings();
+            hooks.has("preReload").should.be.false();
+            hooks.has("preShutdown.plugin").should.be.true();
+        });
+        it("runs the settings hook before a plugin hook of the same name", function(done) {
+            const order = [];
+            hooks.addFromSettings({"preReload.drain": function(event) { order.push("settings") }});
+            hooks.add("preReload.plugin", function(event) { order.push("plugin") });
+            hooks.trigger("preReload", {}).then(() => {
+                order.should.eql(["settings", "plugin"]);
+                done();
+            }).catch(done);
+        });
+        it("awaits a hook with one parameter that returns a promise", function(done) {
+            let finished = false;
+            hooks.addFromSettings({"preShutdown.drain": async function(event) {
+                await new Promise(resolve => setTimeout(resolve, 30));
+                finished = true;
+            }});
+            hooks.trigger("preShutdown", {reason: "test"}).then(() => {
+                finished.should.be.true();
+                done();
+            }).catch(done);
+        });
+        it("passes the payload and a returned value other than undefined stops the next hooks", function(done) {
+            let payload;
+            let secondCalled = false;
+            hooks.addFromSettings({
+                "preReload.a": function(event) { payload = event; return false; },
+                "preReload.b": function(event) { secondCalled = true; }
+            });
+            const data = {rev: "1"};
+            hooks.trigger("preReload", data).then(() => {
+                payload.should.equal(data);
+                secondCalled.should.be.false();
+                done();
+            }).catch(done);
+        });
+    })
 });
