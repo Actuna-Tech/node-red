@@ -16,7 +16,8 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #45: tests of hiding the credentials of a git URL in errors and in the log, of rejecting
- *   an ambiguous user info and of hiding the known user infos literally
+ *   an ambiguous user info and of hiding the known user infos literally (per project, only what
+ *   the pattern does not hide; SEC-006..010)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -45,6 +46,11 @@ describe("storage/localfilesystem/projects/git/index", function() {
             return sinon.stub(util.exec, "run").callsFake(function() {
                 return Promise.reject({ code: 128, stdout: stdout || "", stderr: stderr });
             });
+        }
+        // what an API client can get from the error: the response has message and code
+        // (not the server log nor err.value, which have the user's own text unchanged)
+        function inError(err) {
+            return JSON.stringify([err.message, err.stderr, err.stdout, err.stack]);
         }
         function everything(err) {
             return JSON.stringify([err.message, err.stderr, err.stdout, err.stack, err.value, logged]);
@@ -148,7 +154,9 @@ describe("storage/localfilesystem/projects/git/index", function() {
                 () => { throw new Error("should have failed"); }, e => e);
             err.code.should.equal("git_invalid_argument");
             everything(err).should.not.containEql("s3cret");
-            err.message.should.containEql("-https://***@host.example/r.git");
+            // the value of the argument is not in the message at all (SEC-006)
+            err.message.should.not.containEql("https://");
+            err.message.should.containEql("index");
             run.called.should.be.false();
         });
 
@@ -216,35 +224,196 @@ describe("storage/localfilesystem/projects/git/index", function() {
                                 "origin\thttps://user:pa/ss@host.example/org/repo.git (push)\n" +
                                 "other\thttps://user:pa ss@other.example/b.git (fetch)\n" +
                                 "other\thttps://user:pa ss@other.example/b.git (push)\n";
+            var PROJECT_A = "/tmp/nr-secrets-a";
+            var PROJECT_B = "/tmp/nr-secrets-b";
+
+            function remotesOutput(url) {
+                return "origin\t" + url + " (fetch)\norigin\t" + url + " (push)\n";
+            }
+            // loads the remotes of a project: its secrets are remembered
+            function loadRemotes(cwd, output) {
+                sinon.restore();
+                sinon.stub(util.exec, "run").resolves({ stdout: output, stderr: "" });
+                return gitTools.getRemotes(cwd).then(function(remotes) {
+                    sinon.restore();
+                    return remotes;
+                });
+            }
+            function fetchFailing(cwd, stderr, stdout) {
+                sinon.restore();
+                sinon.stub(util.exec, "run").callsFake(function() {
+                    return Promise.reject({ code: 128, stdout: stdout || "", stderr: stderr });
+                });
+                return gitTools.fetch(cwd, "origin").then(
+                    () => { throw new Error("should have failed"); }, e => e);
+            }
 
             it("the remotes of the project are hidden in the error, in the trace log and in maskCredentials", async function() {
-                var run = sinon.stub(util.exec, "run");
-                run.onFirstCall().resolves({ stdout: CONFIG_OUTPUT, stderr: "" });
-                var remotes = await gitTools.getRemotes("/tmp/p");
+                var remotes = await loadRemotes(PROJECT_A, CONFIG_OUTPUT);
                 // the real URLs are returned: git and the credentials cache need them
                 remotes.origin.fetch.should.equal("https://user:pa/ss@host.example/org/repo.git");
                 // the pattern misses these, the literal secrets do not
-                run.onSecondCall().callsFake(function() {
-                    return Promise.reject({ code: 128, stdout: "", stderr:
-                        "fatal: unable to access 'https://user:pa/ss@host.example/org/repo.git/': error\n" +
-                        "fatal: could not read from https://user:pa ss@other.example/b.git\n" });
-                });
-                var err = await gitTools.fetch("/tmp/p", "origin").then(
-                    () => { throw new Error("should have failed"); }, e => e);
+                var err = await fetchFailing(PROJECT_A,
+                    "fatal: unable to access 'https://user:pa/ss@host.example/org/repo.git/': error\n" +
+                    "fatal: could not read from https://user:pa ss@other.example/b.git\n");
                 everything(err).should.not.containEql("pa/ss");
                 everything(err).should.not.containEql("pa ss");
                 err.message.should.containEql("https://***@host.example/org/repo.git/");
-                gitTools.maskCredentials(remotes.origin.fetch).should.equal("https://***@host.example/org/repo.git");
-                gitTools.maskCredentials(remotes.other.push).should.equal("https://***@other.example/b.git");
-                gitTools.maskCredentials("plain text without secrets").should.equal("plain text without secrets");
+                gitTools.maskCredentials(remotes.origin.fetch, PROJECT_A).should.equal("https://***@host.example/org/repo.git");
+                gitTools.maskCredentials(remotes.other.push, PROJECT_A).should.equal("https://***@other.example/b.git");
+                gitTools.maskCredentials("plain text without secrets", PROJECT_A).should.equal("plain text without secrets");
             });
 
-            it("a URL with an @ in a path or a bare ssh user does not register a secret for the user", function() {
-                return Promise.resolve().then(async function() {
-                    sinon.stub(util.exec, "run").resolves({ stdout:
-                        "origin\tssh://deploy-user@host.example/org/repo.git (fetch)\n", stderr: "" });
-                    await gitTools.getRemotes("/tmp/p");
-                    gitTools.maskCredentials("deploy-user@host.example").should.equal("deploy-user@host.example");
+            it("a bare ssh user does not register a secret", async function() {
+                await loadRemotes(PROJECT_A, remotesOutput("ssh://deploy-user@host.example/org/repo.git"));
+                gitTools.maskCredentials("deploy-user@host.example", PROJECT_A).should.equal("deploy-user@host.example");
+            });
+
+            describe("a password is not an oracle (SEC-006)", function() {
+                it("a normal password (hidden by the pattern) is never remembered", async function() {
+                    await loadRemotes(PROJECT_A, remotesOutput("https://alice:Summer2024@git.example/a.git"));
+                    // a text of the user in the same project is not changed
+                    gitTools.maskCredentials("my Summer2024 text", PROJECT_A).should.equal("my Summer2024 text");
+                    gitTools.maskCredentials("my Summer2024 text", PROJECT_B).should.equal("my Summer2024 text");
+                });
+
+                it("a commit in project B with the password of project A does not return *** nor the password", async function() {
+                    await loadRemotes(PROJECT_A, remotesOutput("https://alice:Summer2024@git.example/a.git"));
+                    var err = await Promise.resolve().then(() => gitTools.commit(PROJECT_B, "-password Winter2023 Summer2024 letmein1")).then(
+                        () => { throw new Error("should have failed"); }, e => e);
+                    err.code.should.equal("git_invalid_argument");
+                    inError(err).should.not.containEql("Summer2024");
+                    err.message.should.not.containEql("***");
+                    err.message.should.not.containEql("Winter2023");
+                });
+
+                it("the same with an old ambiguous password of project A (not hidden by the pattern)", async function() {
+                    await loadRemotes(PROJECT_A, remotesOutput("https://alice:Summer 2024@git.example/a.git"));
+                    // the secret is only used for project A
+                    var err = await Promise.resolve().then(() => gitTools.commit(PROJECT_B, "-Summer 2024")).then(
+                        () => { throw new Error("should have failed"); }, e => e);
+                    inError(err).should.not.containEql("Summer 2024");
+                    err.message.should.not.containEql("***");
+                    // the output of git in project B is not masked with the secrets of project A
+                    var errB = await fetchFailing(PROJECT_B, "fatal: Summer 2024\n");
+                    errB.message.should.equal("fatal: Summer 2024\n");
+                    var errA = await fetchFailing(PROJECT_A, "fatal: Summer 2024\n");
+                    errA.message.should.equal("fatal: ***\n");
+                });
+
+                it("a rejected argument is not in the message: only its index", async function() {
+                    var err = await Promise.resolve().then(() => gitTools.commit(PROJECT_B, "-whatever")).then(
+                        () => { throw new Error("should have failed"); }, e => e);
+                    err.message.should.equal("Invalid argument passed to git: argv element at index 4 looks like an option but is not on the allow-list");
+                });
+            });
+
+            describe("the secrets do not grow without end (SEC-007)", function() {
+                it("a failing remote add does not remember the URL", async function() {
+                    sinon.stub(util.exec, "run").callsFake(function() {
+                        return Promise.reject({ code: 128, stdout: "", stderr: "fatal: remote origin already exists.\n" });
+                    });
+                    var err = await gitTools.addRemote(PROJECT_A, "origin", {url: "https://alice:Autumn2024@git.example/a.git"}).then(
+                        () => { throw new Error("should have failed"); }, e => e);
+                    err.code.should.equal("git_remote_already_exists");
+                    gitTools.maskCredentials("Autumn2024", PROJECT_A).should.equal("Autumn2024");
+                });
+
+                it("getRemotes replaces the secrets of the project: a removed remote is forgotten", async function() {
+                    await loadRemotes(PROJECT_A, remotesOutput("https://alice:Summer 2024@git.example/a.git"));
+                    gitTools.maskCredentials("x Summer 2024 x", PROJECT_A).should.equal("x *** x");
+                    await loadRemotes(PROJECT_A, remotesOutput("https://git.example/a.git"));
+                    gitTools.maskCredentials("x Summer 2024 x", PROJECT_A).should.equal("x Summer 2024 x");
+                    // no remotes at all
+                    await loadRemotes(PROJECT_A, remotesOutput("https://alice:Summer 2024@git.example/a.git"));
+                    await loadRemotes(PROJECT_A, "");
+                    gitTools.maskCredentials("x Summer 2024 x", PROJECT_A).should.equal("x Summer 2024 x");
+                });
+
+                it("removeRemote and forgetSecrets clear the secrets of the project", async function() {
+                    await loadRemotes(PROJECT_A, remotesOutput("https://alice:Summer 2024@git.example/a.git"));
+                    sinon.stub(util.exec, "run").resolves({ stdout: "", stderr: "" });
+                    await gitTools.removeRemote(PROJECT_A, "origin");
+                    sinon.restore();
+                    gitTools.maskCredentials("x Summer 2024 x", PROJECT_A).should.equal("x Summer 2024 x");
+                    await loadRemotes(PROJECT_A, remotesOutput("https://alice:Summer 2024@git.example/a.git"));
+                    gitTools.forgetSecrets(PROJECT_A);
+                    gitTools.maskCredentials("x Summer 2024 x", PROJECT_A).should.equal("x Summer 2024 x");
+                });
+
+                it("a project keeps a limited number of secrets", async function() {
+                    var lines = "";
+                    for (var i = 0; i < 60; i++) {
+                        var url = "https://alice:pass word" + (1000 + i) + "@git.example/r" + i + ".git";
+                        lines += "r" + i + "\t" + url + " (fetch)\n";
+                    }
+                    await loadRemotes(PROJECT_A, lines);
+                    var masked = 0;
+                    for (var j = 0; j < 60; j++) {
+                        if (gitTools.maskCredentials("pass word" + (1000 + j), PROJECT_A) === "***") {
+                            masked++;
+                        }
+                    }
+                    masked.should.be.above(0);
+                    masked.should.be.belowOrEqual(16);
+                });
+
+                it("the number of projects with secrets is limited", async function() {
+                    for (var i = 0; i < 300; i++) {
+                        await loadRemotes("/tmp/nr-secrets-many-" + i, remotesOutput("https://alice:Summer " + (2000 + i) + "@git.example/a.git"));
+                    }
+                    // the oldest are dropped, the newest are kept
+                    gitTools.maskCredentials("Summer 2000", "/tmp/nr-secrets-many-0").should.equal("Summer 2000");
+                    gitTools.maskCredentials("Summer 2299", "/tmp/nr-secrets-many-299").should.equal("***");
+                    for (var k = 0; k < 300; k++) {
+                        gitTools.forgetSecrets("/tmp/nr-secrets-many-" + k);
+                    }
+                });
+            });
+
+            describe("the code of the error is decided on the raw output (SEC-008)", function() {
+                it("a secret that is a word of the message of git does not change git_auth_failed", async function() {
+                    await loadRemotes(PROJECT_A, remotesOutput("https://user:Authentication failed@host.example/r.git"));
+                    gitTools.maskCredentials("remote: Authentication failed", PROJECT_A).should.equal("remote: ***");
+                    var err = await fetchFailing(PROJECT_A, "remote: Authentication failed for 'https://host.example/r.git/'\n");
+                    err.code.should.equal("git_auth_failed");
+                    // only the text of the error is masked
+                    err.message.should.containEql("remote: *** for");
+                });
+
+                it("a secret that is a word of the message of git does not change git_pull_merge_conflict", async function() {
+                    await loadRemotes(PROJECT_A, remotesOutput("https://user:CONFLICT (content)@host.example/r.git"));
+                    sinon.stub(util.exec, "run").callsFake(function() {
+                        return Promise.reject({ code: 1, stdout: "CONFLICT (content): Merge conflict in flow.json\n", stderr: "" });
+                    });
+                    var err = await gitTools.pull(PROJECT_A, "origin", "main").then(
+                        () => { throw new Error("should have failed"); }, e => e);
+                    err.code.should.equal("git_pull_merge_conflict");
+                    err.stdout.should.not.containEql("CONFLICT (content)");
+                });
+
+                it("a secret that is the text of 'nothing to commit' does not change the result", async function() {
+                    await loadRemotes(PROJECT_A, remotesOutput("https://user:nothing to commit@host.example/r.git"));
+                    sinon.stub(util.exec, "run").callsFake(function() {
+                        return Promise.reject({ code: 1, stdout: "On branch main\nnothing to commit, working tree clean\n", stderr: "" });
+                    });
+                    var result = await gitTools.commit(PROJECT_A, "message");
+                    result.should.containEql("nothing to commit");
+                });
+            });
+
+            describe("the user info of a URL (SEC-010)", function() {
+                it("an @ in the path of a URL without a user info gives no false secret", async function() {
+                    await loadRemotes(PROJECT_A, remotesOutput("https://git.example/org@team/repo.git"));
+                    gitTools.maskCredentials("git.example/org", PROJECT_A).should.equal("git.example/org");
+                    await loadRemotes(PROJECT_A, remotesOutput("https://git.example:8443/org@team/repo.git"));
+                    gitTools.maskCredentials("git.example:8443/org", PROJECT_A).should.equal("git.example:8443/org");
+                });
+
+                it("a space in the user info is still hidden, an @ in the path after it does not extend it", async function() {
+                    await loadRemotes(PROJECT_A, remotesOutput("https://user:pa ss@git.example/org@team/repo.git"));
+                    gitTools.maskCredentials("pa ss", PROJECT_A).should.equal("***");
+                    gitTools.maskCredentials("git.example/org", PROJECT_A).should.equal("git.example/org");
                 });
             });
         });

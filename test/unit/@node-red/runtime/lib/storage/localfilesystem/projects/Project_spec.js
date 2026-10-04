@@ -16,7 +16,8 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #45: tests of hiding the credentials of remote URLs in the project returned to the API;
- *   toJSON() of a project gives export() (no credentialSecret)
+ *   toJSON() of a project gives export() (no credentialSecret); the literal secrets of a project
+ *   are forgotten when the project is deleted (SEC-007)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -124,6 +125,25 @@ describe("storage/localfilesystem/projects/Project", function() {
                 notLoaded.credentialSecret = "CREDSECRET-0123";
                 JSON.parse(JSON.stringify(notLoaded)).should.eql({name: "p"});
             });
+        });
+
+        it("a project with an old ambiguous remote URL: hidden in export(), forgotten on delete (SEC-007)", async function() {
+            var gitTools = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/projects/git");
+            git("remote", "set-url", "origin", "https://user:pa ss@host.example/org/repo.git");
+            git("remote", "set-url", "--push", "origin", "https://user:pa ss@host.example/org/repo.git");
+            var projects = {projects: {proj: {}}};
+            Project.init({
+                userDir: os.tmpdir(),
+                editorTheme: {projects: {}},
+                get: function(key) { return key === "projects" ? projects : undefined; },
+                set: function() { return Promise.resolve(); }
+            }, {});
+            var project = await Project.load(projectDir);
+            JSON.stringify(project.export()).should.not.containEql("pa ss");
+            project.export().git.remotes.origin.fetch.should.equal("https://***@host.example/org/repo.git");
+            gitTools.maskCredentials("pa ss", projectDir).should.equal("***");
+            await Project.delete(null, projectDir);
+            gitTools.maskCredentials("pa ss", projectDir).should.equal("pa ss");
         });
 
         it("export() of a project without remotes", async function() {

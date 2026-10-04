@@ -16,7 +16,8 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #45: tests of hiding the credentials of URLs in the event-log; the output is logged by
- *   lines (one event per line and stream instead of one per chunk)
+ *   lines (one event per line and stream instead of one per chunk); a very long line is not
+ *   cut inside a URL (SEC-009)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -181,6 +182,48 @@ describe("runtime/exec", function() {
         mockProcess.stdout.emit('data',"Cloning into 'https://user:pa/ss@host/r.git'\n");
         mockProcess.emit('close',0);
     })
+
+    describe("a line longer than the limit (SEC-009)", function() {
+        function run(chunks, done, check) {
+            exec.run("git",["fetch"],{},true).then(function() {
+                check();
+                done();
+            }).catch(done);
+            chunks.forEach(c => mockProcess.stdout.emit('data',c));
+            mockProcess.emit('close',0);
+        }
+        function logged() {
+            return logEvents.filter(e => e.payload.type === "out").map(e => e.payload.data);
+        }
+
+        it("is cut at its last white space: a URL at the boundary is not cut", function(done) {
+            // 65540 characters of words, then the start of a URL that ends in the next chunk
+            run(["word ".repeat(13108) + "see https://user:s3c", "ret@host/r.git end\n"], done, function() {
+                var text = logged().join("");
+                text.should.not.containEql("s3c");
+                text.should.not.containEql("ret@host");
+                text.should.containEql("see https://***@host/r.git end\n");
+            });
+        });
+
+        it("without white space the last 4 KB stay pending: a URL near the end is completed by the next chunk", function(done) {
+            run(["a".repeat(70000) + "https://user:s3c", "ret@host/r.git\n"], done, function() {
+                var text = logged().join("");
+                text.should.not.containEql("s3c");
+                text.should.not.containEql("ret@host");
+                text.should.containEql("a".repeat(100) + "https://***@host/r.git\n");
+                // nothing is lost
+                text.length.should.equal(70000 + "https://***@host/r.git\n".length);
+            });
+        });
+
+        it("the output is complete and in order", function(done) {
+            var a = "x ".repeat(40000);
+            run([a, a + "\n"], done, function() {
+                logged().join("").should.equal(a + a + "\n");
+            });
+        });
+    });
 
     it("runs command and rejects on error - close", function(done) {
         var command = "cmd";

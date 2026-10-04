@@ -269,11 +269,15 @@ Security
    as `//***@` in the projects runtime: in the error of a git command (`message`, `stderr`, `stdout`, `value`) and so in
    the API response and the audit log, in the trace log of the command, and in the `event-log` of `exec.run` (command
    line and output; the output is logged by lines, one event per line and stream instead of one per chunk, so a URL
-   split between two chunks is recognised). The `remotes[].fetch` / `push` returned by the projects API
+   split between two chunks is recognised; a line longer than 64 KB is cut at its last white space, not inside a URL). The `remotes[].fetch` / `push` returned by the projects API
    (`GET /projects/:id`, `GET /projects/:id/remotes`) are masked the same way; git, `.git/config` and the
    credentials cache keep the real URL. The scp-like form `git@host:org/repo` and a user of `ssh://git@host`
-   are not changed. The user infos of the URLs the process has seen are also hidden literally, so a password with
-   an unescaped `/` or a space that is already in `.git/config` is hidden too. A remote URL with white space or control
+   are not changed. The user info of a remote that is already in `.git/config` and that the pattern cannot recognise
+   (a password with an unescaped `/` or a space) is also hidden literally, only in the text of the operations of
+   that project: the secrets are kept per project, replaced at every `git remote -v`, cleared when the remote or the
+   project is removed and limited in number; a normal password is never kept, so masking of a text supplied by a
+   user (a commit message) cannot reveal it. The text of a rejected git argument no longer contains the argument.
+   The code of a git error (`git_auth_failed`, `git_pull_merge_conflict` ...) is decided on the raw output. A remote URL with white space or control
    characters, or with a user info that cannot be told from the path (a password with `/`, `?`, `#`; an `@` in the path)
    is now rejected on clone and on adding a remote (`git_invalid_argument`) - encode such characters in the password
    (`%2F`, `%40`, `%20`). `exec.run` takes an optional fifth argument with literal secrets for the `event-log`. The helper
