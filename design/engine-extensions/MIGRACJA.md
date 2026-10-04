@@ -181,7 +181,8 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 - **Warunek `reload` (R-47)** – obok stanu, nie nowy stan (tabela przejść R-23 bez zmian): zdarzenie i `runtime.state.get()`
   zawierają pole `reload` `{error: {code}, since, attempts, activeRev, rev, keepReady, staleDeadline, stale?}` – tylko
   gdy przeładowanie z magazynu nie powiodło się po wyczerpaniu ponowień (kod `storage_error`, `credentials_load_failed`,
-  `invalid_flows` lub `reload_failed`); brak pola = brak warunku. **Nowa reguła kontraktu:** `instance:state` jest emitowane
+  `invalid_flows`, `invalid_json`, `empty_file` lub `reload_failed`); **warunek istnieje tylko przy `onExhausted: "keepReady"`** –
+  przy domyślnym `"fail"` brak pola, dodatkowych zdarzeń i logów (sekwencja zdarzeń jak przed R-47); brak pola = brak warunku. **Nowa reguła kontraktu:** `instance:state` jest emitowane
   także, gdy zmienia się **samo** pole `reload` (ustawienie, zmiana liczby prób, przekroczenie `maxStaleTime`, skasowanie)
   przy niezmienionym `state` – odbiorca, który ma reagować tylko na zmiany stanu, porównuje `state`, `reason` i `since`
   (nie liczy każdego zdarzenia jako przejścia). Wtyczki i monitoring mogą z tego przekazywać alarm (np. do systemu alertów).

@@ -679,7 +679,8 @@ describe("flows/reload (Z-09)", function() {
             env.applied.should.have.length(0);
             env.logs.error.some(m => m.indexOf("reload.retries-exhausted") === 0).should.be.true();
             // R-47: the default mode - the condition is the fact, the policy is R-36
-            state.get().reload.should.containEql({ error: { code: "storage_error" }, keepReady: false, attempts: 3, activeRev: "A", staleDeadline: null });
+            // R-47: the default mode sets no condition at all (R-36 exactly as before)
+            state.get().should.not.have.property("reload");
             health.readiness({ ready: state.isReady(), reload: state.get().reload }, Date.now()).status.should.equal(503);
             // the next notification tries again and recovers
             env.failAlways = false;
@@ -897,7 +898,7 @@ describe("flows/reload (Z-09)", function() {
             env.failAlways = true;
             env.change("B");
             env.notify();
-            await waitFor(() => state.get().reload !== undefined, 2000, "no condition");
+            await waitFor(() => logged("error", "reload.retries-exhausted").length > 0, 2000, "retries not exhausted");
         }
         // Fake time: `reload` are the reload settings
         function fake(reload, envOpts) {
@@ -939,9 +940,8 @@ describe("flows/reload (Z-09)", function() {
                 env.change("B");
                 env.notify();
                 await waitFor(() => state.get().state === "failed");
-                state.get().reload.keepReady.should.be.false();
-                // the limit is only used with keepReady
-                (state.get().reload.staleDeadline === null).should.be.true();
+                // no condition in the default mode, so no limit either
+                state.get().should.not.have.property("reload");
             });
             it("keepReady with the default maxStaleTime - the deadline is since + 1800000", async function() {
                 env = createEnv({ reload: retry("keepReady", { attempts: 1 }) });
@@ -973,7 +973,7 @@ describe("flows/reload (Z-09)", function() {
                 logged("warn", "reload.invalid-on-exhausted")[0].should.containEql("sometimes");
                 await exhaust();
                 state.get().state.should.equal("failed");
-                state.get().reload.keepReady.should.be.false();
+                state.get().should.not.have.property("reload");
             });
             [-1, "10", NaN, Infinity, 2147483648, null, true].forEach(function(value) {
                 it("an invalid maxStaleTime " + String(value) + " - warning and the default", async function() {
@@ -987,14 +987,14 @@ describe("flows/reload (Z-09)", function() {
         });
 
         describe("the default mode (fail) - R-36 unchanged", function() {
-            it("failed + the condition keepReady false, forced reload, no editor notification, one error log", async function() {
+            it("failed, no condition, forced reload, no editor notification, no new logs or events", async function() {
                 env = createEnv({ reload: retry("fail") });
                 await env.start();
                 env.failAlways = true;
                 env.change("B");
                 env.notify();
                 await waitFor(() => state.get().state === "failed");
-                state.get().reload.keepReady.should.be.false();
+                state.get().should.not.have.property("reload");
                 readiness().should.eql(READY_503);
                 notifications().should.have.length(0);
                 logged("error", "reload.keep-ready").should.have.length(0);
@@ -1007,8 +1007,28 @@ describe("flows/reload (Z-09)", function() {
                 env.applied.should.have.length(1);
                 state.get().should.not.have.property("reload");
                 notifications().should.have.length(0);
+                logged("info", "reload.recovered").should.have.length(0);
+                stateEvents.forEach(e => e.should.not.have.property("reload"));
             });
-            it("an editor-only instance (loaded) stays ready: 200 ok with the condition", async function() {
+            it("the sequence of instance:state events equals the one before R-47 (regression)", async function() {
+                // an outage of 10 s with the retries exhausted, then the recovery (no onExhausted set)
+                fake({ retry: { min: 1, max: 1000, attempts: 2 } });
+                await env.start();
+                env.failAlways = true;
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(10000);
+                env.failAlways = false;
+                await clock.tickAsync(1000);
+                await clock.tickAsync(0);
+                stateEvents.map(e => e.state).should.eql(["failed", "reloadPending", "reloadPending", "reloading", "ready"]);
+                stateEvents.forEach(e => e.should.not.have.property("reload"));
+                notifications().should.have.length(0);
+                logged("info", "reload.recovered").should.have.length(0);
+                logged("error", "reload.keep-ready").should.have.length(0);
+                env.applied.should.have.length(1);
+            });
+            it("an editor-only instance (loaded) stays ready: 200 ok, no condition", async function() {
                 env = createEnv({ reload: retry("fail") });
                 state.reset();
                 state.markStarting();
@@ -1016,11 +1036,11 @@ describe("flows/reload (Z-09)", function() {
                 state.get().state.should.equal("loaded");
                 await exhaust();
                 state.get().state.should.equal("loaded");
-                state.get().reload.keepReady.should.be.false();
+                state.get().should.not.have.property("reload");
                 state.isReady().should.be.true();
                 readiness().should.eql(READY_OK);
             });
-            it("a local deployment after the exhaustion: ready, 200 ok, the condition cleared", async function() {
+            it("a local deployment after the exhaustion: ready, 200 ok", async function() {
                 env = createEnv({ reload: retry("fail") });
                 await exhaust();
                 await waitFor(() => state.get().state === "failed");
@@ -1030,8 +1050,7 @@ describe("flows/reload (Z-09)", function() {
                 await waitFor(() => state.get().state === "ready");
                 state.get().should.not.have.property("reload");
                 readiness().should.eql(READY_OK);
-                logged("info", "reload.recovered").should.have.length(1);
-                logged("info", "reload.recovered")[0].should.containEql("\"reason\":\"deploy\"");
+                logged("info", "reload.recovered").should.have.length(0);
             });
             it("the periodic read after a local deployment while storage is still unreadable: no new failed state (as before)", async function() {
                 env = createEnv({ reload: retry("fail") });
@@ -1179,8 +1198,8 @@ describe("flows/reload (Z-09)", function() {
                 await clock.tickAsync(0);
                 state.get().should.not.have.property("reload");
                 readiness().should.eql(READY_OK);
-                notifications().map(n => n.payload).should.have.length(2);
-                (notifications()[1].payload === undefined).should.be.true();
+                notifications().should.have.length(2);
+                notifications()[1].should.eql({ id: "reload-failed", payload: { type: "success", text: "notification.warnings.reload_recovered", timeout: 10000 }, retain: false });
                 logged("info", "reload.recovered")[0].should.containEql("\"reason\":\"deploy\"");
                 await clock.tickAsync(10000);
                 logged("error", "reload.stale").should.have.length(0);
@@ -1238,6 +1257,27 @@ describe("flows/reload (Z-09)", function() {
                 state.get().reload.should.containEql({ error: { code: "invalid_flows" }, keepReady: false });
                 readiness().should.eql(READY_503);
             });
+            ["invalid_json", "empty_file"].forEach(function(code) {
+                it("a corrupt flow file (" + code + ") fails: failed, 503, no keep-ready notification", async function() {
+                    env = createEnv({ reload: retry("keepReady") });
+                    env.failError = Object.assign(new Error("the flow file is corrupt"), { code: code });
+                    await exhaust();
+                    await waitFor(() => state.get().state === "failed");
+                    state.get().reload.should.containEql({ error: { code: code }, keepReady: false });
+                    readiness().should.eql(READY_503);
+                    notifications().should.have.length(0);
+                    logged("error", "reload.keep-ready").should.have.length(0);
+                });
+            });
+            it("a raw code of an error of the reload itself does not leak into the condition (reload_failed)", async function() {
+                env = createEnv({ reload: retry("keepReady", { attempts: 1 }) });
+                env.reloadError = Object.assign(new Error("busy"), { code: "state_operation_in_progress" });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                state.get().reload.error.code.should.equal("reload_failed");
+            });
             it("any other error of the reload itself (not storage) fails as well", async function() {
                 env = createEnv({ reload: retry("keepReady", { attempts: 1 }) });
                 env.reloadError = new Error("flows cannot be stopped");
@@ -1278,6 +1318,23 @@ describe("flows/reload (Z-09)", function() {
                 last.reload.should.containEql({ stale: true, keepReady: true });
                 await clock.tickAsync(20000);
                 logged("error", "reload.stale").should.have.length(1);
+            });
+            it("is counted from the first failed read of the series, not from the end of the retries", async function() {
+                fake(retry("keepReady", { min: 100, max: 1000, attempts: 4, maxStaleTime: 60000 }));
+                await env.start();
+                env.failAlways = true;
+                env.change("B");
+                const t0 = Date.now();
+                env.notify();
+                // the retries 100 + 200 + 400 ms: exhausted 700 ms after the first failed read
+                await clock.tickAsync(700);
+                state.get().should.have.property("reload");
+                const reload = state.get().reload;
+                reload.since.should.equal(t0);
+                reload.staleDeadline.should.equal(t0 + 60000);
+                (Date.now() - t0).should.equal(700);
+                await clock.tickAsync(60000 - 700);
+                readiness().should.eql(READY_503);
             });
             it("is counted from the first failure, not from every attempt", async function() {
                 fake(retry("keepReady", { attempts: 1, max: 1000, maxStaleTime: 5500 }));
@@ -1374,11 +1431,33 @@ describe("flows/reload (Z-09)", function() {
                 new Date(n.payload.since).toISOString().should.equal(n.payload.since);
                 n.payload.since.should.equal(new Date(state.get().reload.since).toISOString());
                 Object.keys(n.payload).sort().should.eql(["code", "error", "since", "text", "type"]);
-                // recovery clears it (a retained event without a payload, as runtime-state does)
+                // recovery: a message that disappears (the editor closes it after the timeout);
+                // not retained, so the retained warning is removed
                 env.failAlways = false;
                 env.change("A");
                 await waitFor(() => notifications().length === 2);
-                notifications()[1].should.eql({ id: "reload-failed", retain: true });
+                notifications()[1].should.eql({ id: "reload-failed", payload: { type: "success", text: "notification.warnings.reload_recovered", timeout: 10000 }, retain: false });
+                notifications().should.have.length(2);
+            });
+            it("no recovery message when there was no notification (no editor warning was shown)", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                env.failError = Object.assign(new Error("no flow configuration"), { code: "invalid_flows" });
+                await exhaust();
+                notifications().should.have.length(0);
+                env.failError = null;
+                env.failAlways = false;
+                env.change("A");
+                await waitFor(() => state.get().reload === undefined, 2000, "not recovered");
+                notifications().should.have.length(0);
+            });
+            it("maxStaleTime: the same notification is updated (type error, reload_stale), retained", async function() {
+                fake(retry("keepReady", { attempts: 1, max: 100000, maxStaleTime: 5000 }));
+                await exhaustFake();
+                notifications().should.have.length(1);
+                await clock.tickAsync(5000);
+                notifications().should.have.length(2);
+                notifications()[1].retain.should.be.true();
+                notifications()[1].payload.should.containEql({ type: "error", error: "reload_stale", text: "notification.warnings.reload_stale", code: "storage_error" });
             });
             it("the event instance:state is emitted when only the condition changes", async function() {
                 env = createEnv({ reload: retry("keepReady") });

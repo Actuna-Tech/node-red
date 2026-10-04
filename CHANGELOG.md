@@ -6,11 +6,15 @@
    to read the shared storage after the retries no longer takes a ready instance out of rotation:
    it stays ready on the previous revision and `/ready` answers 200
    `{"status":"warn","reason":"reload_failed"}` (a constant body); an idle instance stays idle, errors
-   of the configuration (`credentials_load_failed`, `invalid_flows`) and a failed start still give
-   `failed` / 503, and after `maxStaleTime` `/ready` is 503. The situation is reported as an error:
+   of the configuration (`credentials_load_failed`, `invalid_flows`, a corrupt flow file:
+   `invalid_json`, `empty_file`) and a failed start still give `failed` / 503, and after
+   `maxStaleTime` (counted from the first failed read) `/ready` is 503. With the default
+   `"fail"` nothing changes at all: no condition, no extra event, log or notification. The situation is reported as an error:
    an error log when it starts and once per `retry.max` while it lasts, a persistent notification in
-   the editor, the new `reload` condition in the `instance:state` event (`error.code`, `since`,
-   `attempts`, `activeRev`, `rev`, `keepReady`, `staleDeadline`) and an info log `reload.recovered`.
+   the editor (it can be dismissed, turns into an error after `maxStaleTime` and into a message
+   that disappears on recovery), the new `reload` condition in the `instance:state` event
+   (`error.code`, `since`, `attempts`, `activeRev`, `rev`, `keepReady`, `staleDeadline`, `stale`)
+   and an info log `reload.recovered`.
    The condition ends when storage holds the running revision again (no drain, no restart), when a
    reload of a new revision succeeds or on a successful deployment on the instance. New contract
    rule: `instance:state` is also emitted when only the `reload` condition changes (the states of

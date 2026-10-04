@@ -202,7 +202,7 @@ w którym pakiet dopisuje swój krok (bez pustych hooków).
 | `node_type_not_permitted` | 403 | Z-12.08 | wdrożenie zawiera dodane/zmienione węzły typu, do którego użytkownik nie ma uprawnienia (odebrane `!nodes.type.<typ>` lub nieprzyznane przy `!nodes.type.*`); odpowiedź z polem `types[]` (R-27, **R-33**, R-42) |
 | `editor_only` | 409 | Z-15 | operacja wymagająca działających flow (np. `inject`) na instancji edycyjnej |
 | `state_operation_in_progress` | 409 | E-02 | (wewnętrzny) próba drugiej operacji stanu pod blokadą |
-| `reload_failed` | 200 (`reason` w treści `/health/ready`) | Z-09 (#1) | `deploy.reload.retry.onExhausted: "keepReady"`: przeładowanie z magazynu nie powiodło się, gotowa instancja uruchamia poprzednią rewizję – treść `{"status":"warn","reason":"reload_failed"}`; stały kod, bez rewizji i tekstu błędu (R-47). Kody w warunku `reload` stanu instancji (`error.code`): `storage_error`, `credentials_load_failed`, `invalid_flows`, `reload_failed` (inny błąd samego przeładowania) |
+| `reload_failed` | 200 (`reason` w treści `/health/ready`) | Z-09 (#1) | `deploy.reload.retry.onExhausted: "keepReady"`: przeładowanie z magazynu nie powiodło się, gotowa instancja uruchamia poprzednią rewizję – treść `{"status":"warn","reason":"reload_failed"}`; stały kod, bez rewizji i tekstu błędu (R-47). Kody w warunku `reload` stanu instancji (`error.code`): `storage_error`, `credentials_load_failed`, `invalid_flows`, `invalid_json`, `empty_file` (uszkodzony plik – błędy konfiguracji, zawsze `failed`), `reload_failed` (inny błąd samego przeładowania); warunek ustawiany tylko przy `"keepReady"` |
 
 ### 2.5 Proces i dostarczenie (E-04, E-05)
 
