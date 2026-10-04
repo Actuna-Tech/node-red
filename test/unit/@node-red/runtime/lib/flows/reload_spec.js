@@ -27,7 +27,8 @@
  *   of the reread under the lock or of the reload step exhausts the retries;
  *   notifications reset the delay, not the count)
  *   #26: tests of the explicit reset of the counters in a new series and of the
- *   cancelled retry timer after a successful cycle
+ *   cancelled retry after a successful cycle, a retry that fires during a running
+ *   cycle (retryQueued)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1337,6 +1338,12 @@ describe("flows/reload (Z-09)", function() {
                     return original(readOpts);
                 };
             }
+            // Lets the promise chains of a cycle run (fake time does not advance)
+            async function settle() {
+                for (let i = 0; i < 5; i++) {
+                    await clock.tickAsync(0);
+                }
+            }
             function attemptsLogged() {
                 return logged("warn", "reload.read-failed").map(m => JSON.parse(m.slice("reload.read-failed ".length)).attempt);
             }
@@ -1693,7 +1700,7 @@ describe("flows/reload (Z-09)", function() {
                 logged("warn", "reload.read-failed").should.have.length(warns);
                 logged("error", "reload.retries-exhausted").should.have.length(2);
             });
-            it("fail: a new series after a local deployment starts its backoff at retry.min and counts the attempts from 1 (#26)", async function() {
+            it("(mutation guard) fail: a new series after a local deployment starts its backoff at retry.min and counts the attempts from 1 (#26)", async function() {
                 fake(retry("fail", { min: 1000, max: 60000, attempts: 2 }));
                 env.reloadError = CREDENTIALS_ERROR();
                 await env.start();
@@ -1716,7 +1723,7 @@ describe("flows/reload (Z-09)", function() {
                 state.get().state.should.equal("failed");
                 logged("error", "reload.retries-exhausted").should.have.length(2);
             });
-            it("a successful cycle cancels the retry scheduled by an earlier failed cycle - no useless cycle (#26, probe P7)", async function() {
+            it("(regression) a successful cycle cancels the retry scheduled by an earlier failed cycle - no useless cycle (#26, probe P7)", async function() {
                 fake(retry("fail", { min: 1000, max: 60000, attempts: 5 }));
                 const gate = deferred();
                 failFirstReadAfter(gate);
@@ -1739,7 +1746,90 @@ describe("flows/reload (Z-09)", function() {
                 env.flows.reloadFromStorage.callCount.should.equal(1);
                 state.get().state.should.equal("ready");
             });
-            it("a successful cycle ends the periodic cycles of the exhausted state - no more reads of storage (#26)", async function() {
+            it("(regression) the retry fires during a slow successful cycle (preReload drain) - no useless cycle (#26, R1)", async function() {
+                fake(retry("fail", { min: 1000, max: 60000, attempts: 5 }));
+                const gate = deferred();
+                const hookGate = deferred();
+                failFirstReadAfter(gate);
+                hooks.add("preReload", p => hookGate.promise);
+                await env.start();
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(0);
+                // a notification arrives during the failing cycle A: cycle B follows at once
+                env.notify();
+                gate.resolve();
+                await clock.tickAsync(0);
+                logged("warn", "reload.read-failed").should.have.length(1);
+                // cycle B waits in the drain; the retry of A (1000 ms) fires meanwhile
+                await clock.tickAsync(1500);
+                env.applied.should.have.length(0);
+                hookGate.resolve();
+                await settle();
+                env.applied.should.have.length(1);
+                const afterB = env.getFlowsCalls;
+                // A: 1 read, B: step 2 and the reread
+                afterB.should.equal(3);
+                await clock.tickAsync(5000);
+                env.getFlowsCalls.should.equal(afterB);
+                env.flows.reloadFromStorage.callCount.should.equal(1);
+                state.get().state.should.equal("ready");
+            });
+            it("(regression) the retry fires during a failing cycle - no immediate extra cycle, the next one follows the backoff (#26, R5)", async function() {
+                fake(retry("fail", { min: 1000, max: 60000, attempts: 10 }));
+                const gate = deferred();
+                const hookGate = deferred();
+                failFirstReadAfter(gate);
+                hooks.add("preReload", p => hookGate.promise);
+                await env.start();
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(0);
+                env.notify();
+                gate.resolve();
+                await clock.tickAsync(0);
+                attemptsLogged().should.eql([1]);
+                // cycle B waits in the drain; the retry of A (1000 ms) fires meanwhile
+                await clock.tickAsync(1500);
+                env.reloadError = CREDENTIALS_ERROR();
+                hookGate.resolve();
+                await settle();
+                // B failed (attempt 2, delay 2000): the fired retry did not start cycle C
+                attemptsLogged().should.eql([1, 2]);
+                env.flows.reloadFromStorage.callCount.should.equal(1);
+                await clock.tickAsync(1999);
+                env.flows.reloadFromStorage.callCount.should.equal(1);
+                await clock.tickAsync(1);
+                env.flows.reloadFromStorage.callCount.should.equal(2);
+                attemptsLogged().should.eql([1, 2, 3]);
+            });
+            it("(guard) the retry fired during a superseded cycle is not lost - the reload is applied after it", async function() {
+                fake(retry("fail", { min: 1000, max: 60000, attempts: 5 }));
+                const gate = deferred();
+                const hookGate = deferred();
+                failFirstReadAfter(gate);
+                let drains = 0;
+                hooks.add("preReload", p => { drains++; return drains === 1 ? hookGate.promise : undefined });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(0);
+                env.notify();
+                gate.resolve();
+                await clock.tickAsync(0);
+                await clock.tickAsync(1500);
+                // the retry of A fired during cycle B; a set-state operation supersedes B
+                await lock.runExclusive(async function() {
+                    const token = state.begin("set-state", { supersede: true });
+                    state.end(token, { errors: [] });
+                });
+                hookGate.resolve();
+                await clock.tickAsync(1000);
+                env.applied.should.have.length(1);
+                env.applied[0].rev.should.equal("B");
+                state.get().state.should.equal("ready");
+            });
+            it("(guard, passes on the base) a successful cycle ends the periodic cycles of the exhausted state - no more reads of storage (#26)", async function() {
                 fake(retry("fail", { min: 1000, max: 10000, attempts: 2 }));
                 env.failAlways = true;
                 await env.start();
@@ -1756,7 +1846,7 @@ describe("flows/reload (Z-09)", function() {
                 await clock.tickAsync(60000);
                 env.getFlowsCalls.should.equal(reads);
             });
-            it("a retry scheduled by a failure after a success is not cancelled by the earlier success (#26)", async function() {
+            it("(guard, passes on the base) a retry scheduled by a failure after a success is not cancelled by the earlier success (#26)", async function() {
                 fake(retry("fail", { min: 1000, max: 60000, attempts: 5 }));
                 await env.start();
                 env.change("B");
