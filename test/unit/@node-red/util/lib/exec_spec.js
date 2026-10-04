@@ -17,7 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #45: tests of hiding the credentials of URLs in the event-log; the output is logged by
  *   lines (one event per line and stream instead of one per chunk); a very long line is not
- *   cut inside a URL (SEC-009)
+ *   cut inside a URL or a secret, also when the cut falls inside a complete one (SEC-009)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -215,6 +215,69 @@ describe("runtime/exec", function() {
                 // nothing is lost
                 text.length.should.equal(70000 + "https://***@host/r.git\n".length);
             });
+        });
+
+        it("a complete URL that the cut would fall into is masked before the cut (SEC-009b)", function(done) {
+            // the URL is in one chunk, no white space; KEEP_TAIL (4096) before the end lies inside it
+            var chunk = "x".repeat(61500) + "https://user:s3cret@host/" + "y".repeat(4085);
+            run([chunk], done, function() {
+                var text = logged().join("");
+                text.should.not.containEql("s3cret");
+                text.should.not.containEql("user:s");
+                text.should.containEql("https://***@host/");
+                text.length.should.equal(chunk.length - "user:s3cret".length + "***".length);
+            });
+        });
+
+        it("a complete URL with a bare token at the cut is masked too", function(done) {
+            var chunk = "x".repeat(61520) + "https://t0k3n-abcdef@host/" + "y".repeat(4085);
+            run([chunk], done, function() {
+                var text = logged().join("");
+                text.should.not.containEql("t0k3n");
+                text.should.not.containEql("abcdef");
+            });
+        });
+
+        it("a literal secret with a space is not cut at its space (SEC-009b)", function(done) {
+            // the last white space of the buffer is the space inside the old user info
+            var chunk = "x".repeat(65530) + " https://user:Summer 2024@host/r" + "y".repeat(10);
+            exec.run("git",["fetch"],{},true,["user:Summer 2024","Summer 2024"]).then(function() {
+                var text = logged().join("");
+                text.should.not.containEql("Summer");
+                text.should.not.containEql("2024");
+                text.should.containEql("https://***@host/r");
+                done();
+            }).catch(done);
+            mockProcess.stdout.emit('data',chunk);
+            mockProcess.emit('close',0);
+        });
+
+        it("a literal secret with a space at the cut of a buffer of words (SEC-009b)", function(done) {
+            // many words, so the cut looks for a white space; the secret is where the last one is
+            var chunk = "w ".repeat(33000) + "https://user:Summer 2024@host/r" + "z".repeat(10);
+            exec.run("git",["fetch"],{},true,["user:Summer 2024","Summer 2024"]).then(function() {
+                var text = logged().join("");
+                text.should.not.containEql("Summer");
+                text.should.not.containEql("2024");
+                text.should.containEql("https://***@host/r");
+                done();
+            }).catch(done);
+            mockProcess.stdout.emit('data',chunk);
+            mockProcess.emit('close',0);
+        });
+
+        it("a literal secret split between two chunks near the cut is completed and masked", function(done) {
+            var first = "w ".repeat(33000) + "https://user:Summer 20";
+            exec.run("git",["fetch"],{},true,["user:Summer 2024","Summer 2024"]).then(function() {
+                var text = logged().join("");
+                text.should.not.containEql("Summer");
+                text.should.not.containEql("2024");
+                text.should.containEql("https://***@host/r");
+                done();
+            }).catch(done);
+            mockProcess.stdout.emit('data',first);
+            mockProcess.stdout.emit('data',"24@host/r\n");
+            mockProcess.emit('close',0);
         });
 
         it("the output is complete and in order", function(done) {

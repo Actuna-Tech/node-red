@@ -269,7 +269,7 @@ Security
    as `//***@` in the projects runtime: in the error of a git command (`message`, `stderr`, `stdout`, `value`) and so in
    the API response and the audit log, in the trace log of the command, and in the `event-log` of `exec.run` (command
    line and output; the output is logged by lines, one event per line and stream instead of one per chunk, so a URL
-   split between two chunks is recognised; a line longer than 64 KB is cut at its last white space, not inside a URL). The `remotes[].fetch` / `push` returned by the projects API
+   split between two chunks is recognised; a line longer than 64 KB is masked as a whole first and then cut at a white space at least 4 KB before its end, so a complete URL or secret is never cut). The `remotes[].fetch` / `push` returned by the projects API
    (`GET /projects/:id`, `GET /projects/:id/remotes`) are masked the same way; git, `.git/config` and the
    credentials cache keep the real URL. The scp-like form `git@host:org/repo` and a user of `ssh://git@host`
    are not changed. The user info of a remote that is already in `.git/config` and that the pattern cannot recognise
