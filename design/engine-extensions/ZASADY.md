@@ -44,6 +44,7 @@
 | P-01 | – | `deploy.startTimeoutReleasesLock: false` | `true` (przy ustawionym `startTimeout`) – blokada wdrożeń zwalniana po upływie `startTimeout` w obu trybach odpowiedzi (ostrzeżenie w logu); ryzyko równoległego startu flow przez kolejne wdrożenie; domyślnie blokada do końca startu (**R-45**) |
 | Z-06 | – | `deploy.hookTimeout: 30000` (ms) | hook `preDeploy` działa pod blokadą wdrożeń – limit chroni przed zablokowaniem API |
 | Z-09 | – | `deploy.reload: { watch: false, type: "full" \| "diff", preReloadTimeout: 1200000, concurrency: <opcjonalnie> }` | `type` domyślnie `"full"` (jak dzisiejszy `reload`); dla długich rozmów rekomendowane `"diff"`; `concurrency` wymaga wtyczki koordynacji (Z-10) – tylko wartość liczbowa; bez łączności z koordynatorem przeładowanie czeka, działa stara konfiguracja (R-20); przy `watch: true` błąd rejestracji `watchFlows` → błąd startu (R-36); dodatkowy `preReload` (D-17) poza blokadą – najwyżej jedna runda, potem przeładowanie z ostrzeżeniem (R-36) |
+| #8 | – | `deploy.holdHttpNodeRequests: { enabled: false, timeout: 5000, maxPending: 1000, retryAfter: 1 }` | `enabled: false` = zachowanie 5.0.7 (404 w oknie restartu) | żądania do tras węzłów (`httpNode`) wstrzymywane na czas wdrożenia i przeładowania z magazynu (stany E-02 `deploying`/`reloading`), po `timeout` lub `maxPending` → 503 z `Retry-After`; rodzina `deploy.*` (nie `deploy.reload.*` – obejmuje też zwykłe wdrożenie); opis: FORK.md §5 |
 | Z-09 | – | `deploy.reload.retry: { min: 1000, max: 60000, attempts }` (ms) | ponawianie odczytu magazynu po błędzie, opóźnienie wykładnicze `min`…`max`; po wyczerpaniu `attempts` – stan `failed` i `/ready` 503 (D-18, **R-20**); `attempts` domyślnie **10** (~8 min), potem `failed` (**R-36**) |
 | Z-10 | – | `coordination: { plugin, options }`; właściwość węzła `inject`: `singleInstance` | wybór wtyczki jak `contextStorage`; domyślnie wtyczka lokalna |
 | Z-03 | – | `externalModules.palette.allowUpload` – **nazwa kanoniczna**; `externalModules.palette.upload` i `editorTheme.palette.upload` – przestarzałe aliasy | aliasy nadal honorowane (każde `false` wyłącza upload), ich użycie → ostrzeżenie w logu; w szablonie `settings.js` tylko nazwa kanoniczna (**R-17**) |
@@ -198,6 +199,8 @@ w którym pakiet dopisuje swój krok (bez pustych hooków).
 | `read_only_user_dir` | 400 | Z-11 | operacja wymagająca zapisu przy `readOnlyUserDir: true`, w tym wdrożenie przy magazynie plikowym (R-18) |
 | `node_type_not_permitted` | 403 | Z-12.08 | wdrożenie zawiera dodane/zmienione węzły typu, do którego użytkownik nie ma uprawnienia (odebrane `!nodes.type.<typ>` lub nieprzyznane przy `!nodes.type.*`); odpowiedź z polem `types[]` (R-27, **R-33**, R-42) |
 | `editor_only` | 409 | Z-15 | operacja wymagająca działających flow (np. `inject`) na instancji edycyjnej |
+| `http_hold_timeout` | 503 | #8 | żądanie do trasy węzła czekało na restart flow dłużej niż `deploy.holdHttpNodeRequests.timeout`; nagłówek `Retry-After` |
+| `http_hold_queue_full` | 503 | #8 | liczba wstrzymanych żądań osiągnęła `deploy.holdHttpNodeRequests.maxPending`; nagłówek `Retry-After` |
 | `state_operation_in_progress` | 409 | E-02 | (wewnętrzny) próba drugiej operacji stanu pod blokadą |
 
 ### 2.5 Proces i dostarczenie (E-04, E-05)

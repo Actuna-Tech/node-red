@@ -4,6 +4,15 @@
    leader, so `inject` nodes with "Run only on one instance" fire on the instances that run the flows (#4)
  - Documented: health probes without `health.port` are public on the main server; `preReload` and
    `preShutdown` hooks must take exactly one parameter (#5)
+ - Requests to the routes of the nodes (`http in` and every node that registers a route on `RED.httpNode`)
+   no longer get 404 while the flows restart (#8): new setting `deploy.holdHttpNodeRequests:
+   {enabled, timeout, maxPending, retryAfter}` (`enabled: false` by default - unchanged behaviour). When
+   enabled, a middleware mounted on the httpNode app before the routes of the nodes holds the requests
+   from the start of a deployment or of a reload from storage until the new flows have started (the
+   instance state `deploying`/`reloading`), then the new flows answer them. After `timeout` (5000 ms)
+   or above `maxPending` (1000) held requests the answer is 503 `{code: "http_hold_timeout"}` /
+   `{code: "http_hold_queue_full"}` with `Retry-After` (`retryAfter`, 1 s). If the start fails, the requests
+   are released to the normal routing. The Admin API and the editor are not held
 
 Features
  - Polish (`pl`) translation of the editor (`editor.json`, 317 keys) and of the core nodes

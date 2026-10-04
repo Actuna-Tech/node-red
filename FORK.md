@@ -30,7 +30,8 @@ module.exports = {
     telemetry: { enabled: false, locked: true }, // telemetria wyłączona na stałe (P-03)
     deploy: {
         response: "started",                // odpowiedź API po starcie flow (P-01)
-        requireRevision: true               // każde wdrożenie z aktualną rewizją (Z-05)
+        requireRevision: true,              // każde wdrożenie z aktualną rewizją (Z-05)
+        holdHttpNodeRequests: { enabled: true } // żądania HTTP węzłów czekają na restart flow zamiast 404 (#8)
     },
     editorTheme: {
         flowLayout: { enabled: true },      // kontrolki układu flow (Z-14) – WYMAGANE przy aktualizacji
@@ -98,6 +99,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 | `deploy.startTimeout` | brak | limit czasu startu w trybie `"started"` (500 z `start_timeout`, start trwa w tle) | P-01 |
 | `deploy.startTimeoutReleasesLock` | `false` | `true` – blokada wdrożeń zwalniana po limicie (ryzyko równoległego startu) | R-45 |
 | `deploy.putCreatesFlow` | `false` | `PUT /flow/:id` tworzy brakujący flow pod tym id | Z-04 |
+| `deploy.holdHttpNodeRequests: {enabled, timeout, maxPending, retryAfter}` | `enabled: false`, `timeout: 5000` ms, `maxPending: 1000`, `retryAfter: 1` s | `enabled: true` – żądania do tras węzłów (`httpNodeRoot`, np. `http in`) są wstrzymywane na czas restartu flow (wdrożenie i przeładowanie z magazynu) i obsługiwane przez nowe flow po ich starcie, zamiast 404; po `timeout` lub przy przepełnieniu `maxPending` → 503 z `Retry-After` (kody `http_hold_timeout`, `http_hold_queue_full`); szczegóły niżej | #8 |
 | `deploy.requireRevision` | `false` | wdrożenie bez rewizji → 409 `version_required`; v1 zawsze 409 | Z-05 |
 | `httpAdminNodeRoutes` | `"open"` | `"authenticated"` – ochrona tras admin węzłów | Z-02 |
 | `telemetry.locked` | brak | blokada ustawienia telemetrii | P-03 |
@@ -111,6 +113,28 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 - Kody błędów (snake_case): `version_mismatch`, `version_required`, `invalid_revision`, `duplicate_id`,
   `invalid_flow_id`, `invalid_node_type`, `deploy_start_failed`, `deploy_stop_failed` – katalog:
   [design/engine-extensions/ZASADY.md](design/engine-extensions/ZASADY.md) §2.4.
+
+### Wstrzymywanie żądań HTTP węzłów podczas restartu flow (#8)
+- **Problem:** trasy węzłów (`http in` i każdy węzeł rejestrujący trasę w `RED.httpNode`) są usuwane przy zatrzymaniu węzła
+  i dodawane przy starcie nowych; żądanie w oknie stop→start dostaje 404, nieodróżnialne od nieistniejącego zasobu.
+- **Rozwiązanie:** `runtime/lib/httpHold.js` – middleware montowany na aplikacji `httpNode` **przed** trasami węzłów
+  (`runtime/lib/index.js`, tylko przy `enabled: true`; bez ustawienia aplikacja nie zmienia się wcale). Sygnałem jest stan
+  instancji E-02 (`runtime/lib/state.js`): żądania są wstrzymywane w stanach `deploying` (potok A, krok 4–8) i `reloading`
+  (potok B, krok 5), które kończą się dopiero po starcie nowych flow (`pipeline.js` `endWithStart`, R-43) – nowe trasy
+  istnieją, gdy żądania są wypuszczane. Brak równoległej maszyny stanów; nasłuch przez `instanceState.onChange`.
+- **Wypuszczenie:** po zmianie stanu na inny niż `deploying`/`reloading`. Przy błędzie startu (`failed`), flow zatrzymanych (`idle`)
+  i zatrzymaniu runtime wstrzymane żądania trafiają do zwykłego routingu (router odpowie jak dziś, np. 404 dla trasy, która nie
+  powstała) – nie przetrzymujemy ich dłużej niż trwa operacja, a `Retry-After` nie ma sensu, gdy nie wiadomo, czy trasa wróci.
+- **Limity:** `timeout` (5000 ms) – po nim 503 `{"code":"http_hold_timeout"}` z `Retry-After`; `maxPending` (1000) – ponad limit
+  503 `{"code":"http_hold_queue_full"}` od razu (pamięć ograniczona); `retryAfter` (1 s). Klient, który się rozłączył,
+  zwalnia miejsce. Błędna wartość opcji → ostrzeżenie i wartość domyślna; ustawienie niebędące obiektem → ostrzeżenie, wyłączone.
+- **Zakres:** tylko aplikacja `httpNode` (ścieżki pod `httpNodeRoot`); Admin API, edytor, sondy `health` i `httpStatic` nie są wstrzymywane.
+  Uwierzytelnianie `httpNodeAuth` (montowane w CLI przed `httpNode`) wykonuje się przed wstrzymaniem. Żądania już obsługiwane nie są ruszane.
+  Poza zakresem: pierwszy start procesu (`starting`), `POST /flows/state`, przełączenie projektu, okno drenażu (`reloadPending` –
+  stare trasy jeszcze odpowiadają), połączenia WebSocket.
+- **Wybory projektowe:** nazwa `deploy.holdHttpNodeRequests` (rodzina `deploy.*`, ZASADY §2.1; nie `deploy.reload.*`, bo obejmuje także
+  zwykłe wdrożenie); wstrzymanie w całym stanie `deploying` (także przed zatrzymaniem węzłów) – prostsze i nieszkodliwe, bo trwa krótko.
+  Ustaw `timeout` poniżej limitów czasu load balancera i klientów.
 
 ### Potok wdrożenia (E-01)
 - Wspólna blokada (`runtime/lib/flows/lock.js`) dla `POST /flows`, `/flow`, `POST /flows/state` i operacji
