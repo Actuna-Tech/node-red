@@ -71,6 +71,10 @@ Features
    `function/10-function.html`, `function/15-change.html`, `parsers/70-JSON.html`). The files follow the
    en-US 5.0.7 help: the same sections, property names and code samples (Z-13, #12). When the
    editor language is Polish, these nodes show the Polish help instead of the English one.
+ - Polish locale files (`pl/messages.json`, `pl/editor.json`) follow the glossary of `FORK.md`: "węzeł"
+   instead of "node", "node'a", "node'y" and "bloczek", "subflow" instead of "podflow", and the impersonal form instead of the second
+   person ("Można zmodyfikować flow…" instead of "Możesz zmodyfikować flow…"). Only the wording changes,
+   the keys are unchanged (Z-13, #21).
 
  - New API for the coordination of instances that run the same flows: `RED.coordination`
    for nodes (`isLeader()`, `onLeaderChange(node, listener)`, `claim(key, ttlMs)`,
