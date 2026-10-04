@@ -394,6 +394,46 @@ describe("runtime/httpHold (#8)", function() {
         });
     });
 
+    describe("robustness", function() {
+        it("a timeout above the limit of setTimeout is invalid: warning and the default, no immediate 503", async function() {
+            await setup({ enabled: true, timeout: 3e9 });
+            log.warn.calledOnce.should.be.true();
+            log.warn.firstCall.args[0].should.match(/httpHold.invalid-option.*timeout/);
+            instanceState.begin("deploy");
+            const pendingRes = getHeld("/hello");
+            await waitHeld(1);
+            await new Promise(r => setTimeout(r, 100));
+            httpHold.pending().should.equal(1);
+            instanceState.markStopping("stop");
+            await pendingRes;
+        });
+        it("the largest allowed timeout is accepted", async function() {
+            await setup({ enabled: true, timeout: 2147483647 });
+            log.warn.called.should.be.false();
+        });
+        it("a next() that throws does not drop the other held requests", async function() {
+            await setup({ enabled: true, timeout: 5000 });
+            instanceState.begin("deploy");
+            const fakeRes = () => ({ headersSent: false, statusCode: 0, headers: {}, on() {}, removeListener() {},
+                setHeader(k, v) { this.headers[k] = v }, end() { this.ended = true } });
+            const res1 = fakeRes();
+            const res2 = fakeRes();
+            const next1 = sinon.stub().throws(new Error("boom"));
+            const next2 = sinon.spy();
+            httpHold.middleware({ method: "GET" }, res1, next1);
+            httpHold.middleware({ method: "GET" }, res2, next2);
+            httpHold.pending().should.equal(2);
+            instanceState.markStopping("stop");
+            next1.calledOnce.should.be.true();
+            next2.calledOnce.should.be.true();
+            res1.statusCode.should.equal(503);
+            res1.ended.should.be.true();
+            log.warn.calledOnce.should.be.true();
+            log.warn.firstCall.args[0].should.match(/httpHold.release-failed/);
+            httpHold.pending().should.equal(0);
+        });
+    });
+
     describe("with the deploy pipeline and the reload from storage", function() {
         let flows;
         let startFlows;

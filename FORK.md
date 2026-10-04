@@ -128,7 +128,11 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 - **Limity:** `timeout` (5000 ms) – po nim 503 `{"code":"http_hold_timeout"}` z `Retry-After`; `maxPending` (1000) – ponad limit
   503 `{"code":"http_hold_queue_full"}` od razu (pamięć ograniczona); `retryAfter` (1 s). Klient, który się rozłączył,
   zwalnia miejsce. Błędna wartość opcji → ostrzeżenie i wartość domyślna; ustawienie niebędące obiektem → ostrzeżenie, wyłączone.
-- **Zakres:** tylko aplikacja `httpNode` (ścieżki pod `httpNodeRoot`); Admin API, edytor, sondy `health` i `httpStatic` nie są wstrzymywane.
+- **Zakres:** tylko aplikacja `httpNode` (ścieżki pod `httpNodeRoot`); Admin API, edytor i sondy `health` nie są wstrzymywane.
+  Uwaga: przy `httpNodeRoot: "/"` (domyślnie) aplikacja `httpNode` jest montowana przed `httpStatic` (`red.js`), więc **pliki statyczne
+  serwowane pod `httpNodeRoot` także są wstrzymywane**; nie są wstrzymywane tylko te pod innym korzeniem. Wstrzymywane jest też
+  preflight CORS (`OPTIONS` rejestrowane przez `http in` na `httpNode`), a odpowiedź 503 z wstrzymania **nie niesie nagłówków
+  `Access-Control-*`** – przeglądarka zgłosi błąd CORS zamiast 503 (klient spoza przeglądarki widzi 503 i `Retry-After`).
   Uwierzytelnianie `httpNodeAuth` (montowane w CLI przed `httpNode`) wykonuje się przed wstrzymaniem. Żądania już obsługiwane nie są ruszane.
   Poza zakresem: pierwszy start procesu (`starting`), `POST /flows/state`, przełączenie projektu, okno drenażu (`reloadPending` –
   stare trasy jeszcze odpowiadają), połączenia WebSocket.

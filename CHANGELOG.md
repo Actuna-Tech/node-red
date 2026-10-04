@@ -12,7 +12,8 @@
    instance state `deploying`/`reloading`), then the new flows answer them. After `timeout` (5000 ms)
    or above `maxPending` (1000) held requests the answer is 503 `{code: "http_hold_timeout"}` /
    `{code: "http_hold_queue_full"}` with `Retry-After` (`retryAfter`, 1 s). If the start fails, the requests
-   are released to the normal routing. The Admin API and the editor are not held
+   are released to the normal routing. The Admin API and the editor are not held; static files under
+   `httpNodeRoot` and CORS preflight requests are held, and the 503 has no `Access-Control-*` headers
 
 Features
  - Polish (`pl`) translation of the editor (`editor.json`, 317 keys) and of the core nodes
