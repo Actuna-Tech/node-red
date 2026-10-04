@@ -245,8 +245,30 @@ Fixes
    unchanged; a new notification from storage only shortens the delay of the next retry and no
    longer resets the count, and a new failing reload after a recovery by a local deployment is
    counted as a new series (#17)
+ - Editor: a deployment that was saved although the flows did not start (500 `deploy_start_failed` or
+   `deploy_stop_failed` with a `rev`, `deploy.response: "started"`) now takes over the new revision and
+   marks the changes as deployed; it is shown as one red error that lists the causes (a flow that failed
+   to start, a start that takes longer than `deploy.startTimeout`, missing node types or modules, safe
+   mode, nodes that could not be stopped). Before, the changes stayed undeployed, the next deploy sent
+   the old revision and got a 409 conflict, and a late `runtime-deploy` raised a false "flows changed in
+   the background" notice (a blocking dialog with `editorTheme.deploy.staleFlows: "reload-only"`) (#22)
+ - Editor: errors of a deploy, of "Restart flows" and of "Start"/"Stop" show a readable message built from
+   the `message` of the response (or a generic one) instead of its raw JSON inserted as HTML. This
+   also applies in the default mode; only the display changes, not saving or the API. A response that is
+   not JSON no longer breaks the error handling of "Start"/"Stop" (#22)
 
 #### Unreleased: Engine extensions
+
+Features
+
+ - With `deploy.response: "started"` the `start_timeout` entry of `errors[]` has the additive fields `timeout`,
+   `phase` (`"modules"` while the modules of the flows are checked, `"flows"` while they start), `startedAt`,
+   `elapsed`, `pending` (flows not started yet) and `current`; a `flow_start_failed` entry of a rejected start has
+   `flow` when known. No new code - still 500 `deploy_start_failed`; the default mode is unchanged (#22, R-48)
+ - When a deployment answered `start_timeout` and the start of the flows ends later, the runtime publishes
+   the event `deploy-start-result` to the logged-in editor sessions (`/comms`, not retained) and the editor
+   shows "flows started" or an error with the causes. Not emitted for a deployment that answered in time or in the
+   default mode (#22, R-48)
 
 Security
 

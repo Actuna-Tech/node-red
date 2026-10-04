@@ -24,6 +24,8 @@
  *   Z-04: tests of getFlowRevision and the single-flow configuration (create, globalConfigs)
  *   Z-09: tests of reloadFromStorage (full, diff) and getChangedFlows
  *   Z-15: tests of the editor-only instance (editorOnly)
+ *   #22: tests of the facts of start_timeout (phase, pending, current), of the flow in
+ *   flow_start_failed and of the runtime event deploy-start-result after a start_timeout response
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1186,6 +1188,172 @@ describe('flows/index', function() {
                 await waitFor("runtime-deploy");
                 await new Promise(resolve => setTimeout(resolve, 5));
                 log.info.callCount.should.be.above(infoCalls);
+            });
+            describe('facts of the start (#22)', function() {
+                let resultEvents;
+                let resultListener;
+                beforeEach(function() {
+                    resultEvents = [];
+                    resultListener = function(evt) {
+                        if (evt.id === "deploy-start-result") { resultEvents.push(evt) }
+                    };
+                    events.on("runtime-event", resultListener);
+                });
+                afterEach(function() {
+                    events.removeListener("runtime-event", resultListener);
+                });
+                function tick(ms) { return new Promise(resolve => setTimeout(resolve, ms || 10)) }
+
+                it('start_timeout in the phase flows lists the flows not started and the current one', async function() {
+                    await initFlows({deploy: {startTimeout: 30}});
+                    let finishStart;
+                    const pendingStart = new Promise(resolve => { finishStart = resolve });
+                    replaceFlowCreate(function(id) { return id === "t1" ? pendingStart : Promise.resolve() });
+                    try {
+                        const err = await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart).should.be.rejected();
+                        const entry = err.errors[0];
+                        entry.should.have.property("code","start_timeout");
+                        entry.should.have.property("phase","flows");
+                        entry.should.have.property("current","t1");
+                        entry.pending.should.eql(["t1","t2"]);
+                        entry.should.have.property("timeout",30);
+                        entry.startedAt.should.be.a.Number();
+                        entry.elapsed.should.be.a.Number();
+                        entry.elapsed.should.be.aboveOrEqual(30);
+                        entry.should.have.property("message");
+                    } finally {
+                        finishStart();
+                        await tick();
+                    }
+                });
+                it('start_timeout in the phase modules has no flows pending', async function() {
+                    await initFlows({deploy: {startTimeout: 30}});
+                    let finishModules;
+                    const modulesPending = new Promise(resolve => { finishModules = resolve });
+                    checkFlowDependencies.callsFake(function() { return modulesPending });
+                    try {
+                        const err = await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart).should.be.rejected();
+                        const entry = err.errors[0];
+                        entry.should.have.property("code","start_timeout");
+                        entry.should.have.property("phase","modules");
+                        entry.pending.should.eql([]);
+                        entry.should.not.have.property("current");
+                        entry.elapsed.should.be.a.Number();
+                    } finally {
+                        finishModules();
+                        await tick();
+                        checkFlowDependencies.callsFake(async function(flow) {
+                            if (flow[0].id === "node-with-missing-modules") {
+                                throw new Error("Missing module");
+                            }
+                        });
+                    }
+                });
+                it('flow_start_failed of a rejected start() names the flow when known', async function() {
+                    await initFlows();
+                    flowCreate.restore();
+                    // replaced stub - restored by the outer afterEach
+                    flowCreate = sinon.stub(Flow,"create").callsFake(function(parent, global, flow) {
+                        if (flow && flow.id === "t2") { throw new Error("create failed") }
+                        return { start: async function() {}, stop: sinon.spy(async () => {}), update: sinon.spy(), getActiveNodes: () => ({}) };
+                    });
+                    const err = await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart).should.be.rejected();
+                    err.should.have.property("code","deploy_start_failed");
+                    err.errors.should.have.length(1);
+                    err.errors[0].should.have.property("code","flow_start_failed");
+                    err.errors[0].should.have.property("message","create failed");
+                    err.errors[0].should.have.property("flow","t2");
+                });
+                it('flow_start_failed of a rejected start() has no flow when none is known', async function() {
+                    await initFlows();
+                    checkFlowDependencies.callsFake(async function() { throw "not a list of modules" });
+                    try {
+                        const consoleLog = sinon.stub(console, "log");
+                        let err;
+                        try {
+                            err = await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart).should.be.rejected();
+                        } finally {
+                            consoleLog.restore();
+                        }
+                        err.errors[0].should.have.property("code","flow_start_failed");
+                        err.errors[0].should.not.have.property("flow");
+                    } finally {
+                        checkFlowDependencies.callsFake(async function(flow) {
+                            if (flow[0].id === "node-with-missing-modules") {
+                                throw new Error("Missing module");
+                            }
+                        });
+                    }
+                });
+                it('the other start errors are unchanged (no extra fields)', async function() {
+                    await initFlows({deploy: {startTimeout: 1000}});
+                    const config = clone(baseConfig);
+                    config.push({id:"t1-2",z:"t1",type:"missing",wires:[]});
+                    const err = await flows.setFlows(config, null, "full", false, false, null, waitForStart).should.be.rejected();
+                    Object.keys(err.errors[0]).sort().should.eql(["code","message","types"]);
+                });
+                it('emits deploy-start-result "started" after a start_timeout response when the start completes', async function() {
+                    await initFlows({deploy: {startTimeout: 30}});
+                    let finishStart;
+                    const pendingStart = new Promise(resolve => { finishStart = resolve });
+                    replaceFlowCreate(function() { return pendingStart });
+                    await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart).should.be.rejected();
+                    resultEvents.should.have.length(0);
+                    finishStart();
+                    await tick();
+                    resultEvents.should.have.length(1);
+                    resultEvents[0].should.have.property("retain",false);
+                    resultEvents[0].payload.should.have.property("type","success");
+                    resultEvents[0].payload.should.have.property("text","notification.info.deploy-started");
+                    resultEvents[0].payload.should.have.property("revision","savedRev");
+                });
+                it('emits deploy-start-result with the errors after a start_timeout response when the start fails', async function() {
+                    await initFlows({deploy: {startTimeout: 30}});
+                    let failStart;
+                    const pendingStart = new Promise((resolve, reject) => { failStart = reject });
+                    replaceFlowCreate(function(id) { return id === "t2" ? pendingStart : Promise.resolve() });
+                    const consoleLog = sinon.stub(console, "log");
+                    try {
+                        await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart).should.be.rejected();
+                        resultEvents.should.have.length(0);
+                        failStart(new Error("late boom"));
+                        await tick();
+                    } finally {
+                        consoleLog.restore();
+                    }
+                    resultEvents.should.have.length(1);
+                    resultEvents[0].should.have.property("retain",false);
+                    resultEvents[0].payload.should.have.property("type","error");
+                    resultEvents[0].payload.should.have.property("text","notification.errors.deploy-start-failed");
+                    resultEvents[0].payload.should.have.property("revision","savedRev");
+                    resultEvents[0].payload.errors.should.have.length(1);
+                    resultEvents[0].payload.errors[0].should.have.property("code","flow_start_failed");
+                    resultEvents[0].payload.errors[0].should.have.property("flow","t2");
+                    resultEvents[0].payload.errors[0].should.have.property("message","late boom");
+                });
+                it('emits no deploy-start-result for a deployment that answered in time', async function() {
+                    await initFlows({deploy: {startTimeout: 1000}});
+                    await flows.setFlows(clone(baseConfig), null, "full", false, false, null, waitForStart);
+                    // a start that fails within the limit
+                    const config = clone(baseConfig);
+                    config.push({id:"t1-2",z:"t1",type:"missing",wires:[]});
+                    await flows.setFlows(config, null, "full", false, false, null, waitForStart).should.be.rejected();
+                    await tick(40);
+                    resultEvents.should.have.length(0);
+                });
+                it('emits no deploy-start-result in the default mode', async function() {
+                    await initFlows({deploy: {startTimeout: 30}});
+                    let finishStart;
+                    const pendingStart = new Promise(resolve => { finishStart = resolve });
+                    replaceFlowCreate(function() { return pendingStart });
+                    // the default mode answers before the start with the revision
+                    const rev = await flows.setFlows(clone(baseConfig), "full");
+                    rev.should.equal("savedRev");
+                    await tick(60);
+                    finishStart();
+                    await tick();
+                    resultEvents.should.have.length(0);
+                });
             });
             it('no timeout when deploy.startTimeout absent', async function() {
                 await initFlows();

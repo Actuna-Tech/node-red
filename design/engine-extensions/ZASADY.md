@@ -193,7 +193,7 @@ w którym pakiet dopisuje swój krok (bez pustych hooków).
 | `deploy_rejected` | 400 | Z-06 | `preDeploy` odrzucił wdrożenie (komunikat z hooka) |
 | `deploy_hook_timeout` | 503 | Z-06 | `preDeploy` przekroczył `deploy.hookTimeout` (R-15; wcześniej proponowane 400) |
 | `deploy_stop_failed` | 500 | P-01 | tryb `started`: błąd zatrzymania węzłów; `rev` (w `/flow` także `revAll` – W-3) |
-| `deploy_start_failed` | 500 | P-01 | tryb `started`: błąd startu – odpowiedź `{ code, message, rev, errors[] }`, `errors[].code` w `snake_case`, m.in. `safe_mode` (R-10, R-33) i `start_timeout` (przekroczony `deploy.startTimeout`, R-38); zakres błędu startu wg §2.3 A krok 10 (R-10); w `/flow` `rev` = rewizja flow, `revAll` = rewizja całości (W-3) |
+| `deploy_start_failed` | 500 | P-01 | tryb `started`: błąd startu – odpowiedź `{ code, message, rev, errors[] }`, `errors[].code` w `snake_case`, m.in. `safe_mode` (R-10, R-33) i `start_timeout` (przekroczony `deploy.startTimeout`, R-38); zakres błędu startu wg §2.3 A krok 10 (R-10); w `/flow` `rev` = rewizja flow, `revAll` = rewizja całości (W-3); pola wpisów `errors[]` (#22, R-48): `start_timeout` – `timeout`, `phase` (`modules`/`flows`), `startedAt`, `elapsed`, `pending[]`, `current`; `flow_start_failed` – `flow` (gdy znany); późny wynik startu po `start_timeout` – zdarzenie `/comms` `deploy-start-result` |
 | `invalid_flow_id` | 400 | Z-04 | `PUT /flow/:id` z niedozwolonym id przy `deploy.putCreatesFlow` |
 | `duplicate_id` | 400 | Z-04 | id węzła/konfiguracji należy do innego flow |
 | `module_downgrade_not_allowed` | 400 | Z-03 | `.tgz` ze starszą wersją przy `allowDowngrade: false` |

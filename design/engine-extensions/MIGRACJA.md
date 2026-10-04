@@ -141,6 +141,13 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 - Limit czasu startu: `deploy.startTimeout` (ms, domyślnie wyłączony). Po przekroczeniu **500 `deploy_start_failed`**
   z `errors[].code: "start_timeout"`; flow startują dalej w tle (wynik w logu) – narzędzie przyjmuje `rev` jak przy
   innym błędzie startu (R-38).
+- Pola wpisu `start_timeout` (#22, R-48, addytywne): `timeout` (ms), `phase` (`"modules"` | `"flows"`), `startedAt` (ms od epoki),
+  `elapsed` (ms), `pending` (id flow jeszcze niewystartowanych, razem z bieżącym; w fazie `"modules"` `[]`) i `current` (id
+  uruchamianego flow, tylko w fazie `"flows"`). Wpis `flow_start_failed` z odrzuconego startu ma `flow`, gdy znany (wpisy
+  z samego startu flow miały je już wcześniej). Pola nie zmieniają kodów ani statusów; klient, który ich nie zna, je pomija.
+- Późny wynik (#22, R-48): po odpowiedzi `start_timeout` runtime publikuje po zakończeniu startu zdarzenie `deploy-start-result`
+  (`/comms`, temat `notification/deploy-start-result`, bez retencji; tylko zalogowane sesje): `{type: "success"|"error",
+  text, revision, errors[]?}` – tylko dla wdrożenia, które odpowiedziało `start_timeout`.
 - Instancja tylko edycyjna (`editorOnly: true`): odpowiedź **`{rev, started: false}`** bez błędu – flow nie są
   uruchamiane (R-39).
 - Błąd zatrzymania: 500 `deploy_stop_failed` z `rev`.
