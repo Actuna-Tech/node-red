@@ -252,6 +252,14 @@ Fixes
    unchanged; a new notification from storage only shortens the delay of the next retry and no
    longer resets the count, and a new failing reload after a recovery by a local deployment is
    counted as a new series (#17)
+ - A successful cycle of the reload from storage (`deploy.reload`) now ends the retry scheduled by
+   an earlier failed cycle: before, one useless extra cycle (a read of storage) followed the
+   success, both when the retry timer had not fired yet and when it fired while the successful
+   cycle was still running (for example during a slow `preReload` drain). A retry that fires
+   while a cycle is running no longer starts an immediate extra cycle either: if that cycle
+   fails, the next retry follows the backoff of the failure instead of being run at once. A
+   notification from storage still starts a cycle at once, as before. The counters of a new
+   series after a recovery by a local deployment are reset explicitly (#26)
 
 #### Unreleased: Engine extensions
 
