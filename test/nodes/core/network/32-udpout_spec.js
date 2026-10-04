@@ -13,6 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #41: no fixed port - the receiving socket of every test is bound to a port assigned by the system
+ *   and the node is configured with it (two test runs on one machine do not collide)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var dgram = require("dgram");
 var should = require("should");
@@ -21,8 +27,6 @@ var udpNode = require("nr-test-utils").require("@node-red/nodes/core/network/32-
 
 
 describe('UDP out Node', function() {
-    var port = 9200;
-
     before(function(done) {
         helper.startServer(done);
     });
@@ -35,17 +39,28 @@ describe('UDP out Node', function() {
         helper.unload();
     });
 
-    function recvData(data, done) {
+    // Binds the receiving socket to a port assigned by the system and calls
+    // listening(port) when it is bound; done is called when the data has arrived.
+    function recvData(data, listening, done) {
         var sock = dgram.createSocket('udp4');
         sock.on('message', function(msg, rinfo) {
             sock.close(done);
             msg.should.deepEqual(data);
         });
-        sock.bind(port, '127.0.0.1');
-        port++;
+        sock.once('error', done);
+        sock.bind(0, '127.0.0.1', function() {
+            sock.removeListener('error', done);
+            listening(sock.address().port);
+        });
     }
 
     function checkSend(proto, val0, val1, decode, dest_in_msg, done) {
+        recvData(val1, function(port) {
+            checkSendTo(port, proto, decode, dest_in_msg);
+        }, done);
+    }
+
+    function checkSendTo(port, proto, decode, dest_in_msg) {
         var dst_ip = dest_in_msg ? undefined : "127.0.0.1";
         var dst_port = dest_in_msg ? undefined : port;
         var flow = [{id:"n1", type:"udp out",
@@ -66,7 +81,6 @@ describe('UDP out Node', function() {
                 msg.ip = "127.0.0.1";
                 msg.port = port;
             }
-            recvData(val1, done);
             setTimeout(function() {
                 n1.receive(msg);
             }, 200);

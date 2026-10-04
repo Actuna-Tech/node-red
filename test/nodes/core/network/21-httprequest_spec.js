@@ -13,6 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #41: no fixed ports - the test servers listen on ports assigned by the system
+ *   (two test runs on one machine do not collide)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var http = require("http");
 var https = require("https");
@@ -40,15 +46,16 @@ const net = require('net')
 describe('HTTP Request Node', function() {
     var testApp;
     var testServer;
-    var testPort = 10234;
+    // The ports are assigned by the system (listen(0)) when the servers start (#41)
+    var testPort;
     var testSslServer;
-    var testSslPort = 10334;
+    var testSslPort;
     var testProxyServer;
-    var testProxyPort = 10444;
+    var testProxyPort;
     var testProxyServerAuth;
-    var testProxyAuthPort = 10554;
+    var testProxyAuthPort;
     var testSslClientServer;
-    var testSslClientPort = 10664;
+    var testSslClientPort;
 
     //save environment variables
     var preEnvHttpProxyLowerCase;
@@ -60,12 +67,10 @@ describe('HTTP Request Node', function() {
     var receivedCookies = {};
 
     function startServer(done) {
-        testPort += 1;
         testServer = stoppable(http.createServer(testApp));
         const promises = []
-        testServer.listen(testPort,function(err) {
-            testSslPort += 1;
-            console.log("ssl port", testSslPort);
+        testServer.listen(0,function(err) {
+            testPort = testServer.address().port;
             var sslOptions = {
                 key:  fs.readFileSync('test/resources/ssl/server.key'),
                 cert: fs.readFileSync('test/resources/ssl/server.crt')
@@ -86,8 +91,9 @@ describe('HTTP Request Node', function() {
             testSslServer = stoppable(https.createServer(sslOptions,testApp));
             console.log('> start testSslServer')
             promises.push(new Promise((resolve, reject) => {
-                testSslServer.listen(testSslPort, function(err){
-                    console.log(' done testSslServer')
+                testSslServer.listen(0, function(err){
+                    testSslPort = testSslServer.address().port;
+                    console.log(' done testSslServer, ssl port', testSslPort)
                     if (err) {
                         reject(err)
                     } else {
@@ -96,7 +102,6 @@ describe('HTTP Request Node', function() {
                 });
             }))
 
-            testSslClientPort += 1;
             var sslClientOptions = {
                 key:  fs.readFileSync('test/resources/ssl/server.key'),
                 cert: fs.readFileSync('test/resources/ssl/server.crt'),
@@ -106,7 +111,8 @@ describe('HTTP Request Node', function() {
             testSslClientServer = stoppable(https.createServer(sslClientOptions, testApp));
             console.log('> start testSslClientServer')
             promises.push(new Promise((resolve, reject) => {
-                testSslClientServer.listen(testSslClientPort, function(err){
+                testSslClientServer.listen(0, function(err){
+                    testSslClientPort = testSslClientServer.address().port;
                     console.log(' done testSslClientServer')
                     if (err) {
                         reject(err)
@@ -115,7 +121,6 @@ describe('HTTP Request Node', function() {
                     }
                 });
             }))
-            testProxyPort += 1;
             testProxyServer = stoppable(httpProxy(http.createServer()))
 
             testProxyServer.on('request', function(req,res){
@@ -125,7 +130,8 @@ describe('HTTP Request Node', function() {
             })
             console.log('> testProxyServer')
             promises.push(new Promise((resolve, reject) => {
-                testProxyServer.listen(testProxyPort, function(err) {
+                testProxyServer.listen(0, function(err) {
+                    testProxyPort = testProxyServer.address().port;
                     console.log(' done testProxyServer')
                     if (err) {
                         reject(err)
@@ -135,7 +141,6 @@ describe('HTTP Request Node', function() {
                 })
             }))
 
-            testProxyAuthPort += 1
             testProxyServerAuth = stoppable(httpProxy(http.createServer()))
             testProxyServerAuth.authenticate = function(req,callback){
                 var authHeader = req.headers['proxy-authorization'];
@@ -157,7 +162,8 @@ describe('HTTP Request Node', function() {
             })
             console.log('> testProxyServerAuth')
             promises.push(new Promise((resolve, reject) => {
-                testProxyServerAuth.listen(testProxyAuthPort, function(err) {
+                testProxyServerAuth.listen(0, function(err) {
+                    testProxyAuthPort = testProxyServerAuth.address().port;
                     console.log(' done testProxyServerAuth')
                     if (err) {
                         reject(err)
@@ -2725,17 +2731,22 @@ describe('HTTP Request Node', function() {
     });
 
     describe('should parse broken headers', function() {
-        let port = testPort++
+        // assigned by the system when the server listens (#41)
+        let port;
 
         let server;
 
-        before(function() {
+        before(function(done) {
             server = net.createServer(function (socket) {
                 socket.write("HTTP/1.0 200\nContent-Type: text/plain\n\nHelloWorld")
                 socket.end()
             })
 
-            server.listen(port,'127.0.0.1', function(err) {
+            server.once('error', done)
+            server.listen(0,'127.0.0.1', function() {
+                server.removeListener('error', done)
+                port = server.address().port
+                done()
             })
         });
 
