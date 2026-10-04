@@ -145,7 +145,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `rawBodyCapture` w oknie stop→start (klucz trasy chwilowo nieobecny), po wypuszczeniu dostałoby ciało sparsowane (obiekt/tekst zamiast
   `Buffer`, np. psuje weryfikację podpisu HMAC). Trasa takiego węzła czyta więc surowe ciało sama, jeśli nie zostało jeszcze odczytane
   (`21-httpin.js`, `createRawBodyFallback`). W #8 robiła to tylko trasa przy `enabled: true`; od #16 robi to każda trasa `skipBodyParsing`,
-  **niezależnie od tego ustawienia**, a samo ciało czyta zawsze trasa (nie `rawBodyCapture`, zob. §6).
+  **niezależnie od tego ustawienia** (zob. §6).
 - **Surowe ciało tras z parametrem i inną wielkością liter (#16):** `rawBodyCapture` dopasowuje dosłowny klucz `METODA:url`, więc trasa
   `skipBodyParsing` z parametrem (`/hook/:id`) lub inną wielkością liter nigdy nie była przechwytywana i dostawała ciało sparsowane.
   Teraz taka trasa dostaje `Buffer` zawsze (zapasowy odczyt wyżej) – zob. §6 (limit rozmiaru surowego ciała i opcja węzła `Max body size`).
@@ -294,16 +294,20 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `Transfer-Encoding: chunked` po przekroczeniu liczby odebranych bajtów (multer nie dostaje reszty); bez pola upload pozostaje **bez
   limitu**, jak dotąd. Żądanie niebędące multipart na trasie z uploadem nie jest limitowane tym polem (jak dotąd). Puste pole = domyślny
   limit; nieprawidłowa wartość → ostrzeżenie węzła i limit domyślny (pole jest brane pod uwagę tylko przy `skipBodyParsing` lub
-  uploadzie; w edytorze jest walidowane tylko, gdy widoczne). Nieprawidłowe `apiMaxLength` (liczba ≤ 0) → jedno ostrzeżenie w logu
+  uploadzie; w edytorze jest walidowane tylko, gdy widoczne). Nieprawidłowe `apiMaxLength` (liczba ≤ 0 albo tekst niebędący rozmiarem, np. `abc`) → jedno ostrzeżenie w logu
   (nie na każdy węzeł) i 5 MB. Brak nowego ustawienia globalnego. Na trasie dzielonej przez kilka węzłów obowiązuje limit węzła, który
   odpowiada (pierwszy zarejestrowany). Bez zmian: parsery JSON/urlencoded (nadal `apiMaxLength`) oraz `rawBodyParser` (ciało
   tekstowe i binarne trasy bez `skipBodyParsing`, nadal bez limitu).
-  (4) **Kolejność (bezpieczeństwo):** `rawBodyCapture` stoi na szczycie głównej aplikacji, przed `httpNodeAuth` i `httpNodeMiddleware`, więc
-  **tylko oznacza** żądanie (klucz trasy z `skipBodyParsing`: inne warstwy, np. parsery ciała, je pomijają) i nie czyta ciała; ciało czyta
-  trasa węzła po uwierzytelnieniu, CORS i `httpNodeMiddleware` (wcześniej bufor do limitu rósł przed odmową 401). **Skutek zmiany
-  zachowania:** `httpNodeMiddleware` i obce trasy na tej samej metodzie i ścieżce nie znajdują już surowego ciała w `req.body` (tak
-  jak dotąd na trasach z parametrem); trasa bez `skipBodyParsing`, która odpowiada na kluczu trasy z `skipBodyParsing`, parsuje ciało
-  normalnie (wcześniej dostawała `Buffer`).
+  (4) **Miejsce odczytu (bezpieczeństwo):** `rawBodyCapture` jest zamontowany na aplikacji `httpNode` (`RED.httpNode`), a nie na aplikacji
+  głównej. `httpNodeAuth` jest zamontowany na aplikacji głównej przed `httpNode` (`red.js`), a wstrzymanie żądań (#8) jest pierwszą warstwą
+  `httpNode` (montowane przy inicjalizacji runtime, przed załadowaniem węzłów), więc **nic nie jest czytane przed uwierzytelnieniem ani
+  w czasie wstrzymania** (wcześniej bufor do najwyższego limitu rósł przed odmową 401). Odczyt jest **przed** `httpNodeMiddleware` i trasami,
+  więc middleware i obce trasy na tym samym kluczu nadal dostają `Buffer` w `req.body`, jak w upstream. Klucz trasy jest względem
+  `httpNodeRoot` (bez prefiksu). Ciało powyżej limitu nie jest odrzucane przez przechwycenie: `rawBodyCapture` je oznacza, a **trasa
+  węzła** (po CORS) odpowiada 413 – dzięki temu 413 ma nagłówki CORS także na trasie dosłownej. Na wspólnym kluczu przechwycenie czyta do
+  najwyższego z limitów, a trasa każdego węzła sprawdza własny. Trasa węzła czyta ciało, gdy przechwycenie tego nie zrobiło (trasa
+  z parametrem, inna wielkość liter, okno #8), **także gdy middleware ustawił `req.skipRawBodyParser = true`** (przykład z `settings.js`;
+  flaga oznacza „pomiń parser”, nie „ciało przeczytane” – do tego służy osobna flaga `_rawBodyRead`).
 
 ## 7. Testy i proces
 

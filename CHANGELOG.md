@@ -304,8 +304,9 @@ Fixes
    promises, regardless of `deploy.holdHttpNodeRequests`. Before, the raw body was captured only for the literal
    `METHOD:url` of the node, so such a route got a parsed body (an object or text; for example it broke the
    verification of a signature of the body). Every route of a node with the option now reads the raw body
-   itself (before: only with `deploy.holdHttpNodeRequests`); `rawBodyCapture` no longer reads the body,
-   it only marks the request (see Features). Behaviour change (#16)
+   itself (before: only with `deploy.holdHttpNodeRequests`), also when a `httpNodeMiddleware` sets
+   `req.skipRawBodyParser` (the example of the settings template; the flag means "skip the parser", not "body
+   read"). Behaviour change (#16)
  - Tests only, no change of the product: flaky tests fixed. The HTTP tests no longer reach a foreign server
    on the same machine (supertest started the app on all interfaces but connected to `127.0.0.1`; the
    shared helper `nr-test-utils/supertest` listens on `127.0.0.1`), the `tcp request` test server hook calls
@@ -322,12 +323,12 @@ Features
    with the CORS headers. The rest of a rejected body is read and discarded (up to 64mb), so the client
    receives the 413 instead of a reset connection; a declared `Content-Length` above 64mb gets the 413 and
    `Connection: close` at once (#16)
- - `http in` with "Do not parse request body": the raw body is read by the route of the node, after
-   `httpNodeAuth`, CORS and `httpNodeMiddleware`; `rawBodyCapture` (the top of the root app, in front of
-   the authentication) only marks the request, so a rejected request no longer makes the runtime buffer
-   its body first. A `httpNodeMiddleware` or another route on the same method and path no longer finds the
-   raw body in `req.body` (as before for routes with parameters); a node without the option that answers on
-   such a route parses its body normally (before it got a `Buffer`) (#16)
+ - `http in` with "Do not parse request body": `rawBodyCapture` now runs on the httpNode app, behind
+   `httpNodeAuth` and the hold of the requests (`deploy.holdHttpNodeRequests`), instead of the top of the
+   root app, so a request that the authentication rejects (or the hold keeps) no longer makes the runtime
+   buffer its body first. It still runs before `httpNodeMiddleware` and the routes, so they find the raw
+   body in `req.body` as before. A body above the limit is answered with 413 by the route of the node, after
+   CORS (#16)
  - `http in`: new optional field "Max body size" (`maxBodySize`) replaces the limit for one node, higher or
    lower, for routes that receive large files or images. A number with an optional unit `b`, `kb`, `mb`
    `gb`, `tb` or `pb` (1024 based, for example `50mb`; a number alone is bytes; up to 32 characters). It applies to

@@ -27,7 +27,6 @@
 const should = require("should");
 const supertest = require("nr-test-utils/supertest");
 const express = require("express");
-const bodyParser = require("body-parser");
 const helper = require("node-red-node-test-helper");
 const httpInNode = require("nr-test-utils").require("@node-red/nodes/core/network/21-httpin.js");
 
@@ -481,18 +480,16 @@ describe("HTTP In node - routes removed on close", function() {
             (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
         });
 
-        // Whether rawBodyCapture holds the key of the route: a route that is not a node,
-        // with a JSON body parser, goes before the routes of the nodes (so the nodes of
-        // the route do not answer first, whether they are on it or not). A held key marks the
-        // request as read and the parser skips it ("held"); without the key the parser
-        // parses the body ("released"). All inside ONE module instance: a reload of the
-        // module (a new helper.load) would start with an empty set of keys and hide a
-        // leaked key.
-        const HELD = "held";
-        const RELEASED = "released";
+        // Whether rawBodyCapture holds the key of the route: a route that is not a node goes
+        // before the routes of the nodes (so the nodes of the route do not answer first,
+        // whether they are on it or not) and reports whether it got the raw body (a held
+        // key makes it a Buffer). All inside ONE module instance: a reload of the module
+        // (a new helper.load) would start with an empty set of keys and hide a leaked key.
+        const HELD = "buffer";
+        const RELEASED = "not read";
         async function keyOfRoute(path, route) {
-            const foreign = function(req, res) { res.status(200).send(req.body && req.body.x === 1 ? RELEASED : HELD) };
-            RED.httpNode.post(route || path, bodyParser.json(), foreign);
+            const foreign = function(req, res) { res.status(200).send(Buffer.isBuffer(req.body) ? HELD : RELEASED) };
+            RED.httpNode.post(route || path, foreign);
             const stack = RED.httpNode._router.stack;
             const layer = stack.pop();
             const firstRoute = stack.findIndex(l => l.route);
@@ -570,12 +567,16 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
     let server;
     let received;
     let before401;
+    let holdLike;
+    let mountAt = "/";
 
     // The httpNode app is mounted on an outer app as in the runtime, where the
-    // authentication of the nodes (httpNodeAuth) is on the outer app in front of it and
-    // rawBodyCapture is on the outer app, in front of the authentication
+    // authentication of the nodes (httpNodeAuth) is on the outer app in front of it,
+    // and a hold of the requests (#8) is the first layer of the httpNode app, before the
+    // module of the node adds rawBodyCapture
     function httpInWrapper(_RED) {
         RED = _RED;
+        if (holdLike) { RED.httpNode.use(holdLike) }
         outer = express();
         if (before401) {
             outer.use(function(req, res) {
@@ -583,7 +584,7 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
                 res.sendStatus(401);
             });
         }
-        outer.use(RED.httpNode);
+        outer.use(mountAt, RED.httpNode);
         return httpInNode(_RED);
     }
 
@@ -701,6 +702,8 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
         // the helper reuses the httpNode app: it is a root app again
         RED.httpNode.parent = undefined;
         before401 = null;
+        holdLike = null;
+        mountAt = "/";
     });
 
     describe("default limit (apiMaxLength, 5mb)", function() {
@@ -766,7 +769,7 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
 
         it("limits the raw body that bypassed the capture", async function() {
             await load([["a"]], { apiMaxLength: "1kb" });
-            const stack = outer._router.stack;
+            const stack = RED.httpNode._router.stack;
             stack.splice(stack.findIndex(layer => layer.handle && layer.handle.name === "rawBodyCapture"), 1);
             await raw("/hook", 2048).expect(413);
             await raw("/hook", 1000).expect(200);
@@ -909,13 +912,58 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             }
         });
 
-        it("a route without skipBodyParsing on the route of a node with it parses its body", async function() {
-            // rawBodyCapture marks the request for the key; the mark is taken off by the
-            // route that is first (a node without the option)
-            await load([["a", { skipBodyParsing: false }], ["b", { skipBodyParsing: true }]]);
-            await supertest(server).post("/hook").set("Content-Type", "application/json").send('{"x": 1}').expect(200);
-            received[0].id.should.equal("a");
-            received[0].msg.payload.should.eql({ x: 1 });
+        it("does not read the body of a request that the hold of the requests keeps, reads it after the release", async function() {
+            const held = [];
+            holdLike = function(req, res, next) {
+                held.push({ next: next, flowing: req.readableFlowing, didRead: req.readableDidRead });
+            };
+            await load([["a"]]);
+            const answer = supertest(server).post("/hook").set("Content-Type", "application/octet-stream").send(Buffer.alloc(100 * 1024, 0x61)).expect(200).then(function(res) { return res });
+            while (held.length === 0) { await new Promise(function(resolve) { setTimeout(resolve, 5) }) }
+            // held in front of rawBodyCapture: the stream was not touched
+            should(held[0].flowing).equal(null);
+            held[0].didRead.should.be.false();
+            received.should.have.length(0);
+            held[0].next();
+            await answer;
+            Buffer.isBuffer(received[0].msg.payload).should.be.true();
+            received[0].msg.payload.length.should.equal(100 * 1024);
+        });
+    });
+
+    describe("middleware and other routes on the route of a node with skipBodyParsing", function() {
+        // the example of settings.js: a middleware that sets skipRawBodyParser
+        function skipping(req, res, next) { req.skipRawBodyParser = true; next() }
+
+        it("gives a Buffer for a literal path and for a path with a parameter although a middleware sets skipRawBodyParser", async function() {
+            await load([["a"], ["b", { url: "/p/:id" }]], { httpNodeMiddleware: skipping });
+            await supertest(server).post("/hook").set("Content-Type", "application/octet-stream").send(Buffer.alloc(10, 0x61)).expect(200);
+            await supertest(server).post("/p/1").set("Content-Type", "application/octet-stream").send(Buffer.alloc(10, 0x61)).expect(200);
+            received.should.have.length(2);
+            received.forEach(function(r) {
+                Buffer.isBuffer(r.msg.payload).should.be.true();
+                r.msg.payload.length.should.equal(10);
+            });
+        });
+
+        it("lets the middleware find the raw body in req.body, also under a mount path of the httpNode app", async function() {
+            mountAt = "/api";
+            const seen = [];
+            await load([["a"]], { httpNodeMiddleware: function(req, res, next) { seen.push(Buffer.isBuffer(req.body)); next() } });
+            await supertest(server).post("/api/hook").set("Content-Type", "application/json").send('{"x": 1}').expect(200);
+            seen.should.eql([true]);
+            Buffer.isBuffer(received[0].msg.payload).should.be.true();
+        });
+
+        it("gives the raw body to another route on the same method and path", async function() {
+            await load([["a"]]);
+            const foreign = function(req, res) { res.status(200).send(Buffer.isBuffer(req.body) ? "buffer" : "not read") };
+            RED.httpNode.post("/hook", foreign);
+            // before the route of the node, which would answer first
+            const stack = RED.httpNode._router.stack;
+            stack.splice(stack.findIndex(l => l.route), 0, stack.pop());
+            const res = await supertest(server).post("/hook").set("Content-Type", "application/json").send('{"x": 1}').expect(200);
+            res.text.should.equal("buffer");
         });
     });
 
