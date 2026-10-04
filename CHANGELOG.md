@@ -258,6 +258,13 @@ Security
 
  - Prevent crash on websocket auth packet when admin auth is disabled
  - Render the username as text in the editor user menu and login notification
+ - Hide the credentials of a git URL (`https://user:pass@host`, `https://token@host`, `ssh://user:pass@host`)
+   as `//***@` in the projects runtime: in the error of a git command (`message`, `stderr`, `stdout`) and so in
+   the API response and the audit log, in the trace log of the command, and in the `event-log` of a command
+   run with `exec.run` (command line and output). The `remotes[].fetch` / `push` returned by the projects API
+   (`GET /projects/:id`, `GET /projects/:id/remotes`) are masked the same way; git, `.git/config` and the
+   credentials cache keep the real URL. The scp-like form `git@host:org/repo` and a user of `ssh://git@host`
+   are not changed. New `util.maskUrlCredentials()` of `@node-red/util` (#45)
 
 Fixes
 

@@ -280,6 +280,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   do nowego modułu `RED.errors` (`ui/common/errors.js`: `escape`, `parseResponse`, `translateEscaped`,
   `translateResponse`, `translateException`); `RED.deploy.translateErrorResponse` i `RED.deploy.formatStartErrors`
   działają jak dotąd, a biblioteka nie zależy już od modułu wdrożenia. Bez zmian API.
+- Projekty/git (#45): dane logowania z adresu URL repozytorium (`https://user:haslo@host/...`, `https://token@host/...`, `ssh://user:haslo@host/...`) są zastępowane przez `//***@` w runtime, w miejscu tworzenia błędu: w treści błędu polecenia git (`message`, `stderr`, `stdout`, a więc także w odpowiedzi API i logu audytu), w logu `trace` polecenia i w zdarzeniach `event-log` poleceń uruchamianych przez `exec.run` (linia polecenia i wyjście – także instalacja modułów z adresu z hasłem). `remotes[].fetch` i `push` zwracane przez API projektów (`GET /projects/:id`, `GET /projects/:id/remotes`) są maskowane tak samo; git, `.git/config` i pamięć podręczna poświadczeń (klucz = adres `fetch`) zachowują prawdziwy adres, więc działanie gita się nie zmienia. Adres scp (`git@github.com:org/repo`) i sam użytkownik `ssh://git@host` (bez hasła) nie są zmieniane. Nowa funkcja `util.maskUrlCredentials()` w `@node-red/util`. Ograniczenie: `event-log` maskuje każdy fragment wyjścia osobno – adres przedzielony na dwa fragmenty wyjścia nie zostanie rozpoznany. Bez nowych ustawień.
 
 ## 7. Testy i proces
 

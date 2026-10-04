@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #45: tests of hiding the credentials of URLs in the event-log
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 var should = require("should");
 var sinon = require("sinon");
 var path = require("path");
@@ -94,6 +99,32 @@ describe("runtime/exec", function() {
         mockProcess.stdout.emit('data',"3");
         mockProcess.stderr.emit('data',"c");
         mockProcess.emit('close',0);
+    })
+
+    it("hides the credentials of URLs in the event-log, not in the result", function(done) {
+        exec.run("git",["clone","--","https://user:s3cret@host/r.git","."],{},true).then(function(result) {
+            JSON.stringify(logEvents).should.not.containEql("s3cret");
+            JSON.stringify(logEvents).should.containEql("https://***@host/r.git");
+            // the result is for the caller, the credentials are not touched there
+            result.stdout.should.containEql("s3cret");
+            done();
+        }).catch(done);
+
+        mockProcess.stdout.emit('data',"Cloning into https://user:s3cret@host/r.git");
+        mockProcess.emit('close',0);
+    })
+
+    it("hides the credentials of URLs in the error output of the event-log", function(done) {
+        exec.run("git",["fetch"],{},true).then(function() {
+            done(new Error("should have failed"));
+        }).catch(function(result) {
+            JSON.stringify(logEvents).should.not.containEql("s3cret");
+            JSON.stringify(logEvents).should.containEql("https://***@host/r.git");
+            done();
+        }).catch(done);
+
+        mockProcess.stderr.emit('data',"fatal: unable to access 'https://user:s3cret@host/r.git/'");
+        mockProcess.emit('close',1);
     })
 
     it("runs command and rejects on error - close", function(done) {
