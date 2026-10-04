@@ -18,6 +18,7 @@
  *   P-03: tests of telemetryLocked and of ignoring telemetryEnabled while locked
  *   Z-05: test of the deploy.requireRevision flag in the runtime settings
  *   Z-15: test of the editorOnly flag in the runtime settings
+ *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -774,7 +775,7 @@ describe("runtime-api/settings", function() {
 
 var should = require("should");
 var sinon = require("sinon");
-var request = require("supertest");
+var request = require("nr-test-utils/supertest");
 var express = require("express");
 var editorApi = require("../../../../red/api/editor");
 var comms = require("../../../../red/api/editor/comms");

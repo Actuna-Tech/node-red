@@ -17,12 +17,13 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-02: integration tests of httpAdminNodeRoutes (editor-api auth + node admin routes)
  *   Z-02: use() without a path and the position of the permission marker
+ *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
 const should = require("should");
 const sinon = require("sinon");
-const request = require("supertest");
+const request = require("nr-test-utils/supertest");
 const express = require("express");
 
 const NR_TEST_UTILS = require("nr-test-utils");

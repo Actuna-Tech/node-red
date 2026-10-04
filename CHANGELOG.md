@@ -285,6 +285,15 @@ Fixes
    the deploy errors (`RED.deploy.translateErrorResponse`). A request with no HTTP response (status 0)
    shows "no response from server". Polish editor: `library.saveFailed` and `user.notAuthorized` are
    translated (the message no longer mixes languages). No change of the API (#30)
+ - Editor: text from a server response and the module name were inserted into notifications (HTML) without
+   escaping. They are now escaped (`& < > " '`) in the palette (install, update, remove, enable and disable of
+   a module, install from a file, automatic install), in the projects (the unexpected error: `message` and
+   `code`; git errors of the remote branches), in the version control (git errors; a failed connection on pull
+   shows the `message` of the error instead of "[object Object]"), when a node module fails to load, on import
+   and drop errors (the message of a failed import quotes the pasted text) and for groups. The catalog text
+   stays HTML. The shared escaping moved from `RED.deploy` to the new `RED.errors` module (`ui/common/errors.js`,
+   loaded before the modules that use it); `RED.deploy.translateErrorResponse` and `RED.deploy.formatStartErrors`
+   work as before, and the library no longer depends on the deploy module. No change of the API (#34)
  - Editor: a start result (`deploy-start-result`) that was ignored because its revision was not the one of the
    editor is dropped when the editor starts a deployment. Revisions are content hashes, so a result kept
    long before could be applied to a later deployment of the same content that ended in `start_timeout`:
@@ -297,6 +306,11 @@ Fixes
    verification of a signature of the body). Every route of a node with the option now reads the raw body
    itself when it was not captured (before: only with `deploy.holdHttpNodeRequests`). Behaviour change, see
    the Features below (#16)
+ - Tests only, no change of the product: flaky tests fixed. The HTTP tests no longer reach a foreign server
+   on the same machine (supertest started the app on all interfaces but connected to `127.0.0.1`; the
+   shared helper `nr-test-utils/supertest` listens on `127.0.0.1`), the `tcp request` test server hook calls
+   `done` once, the `watch` test ignores a macOS event of the test preparation and the limits of the
+   time-dependent hold tests are wider (#19)
 
 Features
 

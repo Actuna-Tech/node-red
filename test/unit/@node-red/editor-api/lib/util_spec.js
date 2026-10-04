@@ -19,12 +19,13 @@
  *   W-3: revAll of a deployment error of the single-flow api
  *   P-01: rev, revAll and errors are passed only for deploy_start_failed/deploy_stop_failed
  *   #22: the additive fields of a start_timeout and of a flow_start_failed entry reach the response
+ *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
 var should = require("should");
 var sinon = require("sinon");
-var request = require('supertest');
+var request = require("nr-test-utils/supertest");
 var express = require('express');
 
 var NR_TEST_UTILS = require("nr-test-utils");

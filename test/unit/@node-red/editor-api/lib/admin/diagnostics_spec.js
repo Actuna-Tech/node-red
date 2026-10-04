@@ -1,5 +1,5 @@
 const should = require("should");
-const request = require('supertest');
+const request = require("nr-test-utils/supertest");
 const express = require('express');
 const bodyParser = require("body-parser");
 const sinon = require('sinon');

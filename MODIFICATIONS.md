@@ -44,6 +44,8 @@ the notices nor this file.
 | `packages/node_modules/@node-red/util/lib/hooks.js` | no project licence header | `preShutdown` added to the valid hooks (Z-08); `preReload` added to the valid hooks (Z-09); `addFromSettings` and `removeFromSettings` - validation and registration of the `hooks` setting of settings.js (#7) |
 | `test/unit/@node-red/util/lib/hooks_spec.js` | no project licence header | test that the `preShutdown` hook can be registered (Z-08); the same for `preReload` (Z-09); tests of `addFromSettings` (#7) |
 | `packages/node_modules/@node-red/registry/lib/externalModules.js` | no project licence header | with `readOnlyUserDir` the modules of the function node are not installed - `read_only_user_dir` before anything is written (Z-11) |
+| `test/unit/@node-red/editor-api/lib/admin/diagnostics_spec.js` | no project licence header | supertest through `nr-test-utils/supertest` (bound to 127.0.0.1; #19) |
+| `test/unit/@node-red/editor-api/lib/admin/plugins_spec.js` | no project licence header | supertest through `nr-test-utils/supertest` (bound to 127.0.0.1; #19) |
 | `CHANGELOG.md` | change log, not source | `Unreleased` sections describing the changes of the fork |
 
 When another file of this kind is changed, add a row here in the same commit.
