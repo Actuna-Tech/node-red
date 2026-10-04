@@ -63,8 +63,11 @@ module.exports = {
 - Dodane `locales/pl/editor.json` (317 z 1151 kluczy en-US, ok. 28%, oraz 8 form liczby mnogiej) i `locales/pl/messages.json` (98 z 869, ok. 11%) –
   tłumaczenie częściowe od Zamawiającego; brakujące klucze wracają do en-US (`fallbackLng`). Słownik: „węzeł”,
   `flow`/`subflow` bez tłumaczenia, „Wdróż”; forma bezosobowa. Liczba mnoga: `_one/_few/_many/_other` (i18next 25).
-- Brak: `runtime.json`, `jsonata.json`, `infotips.json`, pliki pomocy HTML węzłów (D-16, R-29) i test pełnej zgodności
-  kluczy – do kolejnego etapu Z-13. Pomoc węzłów bez pliku `pl` wyświetla się po angielsku.
+- Pomoc węzłów (#12): `locales/pl/common/21-debug.html`, `function/10-function.html`, `function/15-change.html`
+  i `parsers/70-JSON.html` (węzły `debug`, `function`, `change`, `json`) – tłumaczenie pomocy en-US 5.0.7: te same sekcje,
+  nazwy właściwości `msg`, przykłady kodu i wartości opcji po angielsku. Pliki mają nagłówek licencji i adnotację D-19.
+- Brak: `runtime.json`, `jsonata.json`, `infotips.json`, pomoc HTML pozostałych węzłów (D-16, R-29) i test pełnej zgodności
+  kluczy – do kolejnego etapu Z-13. Pomoc węzła bez pliku `pl` wyświetla się po angielsku.
 - Język wykrywany z katalogu `locales/pl`; nazwa w selektorze z `languages.pl` (`"Polski"`, dodane w `en-US` i `es-ES`).
   Przeglądarka z językiem `pl` bez wybranego języka w ustawieniach użytkownika pokaże teraz polski edytor.
 - Test: `test/unit/@node-red/editor-client/locales_pl_spec.js` (brak kluczy nadmiarowych, spójne placeholdery i znaczniki).
