@@ -350,6 +350,8 @@ describe("HTTP In node - routes removed on close", function() {
         await answer("/same").expect(404);
     });
 
+    // A guard only (in Express 4 one RED.httpNode.post() adds one layer, the parsers are
+    // handlers inside its route): it passes on the old code too. The tests above fail on it.
     it("removes all the layers of a node (POST with upload and parsers) and leaves no dead layer", async function() {
         await load(flowOf(httpIn("a", { upload: true }), httpIn("b", { url: "/other" })));
         const all = routeLayers().length;
@@ -384,6 +386,8 @@ describe("HTTP In node - routes removed on close", function() {
         }
     });
 
+    // A guard only: with the nodes closed one after the other the old code also left no
+    // layer. The growth shows only for nodes that share a route (the tests above).
     it("does not grow the router stack over redeploys", async function() {
         const flow = flowOf(httpIn("a"), httpIn("b", { upload: true }), httpIn("c", { method: "get" }));
         await load(flow);
@@ -438,6 +442,59 @@ describe("HTTP In node - routes removed on close", function() {
             rawAnswers();
             await helper.getNode("b").close();
             (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
+        });
+
+        it("a second close() of the same node does not release the key of another node", async function() {
+            await load(flowOf(httpIn("a", { skipBodyParsing: true }), httpIn("b", { skipBodyParsing: true })));
+            rawAnswers();
+            const a = helper.getNode("a");
+            await a.close();
+            await a.close();
+            (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
+        });
+
+        it("a second close() leaves the count at zero (a new node without skipBodyParsing gets the parsed body)", async function() {
+            await load(flowOf(httpIn("a", { skipBodyParsing: true })));
+            const a = helper.getNode("a");
+            await a.close();
+            await a.close();
+            await helper.unload();
+            await load(flowOf(httpIn("a")));
+            rawAnswers();
+            (await rawPost("/same", '{"x":  1}')).text.should.equal("parsed");
+        });
+
+        it("a redeploy toggling skipBodyParsing true -> false -> true on the same route follows the setting", async function() {
+            const expected = ["buffer:{\"x\":  1}", "parsed", "buffer:{\"x\":  1}"];
+            const settings = [true, false, true];
+            for (let i = 0; i < settings.length; i++) {
+                await load(flowOf(httpIn("a", { skipBodyParsing: settings[i] })));
+                rawAnswers();
+                (await rawPost("/same", '{"x":  1}')).text.should.equal(expected[i]);
+                await helper.unload();
+            }
+        });
+
+        it("a redeploy of the node with skipBodyParsing next to a node that keeps it leaves the key of the other", async function() {
+            await load(flowOf(httpIn("a", { skipBodyParsing: true }), httpIn("b", { skipBodyParsing: true })));
+            rawAnswers();
+            for (let i = 0; i < 3; i++) {
+                await helper.getNode("a").close();
+                (await rawPost("/same", '{"x":  1}')).text.should.equal('buffer:{"x":  1}');
+            }
+        });
+
+        it("an invalid path with skipBodyParsing leaves no held key", async function() {
+            // a route that is not a node: reports what rawBodyCapture did with the body of
+            // the request to the path of the invalid route (a held key makes it a Buffer)
+            await load(flowOf(httpIn("bad", { url: "/foo(", skipBodyParsing: true })));
+            const foreign = function(req, res) { res.status(200).send(Buffer.isBuffer(req.body) ? "buffer" : "not read") };
+            RED.httpNode.post(/^\/foo\($/, foreign);
+            try {
+                (await rawPost("/foo(", '{"x":  1}')).text.should.equal("not read");
+            } finally {
+                RED.httpNode._router.stack = RED.httpNode._router.stack.filter(layer => !(layer.route && layer.route.stack[0].handle === foreign));
+            }
         });
 
         it("stops capturing the raw body when the last node of the route closes", async function() {
