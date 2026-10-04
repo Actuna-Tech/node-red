@@ -260,9 +260,20 @@ watchFlows(callback)
 
 - Powiadomienie jest **tylko sygnałem**: runtime zawsze czyta flow przez `getFlows()`/`getCredentials()` i porównuje
   rewizję (SHA-256 z `JSON.stringify(flows)`) z działającą. Wolno wołać `callback()` bez argumentów, wielokrotnie
-  i seriami (runtime łączy powiadomienia), także dla zapisów tej samej instancji (pomijane po rewizji).
-- **Rewizja nie obejmuje poświadczeń** – przy zmianie samych poświadczeń wtyczka musi przekazać
-  `credentialsChanged: true`, inaczej zmiana nie zostanie przeładowana.
+  i seriami (runtime łączy powiadomienia), także dla zapisów tej samej instancji (pomijane po rewizji i skrócie poświadczeń).
+- **Poświadczenia porównuje runtime** (#2): obok rewizji flow liczy skrót (HMAC-SHA-256 z kluczem losowym dla procesu, z kanonicznego JSON o posortowanych
+  kluczach) **odszyfrowanej** zawartości poświadczeń odczytanych z magazynu i porównuje go ze skrótem poświadczeń
+  działającej konfiguracji. Szyfrogramu się nie porównuje (losowy IV zmienia go przy każdym zapisie), więc ponowne
+  zaszyfrowanie tych samych poświadczeń nie jest zmianą. Przeładowanie następuje, gdy różni się rewizja **lub** skrót
+  poświadczeń – zmiana samych poświadczeń wymaga tylko powiadomienia (z flagą lub bez), a zgubione powiadomienie
+  naprawia kolejne. Skrót jest wewnętrzny: nie jest logowany ani zwracany przez żadne API (`GET /flows` zwraca tylko
+  `{flows, rev}`). Poświadczenia są odczytywane kluczem, którego użyłoby wczytanie poświadczeń (także starym wygenerowanym kluczem w trakcie migracji do `credentialSecret`, bez migrowania i zapisu); te, których nie da się odszyfrować, to błąd `credentials_load_failed`
+  (ta sama ścieżka co błąd przeładowania: ponowienia `retry`, `failed`; `onExhausted: "keepReady"` go nie utrzymuje). Wyjątek: gdy działająca konfiguracja wystartowała z poświadczeniami, których nie dało się odszyfrować (nie ma skrótu), a rewizja flow w magazynie jest działającą, nieodszyfrowalne poświadczenia nie są błędem (jak przed #2) – nowa rewizja idzie normalną ścieżką. Zmiana poświadczeń w trakcie drenażu przeładowania `diff` daje dodatkową rundę `preReload` dla wszystkich flow (`changedFlows: null`, `credentialsChanged: true`).
+- **`credentialsChanged` w powiadomieniu jest tylko wskazówką** do odczytu magazynu (każde powiadomienie go wywołuje).
+  Samo nie wymusza przeładowania (dawniej wymuszało, z pominięciem porównania rewizji) i nie blokuje go. **Zmiana
+  zachowania dla wtyczek magazynu**, które używały flagi do wymuszenia przeładowania: flaga nie wymusza już
+  przeładowania – wystarczy, że `getCredentials()` zwraca zmienioną zawartość; flagę można nadal przekazywać
+  (jest ignorowana poza wywołaniem odczytu).
 - Wyjątek w `callback` nie wraca do wtyczki; wywołanie po wyrejestrowaniu jest ignorowane.
 - Odrzucenie rejestracji przy `deploy.reload.watch: true` → **błąd startu** runtime (R-36). Magazyn bez `watchFlows`
   → ustawienie bez efektu, ostrzeżenie w logu.
@@ -284,7 +295,7 @@ watchFlows(callback)
 | `rev` / `activeRev` | rewizja, która zostanie uruchomiona / działająca |
 | `type` | `"full"` \| `"diff"` (`deploy.reload.type`) |
 | `changedFlows` | id flow (zakładek, subflow) restartowanych; `null` = wszystkie (`full`, zmiana konfiguracji globalnej lub węzła konfiguracyjnego poza flow, zmiana poświadczeń) |
-| `credentialsChanged` | zmiana poświadczeń |
+| `credentialsChanged` | **obliczone** (#2): poświadczenia w magazynie różnią się (skrót odszyfrowanej zawartości) od działających – nie jest kopią flagi powiadomienia |
 | `deadline` | `Date.now() + preReloadTimeout` z chwili rozpoczęcia drenażu (wspólny dla dodatkowej rundy D-17) |
 | `signal` | `AbortSignal`; `reason`: `"stopping"` (zatrzymanie procesu) lub `"superseded"` (wdrożenie na tej instancji) |
 

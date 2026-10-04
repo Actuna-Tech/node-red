@@ -1,5 +1,26 @@
 #### Unreleased: Instances and reload
 
+ - Reload from storage (`deploy.reload.watch: true`) compares the credentials like the flow
+   revision (#2): the runtime computes a digest (HMAC-SHA256 with a per-process random key, of the canonical JSON with sorted keys) of the
+   **decrypted** credentials read from storage and compares it with the digest of the running
+   configuration (computed after the credentials were loaded - on start, on a reload and on an
+   own save); the ciphertext is never compared (a random IV changes it on every save). A reload
+   happens when the revision or the credentials digest differ, so a change of the credentials
+   alone is reloaded after any notification, a lost notification is healed by the next one, and
+   re-encrypting the same content or an own save is not a change. **Behaviour change for storage
+   plugins that used the flag:** `credentialsChanged` of a `watchFlows` notification is now only a
+   hint to read storage - it no longer forces a drain and a reload by itself (and does not prevent
+   one); a plugin only has to return the changed content from `getCredentials()`. The
+   `credentialsChanged` field of the `preReload` payload is computed from the comparison. Stored
+   credentials are read with the key the credentials load would use - also the old generated key
+   while a migration to `credentialSecret` is pending - without migrating, saving or logging
+   anything; credentials that this key cannot decrypt fail with `credentials_load_failed` (the same
+   path as a failed reload). An instance that started with credentials it could not decrypt has no
+   digest: with the running revision in storage that is not an error (as before), a new revision
+   goes the normal way. A change of the credentials during the drain of a `diff` reload gets an
+   extra `preReload` round for all flows (`changedFlows: null`), like a change of the flows. The digest is internal: never logged and not part of the result of
+   `GET /flows` (still `{flows, rev}`). New `credentials.digest()` of the runtime is pure (it
+   changes no cache, key or setting). Nothing changes without `deploy.reload.watch`
  - New settings `deploy.reload.retry.onExhausted` (`"fail"` by default - nothing changes: after
    the retries the instance is `failed` and `/ready` is 503) and `deploy.reload.retry.maxStaleTime`
    (ms, default 1800000, used only with `"keepReady"`; 0 - no limit). With `"keepReady"` a failure
@@ -282,7 +303,7 @@ Fixes
    dialog of the clipboard) inserted the raw body of the server response into the notification as HTML
    (`library.saveFailed`). It now shows the `message` of a JSON response (or a generic text with the HTTP
    status) with `& < > " '` escaped, never the raw body; the message is built by the same function as
-   the deploy errors (`RED.deploy.translateErrorResponse`). A request with no HTTP response (status 0)
+   the deploy errors (`RED.deploy.translateErrorResponse`, today `RED.errors.translateResponse`). A request with no HTTP response (status 0)
    shows "no response from server". Polish editor: `library.saveFailed` and `user.notAuthorized` are
    translated (the message no longer mixes languages). No change of the API (#30)
  - Editor: text from a server response and the module name were inserted into notifications (HTML) without
@@ -292,8 +313,35 @@ Fixes
    shows the `message` of the error instead of "[object Object]"), when a node module fails to load, on import
    and drop errors (the message of a failed import quotes the pasted text) and for groups. The catalog text
    stays HTML. The shared escaping moved from `RED.deploy` to the new `RED.errors` module (`ui/common/errors.js`,
-   loaded before the modules that use it); `RED.deploy.translateErrorResponse` and `RED.deploy.formatStartErrors`
-   work as before, and the library no longer depends on the deploy module. No change of the API (#34)
+   loaded before the modules that use it); `RED.deploy.formatStartErrors` works as before, the library no
+   longer depends on the deploy module. `RED.deploy.translateErrorResponse` was kept as an alias at that time
+   and is removed in #37 (use `RED.errors.translateResponse`). No change of the HTTP API (#34)
+ - Editor: more places inserted text that is not from the message catalog into HTML without escaping (#37).
+   - Escaped: the module name in the confirmations of install, update and remove and in the progress message
+     of the automatic install; the remote URL in the dialog of the git authentication; the file name in the
+     confirmation of a revert and in the title of the window with the changes of a file; the names of a project,
+     a branch, a remote and a key in the confirmations of their removal; the type and the error of a node that
+     could not be registered; the module and the version of an upgraded module; the message of an import
+     error; the library type of a saved item; the values of the notifications of the runtime (`red.js`,
+     `runtime.js`); the conflict hint of the install button and the pending version of a module.
+   - Set as text, not parsed as HTML: the version of a module, the name of a catalog and the options of the
+     catalog filter of the Install tab (they came from the remote catalog and ran when the tab opened, with no
+     click), the name of an item of the library.
+   - Only an `http:` or `https:` address of the remote catalog is a link or a "Open node information" button of
+     a module (a `javascript:` address was a link); the page opens with `noopener`. New `RED.errors.httpUrl`.
+   - **Changes of the editor API for the code that uses it (a node module, a plugin):**
+     `RED.utils.sanitize` now also escapes `"` and `'` (it did `& < >` only) and gives an empty text for
+     `null`/`undefined` (it threw a TypeError). A module that puts the result into `.text()` or `.attr()` will now
+     show `&quot;`/`&#39;` for a quote - it never should have escaped for a plain-text sink. New
+     `RED.utils.sanitizeContent` keeps the old `& < >` escaping (for markdown and for text cut by characters).
+     New `RED.errors.notifyGitError` (the function of the projects and of the version control, which were two
+     copies). `RED.errors.translateEscaped` keeps a number and a boolean as they are.
+     **`RED.deploy.translateErrorResponse` is removed** - the replacement is `RED.errors.translateResponse`
+     (the same arguments, the same result); it was never in a release. The HTTP API and the settings do not change.
+   - Two places that escaped text for a plain-text sink no longer show entities (the tooltip of a tab, the title
+     of the edit dialog of a node, which was escaped twice). Enabling or disabling a module showed "Failed to
+     install" with an undefined name (or failed with a ReferenceError); it names the action and the module and
+     is shown as an error now, and the texts are in the Polish catalog.
  - Editor: a start result (`deploy-start-result`) that was ignored because its revision was not the one of the
    editor is dropped when the editor starts a deployment. Revisions are content hashes, so a result kept
    long before could be applied to a later deployment of the same content that ended in `start_timeout`:

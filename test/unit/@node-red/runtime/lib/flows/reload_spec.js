@@ -29,6 +29,11 @@
  *   #26: tests of the explicit reset of the counters in a new series and of the
  *   cancelled retry after a successful cycle, a retry that fires during a running
  *   cycle (retryQueued)
+ *   #2: tests of the comparison of the credentials (the digest of the decrypted
+ *   content): a change of the credentials alone, the flag of a notification as a
+ *   hint, re-encryption, an own save, a key that does not decrypt; credentials changed
+ *   during the drain of a diff reload (the extra preReload round for all flows); a running
+ *   configuration without a digest (credentials that could not be decrypted at start)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -72,6 +77,13 @@ function flowsOf(rev) {
     return [{ id: "t1", type: "tab", label: rev }];
 }
 
+// #2: the mock of flows.credentialsChanged compares the CONTENT of the credentials, as
+// the digest does: the encrypted form is "<content>:<iv>" - the same content with
+// another iv is the same credentials; a plain object is its own content
+function contentOf(creds) {
+    return (creds && typeof creds.$ === "string") ? creds.$.split(":")[0] : JSON.stringify(creds || {});
+}
+
 /**
  * A runtime with a storage mock providing watchFlows, the flows mock and the
  * real instance state, deploy lock and pipeline.
@@ -81,6 +93,8 @@ function createEnv(opts) {
     const env = {
         stored: { flows: flowsOf("A"), rev: "A", credentials: {} },
         active: { flows: flowsOf("A"), rev: "A" },
+        // the content of the credentials of the active configuration (#2)
+        activeCredentials: contentOf({}),
         applied: [],
         logs: { warn: [], error: [], info: [], debug: [], trace: [] },
         audits: [],
@@ -121,6 +135,14 @@ function createEnv(opts) {
     };
     env.flows = {
         getFlows: () => env.active,
+        credentialsChanged: sinon.spy(function(loaded) {
+            if (env.credentialsError) {
+                throw env.credentialsError;
+            }
+            return contentOf(loaded.credentials) !== env.activeCredentials;
+        }),
+        // false: the running configuration has no digest of its credentials (#2)
+        hasCredentialsRevision: () => env.credentialsKnown !== false,
         getChangedFlows: sinon.spy(function(loaded) {
             return opts.changedFlows ? opts.changedFlows(loaded, env.active) : ["t1"];
         }),
@@ -130,14 +152,16 @@ function createEnv(opts) {
             }
             env.applied.push({ rev: loaded.rev, type: reloadOpts.type, credentialsChanged: reloadOpts.credentialsChanged, locked: lock.isLocked() });
             env.active = { flows: loaded.flows, rev: loaded.rev };
+            env.activeCredentials = contentOf(loaded.credentials);
             if (!env.idle) {
                 lock.holdUntil(Promise.resolve({ errors: env.startErrors || [] }));
             }
             return loaded.rev;
         }),
-        setFlows: sinon.spy(async function(flows) {
+        setFlows: sinon.spy(async function(flows, creds) {
             env.active = { flows: flows, rev: "deployed" };
-            env.stored = { flows: flows, rev: "deployed", credentials: {} };
+            env.stored = { flows: flows, rev: "deployed", credentials: creds || {} };
+            env.activeCredentials = contentOf(env.stored.credentials);
             lock.holdUntil(Promise.resolve({ errors: [] }));
             return "deployed";
         })
@@ -272,14 +296,369 @@ describe("flows/reload (Z-09)", function() {
             hook.called.should.be.false();
             states.should.eql([]);
         });
-        it("reloads on credentialsChanged with same rev", async function() {
-            env = createEnv({ reload: { type: "diff" } });
-            await env.start();
-            env.notify({ credentialsChanged: true });
-            await waitFor(() => env.applied.length === 1);
-            // the diff does not see the credentials: a full reload
-            env.applied[0].type.should.equal("full");
-            env.applied[0].credentialsChanged.should.be.true();
+        describe("credentials (#2)", function() {
+            // The credentials are compared by the digest of their decrypted content
+            // (the mock of flows.credentialsChanged, see contentOf); the `credentialsChanged`
+            // flag of a notification is only a hint to read storage
+            it("a change of the credentials alone, a notification without the flag - a full reload", async function() {
+                env = createEnv({ reload: { type: "diff" } });
+                let payload;
+                hooks.add("preReload", p => { payload = p });
+                await env.start();
+                env.change("A", { credentials: { $: "new:iv1" } });
+                env.notify({ rev: "A" });
+                await waitFor(() => env.applied.length === 1);
+                // the diff does not see the credentials: a full reload
+                env.applied[0].type.should.equal("full");
+                env.applied[0].credentialsChanged.should.be.true();
+                // computed, not copied from the notification
+                payload.credentialsChanged.should.be.true();
+                should(payload.changedFlows).be.null();
+                env.activeCredentials.should.equal("new");
+            });
+            it("a change of the credentials alone, a notification with the flag false - a reload", async function() {
+                env = createEnv();
+                await env.start();
+                env.change("A", { credentials: { $: "new:iv1" } });
+                env.notify({ credentialsChanged: false });
+                await waitFor(() => env.applied.length === 1);
+                env.applied[0].credentialsChanged.should.be.true();
+            });
+            it("a lost notification heals: the next notification without the flag reloads the credentials", async function() {
+                env = createEnv();
+                await env.start();
+                // another instance changed the credentials, the notification about it was lost
+                env.change("A", { credentials: { $: "new:iv1" } });
+                env.notify();
+                await waitFor(() => env.applied.length === 1);
+                env.applied[0].credentialsChanged.should.be.true();
+            });
+            it("the flag with unchanged revision and credentials - no reload, no drain, no preReload", async function() {
+                env = createEnv();
+                const hook = sinon.spy();
+                hooks.add("preReload", hook);
+                await env.start();
+                env.notify({ credentialsChanged: true });
+                await waitFor(() => env.getFlowsCalls === 1);
+                await delay(20);
+                env.applied.should.have.length(0);
+                hook.called.should.be.false();
+                states.should.eql([]);
+            });
+            it("the flag does not force a reload either with a new revision and the same credentials: the payload is computed", async function() {
+                env = createEnv();
+                let payload;
+                hooks.add("preReload", p => { payload = p });
+                await env.start();
+                env.change("B");
+                env.notify({ credentialsChanged: true });
+                await waitFor(() => env.applied.length === 1);
+                payload.credentialsChanged.should.be.false();
+                env.applied[0].credentialsChanged.should.be.false();
+            });
+            it("re-encryption of the same content (another iv) - no reload", async function() {
+                env = createEnv();
+                env.activeCredentials = "same";
+                const hook = sinon.spy();
+                hooks.add("preReload", hook);
+                await env.start();
+                env.change("A", { credentials: { $: "same:iv2" } });
+                env.notify({ credentialsChanged: true });
+                env.notify();
+                await waitFor(() => env.getFlowsCalls >= 1);
+                await delay(20);
+                env.applied.should.have.length(0);
+                hook.called.should.be.false();
+                states.should.eql([]);
+            });
+            it("an own save with credentialsDirty - the notification of it reloads nothing", async function() {
+                env = createEnv();
+                await env.start();
+                // the deployment saves the flows and the (re-encrypted) credentials, storage notifies
+                await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D"), credentials: { $: "own:iv1" }, credentialsDirty: true } });
+                await waitFor(() => state.get().state === "ready");
+                env.stored.credentials.should.eql({ $: "own:iv1" });
+                env.getFlowsCalls = 0;
+                env.notify({ rev: "deployed", credentialsChanged: true });
+                await waitFor(() => env.getFlowsCalls === 1);
+                await delay(20);
+                env.applied.should.have.length(0);
+                // the same content saved by another instance with another iv: still nothing
+                env.change("deployed", { credentials: { $: "own:iv9" } });
+                env.stored.flows = env.active.flows;
+                env.notify({ credentialsChanged: true });
+                await waitFor(() => env.getFlowsCalls === 2);
+                await delay(20);
+                env.applied.should.have.length(0);
+            });
+            it("the credentials changed during the drain of a diff reload - one more preReload round for all flows, then a full reload", async function() {
+                env = createEnv({ reload: { type: "diff" } });
+                const d = deferred();
+                const calls = [];
+                hooks.add("preReload", p => {
+                    calls.push({ rev: p.rev, type: p.type, changedFlows: p.changedFlows && p.changedFlows.slice(), credentialsChanged: p.credentialsChanged, locked: lock.isLocked() });
+                    return calls.length === 1 ? d.promise : undefined;
+                });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => calls.length === 1);
+                calls[0].should.containEql({ type: "diff", credentialsChanged: false });
+                calls[0].changedFlows.should.eql(["t1"]);
+                env.change("B", { credentials: { $: "late:iv1" } });
+                d.resolve();
+                await waitFor(() => env.applied.length === 1);
+                // the contract: what is restarted (all flows) is drained
+                calls.should.have.length(2);
+                calls[1].should.containEql({ rev: "B", credentialsChanged: true, locked: false });
+                should(calls[1].changedFlows).be.null();
+                env.applied[0].should.containEql({ rev: "B", type: "full", credentialsChanged: true });
+                env.logs.warn.some(m => m.indexOf("reload.changed-during-drain") === 0 && m.indexOf('"*"') !== -1).should.be.true();
+            });
+            it("the credentials changed during the second round of a diff reload - at most one more round, a full reload with a warning", async function() {
+                const map = { B: ["t1"], C: ["t1", "t2"] };
+                env = createEnv({ reload: { type: "diff" }, changedFlows: loaded => map[loaded.rev] });
+                const calls = [];
+                hooks.add("preReload", p => {
+                    calls.push({ rev: p.rev, changedFlows: p.changedFlows && p.changedFlows.slice(), credentialsChanged: p.credentialsChanged });
+                    if (calls.length === 1) {
+                        env.change("C");
+                    } else if (calls.length === 2) {
+                        env.change("C", { credentials: { $: "late:iv1" } });
+                    }
+                });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => env.applied.length === 1);
+                calls.should.have.length(2);
+                calls[1].changedFlows.should.eql(["t2"]);
+                calls[1].credentialsChanged.should.be.false();
+                env.applied[0].should.containEql({ rev: "C", type: "full", credentialsChanged: true });
+                env.logs.warn.some(m => m.indexOf("reload.changed-after-extra-drain") === 0 && m.indexOf('"*"') !== -1).should.be.true();
+            });
+            it("the credentials changed with the flows in the first drain - the extra round is for all flows", async function() {
+                const map = { B: ["t1"], C: ["t1", "t2"] };
+                env = createEnv({ reload: { type: "diff" }, changedFlows: loaded => map[loaded.rev] });
+                const calls = [];
+                hooks.add("preReload", p => {
+                    calls.push({ rev: p.rev, changedFlows: p.changedFlows && p.changedFlows.slice(), credentialsChanged: p.credentialsChanged });
+                    if (calls.length === 1) {
+                        env.change("C", { credentials: { $: "late:iv1" } });
+                    }
+                });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => env.applied.length === 1);
+                calls.should.have.length(2);
+                should(calls[1].changedFlows).be.null();
+                calls[1].should.containEql({ rev: "C", credentialsChanged: true });
+                env.applied[0].should.containEql({ rev: "C", type: "full", credentialsChanged: true });
+            });
+            it("the credentials changed back during the drain, same revision - nothing is reloaded", async function() {
+                env = createEnv();
+                const d = deferred();
+                let payload;
+                hooks.add("preReload", p => { payload = p; return d.promise });
+                await env.start();
+                env.change("A", { credentials: { $: "tmp:iv1" } });
+                env.notify();
+                await waitFor(() => !!payload);
+                payload.credentialsChanged.should.be.true();
+                env.change("A", { credentials: {} });
+                d.resolve();
+                await waitFor(() => state.get().state === "ready" && states.length >= 3);
+                env.applied.should.have.length(0);
+            });
+            describe("a running configuration without a digest of its credentials", function() {
+                // it started with credentials that could not be decrypted (a reset), see flows.hasCredentialsRevision
+                const undecryptable = () => Object.assign(new Error("Failed to decrypt credentials"), { code: "credentials_load_failed" });
+                const retry = { min: 2, max: 60000, attempts: 1, onExhausted: "keepReady" };
+                it("the same revision, credentials that cannot be decrypted - not an error, nothing happens (as before #2)", async function() {
+                    env = createEnv({ reload: { retry: retry } });
+                    env.credentialsKnown = false;
+                    env.credentialsError = undecryptable();
+                    const hook = sinon.spy();
+                    hooks.add("preReload", hook);
+                    await env.start();
+                    env.change("A", { credentials: { $: "cipher:iv1" } });
+                    env.notify({ credentialsChanged: true });
+                    env.notify();
+                    await waitFor(() => env.getFlowsCalls >= 2);
+                    await delay(30);
+                    env.applied.should.have.length(0);
+                    hook.called.should.be.false();
+                    states.should.eql([]);
+                    state.get().state.should.equal("ready");
+                    state.get().should.not.have.property("reload");
+                    env.logs.warn.some(m => m.indexOf("reload.read-failed") === 0).should.be.false();
+                    env.logs.debug.some(m => m.indexOf("cannot be decrypted (credentials_load_failed)") !== -1).should.be.true();
+                    JSON.stringify(env.logs).should.not.containEql("cipher:iv1");
+                });
+                it("a new revision goes the normal way: credentials_load_failed", async function() {
+                    env = createEnv({ reload: { retry: retry } });
+                    env.credentialsKnown = false;
+                    env.credentialsError = undecryptable();
+                    await env.start();
+                    env.change("B", { credentials: { $: "cipher:iv1" } });
+                    env.notify();
+                    await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                    state.get().reload.should.containEql({ error: { code: "credentials_load_failed" }, keepReady: false });
+                    env.applied.should.have.length(0);
+                });
+                it("with a digest the same revision and credentials that cannot be decrypted is still an error", async function() {
+                    env = createEnv({ reload: { retry: retry } });
+                    env.credentialsError = undecryptable();
+                    await env.start();
+                    env.change("A", { credentials: { $: "cipher:iv1" } });
+                    env.notify();
+                    await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                    state.get().reload.should.containEql({ error: { code: "credentials_load_failed" } });
+                });
+                it("the reread under the lock: the revision is the running one again and the credentials cannot be decrypted - unchanged", async function() {
+                    env = createEnv({ reload: { retry: retry } });
+                    env.credentialsKnown = false;
+                    const d = deferred();
+                    let payload;
+                    hooks.add("preReload", p => { payload = p; return d.promise });
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => !!payload);
+                    env.credentialsError = undecryptable();
+                    env.change("A", { credentials: { $: "cipher:iv1" } });
+                    d.resolve();
+                    await waitFor(() => state.get().state === "ready" && states.length >= 3);
+                    env.applied.should.have.length(0);
+                    state.get().should.not.have.property("reload");
+                });
+            });
+            describe("with the real credentials module (random iv, key)", function() {
+                const credentialsModule = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+                const settingsValues = { credentialSecret: "a user key for the credentials of the reload tests" };
+                let digestOfActive;
+                function initCredentials(secretSettings) {
+                    credentialsModule.init({
+                        log: { _: k => k, warn() {}, debug() {}, info() {}, error() {}, trace() {} },
+                        settings: { get: key => secretSettings[key], set: async () => {}, delete: async key => { delete secretSettings[key] } },
+                        nodes: { getType: () => function() {} }
+                    });
+                }
+                async function encryptedWith(content, secretSettings) {
+                    initCredentials(secretSettings);
+                    await credentialsModule.load({});
+                    for (const id of Object.keys(content)) {
+                        await credentialsModule.add(id, content[id]);
+                    }
+                    return credentialsModule.export();
+                }
+                // the flows mock backed by the digest of the real module
+                function useRealDigest(e) {
+                    e.flows.credentialsChanged = function(loaded) {
+                        return credentialsModule.digest(loaded.credentials) !== digestOfActive;
+                    };
+                    e.flows.reloadFromStorage = sinon.spy(async function(loaded, reloadOpts) {
+                        digestOfActive = credentialsModule.digest(loaded.credentials);
+                        e.applied.push({ rev: loaded.rev, type: reloadOpts.type, credentialsChanged: reloadOpts.credentialsChanged });
+                        e.active = { flows: loaded.flows, rev: loaded.rev };
+                        return loaded.rev;
+                    });
+                }
+                it("a notification during a pending migration from the default key to a user key: no credentials_load_failed, no reload", async function() {
+                    const defaultKey = "e3a36f47f005bf2aaa51ce3fc6fcaafd79da8d03f2b1a9281f8fb0a285e6255a";
+                    // {"node":{user1:"abc",password1:"123"}} encrypted with the default key
+                    const old = { "$": "5b89d8209b5158a3c313675561b1a5b5phN1gDBe81Zv98KqS/hVDmc9EKvaKqRIvcyXYvBlFNzzzJtvN7qfw06i" };
+                    const migrating = { _credentialSecret: defaultKey, credentialSecret: "a user key that replaces the default one" };
+                    env = createEnv({ reload: { retry: { min: 2, max: 60000, attempts: 1, onExhausted: "keepReady" } } });
+                    initCredentials(migrating);
+                    await credentialsModule.load(old);
+                    credentialsModule.dirty().should.be.true();
+                    digestOfActive = credentialsModule.digest(old);
+                    useRealDigest(env);
+                    await env.start();
+                    env.change("A", { credentials: old });
+                    env.notify({ credentialsChanged: true });
+                    env.notify();
+                    await waitFor(() => env.getFlowsCalls >= 1);
+                    await delay(30);
+                    env.applied.should.have.length(0);
+                    states.should.eql([]);
+                    state.get().should.not.have.property("reload");
+                    // the first save migrates; storage then holds the same content under the user key
+                    const saved = await credentialsModule.export();
+                    saved["$"].should.not.equal(old["$"]);
+                    env.change("A", { credentials: saved });
+                    env.notify({ credentialsChanged: true });
+                    await waitFor(() => env.getFlowsCalls >= 3);
+                    await delay(30);
+                    env.applied.should.have.length(0);
+                    state.get().should.not.have.property("reload");
+                });
+                it("re-encryption (a new iv, another ciphertext) is no reload; another content is one; a wrong key is credentials_load_failed", async function() {
+                    env = createEnv({ reload: { retry: { min: 2, max: 60000, attempts: 1, onExhausted: "keepReady" } } });
+                    const first = await encryptedWith({ n1: { user: "abc", password: "123" } }, settingsValues);
+                    const again = await encryptedWith({ n1: { password: "123", user: "abc" } }, settingsValues);
+                    first["$"].should.not.equal(again["$"]);
+                    digestOfActive = credentialsModule.digest(first);
+                    useRealDigest(env);
+                    await env.start();
+                    env.change("A", { credentials: again });
+                    env.notify({ credentialsChanged: true });
+                    await waitFor(() => env.getFlowsCalls === 1);
+                    await delay(20);
+                    env.applied.should.have.length(0);
+                    states.should.eql([]);
+                    // another content with the same key: a reload without the flag
+                    const changed = await encryptedWith({ n1: { user: "abc", password: "124" } }, settingsValues);
+                    env.change("A", { credentials: changed });
+                    env.notify();
+                    await waitFor(() => env.applied.length === 1);
+                    env.applied[0].credentialsChanged.should.be.true();
+                    // the credentials of storage were encrypted with another key
+                    const foreign = await encryptedWith({ n1: { user: "abc", password: "124" } }, { credentialSecret: "another key" });
+                    initCredentials(settingsValues);
+                    await credentialsModule.load(changed);
+                    env.change("A", { credentials: foreign });
+                    env.notify();
+                    await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                    state.get().reload.should.containEql({ error: { code: "credentials_load_failed" }, keepReady: false });
+                    env.applied.should.have.length(1);
+                });
+            });
+            it("a key that does not decrypt the credentials (step 2) - credentials_load_failed, nothing reloaded, flows keep running", async function() {
+                env = createEnv({ reload: { retry: { min: 2, max: 60000, attempts: 1, onExhausted: "keepReady" } } });
+                env.credentialsError = Object.assign(new Error("Failed to decrypt credentials"), { code: "credentials_load_failed" });
+                const hook = sinon.spy();
+                hooks.add("preReload", hook);
+                await env.start();
+                env.change("A", { credentials: { $: "new:iv1" } });
+                env.notify({ credentialsChanged: true });
+                await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                state.get().reload.should.containEql({ error: { code: "credentials_load_failed" }, keepReady: false });
+                env.applied.should.have.length(0);
+                hook.called.should.be.false();
+                env.flows.reloadFromStorage.called.should.be.false();
+                env.logs.warn.some(m => m.indexOf("reload.read-failed") === 0).should.be.true();
+                // the error message is the fixed one and does not carry the credentials
+                JSON.stringify(env.logs).should.not.containEql("new:iv1");
+            });
+            it("a key that does not decrypt the credentials of the newest revision (the reread under the lock) - credentials_load_failed", async function() {
+                env = createEnv({ reload: { retry: { min: 2, max: 60000, attempts: 1, onExhausted: "keepReady" } } });
+                const d = deferred();
+                let payload;
+                hooks.add("preReload", p => { payload = p; return d.promise });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => !!payload);
+                env.credentialsError = Object.assign(new Error("Failed to decrypt credentials"), { code: "credentials_load_failed" });
+                d.resolve();
+                await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                state.get().reload.should.containEql({ error: { code: "credentials_load_failed" }, keepReady: false });
+                env.applied.should.have.length(0);
+                env.active.rev.should.equal("A");
+            });
         });
         it("type defaults to full - preReload gets type full and changedFlows null", async function() {
             env = createEnv();

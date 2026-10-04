@@ -89,6 +89,7 @@ module.exports = {
 | Nazwa użytkownika wstawiana jako tekst (XSS), odświeżenie danych po ponownym logowaniu | R-08, R-41 | poprawka |
 | Odpowiedź serwera przy błędzie zapisu/eksportu do biblioteki pokazywana jako escapowany tekst, nie jako HTML (XSS) | #30 | poprawka |
 | Komunikaty błędów palety, projektów, kontroli wersji, ładowania modułu węzła, importu i grup pokazywane jako escapowany tekst, nie jako HTML (XSS) | #34 | poprawka |
+| Dalsze komunikaty z tekstem spoza katalogu (nazwa modułu w potwierdzeniach palety, adres zdalny git, nazwa pliku przy `revert`, nazwy projektu/gałęzi/zdalnego/klucza, błędy rejestracji węzła i importu) escapowane; `RED.utils.sanitize` escapuje też cudzysłowy | #37 | poprawka |
 | Subskrypcje `/comms` dopiero po uwierzytelnieniu | Z-01 | poprawka |
 | Trasy admin węzłów wymagają logowania: `httpAdminNodeRoutes: "authenticated"`, `RED.auth.publicRoute()` | Z-02 | `"open"` |
 | Telemetria blokowana przez administratora: `telemetry.locked` (także w edytorze) | P-03 | wyłączone |
@@ -254,6 +255,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   więc czytany jest identyfikator z magazynu (wcześniej start padał). Odrzucony zapis identyfikatora jest ostrzeżeniem
   w logu, a nie nieobsłużonym odrzuceniem obietnicy; start trwa z wygenerowanym identyfikatorem.
 - Przeładowanie z magazynu (`deploy.reload.watch: true`), w którym zawodzi ponowny odczyt pod blokadą lub samo przeładowanie (np. `credentials_load_failed`), wyczerpuje teraz `deploy.reload.retry.attempts` i kończy się stanem `failed` (503) – wcześniej licznik był zerowany po każdym udanym pierwszym odczycie i instancja ponawiała próby w nieskończoność, nie osiągając `failed` (#17). Dotyczy też trybu domyślnego; z `"keepReady"` rosną `attempts` warunku `reload` i pojawiają się okresowe logi `error`. Nowe powiadomienie o zmianie w magazynie skraca tylko opóźnienie kolejnej próby (backoff zaczyna od `retry.min`), nie zeruje licznika prób – inaczej instancja, która dostaje powiadomienia częściej niż trwa seria prób (np. wtyczka magazynu powiadamiająca po ponownym połączeniu), nigdy nie osiągałaby `failed`. Po wyczerpaniu prób i powrocie instancji do `ready` przez wdrożenie lokalne nowy błąd konfiguracji lub przeładowania (np. `credentials_load_failed` nowej rewizji) rozpoczyna nową serię i znów kończy się `failed` po `retry.attempts` próbach; sam błąd odczytu magazynu zachowuje się jak dotąd (okresowe próby, bez nowego `failed`). Logowanie po wyczerpaniu: w trybie `"fail"` instancja w stanie `failed` ponawia cykl co `retry.max` i loguje to na poziomie `debug` (bez ostrzeżeń `read-failed`); z `"keepReady"` błąd konfiguracji lub przeładowania po warunku `storage_error` powoduje natychmiastowe `failed` (log `error` `reload.not-kept-ready`). Udany cykl przeładowania kończy też ponowienie zaplanowane przez wcześniejszy nieudany cykl – wcześniej po sukcesie startował jeszcze jeden zbędny cykl (dodatkowy odczyt magazynu), zarówno gdy timer ponowienia jeszcze nie wystrzelił, jak i gdy wystrzelił w trakcie udanego cyklu (np. podczas wolnego drenażu `preReload`). Ponowienie, które wystrzeli w trakcie trwającego cyklu, nie uruchamia już natychmiastowego dodatkowego cyklu: gdy ten cykl się nie powiedzie, następna próba następuje po opóźnieniu (backoff) tej porażki, a nie od razu. Powiadomienie z magazynu nadal uruchamia cykl od razu, jak dotąd (#26).
+- Przeładowanie z magazynu (`deploy.reload.watch: true`, #2): poświadczenia są porównywane tak jak rewizja flow – runtime liczy skrót (HMAC-SHA-256 kanonicznego JSON z kluczem losowym dla procesu) **odszyfrowanej** zawartości poświadczeń z magazynu i porównuje go ze skrótem działającej konfiguracji (liczonym po wczytaniu poświadczeń przy przeładowaniu, starcie i własnym zapisie). Przeładowanie następuje, gdy różni się rewizja lub skrót; zmiana samych poświadczeń jest wykrywana bez flagi w powiadomieniu, a zgubione powiadomienie naprawia kolejne. **Flaga `credentialsChanged` powiadomienia `watchFlows` jest tylko wskazówką do odczytu** – nie wymusza już przeładowania (dawniej wymuszała pełny drenaż i przeładowanie z pominięciem porównania rewizji, także przy niezmienionych poświadczeniach); wtyczki magazynu, które używały jej do wymuszenia, nie mają tego efektu. Pole `credentialsChanged` hooka `preReload` jest teraz obliczane z porównania skrótów. Ponowne zaszyfrowanie tych samych poświadczeń (nowy losowy IV) i własny zapis nie są zmianą. Poświadczenia z magazynu są odczytywane kluczem, którego użyłoby wczytanie poświadczeń – także starym wygenerowanym kluczem, dopóki trwa migracja do `credentialSecret` – bez migrowania, zapisu i logowania; te, których ten klucz nie odszyfruje, kończą się `credentials_load_failed` tą samą ścieżką co błąd przeładowania. Skrót jest wewnętrzny (nie jest logowany, nie jest zwracany przez `GET /flows` – tylko `{flows, rev}`). Wyjątek: instancja uruchomiona z poświadczeniami, których nie dało się odszyfrować (np. po resecie poświadczeń przy złym kluczu), nie ma skrótu; przy tej samej rewizji flow nieodszyfrowalne poświadczenia w magazynie nie są błędem (jak przed #2), nowa rewizja idzie normalną ścieżką (`credentials_load_failed`). Dotyczy tylko `deploy.reload.watch: true`; bez niego nic się nie zmienia.
 - Edytor, błędy wdrożenia (#22, R-48): (1) odpowiedź 500 `deploy_start_failed` / `deploy_stop_failed` z `rev` oznacza, że konfiguracja
   **jest zapisana** (tryb `deploy.response: "started"`) – edytor przejmuje nowy `rev`, oznacza zmiany jako wdrożone i pokazuje
   czerwony błąd z listą przyczyn (wcześniej: zmiany niewdrożone, nieaktualny `rev` i 409 `version_mismatch` przy kolejnym
@@ -266,7 +268,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 - Edytor, błąd zapisu do biblioteki (okno biblioteki) i eksportu do biblioteki (okno eksportu schowka) (#30): komunikat
   `library.saveFailed` wstawiał surową treść odpowiedzi serwera jako HTML (XSS przy odpowiedzi z znacznikami). Teraz
   pokazuje pole `message` odpowiedzi JSON (albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”) z escapowaniem
-  `& < > " '`, nigdy surową treść; ten sam formater co błędy wdrożenia (`RED.deploy.translateErrorResponse`). Brak odpowiedzi
+  `& < > " '`, nigdy surową treść; ten sam formater co błędy wdrożenia (`RED.deploy.translateErrorResponse`, dziś `RED.errors.translateResponse`). Brak odpowiedzi
   HTTP (status 0) daje „brak odpowiedzi z serwera”. Polski edytor: przetłumaczone `library.saveFailed` i `user.notAuthorized`
   (komunikat nie miesza języków). Bez zmian API.
 - Edytor, błędy z serwera i błędy importu w powiadomieniach (#34): tekst z odpowiedzi serwera i nazwa modułu
@@ -277,8 +279,35 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   (`red.js`), imporcie i upuszczaniu węzłów (`view.js`; komunikat błędu importu zawiera fragment wklejonego tekstu) i
   grupach (`group.js`). Tekst katalogu nadal jest HTML-em. Wspólny kod escapowania przeniesiony z `RED.deploy`
   do nowego modułu `RED.errors` (`ui/common/errors.js`: `escape`, `parseResponse`, `translateEscaped`,
-  `translateResponse`, `translateException`); `RED.deploy.translateErrorResponse` i `RED.deploy.formatStartErrors`
-  działają jak dotąd, a biblioteka nie zależy już od modułu wdrożenia. Bez zmian API.
+  `translateResponse`, `translateException`); `RED.deploy.formatStartErrors` działa jak dotąd, a biblioteka nie zależy już od
+  modułu wdrożenia. `RED.deploy.translateErrorResponse` został wtedy jako alias, a w #37 jest usunięty (zamiennik:
+  `RED.errors.translateResponse`). Bez zmian API HTTP.
+- Edytor, dalsze miejsca z tekstem spoza katalogu w HTML (#37):
+  - Escapowane: nazwa modułu w potwierdzeniach instalacji, aktualizacji i usunięcia oraz w komunikacie postępu instalacji
+    automatycznej; adres zdalnego repozytorium w oknie uwierzytelnienia git; nazwa pliku w potwierdzeniu `revert` i w
+    tytule okna ze zmianami pliku; nazwy projektu, gałęzi, zdalnego repozytorium i klucza w potwierdzeniach usunięcia;
+    typ i błąd węzła, którego nie dało się zarejestrować; moduł i wersja zaktualizowanego modułu; komunikat błędu
+    importu; typ biblioteki przy zapisie; wartości powiadomień runtime (`red.js`, `runtime.js`); podpowiedź konfliktu
+    na przycisku instalacji i wersja modułu oczekująca na restart.
+  - Ustawiane jako tekst, nie jako HTML: wersja modułu, nazwa katalogu i opcje filtra katalogów na zakładce Install
+    (pochodzą ze zdalnego katalogu i uruchamiały się przy samym otwarciu zakładki, bez kliknięcia), nazwa elementu
+    biblioteki.
+  - Linkiem i przyciskiem „Open node information” jest tylko adres `http:` lub `https:` ze zdalnego katalogu (adres
+    `javascript:` był linkiem); strona otwiera się z `noopener`. Nowe `RED.errors.httpUrl`.
+  - **Zmiany API edytora dla kodu, który z niego korzysta (moduł węzła, wtyczka):** `RED.utils.sanitize` escapuje teraz
+    także `"` i `'` (dotąd tylko `& < >`) i dla `null`/`undefined` zwraca pusty tekst (dotąd błąd TypeError). Moduł, który
+    wynik wstawia do `.text()` lub `.attr()`, pokaże teraz `&quot;`/`&#39;` zamiast cudzysłowu – do czystego tekstu nie
+    wolno escapować. Nowe `RED.utils.sanitizeContent` zachowuje dawne escapowanie `& < >` (markdown, tekst dzielony po
+    znakach). Nowe `RED.errors.notifyGitError` (dawniej dwie kopie w projektach i kontroli wersji);
+    `RED.errors.translateEscaped` zostawia liczby i wartości logiczne bez zmian. **`RED.deploy.translateErrorResponse`
+    jest usunięty** – zamiennik: `RED.errors.translateResponse` (te same argumenty i wynik); nie było go w żadnym
+    wydaniu. API HTTP i ustawienia bez zmian.
+  - Dwa miejsca, które escapowały tekst dla miejsca wyświetlającego czysty tekst (podpowiedź zakładki, tytuł okna edycji
+    węzła – escapowany dwukrotnie), nie pokazują już encji. Włączenie i wyłączenie modułu pokazywało „Nie udało się
+    zainstalować” z niezdefiniowaną nazwą (albo kończyło się błędem `ReferenceError`); teraz podaje właściwą czynność i
+    moduł, jako błąd, a teksty są też w polskim katalogu.
+  - Nie zrobione (opcjonalne, R2 przeglądu #36): maskowanie `//user:pass@` w stderr gita – właściwe miejsce to runtime
+    (komunikat błędu jest budowany w `projects/git`, trafia do odpowiedzi API i logów), osobne zgłoszenie (#45).
 - `http in`, surowe ciało „Do not parse request body” (`skipBodyParsing`, #16): (1) trasa z parametrem (`/hook/:id`) lub adresowana inną
   wielkością liter (`/HOOK`) dostaje teraz `Buffer` **niezależnie od `deploy.holdHttpNodeRequests`** (wcześniej – obiekt lub tekst,
   bo `rawBodyCapture` zna tylko dosłowny klucz `METODA:url`; psuło to np. weryfikację podpisu ciała); każda trasa z tą opcją czyta
