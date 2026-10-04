@@ -272,6 +272,13 @@ Fixes
    the `message` of the response (or a generic one) instead of its raw JSON inserted as HTML. This
    also applies in the default mode; only the display changes, not saving or the API. A response that is
    not JSON no longer breaks the error handling of "Start"/"Stop" (#22)
+ - `http in`: on close (a redeploy or a stop) the node removes only its own routes. Before, it removed every
+   route with its path and method, so closing one node also removed the routes of other nodes registered on the
+   same path (including routes added by other modules through `RED.httpNode`), and it skipped the route that
+   followed a removed one (`splice` inside `forEach`), which could leave a route of a closed node. The routes
+   are now found by the handler of the node and removed from the end of the stack; a missing router is
+   tolerated. The key of a raw body route (`skipBodyParsing`) is also kept while another node still uses the
+   same method and path (a count per key), instead of being dropped by the first node that closes (#11)
  - Editor: a failed save to the library (library dialog) and a failed export to the library (export
    dialog of the clipboard) inserted the raw body of the server response into the notification as HTML
    (`library.saveFailed`). It now shows the `message` of a JSON response (or a generic text with the HTTP
