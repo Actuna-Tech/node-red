@@ -272,6 +272,11 @@ Fixes
    the `message` of the response (or a generic one) instead of its raw JSON inserted as HTML. This
    also applies in the default mode; only the display changes, not saving or the API. A response that is
    not JSON no longer breaks the error handling of "Start"/"Stop" (#22)
+ - Editor: a start result (`deploy-start-result`) that was ignored because its revision was not the one of the
+   editor is dropped when the editor starts a deployment. Revisions are content hashes, so a result kept
+   long before could be applied to a later deployment of the same content that ended in `start_timeout`:
+   it closed that error at once and showed the outcome of the earlier start. A result that arrives
+   during the request, before its response, is still shown after the response (#31)
 
 #### Unreleased: Engine extensions
 
