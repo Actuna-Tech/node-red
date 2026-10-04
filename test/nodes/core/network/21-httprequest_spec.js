@@ -15,8 +15,8 @@
  **/
 /*
  * Modified by Actuna Sp. z o.o.:
- *   #41: no fixed ports - the test servers listen on ports assigned by the system
- *   (two test runs on one machine do not collide)
+ *   #41: no fixed ports - the test servers listen on free ports found by nr-test-utils/free-port
+ *   (two test runs on one machine do not collide, a foreign server on 127.0.0.1 does not answer instead)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -40,6 +40,7 @@ var RED = require("nr-test-utils").require("node-red/lib/red");
 var fs = require('fs-extra');
 var auth = require('basic-auth');
 var crypto = require("crypto");
+var listenOnFreePort = require("nr-test-utils/free-port").listenOnFreePort;
 const { version } = require("os");
 const net = require('net')
 
@@ -69,8 +70,8 @@ describe('HTTP Request Node', function() {
     function startServer(done) {
         testServer = stoppable(http.createServer(testApp));
         const promises = []
-        testServer.listen(0,function(err) {
-            testPort = testServer.address().port;
+        listenOnFreePort(testServer).then(function(port) {
+            testPort = port;
             var sslOptions = {
                 key:  fs.readFileSync('test/resources/ssl/server.key'),
                 cert: fs.readFileSync('test/resources/ssl/server.crt')
@@ -91,15 +92,11 @@ describe('HTTP Request Node', function() {
             testSslServer = stoppable(https.createServer(sslOptions,testApp));
             console.log('> start testSslServer')
             promises.push(new Promise((resolve, reject) => {
-                testSslServer.listen(0, function(err){
-                    testSslPort = testSslServer.address().port;
+                listenOnFreePort(testSslServer).then(function(port) {
+                    testSslPort = port;
                     console.log(' done testSslServer, ssl port', testSslPort)
-                    if (err) {
-                        reject(err)
-                    } else {
-                        resolve()
-                    }
-                });
+                    resolve()
+                }, reject)
             }))
 
             var sslClientOptions = {
@@ -111,15 +108,11 @@ describe('HTTP Request Node', function() {
             testSslClientServer = stoppable(https.createServer(sslClientOptions, testApp));
             console.log('> start testSslClientServer')
             promises.push(new Promise((resolve, reject) => {
-                testSslClientServer.listen(0, function(err){
-                    testSslClientPort = testSslClientServer.address().port;
+                listenOnFreePort(testSslClientServer).then(function(port) {
+                    testSslClientPort = port;
                     console.log(' done testSslClientServer')
-                    if (err) {
-                        reject(err)
-                    } else {
-                        resolve()
-                    }
-                });
+                    resolve()
+                }, reject)
             }))
             testProxyServer = stoppable(httpProxy(http.createServer()))
 
@@ -130,15 +123,11 @@ describe('HTTP Request Node', function() {
             })
             console.log('> testProxyServer')
             promises.push(new Promise((resolve, reject) => {
-                testProxyServer.listen(0, function(err) {
-                    testProxyPort = testProxyServer.address().port;
+                listenOnFreePort(testProxyServer).then(function(port) {
+                    testProxyPort = port;
                     console.log(' done testProxyServer')
-                    if (err) {
-                        reject(err)
-                    } else {
-                        resolve()
-                    }
-                })
+                    resolve()
+                }, reject)
             }))
 
             testProxyServerAuth = stoppable(httpProxy(http.createServer()))
@@ -162,19 +151,15 @@ describe('HTTP Request Node', function() {
             })
             console.log('> testProxyServerAuth')
             promises.push(new Promise((resolve, reject) => {
-                testProxyServerAuth.listen(0, function(err) {
-                    testProxyAuthPort = testProxyServerAuth.address().port;
+                listenOnFreePort(testProxyServerAuth).then(function(port) {
+                    testProxyAuthPort = port;
                     console.log(' done testProxyServerAuth')
-                    if (err) {
-                        reject(err)
-                    } else {
-                        resolve()
-                    }
-                })
+                    resolve()
+                }, reject)
             }))
 
-            Promise.all(promises).then(() => { done() }).catch(done)
-        });
+            return Promise.all(promises)
+        }).then(() => done(), done)
     }
 
     function getTestURL(url) {

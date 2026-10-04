@@ -16,11 +16,12 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #41: no fixed ports - the test server listens on a port assigned by the system and the port of
- *   the "tcp in" server is a free port found before the node starts (two test runs on one machine do not collide)
+ *   the "tcp in" server is a free port found before the node starts (nr-test-utils/free-port) (two test runs on one machine do not collide)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
 var net = require("net");
+var getFreePort = require("nr-test-utils/free-port").freePort;
 var should = require("should");
 var stoppable = require('stoppable');
 var helper = require("node-red-node-test-helper");
@@ -36,26 +37,15 @@ describe('TCP in Node', function() {
     var server_port = undefined;
     var reply_data = undefined;
 
-    // A free port. The "tcp in" server listens on all interfaces, so the probe does too.
-    // The port is known only before the node is configured, hence the (short) time between
-    // the probe and the start of the node.
-    function getFreePort(done) {
-        var probe = net.createServer();
-        probe.once("error", done);
-        probe.listen(0, function() {
-            var freePort = probe.address().port;
-            probe.close(function(err) {
-                done(err, freePort);
-            });
-        });
-    }
-
+    // The "tcp in" server listens on all interfaces and the port is in the configuration of
+    // the node, so it is found before the node starts: a port that is free also on the
+    // loopback addresses, where a foreign server (a dev tool on 127.0.0.1) could answer
+    // instead of the node.
     beforeEach(function(done) {
-        getFreePort(function(err, freePort) {
-            if (err) { return done(err); }
+        getFreePort().then(function(freePort) {
             port = freePort;
             startServer(done);
-        });
+        }, done);
     });
 
     afterEach(function(done) {
