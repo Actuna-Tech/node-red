@@ -25,6 +25,22 @@
    leader, so `inject` nodes with "Run only on one instance" fire on the instances that run the flows (#4)
  - Documented: health probes without `health.port` are public on the main server; `preReload` and
    `preShutdown` hooks must take exactly one parameter (#5)
+ - Requests to the routes of the nodes (`http in` and every node that registers a route on `RED.httpNode`)
+   no longer get 404 while the flows restart (#8): new setting `deploy.holdHttpNodeRequests:
+   {enabled, timeout, maxPending, retryAfter}` (`enabled: false` by default - unchanged behaviour). When
+   enabled, a middleware mounted on the httpNode app before the routes of the nodes holds the requests
+   from the start of a deployment or of a reload from storage until the new flows have started (the
+   instance state `deploying`/`reloading`), then the new flows answer them. After `timeout` (5000 ms)
+   or above `maxPending` (1000) held requests the answer is 503 `{code: "http_hold_timeout"}` /
+   `{code: "http_hold_queue_full"}` with `Retry-After` (`retryAfter`, 1 s; `maxPending` is global, not per
+   client; a failure while releasing a request answers 503 `{code: "http_hold_release_failed"}`). Only
+   requests for which the httpNode app has no route at that moment are held: the routes of unchanged nodes
+   (a partial deployment) are served at once. If the start fails, the requests are released to the normal routing. The Admin API and the editor are not held; static files under
+   `httpNodeRoot` and CORS preflight requests are held, and the 503 has no `Access-Control-*` headers.
+   `http in` with "skipBodyParsing" (only with this setting enabled; without it nothing changes): a request that
+   bypassed the capture of the raw body (it arrived while the route was replaced) is read raw by the route itself,
+   so the handler still gets a `Buffer`. With the setting, a skipBodyParsing route with parameters (`/hook/:id`) or
+   another letter case, which the capture never matched, also gets a `Buffer` instead of a parsed body
 
 Features
  - Polish (`pl`) translation of the editor (`editor.json`, 317 keys) and of the core nodes
