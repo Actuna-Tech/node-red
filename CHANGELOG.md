@@ -330,7 +330,10 @@ Features
    body in `req.body` as before, up to the highest limit of the nodes on the key (upstream had no limit): a
    larger body is answered with 413 (with the CORS headers) at once and nothing else on the route sees it,
    neither a middleware, nor another route, nor a node without the option. Loading the module again on the same
-   app (`RED.stop()` and `RED.start()` in one process) replaces the capture instead of adding another (#16)
+   app (`RED.stop()` and `RED.start()` in one process) replaces the capture instead of adding another. An authorization in `httpNodeMiddleware` runs after the
+   body has been read (up to the limit): above the limit the client gets 413 instead of 401. To avoid reading
+   the body of unauthenticated requests use `httpNodeAuth` or an application middleware in front of `RED.httpNode`.
+   The 413 carries the CORS headers of the global `httpNodeCors`, also on a foreign route with its own CORS (#16)
  - `http in`: new optional field "Max body size" (`maxBodySize`) replaces the limit for one node, higher or
    lower, for routes that receive large files or images. A number with an optional unit `b`, `kb`, `mb`
    `gb`, `tb` or `pb` (1024 based, for example `50mb`; a number alone is bytes; up to 32 characters). It applies to
