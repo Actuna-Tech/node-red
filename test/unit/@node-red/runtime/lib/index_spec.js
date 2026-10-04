@@ -1028,7 +1028,7 @@ describe("runtime", function() {
             warnings("preShutdown-not-called").calledOnce.should.be.true();
             warnings("preShutdown-not-called").firstCall.args[1].should.eql({id: "preShutdown.drain"});
             warnings("preReload-not-called").called.should.be.false();
-            log.warn.called.should.be.true();
+            log.warn.calledWith("abc").should.be.true();
         });
 
         it("warns about a preReload hook without deploy.reload.watch and names the hook", async function() {
@@ -1056,6 +1056,15 @@ describe("runtime", function() {
             await runtime.start();
             warnings("preShutdown-not-called").calledOnce.should.be.true();
             warnings("preReload-not-called").calledOnce.should.be.true();
+        });
+
+        it("warns about a shutdownTimeout that is a string or negative", async function() {
+            for (const value of ["30000", -1]) {
+                log._.resetHistory();
+                runtime.init(base({shutdownTimeout: value, hooks: {"preShutdown.drain": hook}}));
+                await runtime.start();
+                warnings("preShutdown-not-called").calledOnce.should.be.true();
+            }
         });
 
         it("keeps the hooks registered and the start unchanged", async function() {

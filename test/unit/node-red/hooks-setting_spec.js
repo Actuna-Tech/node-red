@@ -158,7 +158,7 @@ module.exports = Object.assign(${JSON.stringify({
         const stopTime = Date.now() - signalled;
         should(code).not.equal("timeout");
         fs.readFileSync(stepLog, "utf8").split("\n").filter(l => l).should.eql(["hook SIGTERM"]);
-        child.output.should.containEql(String(GRACE));
+        child.output.should.match(/Not ready for 700 ms before stopping/);
         stopTime.should.be.aboveOrEqual(GRACE);
     });
 
