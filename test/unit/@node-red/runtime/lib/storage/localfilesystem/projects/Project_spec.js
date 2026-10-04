@@ -15,7 +15,8 @@
  **/
 /*
  * Modified by Actuna Sp. z o.o.:
- *   #45: tests of hiding the credentials of remote URLs in the project returned to the API
+ *   #45: tests of hiding the credentials of remote URLs in the project returned to the API;
+ *   toJSON() of a project gives export() (no credentialSecret)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -95,6 +96,34 @@ describe("storage/localfilesystem/projects/Project", function() {
             // .git/config is not changed
             var config = await fs.readFile(path.join(projectDir, ".git", "config"), "utf8");
             config.should.containEql(WITH_PASSWORD);
+        });
+
+        it("a serialized Project is its export(): no credentialSecret, no password", async function() {
+            Project.init({
+                userDir: os.tmpdir(),
+                editorTheme: {projects: {}},
+                get: function(key) { return key === "projects" ? {projects: {proj: {credentialSecret: "CREDSECRET-0123"}}} : undefined; },
+                set: function() { return Promise.resolve(); }
+            }, {});
+            var project = await Project.load(projectDir);
+            project.credentialSecret.should.equal("CREDSECRET-0123");
+            var text = JSON.stringify({project: project});
+            text.should.not.containEql("CREDSECRET-0123");
+            text.should.not.containEql("s3cret");
+            JSON.parse(text).project.should.eql(JSON.parse(JSON.stringify(project.export())));
+            // a copy for the API, the project itself is not changed
+            project.credentialSecret.should.equal("CREDSECRET-0123");
+            project.remotes.origin.fetch.should.equal(WITH_PASSWORD);
+        });
+
+        it("a project that is not loaded yet serializes to its name", function() {
+            // the constructor is not exported: Project.prototype is reached through a loaded project
+            return Project.load(projectDir).then(function(project) {
+                var notLoaded = Object.create(Object.getPrototypeOf(project));
+                notLoaded.name = "p";
+                notLoaded.credentialSecret = "CREDSECRET-0123";
+                JSON.parse(JSON.stringify(notLoaded)).should.eql({name: "p"});
+            });
         });
 
         it("export() of a project without remotes", async function() {

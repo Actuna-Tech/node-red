@@ -13,11 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
-/*
- * Modified by Actuna Sp. z o.o.:
- *   #45: tests of maskUrlCredentials
- * This notice is required by section 4(b) of the Apache License 2.0.
- */
 var should = require("should");
 
 var NR_TEST_UTILS = require("nr-test-utils");
@@ -30,52 +25,6 @@ describe("@node-red/util/util", function() {
             var id = util.generateId();
             var id2 = util.generateId();
             id.should.not.eql(id2);
-        });
-    });
-    describe('maskUrlCredentials', function() {
-        it('hides user:password of an http(s) URL', function() {
-            util.maskUrlCredentials("fatal: unable to access 'https://user:s3cret@host.example/org/repo.git/': error")
-                .should.equal("fatal: unable to access 'https://***@host.example/org/repo.git/': error");
-            util.maskUrlCredentials("http://user:s3cret@host:8080/r.git").should.equal("http://***@host:8080/r.git");
-        });
-        it('hides a bare token', function() {
-            util.maskUrlCredentials("https://ghp_abc123@github.com/org/repo.git").should.equal("https://***@github.com/org/repo.git");
-        });
-        it('hides a password with an unencoded @ up to the last @ of the authority', function() {
-            util.maskUrlCredentials("https://user:p@ss@host/r.git").should.equal("https://***@host/r.git");
-        });
-        it('hides every URL of a text', function() {
-            var masked = util.maskUrlCredentials("a https://u1:p1@h1/x\nb http://tok@h2/y c ssh://u3:p3@h3/z");
-            masked.should.equal("a https://***@h1/x\nb http://***@h2/y c ssh://***@h3/z");
-        });
-        it('hides a password of an ssh URL but not its bare user', function() {
-            util.maskUrlCredentials("ssh://user:s3cret@host/r.git").should.equal("ssh://***@host/r.git");
-            util.maskUrlCredentials("git+ssh://user:s3cret@host/r.git").should.equal("git+ssh://***@host/r.git");
-            util.maskUrlCredentials("ssh://git@host/org/repo.git").should.equal("ssh://git@host/org/repo.git");
-        });
-        it('does not change a URL without credentials', function() {
-            var text = "fatal: unable to access 'https://github.com/org/repo.git/': Could not resolve host";
-            util.maskUrlCredentials(text).should.equal(text);
-            util.maskUrlCredentials("https://host/path@with-at").should.equal("https://host/path@with-at");
-            util.maskUrlCredentials("https://host/a b@c").should.equal("https://host/a b@c");
-        });
-        it('does not change an scp-like URL', function() {
-            var text = "fatal: Could not read from remote repository git@github.com:org/repo.git";
-            util.maskUrlCredentials(text).should.equal(text);
-            util.maskUrlCredentials("user@host:path/repo.git").should.equal("user@host:path/repo.git");
-        });
-        it('returns a value that is not a string as it is', function() {
-            should.not.exist(util.maskUrlCredentials(undefined));
-            should.not.exist(util.maskUrlCredentials(null));
-            util.maskUrlCredentials(5).should.equal(5);
-        });
-        it('is linear on long input without a match', function() {
-            var start = Date.now();
-            util.maskUrlCredentials("a".repeat(200000)).length.should.equal(200000);
-            util.maskUrlCredentials("https://" + "a:".repeat(100000)).length.should.equal(8 + 200000);
-            util.maskUrlCredentials("https://".repeat(20000)).length.should.equal(8 * 20000);
-            util.maskUrlCredentials("a://".repeat(20000) + "@").should.be.a.String();
-            (Date.now() - start).should.be.below(2000);
         });
     });
     describe('compareObjects', function() {

@@ -15,6 +15,7 @@
  **/
 /*
  * Modified by Actuna Sp. z o.o.:
+ *   #45: GET /settings with an active project has no credentialSecret and no credentials of the remote URLs
  *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
@@ -95,4 +96,72 @@ describe("api/editor/settings", function() {
         });
     });
 
+});
+
+describe("api/admin/settings - active project (#45)", function() {
+    var fs = require("fs-extra");
+    var os = require("os");
+    var path = require("path");
+    var child_process = require("child_process");
+    var runtimeSettings = NR_TEST_UTILS.require("@node-red/runtime/lib/api/settings");
+    var Project = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/projects/Project");
+    var tmpDir;
+    var adminApp;
+
+    before(function() {
+        sinon.stub(theme,"settings").callsFake(function() { return {}; });
+    });
+    after(function() {
+        theme.settings.restore();
+    });
+    beforeEach(async function() {
+        tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "nr-admin-settings-spec-"));
+        var dir = path.join(tmpDir, "p1");
+        await fs.mkdirp(dir);
+        child_process.execFileSync("git", ["init", "-q"], {cwd: dir});
+        child_process.execFileSync("git", ["remote", "add", "origin", "https://user:s3cret@host.example/org/repo.git"], {cwd: dir});
+        await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({name: "p1", "node-red": {settings: {flowFile: "flow.json", credentialsFile: "flow_cred.json"}}}));
+        await fs.writeFile(path.join(dir, "flow.json"), "[]");
+        Project.init({
+            userDir: tmpDir,
+            editorTheme: {projects: {}},
+            get: function(key) { return key === "projects" ? {projects: {p1: {credentialSecret: "CREDSECRET-0123"}}} : undefined; },
+            set: function() { return Promise.resolve(); }
+        }, {});
+        var project = await Project.load(dir);
+        runtimeSettings.init({
+            settings: { version: "testVersion", exportNodeSettings: () => {} },
+            library: {getLibraries: () => []},
+plugins: { exportPluginSettings: () => {} },
+            nodes: {
+                listContextStores: () => { return {stores:["memory"], default: "memory"} },
+                installerEnabled: () => false,
+                getCredentialKeyType: () => "test-key-type"
+            },
+            storage: {
+                projects: {
+                    getActiveProject: () => project,
+                    getFlowFilename: () => 'flow.json',
+                    getCredentialsFilename: () => 'flow_cred.json',
+                    getGlobalGitUser: () => null
+                }
+            },
+            telemetry: { isEnabled: () => true }
+        });
+        // the real runtime settings API behind the real route
+        info.init({}, { settings: runtimeSettings });
+        adminApp = express();
+        adminApp.get("/settings", info.runtimeSettings);
+    });
+    afterEach(async function() {
+        await fs.remove(tmpDir);
+    });
+
+    it('GET /settings has neither the credentialSecret nor the password of a remote URL', async function() {
+        const res = await request(adminApp).get("/settings").expect(200);
+        res.text.should.not.containEql("CREDSECRET-0123");
+        res.text.should.not.containEql("s3cret");
+        res.body.project.name.should.equal("p1");
+        res.body.project.git.remotes.origin.fetch.should.equal("https://***@host.example/org/repo.git");
+    });
 });

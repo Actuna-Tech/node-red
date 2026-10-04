@@ -15,7 +15,8 @@
  **/
 /*
  * Modified by Actuna Sp. z o.o.:
- *   #45: tests of hiding the credentials of a git URL in errors and in the log
+ *   #45: tests of hiding the credentials of a git URL in errors and in the log, of rejecting
+ *   an ambiguous user info and of hiding the known user infos literally
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -125,6 +126,127 @@ describe("storage/localfilesystem/projects/git/index", function() {
             err.message.should.equal(stderr);
             err.stderr.should.equal(stderr);
             err.code.should.equal("git_auth_failed");
+        });
+
+        it("SSH:// in capital letters is handled like ssh://: a bare user is not changed, a password is hidden", async function() {
+            var stderr = "fatal: Could not read from remote repository SSH://git@host.example/org/repo.git\n";
+            failWith(stderr);
+            var err = await gitTools.fetch("/tmp/p", "origin").then(
+                () => { throw new Error("should have failed"); }, e => e);
+            err.message.should.equal(stderr);
+            sinon.restore();
+            failWith("fatal: Could not read from SSH://user:s3cret@host.example/org/repo.git\n");
+            err = await gitTools.fetch("/tmp/p", "origin").then(
+                () => { throw new Error("should have failed"); }, e => e);
+            everything(err).should.not.containEql("s3cret");
+            err.message.should.containEql("SSH://***@host.example/org/repo.git");
+        });
+
+        it("the text of an invalid argument has no password (a commit message that looks like an option)", async function() {
+            var run = sinon.stub(util.exec, "run").resolves({ stdout: "", stderr: "" });
+            var err = await Promise.resolve().then(() => gitTools.commit("/tmp/p", "-https://user:s3cret@host.example/r.git")).then(
+                () => { throw new Error("should have failed"); }, e => e);
+            err.code.should.equal("git_invalid_argument");
+            everything(err).should.not.containEql("s3cret");
+            err.message.should.containEql("-https://***@host.example/r.git");
+            run.called.should.be.false();
+        });
+
+        describe("ambiguous user info of a URL (SEC-002)", function() {
+            var AMBIGUOUS = [
+                ["an unescaped / in the password", "https://user:pa/ss@host.example/org/repo.git"],
+                ["a space in the password", "https://user:pa ss@host.example/org/repo.git"],
+                ["a tab in the password", "https://user:pa\tss@host.example/org/repo.git"],
+                ["a newline in the URL", "https://user:s3cret@host.example/org/repo.git\n"],
+                ["a numeric port-like password with /", "https://user:12/ss@host.example/org/repo.git"],
+                ["an unescaped ? in the password", "https://user:pa?ss@host.example/org/repo.git"],
+                ["an unescaped # in the password", "https://user:pa#ss@host.example/org/repo.git"],
+                ["ssh with / in the password", "ssh://user:pa/ss@host.example/org/repo.git"],
+                ["an @ in the path", "https://host.example/org@x/repo.git"]
+            ];
+            AMBIGUOUS.forEach(function(c) {
+                it("clone rejects " + c[0], async function() {
+                    var run = sinon.stub(util.exec, "run").resolves({ stdout: "", stderr: "" });
+                    var err = await Promise.resolve().then(() => gitTools.clone({url: c[1]}, null, "/tmp/p")).then(
+                        () => { throw new Error("should have failed"); }, e => e);
+                    err.code.should.equal("git_invalid_argument");
+                    everything(err).should.not.containEql("s3cret");
+                    everything(err).should.not.containEql("pa/ss");
+                    everything(err).should.not.containEql("pa ss");
+                    run.called.should.be.false();
+                });
+                it("addRemote rejects " + c[0], async function() {
+                    var run = sinon.stub(util.exec, "run").resolves({ stdout: "", stderr: "" });
+                    var err = await Promise.resolve().then(() => gitTools.addRemote("/tmp/p", "origin", {url: c[1]})).then(
+                        () => { throw new Error("should have failed"); }, e => e);
+                    err.code.should.equal("git_invalid_argument");
+                    everything(err).should.not.containEql("pa/ss");
+                    everything(err).should.not.containEql("pa ss");
+                    run.called.should.be.false();
+                });
+            });
+
+            [
+                "https://user:pa%2Fss@host.example/org/repo.git",
+                "https://user:pa%20ss@host.example/org/repo.git",
+                "https://user:p@ss@host.example/org/repo.git",
+                "https://ghp_tok3n@github.com/org/repo.git",
+                "https://host.example:8443/org/repo.git",
+                "https://user:s3cret@[::1]:8443/org/repo.git",
+                "http://host.example/org/repo.git",
+                "ssh://git@host.example:2222/org/repo.git",
+                "SSH://git@host.example/org/repo.git",
+                "git://host.example/org/repo.git",
+                "file:///tmp/my repo",
+                "git@github.com:org/repo.git"
+            ].forEach(function(url) {
+                it("clone and addRemote accept " + JSON.stringify(url), async function() {
+                    var run = sinon.stub(util.exec, "run").resolves({ stdout: "", stderr: "" });
+                    await gitTools.clone({url: url}, null, "/tmp/p");
+                    await gitTools.addRemote("/tmp/p", "origin", {url: url});
+                    run.callCount.should.equal(2);
+                    run.firstCall.args[1].should.containEql(url);
+                });
+            });
+        });
+
+        describe("known user infos are hidden literally (SEC-002 b)", function() {
+            // a URL that is already in .git/config, as git accepts it (an unescaped "/" and a space)
+            var CONFIG_OUTPUT = "origin\thttps://user:pa/ss@host.example/org/repo.git (fetch)\n" +
+                                "origin\thttps://user:pa/ss@host.example/org/repo.git (push)\n" +
+                                "other\thttps://user:pa ss@other.example/b.git (fetch)\n" +
+                                "other\thttps://user:pa ss@other.example/b.git (push)\n";
+
+            it("the remotes of the project are hidden in the error, in the trace log and in maskCredentials", async function() {
+                var run = sinon.stub(util.exec, "run");
+                run.onFirstCall().resolves({ stdout: CONFIG_OUTPUT, stderr: "" });
+                var remotes = await gitTools.getRemotes("/tmp/p");
+                // the real URLs are returned: git and the credentials cache need them
+                remotes.origin.fetch.should.equal("https://user:pa/ss@host.example/org/repo.git");
+                // the pattern misses these, the literal secrets do not
+                run.onSecondCall().callsFake(function() {
+                    return Promise.reject({ code: 128, stdout: "", stderr:
+                        "fatal: unable to access 'https://user:pa/ss@host.example/org/repo.git/': error\n" +
+                        "fatal: could not read from https://user:pa ss@other.example/b.git\n" });
+                });
+                var err = await gitTools.fetch("/tmp/p", "origin").then(
+                    () => { throw new Error("should have failed"); }, e => e);
+                everything(err).should.not.containEql("pa/ss");
+                everything(err).should.not.containEql("pa ss");
+                err.message.should.containEql("https://***@host.example/org/repo.git/");
+                gitTools.maskCredentials(remotes.origin.fetch).should.equal("https://***@host.example/org/repo.git");
+                gitTools.maskCredentials(remotes.other.push).should.equal("https://***@other.example/b.git");
+                gitTools.maskCredentials("plain text without secrets").should.equal("plain text without secrets");
+            });
+
+            it("a URL with an @ in a path or a bare ssh user does not register a secret for the user", function() {
+                return Promise.resolve().then(async function() {
+                    sinon.stub(util.exec, "run").resolves({ stdout:
+                        "origin\tssh://deploy-user@host.example/org/repo.git (fetch)\n", stderr: "" });
+                    await gitTools.getRemotes("/tmp/p");
+                    gitTools.maskCredentials("deploy-user@host.example").should.equal("deploy-user@host.example");
+                });
+            });
         });
 
         it("a password of an ssh URL is hidden", async function() {
