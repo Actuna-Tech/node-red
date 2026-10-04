@@ -19,6 +19,7 @@
  *   Z-02: tests of use() without a path and of the position of the permission marker
  *   Z-02: tests of use() with paths that match every path
  *   Z-10: test of RED.coordination in the node api
+ *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -99,7 +100,7 @@ describe("red/nodes/registry/util",function() {
     });
     describe("createNodeApi httpAdmin guard", function() {
         const express = require("express");
-        const request = require("supertest");
+        const request = require("nr-test-utils/supertest");
         const log = NR_TEST_UTILS.require("@node-red/util").log;
         const ADMIN_ROUTE_AUTH = Symbol.for("node-red.adminRouteAuth");
         let adminApp;
