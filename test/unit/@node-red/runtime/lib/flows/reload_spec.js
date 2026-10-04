@@ -1238,6 +1238,22 @@ describe("flows/reload (Z-09)", function() {
                 env.applied.should.have.length(1);
                 state.get().should.not.have.property("reload");
             });
+            it("the event order: failed first, then the condition (no ready instance with keepReady false in between)", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                env.failError = Object.assign(new Error("credentials cannot be decrypted"), { code: "credentials_load_failed" });
+                await env.start();
+                stateEvents.length = 0;
+                env.failAlways = true;
+                env.change("B");
+                env.notify();
+                await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                const summary = stateEvents.map(e => e.state + (e.reload ? ":" + e.reload.error.code + ":" + e.reload.keepReady : ""));
+                summary.slice(0, 2).should.eql(["failed", "failed:credentials_load_failed:false"]);
+                summary.should.not.containEql("ready:credentials_load_failed:false");
+                // the condition is not taken for a clear by the reloader itself
+                logged("info", "reload.recovered").should.have.length(0);
+                state.get().reload.error.code.should.equal("credentials_load_failed");
+            });
             it("credentials_load_failed during the reload itself (retry.attempts 1): failed, 503", async function() {
                 env = createEnv({ reload: retry("keepReady", { attempts: 1 }) });
                 env.reloadError = Object.assign(new Error("credentials cannot be decrypted"), { code: "credentials_load_failed" });
