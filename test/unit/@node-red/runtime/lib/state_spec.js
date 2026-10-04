@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   E-02: tests of the instance state module
+ *   #1 (R-47): tests of the condition `reload`
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -452,6 +453,142 @@ describe("runtime/state (E-02)", function() {
             info.errors.push({});
             state.get().state.should.equal("failed");
             state.get().errors.should.have.length(1);
+        });
+    });
+
+    describe("condition reload (R-47)", function() {
+        const FAILED = { error: { code: "storage_error" }, attempts: 10, activeRev: "A", rev: null, keepReady: true, staleDeadline: 5000 };
+
+        it("is absent by default (no `reload` key)", function() {
+            toReady();
+            state.get().should.not.have.property("reload");
+            emitted.forEach(e => e.should.not.have.property("reload"));
+        });
+
+        it("markReloadFailed sets it, keeps the state and emits instance:state", function() {
+            toReady();
+            const before = state.get();
+            emitted = [];
+            state.markReloadFailed(Object.assign({ since: 1000 }, FAILED)).should.be.true();
+            const info = state.get();
+            info.state.should.equal("ready");
+            info.previous.should.equal(before.previous);
+            info.reason.should.equal(before.reason);
+            info.since.should.equal(before.since);
+            info.reload.should.eql({ error: { code: "storage_error" }, since: 1000, attempts: 10, activeRev: "A", rev: null, keepReady: true, staleDeadline: 5000 });
+            state.isReady().should.be.true();
+            emitted.should.have.length(1);
+            emitted[0].state.should.equal("ready");
+            emitted[0].reload.error.code.should.equal("storage_error");
+        });
+
+        it("a string error is the code; since defaults to now; keepReady false and no deadline by default", function() {
+            toReady();
+            const t = Date.now();
+            state.markReloadFailed({ error: "invalid_flows" });
+            const reload = state.get().reload;
+            reload.error.should.eql({ code: "invalid_flows" });
+            reload.since.should.be.aboveOrEqual(t);
+            reload.should.containEql({ attempts: 0, activeRev: null, rev: null, keepReady: false, staleDeadline: null });
+        });
+
+        it("an unchanged condition emits nothing, a changed one (attempts) does, since is kept", function() {
+            toReady();
+            state.markReloadFailed(Object.assign({ since: 1000 }, FAILED));
+            emitted = [];
+            state.markReloadFailed(Object.assign({ since: 1000 }, FAILED)).should.be.false();
+            emitted.should.have.length(0);
+            state.markReloadFailed(Object.assign({}, FAILED, { since: 9999, attempts: 11 })).should.be.true();
+            emitted.should.have.length(1);
+            emitted[0].reload.attempts.should.equal(11);
+            emitted[0].reload.since.should.equal(1000);
+        });
+
+        it("the stale flag is part of the condition", function() {
+            toReady();
+            state.markReloadFailed(FAILED);
+            emitted = [];
+            state.markReloadFailed(Object.assign({}, FAILED, { stale: true }));
+            emitted.should.have.length(1);
+            emitted[0].reload.stale.should.be.true();
+        });
+
+        it("the listeners of onChange are notified with the condition", function() {
+            toReady();
+            const seen = [];
+            state.onChange(info => seen.push(info.reload ? info.reload.error.code : null));
+            state.markReloadFailed(FAILED);
+            state.clearReloadFailed();
+            seen.should.eql(["storage_error", null]);
+        });
+
+        it("clearReloadFailed removes it and emits; without a condition nothing", function() {
+            toReady();
+            state.clearReloadFailed().should.be.false();
+            emitted = [];
+            state.markReloadFailed(FAILED);
+            state.clearReloadFailed().should.be.true();
+            state.get().should.not.have.property("reload");
+            emitted.should.have.length(2);
+            emitted[1].should.not.have.property("reload");
+            emitted[1].state.should.equal("ready");
+        });
+
+        it("the condition survives transitions and is shown in every state", function() {
+            toReady();
+            state.markReloadFailed(FAILED);
+            const token = state.begin("deploy");
+            state.get().state.should.equal("deploying");
+            state.get().reload.keepReady.should.be.true();
+            state.end(token, { errors: [] });
+            state.get().state.should.equal("ready");
+            state.get().reload.keepReady.should.be.true();
+        });
+
+        it("does not change the transitions of the state (a failed state keeps the errors)", function() {
+            toReady();
+            state.markReloadFailed(FAILED);
+            state.fail([{ code: "storage_error", message: "m" }], "storage-error");
+            const info = state.get();
+            info.state.should.equal("failed");
+            info.errors.should.have.length(1);
+            info.reload.error.code.should.equal("storage_error");
+            state.isReady().should.be.false();
+        });
+
+        it("get() returns a copy of the condition", function() {
+            toReady();
+            state.markReloadFailed(FAILED);
+            const info = state.get();
+            info.reload.error.code = "x";
+            info.reload.attempts = 99;
+            state.get().reload.error.code.should.equal("storage_error");
+            state.get().reload.attempts.should.equal(10);
+            // the event carries a copy as well
+            emitted[emitted.length - 1].reload.attempts = 77;
+            state.get().reload.attempts.should.equal(10);
+        });
+
+        it("the input object is not kept", function() {
+            toReady();
+            const input = Object.assign({ error: { code: "storage_error" } }, { attempts: 1 });
+            state.markReloadFailed(input);
+            input.error.code = "x";
+            state.get().reload.error.code.should.equal("storage_error");
+        });
+
+        it("is ignored in stopping and stopped", function() {
+            toReady();
+            state.markStopping("SIGTERM");
+            state.markReloadFailed(FAILED).should.be.false();
+            state.get().should.not.have.property("reload");
+        });
+
+        it("reset() clears it", function() {
+            toReady();
+            state.markReloadFailed(FAILED);
+            state.reset();
+            state.get().should.not.have.property("reload");
         });
     });
 });

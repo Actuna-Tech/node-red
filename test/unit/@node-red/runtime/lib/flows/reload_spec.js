@@ -21,6 +21,8 @@
  *   (an invalid flow file during the reload), lost reloads after a superseded
  *   cycle, the way out of "failed", timers
  *   Z-16: tests of health.unreadyGrace before a reload
+ *   #1 (R-47): tests of deploy.reload.retry.onExhausted / maxStaleTime (the
+ *   condition `reload`, /ready warn, active reporting)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -31,7 +33,9 @@ const reloadModule = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/reload")
 const pipeline = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/pipeline");
 const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
 const state = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+const health = NR_TEST_UTILS.require("@node-red/runtime/lib/health");
 const hooks = NR_TEST_UTILS.require("@node-red/util").hooks;
+const events = NR_TEST_UTILS.require("@node-red/util").events;
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -103,7 +107,7 @@ function createEnv(opts) {
             env.getFlowsCalls++;
             if (env.failAlways || env.failReads > 0) {
                 env.failReads--;
-                throw new Error("storage unavailable");
+                throw env.failError || new Error("storage unavailable");
             }
             return JSON.parse(JSON.stringify(env.stored));
         },
@@ -115,6 +119,9 @@ function createEnv(opts) {
             return opts.changedFlows ? opts.changedFlows(loaded, env.active) : ["t1"];
         }),
         reloadFromStorage: sinon.spy(async function(loaded, reloadOpts) {
+            if (env.reloadError) {
+                throw env.reloadError;
+            }
             env.applied.push({ rev: loaded.rev, type: reloadOpts.type, credentialsChanged: reloadOpts.credentialsChanged, locked: lock.isLocked() });
             env.active = { flows: loaded.flows, rev: loaded.rev };
             if (!env.idle) {
@@ -671,11 +678,17 @@ describe("flows/reload (Z-09)", function() {
             state.isReady().should.be.false();
             env.applied.should.have.length(0);
             env.logs.error.some(m => m.indexOf("reload.retries-exhausted") === 0).should.be.true();
+            // R-47: the default mode - the condition is the fact, the policy is R-36
+            // R-47: the default mode sets no condition at all (R-36 exactly as before)
+            state.get().should.not.have.property("reload");
+            health.readiness({ ready: state.isReady(), reload: state.get().reload }, Date.now()).status.should.equal(503);
             // the next notification tries again and recovers
             env.failAlways = false;
             env.notify();
             await waitFor(() => state.get().state === "ready");
             env.applied.should.have.length(1);
+            state.get().should.not.have.property("reload");
+            health.readiness({ ready: state.isReady(), reload: state.get().reload }, Date.now()).should.eql({ status: 200, body: '{"status":"ok"}' });
         });
         it("retry.attempts defaults to 10", async function() {
             env = createEnv({ reload: { retry: { min: 1, max: 1 } } });
@@ -853,6 +866,722 @@ describe("flows/reload (Z-09)", function() {
                     // nothing written next to the flow file (readOnlyUserDir)
                     fsx.readdirSync(dir).filter(n => n.indexOf("flows") !== -1).length.should.be.belowOrEqual(1);
                 });
+            });
+        });
+    });
+
+    describe("deploy.reload.retry.onExhausted and maxStaleTime (R-47)", function() {
+        const READY_OK = { status: 200, body: '{"status":"ok"}' };
+        const READY_WARN = { status: 200, body: '{"status":"warn","reason":"reload_failed"}' };
+        const READY_503 = { status: 503, body: '{"status":"unavailable"}' };
+        let clock;
+        let runtimeEvents;
+        let stateEvents;
+
+        function onRuntimeEvent(e) { runtimeEvents.push(e) }
+        function onStateEvent(e) { stateEvents.push(e) }
+        function readiness() {
+            return health.readiness({ ready: state.isReady(), reload: state.get().reload }, Date.now());
+        }
+        function logged(level, key) {
+            return env.logs[level].filter(m => m.indexOf(key) === 0);
+        }
+        function retry(onExhausted, extra) {
+            return { retry: Object.assign({ min: 1, max: 10, attempts: 2, onExhausted: onExhausted }, extra || {}) };
+        }
+        function notifications() {
+            return runtimeEvents.filter(e => e.id === "reload-failed");
+        }
+        // Real timers: the retries are exhausted
+        async function exhaust() {
+            await env.start();
+            env.failAlways = true;
+            env.change("B");
+            env.notify();
+            await waitFor(() => logged("error", "reload.retries-exhausted").length > 0 || state.get().reload !== undefined, 2000, "retries not exhausted");
+        }
+        // Fake time: `reload` are the reload settings
+        function fake(reload, envOpts) {
+            clock = sinon.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+            env = createEnv(Object.assign({ reload: reload }, envOpts || {}));
+            return env;
+        }
+        async function exhaustFake() {
+            await env.start();
+            env.failAlways = true;
+            env.change("B");
+            env.notify();
+            await clock.tickAsync(20);
+            state.get().should.have.property("reload");
+        }
+
+        beforeEach(function() {
+            runtimeEvents = [];
+            stateEvents = [];
+            events.on("runtime-event", onRuntimeEvent);
+            events.on("instance:state", onStateEvent);
+        });
+        afterEach(function() {
+            events.removeListener("runtime-event", onRuntimeEvent);
+            events.removeListener("instance:state", onStateEvent);
+            if (clock) {
+                clock.restore();
+                clock = null;
+            }
+        });
+
+        describe("settings", function() {
+            it("defaults: fail and 30 minutes", async function() {
+                env = createEnv({ reload: { retry: { min: 1, max: 10, attempts: 1 } } });
+                env.logs.warn.should.have.length(0);
+                clock = sinon.useFakeTimers({ toFake: ["Date"] });
+                await env.start();
+                env.failAlways = true;
+                env.change("B");
+                env.notify();
+                await waitFor(() => state.get().state === "failed");
+                // no condition in the default mode, so no limit either
+                state.get().should.not.have.property("reload");
+            });
+            it("keepReady with the default maxStaleTime - the deadline is since + 1800000", async function() {
+                env = createEnv({ reload: retry("keepReady", { attempts: 1 }) });
+                env.logs.warn.should.have.length(0);
+                await exhaust();
+                const reload = state.get().reload;
+                reload.keepReady.should.be.true();
+                (reload.staleDeadline - reload.since).should.equal(1800000);
+            });
+            it("an explicit maxStaleTime and the largest timer value are accepted", async function() {
+                env = createEnv({ reload: retry("keepReady", { attempts: 1, maxStaleTime: 2147483647 }) });
+                env.logs.warn.should.have.length(0);
+                await exhaust();
+                (state.get().reload.staleDeadline - state.get().reload.since).should.equal(2147483647);
+            });
+            it("maxStaleTime 0 - no limit (no deadline, no timer, warn does not turn into 503)", async function() {
+                fake(retry("keepReady", { attempts: 1, max: 3600000, maxStaleTime: 0 }));
+                env.logs.warn.should.have.length(0);
+                await exhaustFake();
+                (state.get().reload.staleDeadline === null).should.be.true();
+                await clock.tickAsync(24 * 3600000);
+                readiness().should.eql(READY_WARN);
+                logged("error", "reload.stale").should.have.length(0);
+                state.get().reload.should.not.have.property("stale");
+            });
+            it("an invalid onExhausted - warning and the default (fail)", async function() {
+                env = createEnv({ reload: retry("sometimes", { attempts: 1 }) });
+                logged("warn", "reload.invalid-on-exhausted").should.have.length(1);
+                logged("warn", "reload.invalid-on-exhausted")[0].should.containEql("sometimes");
+                await exhaust();
+                state.get().state.should.equal("failed");
+                state.get().should.not.have.property("reload");
+            });
+            [-1, "10", NaN, Infinity, 2147483648, null, true].forEach(function(value) {
+                it("an invalid maxStaleTime " + String(value) + " - warning and the default", async function() {
+                    env = createEnv({ reload: retry("keepReady", { attempts: 1, maxStaleTime: value }) });
+                    logged("warn", "reload.invalid-retry").should.have.length(1);
+                    logged("warn", "reload.invalid-retry")[0].should.containEql("maxStaleTime");
+                    await exhaust();
+                    (state.get().reload.staleDeadline - state.get().reload.since).should.equal(1800000);
+                });
+            });
+        });
+
+        describe("the default mode (fail) - R-36 unchanged", function() {
+            it("failed, no condition, forced reload, no editor notification, no new logs or events", async function() {
+                env = createEnv({ reload: retry("fail") });
+                await env.start();
+                env.failAlways = true;
+                env.change("B");
+                env.notify();
+                await waitFor(() => state.get().state === "failed");
+                state.get().should.not.have.property("reload");
+                readiness().should.eql(READY_503);
+                notifications().should.have.length(0);
+                logged("error", "reload.keep-ready").should.have.length(0);
+                logged("error", "reload.stale").should.have.length(0);
+                // forceNext: the same revision is reloaded after the recovery (R-36)
+                env.failAlways = false;
+                env.stored = Object.assign({}, env.stored, { rev: "A" });
+                env.notify();
+                await waitFor(() => state.get().state === "ready");
+                env.applied.should.have.length(1);
+                state.get().should.not.have.property("reload");
+                notifications().should.have.length(0);
+                logged("info", "reload.recovered").should.have.length(0);
+                stateEvents.forEach(e => e.should.not.have.property("reload"));
+            });
+            it("the sequence of instance:state events equals the one before R-47 (regression)", async function() {
+                // an outage of 10 s with the retries exhausted, then the recovery (no onExhausted set)
+                fake({ retry: { min: 1, max: 1000, attempts: 2 } });
+                await env.start();
+                env.failAlways = true;
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(10000);
+                env.failAlways = false;
+                await clock.tickAsync(1000);
+                await clock.tickAsync(0);
+                stateEvents.map(e => e.state).should.eql(["failed", "reloadPending", "reloadPending", "reloading", "ready"]);
+                stateEvents.forEach(e => e.should.not.have.property("reload"));
+                notifications().should.have.length(0);
+                logged("info", "reload.recovered").should.have.length(0);
+                logged("error", "reload.keep-ready").should.have.length(0);
+                env.applied.should.have.length(1);
+            });
+            it("an editor-only instance (loaded) stays ready: 200 ok, no condition", async function() {
+                env = createEnv({ reload: retry("fail") });
+                state.reset();
+                state.markStarting();
+                state.report({ flowsRunning: false, reason: "editor-only" });
+                state.get().state.should.equal("loaded");
+                await exhaust();
+                state.get().state.should.equal("loaded");
+                state.get().should.not.have.property("reload");
+                state.isReady().should.be.true();
+                readiness().should.eql(READY_OK);
+            });
+            it("a local deployment after the exhaustion: ready, 200 ok", async function() {
+                env = createEnv({ reload: retry("fail") });
+                await exhaust();
+                await waitFor(() => state.get().state === "failed");
+                readiness().should.eql(READY_503);
+                const result = await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } });
+                result.rev.should.equal("deployed");
+                await waitFor(() => state.get().state === "ready");
+                state.get().should.not.have.property("reload");
+                readiness().should.eql(READY_OK);
+                logged("info", "reload.recovered").should.have.length(0);
+            });
+            it("the periodic read after a local deployment while storage is still unreadable: no new failed state (as before)", async function() {
+                env = createEnv({ reload: retry("fail") });
+                await exhaust();
+                await waitFor(() => state.get().state === "failed");
+                await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } });
+                await waitFor(() => state.get().state === "ready");
+                const calls = env.getFlowsCalls;
+                await waitFor(() => env.getFlowsCalls >= calls + 3, 2000, "no periodic read");
+                state.get().state.should.equal("ready");
+                state.get().should.not.have.property("reload");
+            });
+        });
+
+        describe("keepReady - the read error of storage", function() {
+            it("a ready instance stays ready: warn, no failed state, no forced reload, the flows run", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                await exhaust();
+                state.get().state.should.equal("ready");
+                states.should.not.containEql("failed");
+                state.isReady().should.be.true();
+                readiness().should.eql(READY_WARN);
+                state.get().reload.should.containEql({ error: { code: "storage_error" }, keepReady: true, attempts: 2, activeRev: "A" });
+                env.applied.should.have.length(0);
+                env.active.rev.should.equal("A");
+            });
+            it("an idle instance stays idle: 503", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                state.reset();
+                state.markStarting();
+                state.report({ flowsRunning: false, reason: "set-state" });
+                env.idle = true;
+                await exhaust();
+                state.get().state.should.equal("idle");
+                state.get().reload.keepReady.should.be.true();
+                readiness().should.eql(READY_503);
+            });
+            it("a startup error of storage (F1) is not affected: failed, 503, no condition", function() {
+                state.reset();
+                state.markStarting();
+                state.fail(new Error("storage down"), "storage-error");
+                state.get().state.should.equal("failed");
+                state.get().should.not.have.property("reload");
+                readiness().should.eql(READY_503);
+            });
+            it("recovery with the same revision: the condition is cleared with no drain, no preReload, no reload", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                const hook = sinon.spy();
+                hooks.add("preReload", p => { hook(p) });
+                await exhaust();
+                states.length = 0;
+                env.failAlways = false;
+                env.change("A");
+                await waitFor(() => state.get().reload === undefined, 2000, "the condition was not cleared");
+                readiness().should.eql(READY_OK);
+                hook.called.should.be.false();
+                env.flows.reloadFromStorage.called.should.be.false();
+                states.should.not.containEql("reloadPending");
+                states.should.not.containEql("reloading");
+                state.get().state.should.equal("ready");
+                logged("info", "reload.recovered").should.have.length(1);
+                logged("info", "reload.recovered")[0].should.containEql("\"reason\":\"unchanged\"");
+                logged("info", "reload.recovered")[0].should.containEql("storage_error");
+            });
+            it("recovery with another revision: a normal reload, the condition cleared", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                const hook = sinon.spy();
+                hooks.add("preReload", p => { hook(p) });
+                await exhaust();
+                env.failAlways = false;
+                await waitFor(() => env.applied.length === 1 && state.get().state === "ready", 2000, "no reload");
+                env.applied[0].rev.should.equal("B");
+                hook.calledOnce.should.be.true();
+                state.get().should.not.have.property("reload");
+                readiness().should.eql(READY_OK);
+                logged("info", "reload.recovered")[0].should.containEql("\"reason\":\"reload\"");
+            });
+            it("recovery when the revision went back during the drain (unchanged) clears the condition", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                const d = deferred();
+                hooks.add("preReload", p => d.promise);
+                await exhaust();
+                env.failAlways = false;
+                await waitFor(() => states.indexOf("reloadPending:draining") !== -1);
+                state.get().reload.should.have.property("keepReady", true);
+                env.change("A");
+                d.resolve();
+                await waitFor(() => state.get().reload === undefined, 2000, "the condition was not cleared");
+                env.applied.should.have.length(0);
+                state.get().state.should.equal("ready");
+            });
+            it("recovery by a reload whose start fails (F5): the condition cleared, failed, 503", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                env.startErrors = [{ code: "flow_start_failed", message: "start failed" }];
+                await exhaust();
+                env.failAlways = false;
+                await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                state.get().should.not.have.property("reload");
+                readiness().should.eql(READY_503);
+            });
+            it("recovery by a reload with a partial start: failed, 503", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                env.startErrors = [{ code: "node_start_failed", message: "one node failed" }];
+                await exhaust();
+                env.failAlways = false;
+                await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                state.get().errors[0].code.should.equal("node-start-failed".replace(/-/g, "_"));
+                readiness().should.eql(READY_503);
+            });
+            it("reloadPending (not draining) after the exhaustion is 200 warn, draining is 503", async function() {
+                // a slot that is not given yet keeps the cycle in "reloadPending" before the drain
+                const gate = deferred();
+                const d = deferred();
+                const seen = {};
+                env = createEnv({
+                    reload: Object.assign({ concurrency: 1 }, retry("keepReady")),
+                    localCoordination: false,
+                    claimSlot: async function() {
+                        await gate.promise;
+                        return { release: async function() {}, renew: async function() { return true } };
+                    }
+                });
+                hooks.add("preReload", p => {
+                    seen.draining = readiness();
+                    return d.promise;
+                });
+                await exhaust();
+                env.failAlways = false;
+                await waitFor(() => state.get().state === "reloadPending" && !state.get().draining);
+                state.get().reload.should.have.property("keepReady", true);
+                readiness().should.eql(READY_WARN);
+                gate.resolve();
+                await waitFor(() => !!seen.draining);
+                seen.draining.should.eql(READY_503);
+                d.resolve();
+                await waitFor(() => env.applied.length === 1 && state.get().state === "ready" && state.get().reload === undefined);
+                readiness().should.eql(READY_OK);
+            });
+            it("a local deployment clears the condition, the notification and the stale timer", async function() {
+                fake(retry("keepReady", { attempts: 1, max: 100000, maxStaleTime: 5000 }));
+                await exhaustFake();
+                readiness().should.eql(READY_WARN);
+                const result = await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } });
+                result.rev.should.equal("deployed");
+                await clock.tickAsync(0);
+                state.get().should.not.have.property("reload");
+                readiness().should.eql(READY_OK);
+                notifications().should.have.length(2);
+                notifications()[1].should.eql({ id: "reload-failed", payload: { type: "success", text: "notification.warnings.reload_recovered", timeout: 10000 }, retain: false });
+                logged("info", "reload.recovered")[0].should.containEql("\"reason\":\"deploy\"");
+                await clock.tickAsync(10000);
+                logged("error", "reload.stale").should.have.length(0);
+                readiness().should.eql(READY_OK);
+            });
+            it("after a local deployment while storage is still unreadable the condition is reported again", async function() {
+                fake(retry("keepReady", { attempts: 1, max: 100 }));
+                await exhaustFake();
+                await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } });
+                await clock.tickAsync(0);
+                state.get().should.not.have.property("reload");
+                await clock.tickAsync(100);
+                state.get().should.have.property("reload");
+                state.get().reload.keepReady.should.be.true();
+                logged("error", "reload.keep-ready").should.have.length(2);
+                notifications().should.have.length(3);
+            });
+        });
+
+        describe("keepReady - the errors of the configuration always fail", function() {
+            it("credentials_load_failed: failed, 503, no editor notification, a forced reload after the recovery", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                env.failError = Object.assign(new Error("credentials cannot be decrypted"), { code: "credentials_load_failed" });
+                await exhaust();
+                await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                state.get().reload.should.containEql({ error: { code: "credentials_load_failed" }, keepReady: false });
+                (state.get().reload.staleDeadline === null).should.be.true();
+                readiness().should.eql(READY_503);
+                notifications().should.have.length(0);
+                logged("error", "reload.keep-ready").should.have.length(0);
+                // forceNext (R-36): the revision in storage is reloaded even though it is the running one
+                env.failError = null;
+                env.failAlways = false;
+                env.change("A");
+                await waitFor(() => state.get().state === "ready", 2000, "not ready again");
+                env.applied.should.have.length(1);
+                state.get().should.not.have.property("reload");
+            });
+            it("the event order: failed first, then the condition (no ready instance with keepReady false in between)", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                env.failError = Object.assign(new Error("credentials cannot be decrypted"), { code: "credentials_load_failed" });
+                await env.start();
+                stateEvents.length = 0;
+                env.failAlways = true;
+                env.change("B");
+                env.notify();
+                await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                const summary = stateEvents.map(e => e.state + (e.reload ? ":" + e.reload.error.code + ":" + e.reload.keepReady : ""));
+                summary.slice(0, 2).should.eql(["failed", "failed:credentials_load_failed:false"]);
+                summary.should.not.containEql("ready:credentials_load_failed:false");
+                // the condition is not taken for a clear by the reloader itself
+                logged("info", "reload.recovered").should.have.length(0);
+                state.get().reload.error.code.should.equal("credentials_load_failed");
+            });
+            it("credentials_load_failed during the reload itself (retry.attempts 1): failed, 503", async function() {
+                env = createEnv({ reload: retry("keepReady", { attempts: 1 }) });
+                env.reloadError = Object.assign(new Error("credentials cannot be decrypted"), { code: "credentials_load_failed" });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                state.get().reload.should.containEql({ error: { code: "credentials_load_failed" }, keepReady: false });
+                readiness().should.eql(READY_503);
+                notifications().should.have.length(0);
+            });
+            it("invalid_flows from storage: failed, 503", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                env.failError = Object.assign(new Error("no flow configuration"), { code: "invalid_flows" });
+                await exhaust();
+                await waitFor(() => state.get().state === "failed");
+                state.get().reload.should.containEql({ error: { code: "invalid_flows" }, keepReady: false });
+                readiness().should.eql(READY_503);
+            });
+            ["invalid_json", "empty_file"].forEach(function(code) {
+                it("a corrupt flow file (" + code + ") fails: failed, 503, no keep-ready notification", async function() {
+                    env = createEnv({ reload: retry("keepReady") });
+                    env.failError = Object.assign(new Error("the flow file is corrupt"), { code: code });
+                    await exhaust();
+                    await waitFor(() => state.get().state === "failed");
+                    state.get().reload.should.containEql({ error: { code: code }, keepReady: false });
+                    readiness().should.eql(READY_503);
+                    notifications().should.have.length(0);
+                    logged("error", "reload.keep-ready").should.have.length(0);
+                });
+            });
+            it("a raw code of an error of the reload itself does not leak into the condition (reload_failed)", async function() {
+                env = createEnv({ reload: retry("keepReady", { attempts: 1 }) });
+                env.reloadError = Object.assign(new Error("busy"), { code: "state_operation_in_progress" });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                state.get().reload.error.code.should.equal("reload_failed");
+            });
+            it("any other error of the reload itself (not storage) fails as well", async function() {
+                env = createEnv({ reload: retry("keepReady", { attempts: 1 }) });
+                env.reloadError = new Error("flows cannot be stopped");
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                state.get().reload.should.containEql({ error: { code: "reload_failed" }, keepReady: false });
+            });
+            it("a kept-ready instance whose error turns into a configuration error fails", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                await exhaust();
+                state.get().state.should.equal("ready");
+                env.failError = Object.assign(new Error("no flow configuration"), { code: "invalid_flows" });
+                await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                state.get().reload.should.containEql({ error: { code: "invalid_flows" }, keepReady: false });
+                state.get().reload.since.should.be.belowOrEqual(Date.now());
+                logged("error", "reload.not-kept-ready").should.have.length(1);
+                (notifications().pop().payload === undefined).should.be.true();
+                readiness().should.eql(READY_503);
+            });
+        });
+
+        describe("maxStaleTime", function() {
+            it("passes: /ready 503, one error log, the event with stale, no more attempts to log it", async function() {
+                fake(retry("keepReady", { attempts: 1, max: 100000, maxStaleTime: 5000 }));
+                await exhaustFake();
+                readiness().should.eql(READY_WARN);
+                logged("error", "reload.stale").should.have.length(0);
+                const before = stateEvents.length;
+                await clock.tickAsync(5000);
+                readiness().should.eql(READY_503);
+                state.get().state.should.equal("ready");
+                logged("error", "reload.stale").should.have.length(1);
+                stateEvents.length.should.equal(before + 1);
+                const last = stateEvents[stateEvents.length - 1];
+                last.state.should.equal("ready");
+                last.reload.should.containEql({ stale: true, keepReady: true });
+                await clock.tickAsync(20000);
+                logged("error", "reload.stale").should.have.length(1);
+            });
+            it("is counted from the first failed read of the series, not from the end of the retries", async function() {
+                fake(retry("keepReady", { min: 100, max: 1000, attempts: 4, maxStaleTime: 60000 }));
+                await env.start();
+                env.failAlways = true;
+                env.change("B");
+                const t0 = Date.now();
+                env.notify();
+                // the retries 100 + 200 + 400 ms: exhausted 700 ms after the first failed read
+                await clock.tickAsync(700);
+                state.get().should.have.property("reload");
+                const reload = state.get().reload;
+                reload.since.should.equal(t0);
+                reload.staleDeadline.should.equal(t0 + 60000);
+                (Date.now() - t0).should.equal(700);
+                await clock.tickAsync(60000 - 700);
+                readiness().should.eql(READY_503);
+            });
+            it("is counted from the first failure, not from every attempt", async function() {
+                fake(retry("keepReady", { attempts: 1, max: 1000, maxStaleTime: 5500 }));
+                await exhaustFake();
+                const since = state.get().reload.since;
+                await clock.tickAsync(5000);
+                state.get().reload.since.should.equal(since);
+                readiness().should.eql(READY_WARN);
+                await clock.tickAsync(500);
+                readiness().should.eql(READY_503);
+            });
+            it("recovery after it: back to ready ok", async function() {
+                fake(retry("keepReady", { attempts: 1, max: 1000, maxStaleTime: 3000 }));
+                await exhaustFake();
+                await clock.tickAsync(3000);
+                readiness().should.eql(READY_503);
+                env.failAlways = false;
+                env.change("A");
+                await clock.tickAsync(1000);
+                state.get().should.not.have.property("reload");
+                readiness().should.eql(READY_OK);
+            });
+            it("stop() clears the timer: no event after the stop", async function() {
+                fake(retry("keepReady", { attempts: 1, max: 100000, maxStaleTime: 5000 }));
+                await exhaustFake();
+                await env.reloader.stop();
+                const before = stateEvents.length;
+                await clock.tickAsync(10000);
+                logged("error", "reload.stale").should.have.length(0);
+                stateEvents.length.should.equal(before);
+            });
+            it("the stale timer does not keep the process alive and stop() ends it", async function() {
+                const recorded = [];
+                const realSetTimeout = global.setTimeout;
+                global.setTimeout = function() {
+                    const timer = realSetTimeout.apply(this, arguments);
+                    if (/flows[\\/]reload\.js/.test(new Error().stack)) {
+                        recorded.push(timer);
+                    }
+                    return timer;
+                };
+                try {
+                    env = createEnv({ reload: retry("keepReady", { attempts: 1, max: 600000, maxStaleTime: 600000 }) });
+                    await exhaust();
+                } finally {
+                    global.setTimeout = realSetTimeout;
+                }
+                // the retry timer and the stale timer
+                recorded.length.should.be.aboveOrEqual(2);
+                recorded.forEach(t => t.hasRef().should.be.false());
+                await env.reloader.stop();
+                recorded.forEach(t => t._destroyed.should.be.true());
+            });
+        });
+
+        describe("active reporting", function() {
+            it("an error log on entering with the code, the attempts and the active revision", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                await exhaust();
+                const entries = logged("error", "reload.keep-ready");
+                entries.should.have.length(1);
+                entries[0].should.containEql("\"code\":\"storage_error\"").and.containEql("\"attempts\":2").and.containEql("\"rev\":\"A\"");
+                // the message text of the error is for the log only
+                entries[0].should.containEql("storage unavailable");
+            });
+            it("keepReady + storage_error: no contradicting retries-exhausted error log, only the keep-ready one", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                await exhaust();
+                logged("error", "reload.retries-exhausted").should.have.length(0);
+                logged("error", "reload.keep-ready").should.have.length(1);
+                env.logs.error.should.have.length(1);
+            });
+            it("keepReady + a configuration error (fails) keeps the retries-exhausted error log", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                env.failError = Object.assign(new Error("no flow configuration"), { code: "invalid_flows" });
+                await exhaust();
+                logged("error", "reload.retries-exhausted").should.have.length(1);
+            });
+            it("mode fail keeps the retries-exhausted error log", async function() {
+                env = createEnv({ reload: retry("fail") });
+                await exhaust();
+                logged("error", "reload.retries-exhausted").should.have.length(1);
+            });
+            it("an error log at most once per retry cycle while the condition lasts", async function() {
+                fake(retry("keepReady", { attempts: 1, max: 60000, maxStaleTime: 0 }));
+                await exhaustFake();
+                logged("error", "reload.keep-ready").should.have.length(1);
+                // a burst of notifications: failed attempts, no error logs
+                for (let i = 0; i < 5; i++) {
+                    env.notify();
+                    await clock.tickAsync(1);
+                }
+                logged("error", "reload.still-failing").should.have.length(0);
+                state.get().reload.attempts.should.be.above(5);
+                await clock.tickAsync(60000);
+                logged("error", "reload.still-failing").should.have.length(1);
+                await clock.tickAsync(60000);
+                logged("error", "reload.still-failing").should.have.length(2);
+                logged("error", "reload.still-failing")[1].should.containEql("storage_error");
+                logged("error", "reload.keep-ready").should.have.length(1);
+            });
+            it("the editor notification: one retained warning while the condition lasts, cleared on recovery", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                await exhaust();
+                // further failed attempts do not repeat it
+                const calls = env.getFlowsCalls;
+                await waitFor(() => env.getFlowsCalls >= calls + 3);
+                notifications().should.have.length(1);
+                const n = notifications()[0];
+                n.retain.should.be.true();
+                n.payload.should.containEql({ type: "warning", error: "reload_failed", text: "notification.warnings.reload_failed", code: "storage_error" });
+                new Date(n.payload.since).toISOString().should.equal(n.payload.since);
+                n.payload.since.should.equal(new Date(state.get().reload.since).toISOString());
+                Object.keys(n.payload).sort().should.eql(["code", "error", "since", "text", "type"]);
+                // recovery: a message that disappears (the editor closes it after the timeout);
+                // not retained, so the retained warning is removed
+                env.failAlways = false;
+                env.change("A");
+                await waitFor(() => notifications().length === 2);
+                notifications()[1].should.eql({ id: "reload-failed", payload: { type: "success", text: "notification.warnings.reload_recovered", timeout: 10000 }, retain: false });
+                notifications().should.have.length(2);
+            });
+            it("no recovery message when there was no notification (no editor warning was shown)", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                env.failError = Object.assign(new Error("no flow configuration"), { code: "invalid_flows" });
+                await exhaust();
+                notifications().should.have.length(0);
+                env.failError = null;
+                env.failAlways = false;
+                env.change("A");
+                await waitFor(() => state.get().reload === undefined, 2000, "not recovered");
+                notifications().should.have.length(0);
+            });
+            it("maxStaleTime: the same notification is updated (type error, reload_stale), retained", async function() {
+                fake(retry("keepReady", { attempts: 1, max: 100000, maxStaleTime: 5000 }));
+                await exhaustFake();
+                notifications().should.have.length(1);
+                await clock.tickAsync(5000);
+                notifications().should.have.length(2);
+                notifications()[1].retain.should.be.true();
+                notifications()[1].payload.should.containEql({ type: "error", error: "reload_stale", text: "notification.warnings.reload_stale", code: "storage_error" });
+            });
+            it("the event instance:state is emitted when only the condition changes", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                await env.start();
+                env.failAlways = true;
+                env.change("B");
+                stateEvents.length = 0;
+                env.notify();
+                await waitFor(() => state.get().reload !== undefined);
+                const entered = stateEvents.filter(e => e.reload);
+                entered.should.have.length(1);
+                entered[0].state.should.equal("ready");
+                entered[0].reload.should.containEql({ keepReady: true, attempts: 2, activeRev: "A" });
+                // another failed attempt: attempts changed
+                await waitFor(() => stateEvents.some(e => e.reload && e.reload.attempts > 2));
+                // recovery: an event without the condition and with the same state
+                env.failAlways = false;
+                env.change("A");
+                await waitFor(() => stateEvents[stateEvents.length - 1].reload === undefined);
+                stateEvents[stateEvents.length - 1].state.should.equal("ready");
+            });
+        });
+
+        describe("contract", function() {
+            it("the listener of the cycle ignores events that change only the condition", async function() {
+                env = createEnv();
+                const d = deferred();
+                hooks.add("preReload", p => d.promise);
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => states.indexOf("reloadPending:draining") !== -1);
+                // a deployment on this instance supersedes the cycle (once) ...
+                state.begin("deploy", { supersede: true });
+                logged("info", "reload.superseded").should.have.length(1);
+                // ... condition-only events in the state "deploying" (previous: reloadPending) do not react again
+                state.markReloadFailed({ error: "storage_error", attempts: 1 });
+                state.markReloadFailed({ error: "storage_error", attempts: 2 });
+                state.clearReloadFailed();
+                logged("info", "reload.superseded").should.have.length(1);
+                d.resolve();
+            });
+            it("a condition-only event during a running cycle does not abort it", async function() {
+                env = createEnv();
+                const d = deferred();
+                hooks.add("preReload", p => d.promise);
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => states.indexOf("reloadPending:draining") !== -1);
+                state.markReloadFailed({ error: "storage_error", attempts: 1 });
+                d.resolve();
+                await waitFor(() => env.applied.length === 1 && state.get().state === "ready");
+            });
+            it("coexists with health.unreadyGrace: a reload after the condition waits for the grace once", async function() {
+                fake(retry("keepReady", { attempts: 1, max: 100000, maxStaleTime: 0 }));
+                env.runtime.settings.health = { enabled: true, unreadyGrace: 500 };
+                env.reloader.init(env.runtime);
+                let drainStart = null;
+                state.onChange(info => {
+                    if (info.draining && drainStart === null) {
+                        drainStart = Date.now();
+                    }
+                });
+                await exhaustFake();
+                const t0 = Date.now();
+                env.failAlways = false;
+                env.notify();
+                await clock.tickAsync(499);
+                env.applied.should.have.length(0);
+                drainStart.should.be.aboveOrEqual(t0);
+                await clock.tickAsync(1);
+                env.applied.should.have.length(1);
+                (Date.now() - drainStart).should.equal(500);
+                await clock.tickAsync(0);
+                state.get().should.not.have.property("reload");
+                logged("info", "reload.unready-grace").should.have.length(1);
+            });
+            it("coexists with health.unreadyGrace: a recovery with the same revision has no grace and no drain", async function() {
+                fake(retry("keepReady", { attempts: 1, max: 100000, maxStaleTime: 0 }));
+                env.runtime.settings.health = { enabled: true, unreadyGrace: 500 };
+                env.reloader.init(env.runtime);
+                await exhaustFake();
+                env.failAlways = false;
+                env.change("A");
+                env.notify();
+                await clock.tickAsync(0);
+                state.get().should.not.have.property("reload");
+                logged("info", "reload.unready-grace").should.have.length(0);
+                states.should.not.containEql("reloadPending:draining");
             });
         });
     });

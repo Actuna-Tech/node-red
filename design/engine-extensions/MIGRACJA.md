@@ -179,9 +179,23 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   lub safe mode); `loaded` – instancja tylko edycyjna (`editorOnly`).
 - **Zdarzenie `instance:state`** z treścią `{state, previous, reason}` (R-23); kod osadzający zatrzymuje runtime przez
   `RED.stop(reason)` – powód trafia do hooka `preShutdown` i logu.
+- **Warunek `reload` (R-47)** – obok stanu, nie nowy stan (tabela przejść R-23 bez zmian): zdarzenie i `runtime.state.get()`
+  zawierają pole `reload` `{error: {code}, since, attempts, activeRev, rev, keepReady, staleDeadline, stale?}` – tylko
+  gdy przeładowanie z magazynu nie powiodło się po wyczerpaniu ponowień (kod `storage_error`, `credentials_load_failed`,
+  `invalid_flows`, `invalid_json`, `empty_file` lub `reload_failed`); **warunek istnieje tylko przy `onExhausted: "keepReady"`** –
+  przy domyślnym `"fail"` brak pola, dodatkowych zdarzeń i logów (sekwencja zdarzeń jak przed R-47); brak pola = brak warunku. **Nowa reguła kontraktu:** `instance:state` jest emitowane
+  także, gdy zmienia się **samo** pole `reload` (ustawienie, zmiana liczby prób, przekroczenie `maxStaleTime`, skasowanie)
+  przy niezmienionym `state` – odbiorca, który ma reagować tylko na zmiany stanu, porównuje `state`, `reason` i `since`
+  (nie liczy każdego zdarzenia jako przejścia). Gdy `keepReady` eskaluje do błędu konfiguracji (z `storage_error` na np. `invalid_flows`), odbiorca może zobaczyć jedno zdarzenie przejściowe – zdarzenie `failed` nosi jeszcze poprzedni warunek z `keepReady: true` – a zaraz po nim poprawiony warunek. Wtyczki i monitoring mogą z tego przekazywać alarm (np. do systemu alertów).
 - **Sondy** (`health.enabled`, R-19, R-22): `/health/ready` → 200 w `ready` i `loaded`; 503 m.in. w `idle` (safe mode,
   zatrzymane flow), `failed`, `stopping`. Treść 503 jest **stała**: `{"status":"unavailable"}` – nie zawiera nazwy stanu
   (stan odczytywać ze zdarzenia `instance:state` / `runtime.state`, nie z sondy).
+  **`warn` (R-47):** tylko przy `deploy.reload.retry.onExhausted: "keepReady"` gotowa instancja, której przeładowanie z magazynu
+  nie powiodło się (odczyt magazynu po wyczerpaniu ponowień), odpowiada 200 z treścią `{"status":"warn","reason":"reload_failed"}`
+  (stały kod – bez rewizji i tekstu błędu, bo sonda jest bez uwierzytelnienia); po `deploy.reload.retry.maxStaleTime` (domyślnie
+  30 min, `0` = bez limitu) – 503 `{"status":"unavailable"}`. **Monitoring dopasowujący treść `"ok"` zobaczy `"warn"` dopiero po
+  włączeniu `keepReady`** (domyślnie `"fail"` – treść i kody bez zmian, także dla `editorOnly`); sprawdzanie samego kodu HTTP
+  działa jak dotąd. `/live` bez zmian. Draft IETF health-check: `warn` → 2xx.
 - **Przeładowanie z magazynu** (Z-09, R-20): `preReload` nie ma prawa weta (tylko opóźnia, limit `preReloadTimeout`);
   przy dodatkowych flow zmienionych po drenażu – ponowny `preReload` dla nich (D-17), poza blokadą, najwyżej jedna
   runda, potem przeładowanie z ostrzeżeniem w logu (R-36); błąd odczytu magazynu → ponowienia wg `deploy.reload.retry`
