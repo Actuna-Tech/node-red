@@ -24,6 +24,7 @@
  *   read, a failed registration fails the start, unregistered on stop
  *   #8: the hold of the requests to the routes of the nodes is mounted on the
  *   httpNode app only with deploy.holdHttpNodeRequests.enabled
+ *   #7: the `hooks` setting is registered by init()
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -93,6 +94,66 @@ describe("runtime", function() {
             runtime.init({testSettings: true, httpAdminRoot:"/"});
             settings.init.called.should.be.true();
             redNodes.init.called.should.be.true();
+        });
+
+        describe("hooks setting (#7)", function() {
+            afterEach(function() {
+                util.hooks.clear();
+            });
+            it("registers the hooks of the setting", function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", hooks: {
+                    "preReload.drain": async function(event) {},
+                    "preShutdown.drain": async function(event) {}
+                }});
+                util.hooks.has("preReload").should.be.true();
+                util.hooks.has("preShutdown.drain").should.be.true();
+                redNodes.init.called.should.be.true();
+            });
+            it("registers the hooks before the nodes are initialised", function() {
+                let registered;
+                redNodes.init.callsFake(function() {
+                    registered = util.hooks.has("preReload.drain");
+                });
+                runtime.init({testSettings: true, httpAdminRoot:"/", hooks: {
+                    "preReload.drain": async function(event) {}
+                }});
+                registered.should.be.true();
+            });
+            it("fails init for an invalid setting, with a code and the key", function() {
+                try {
+                    runtime.init({testSettings: true, httpAdminRoot:"/", hooks: {
+                        "onSend.drain": function(event) {}
+                    }});
+                } catch(err) {
+                    err.should.have.property("code", "invalid_hook_setting");
+                    err.message.should.containEql("onSend.drain");
+                    redNodes.init.called.should.be.false();
+                    util.hooks.has("onSend").should.be.false();
+                    return;
+                }
+                throw new Error("init did not throw");
+            });
+            it("registers no hooks without the setting", function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/"});
+                util.hooks.has("preReload").should.be.false();
+                util.hooks.has("preShutdown").should.be.false();
+            });
+            it("removes the hooks of a previous init when the setting is gone", function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", hooks: {
+                    "preReload.drain": async function(event) {}
+                }});
+                util.hooks.has("preReload").should.be.true();
+                runtime.init({testSettings: true, httpAdminRoot:"/"});
+                util.hooks.has("preReload").should.be.false();
+            });
+            it("can be initialised twice with the same setting", function() {
+                const setting = {"preShutdown.drain": async function(event) {}};
+                runtime.init({testSettings: true, httpAdminRoot:"/", hooks: setting});
+                (function() {
+                    runtime.init({testSettings: true, httpAdminRoot:"/", hooks: setting});
+                }).should.not.throw();
+                util.hooks.has("preShutdown.drain").should.be.true();
+            });
         });
 
         it("stubbed adminApi.auth provides publicRoute", function(done) {

@@ -28,6 +28,7 @@ module.exports = {
     adminAuth: { /* ... */ },
     httpAdminNodeRoutes: "authenticated",   // trasy admin węzłów tylko po zalogowaniu (Z-02)
     telemetry: { enabled: false, locked: true }, // telemetria wyłączona na stałe (P-03)
+    health: { enabled: true, port: 1881, unreadyGrace: 15000 }, // sondy; /ready 503 min. 15 s przed zatrzymaniem flow (Z-16) – tylko za balanserem
     deploy: {
         response: "started",                // odpowiedź API po starcie flow (P-01)
         requireRevision: true,              // każde wdrożenie z aktualną rewizją (Z-05)
@@ -166,6 +167,8 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 |---|---|---|---|
 | stan instancji `runtime.state`, zdarzenie `instance:state`, `RED.stop(reason)` | zawsze (pasywne) | `init, starting, ready, deploying, reloadPending, reloading, idle, loaded, failed, stopping, stopped` | E-02 |
 | `health: {enabled, path, port, host}` | wyłączone | `/live`, `/ready` (503 `{"status":"unavailable"}` poza stanem gotowości), bez uwierzytelnienia | Z-08 |
+| `health.unreadyGrace` | brak (0) | planowane zatrzymanie (SIGTERM, przeładowanie z magazynu `deploy.reload`): `/ready` odpowiada 503 co najmniej tyle ms, **liczone od początku planowanego zatrzymania/przeładowania** (najpóźniej wtedy `/ready` odpowiada 503; instancja już niegotowa czeka pełny czas ponownie – bezpiecznie, tylko dłużej), zanim flow zostaną zatrzymane – balanser odpytujący `/ready` zdąży wyłączyć instancję z ruchu. Czeka równolegle z hookami `preShutdown`/`preReload` (zatrzymanie po dłuższym z nich) i mieści się w limicie: ograniczone `shutdownTimeout` (SIGTERM) i `deploy.reload.preReloadTimeout` (przeładowanie). Przy SIGTERM przerywa je tylko drugi sygnał; przed przeładowaniem – wdrożenie na tej instancji lub zatrzymanie runtime. Bez `shutdownTimeout` zamykanie czeka dokładnie `unreadyGrace` (hook `preShutdown` nadal nie jest wołany) – `terminationGracePeriodSeconds` musi być dłuższy. **Nie dotyczy** wdrożenia z edytora/Admin API (ta instancja jest edytowana, żądanie nie może czekać). Wymaga `health.enabled: true`; wartość nie będąca liczbą ≥ 0 lub brak `enabled` → ostrzeżenie w logu i brak oczekiwania (zgłoszenia #8, #1) | Z-16 |
+| `hooks: {"preReload.<etykieta>": fn, "preShutdown.<etykieta>": fn}` | brak | hooki `preReload` i `preShutdown` rejestrowane z `settings.js` przy `init` runtime – przed wtyczkami i pierwszym startem flow (SIGTERM podczas startu też je widzi); semantyka jak `RED.hooks.add` (arność 1 = obietnica); dozwolone tylko te dwa hooki i tylko funkcje – inna nazwa, brak etykiety lub wartość niebędąca funkcją = błąd startu `invalid_hook_setting` z nazwą klucza (nic nie jest rejestrowane); etykieta: litery, cyfry, `_`, `-`; hooki z `settings.js` są rejestrowane przed wtyczkami, więc przy starcie wołane przed ich hookami; ta sama etykieta z wtyczki → „already registered”; `preShutdown` działa tylko z `shutdownTimeout`, `preReload` tylko z `deploy.reload.watch` | #7 |
 | `shutdownTimeout` + hook `preShutdown` | brak | drenaż przy SIGTERM: `/ready` 503 od razu, hook z limitem, potem zatrzymanie; drugi sygnał = natychmiast | Z-08 |
 | `readOnlyUserDir`, zmienna `NODE_RED_READ_ONLY_USER_DIR` | `false` | brak zapisu do katalogu użytkownika; wdrożenie przy magazynie plikowym i `DELETE /nodes/<moduł>` → 400 `read_only_user_dir`; instalatory palety i modułów function odrzucają zapis niezależnie od innych ustawień | Z-11 |
 | `coordination: {plugin, options}`, `RED.coordination` (węzły), typ wtyczki `node-red-coordination` | wtyczka lokalna | przywództwo i zajęcia z TTL; własna wtyczka wybierana jawnie | Z-10 |
@@ -183,6 +186,10 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `RED.hooks.add("preReload", async (payload) => { … })`. Hook z innym parametrem jest wołany jako
   `(payload, done)` (mechanizm hooków Node-RED), a zwrócona obietnica jest ignorowana – bez wywołania `done`
   przeładowanie czeka do `preReloadTimeout` (domyślnie 20 min), zamykanie do `shutdownTimeout` (zgłoszenie #5).
+- Hooki `preReload` i `preShutdown` można rejestrować w `settings.js` (`hooks`, zgłoszenie #7) – bez wtyczki i bez
+  sięgania do wewnętrznego singletonu `@node-red/util`; obowiązuje ta sama zasada jednego parametru. Przykład:
+  `hooks: { "preShutdown.drain": async (payload) => { … } }`. Hook zarejestrowany z wtyczki lub węzła nadal działa, ale
+  pojawia się dopiero po załadowaniu wtyczek.
 - Instancja `editorOnly` nie uczestniczy w koordynacji klastra (nie uruchamia wybranej wtyczki koordynacji) i nigdy
   nie jest liderem – przywództwo obejmują tylko instancje wykonujące flow (zgłoszenie #4).
 
@@ -204,7 +211,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 | Testy jednostkowe | `npm test` / `npx mocha test/unit/_spec.js "test/unit/**/*_spec.js"`; 5 testów `projects/ssh` wymaga `ssh-keygen` |
 | Testy E2E | `npm run test:e2e` – Playwright **nie** jest w repozytorium (D-03): `npm i --no-save playwright`; bez niego testy są pomijane |
 | Nagłówki modyfikacji | każdy zmieniony plik: blok „Modified by Actuna Sp. z o.o.” (D-19); JSON i szablon `settings.js` – w MODIFICATIONS.md |
-| Commity | autor Wojciech Repiński, `Signed-off-by` (DCO), udział AI w `Co-Authored-By` |
+| Commity | autorem jest operator AI (obecnie Wojciech Repiński), `Signed-off-by` (DCO), bez `Co-Authored-By` dla AI |
 | Zależności npm | bez nowych zależności bez zgody Zamawiającego |
 | Przegląd | każda faza: niezależny przegląd (DoD – ZASADY §3) |
 | Decyzje | [design/engine-extensions/REJESTR-DECYZJI.md](design/engine-extensions/REJESTR-DECYZJI.md) (R-01…) |

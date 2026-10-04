@@ -20,6 +20,7 @@
  *   progress (preReload) and /ready 503 during the drain
  *   #8: acceptance test of deploy.holdHttpNodeRequests with a real "http in" node
  *   in the window between the stop of the old flows and the start of the new ones
+ *   #7: the preReload hook is registered with the `hooks` setting of settings.js
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -27,8 +28,8 @@
  * Runs two Node-RED instances in child processes. Both use the same flow file
  * in a shared directory (like a shared volume) with `readOnlyUserDir` and
  * `deploy.reload.watch`. A node defined in `<userDir>/nodes` holds an HTTP
- * request for 2 s and counts the work in progress; a `preReload` hook in
- * settings.js waits until the count is zero.
+ * request for 2 s and counts the work in progress; a `preReload` hook of the
+ * `hooks` setting waits until the count is zero.
  *
  * While a request ("turn") is held on each instance, a new flow file with
  * another tab is written: the turns complete with 200, /ready answers 503
@@ -50,7 +51,6 @@ const net = require("net");
 const { spawn } = require("child_process");
 
 const RED_JS = path.resolve(__dirname, "../../../packages/node_modules/node-red/red.js");
-const UTIL = path.resolve(__dirname, "../../../packages/node_modules/@node-red/util");
 
 function getFreePort() {
     return new Promise((resolve, reject) => {
@@ -177,26 +177,30 @@ describe("reload of shared flows in two instances (acceptance, Z-09)", function(
         writeHoldNode(userDir);
         const port = await getFreePort();
         const healthPort = await getFreePort();
+        // The drain hook is registered with the `hooks` setting (#7)
         fs.writeFileSync(path.join(userDir, "settings.js"), `
-require(${JSON.stringify(UTIL)}).hooks.add("preReload", function(event) {
-    return new Promise(function(resolve) {
-        (function check() {
-            if (!global.__turnsInProgress || event.signal.aborted) {
-                resolve();
-            } else {
-                setTimeout(check, 20);
-            }
-        })();
-    });
-});
-module.exports = ${JSON.stringify({
+module.exports = Object.assign(${JSON.stringify({
             flowFile: flowFile,
             readOnlyUserDir: true,
             disableEditor: true,
             logging: { console: { level: "off" } },
             health: { enabled: true, port: healthPort, host: "127.0.0.1" },
             deploy: Object.assign({ reload: { watch: true, preReloadTimeout: 30000 } }, deploy)
-        })};
+        })}, {
+    hooks: {
+        "preReload.drain": function(event) {
+            return new Promise(function(resolve) {
+                (function check() {
+                    if (!global.__turnsInProgress || event.signal.aborted) {
+                        resolve();
+                    } else {
+                        setTimeout(check, 20);
+                    }
+                })();
+            });
+        }
+    }
+});
 `);
         const child = spawn(process.execPath, [RED_JS, "-u", userDir, "-p", String(port)], { stdio: "ignore" });
         children.push(child);

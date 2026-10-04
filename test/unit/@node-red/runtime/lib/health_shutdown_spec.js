@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-08: tests of the drain on shutdown (shutdownTimeout, preShutdown hook)
+ *   Z-16: tests of health.unreadyGrace on shutdown
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -182,5 +183,185 @@ describe("runtime/health shutdown (Z-08, D-11)", function() {
     it("a failing RED.stop rejects the shutdown", async function() {
         health.init({});
         await health.shutdown({ reason: "SIGTERM", stop: async () => { throw new Error("stop failed") } }).should.be.rejectedWith("stop failed");
+    });
+
+    describe("health.unreadyGrace (Z-16)", function() {
+        function fakeTime() {
+            clock = sinon.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        }
+        function initWith(unreadyGrace, extra) {
+            health.init(Object.assign({ health: { enabled: true, unreadyGrace: unreadyGrace } }, extra || {}));
+        }
+
+        it("not set - the flows stop at once (unchanged)", async function() {
+            fakeTime();
+            health.init({ health: { enabled: true } });
+            const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+            await clock.tickAsync(0);
+            await done;
+            stop.calledOnce.should.be.true();
+            log.info.calledWithMatch("health.unready-grace").should.be.false();
+        });
+
+        it("waits at least the grace after /ready turned 503 before the stop", async function() {
+            fakeTime();
+            initWith(500);
+            const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+            state.isReady().should.be.false();
+            await clock.tickAsync(499);
+            stop.called.should.be.false();
+            state.isReady().should.be.false();
+            await clock.tickAsync(1);
+            await done;
+            stop.calledOnce.should.be.true();
+            log.info.calledWithMatch("health.unready-grace").should.be.true();
+        });
+
+        it("runs in parallel with preShutdown: a longer hook adds no wait", async function() {
+            fakeTime();
+            initWith(500, { shutdownTimeout: 10000 });
+            hooks.add("preShutdown", function(payload) { return new Promise(resolve => setTimeout(resolve, 800)) });
+            const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+            await clock.tickAsync(799);
+            stop.called.should.be.false();
+            await clock.tickAsync(1);
+            await done;
+            stop.calledOnce.should.be.true();
+            // not 800 + 500
+            Date.now().should.equal(800);
+        });
+
+        it("a shorter hook still waits for the grace", async function() {
+            fakeTime();
+            initWith(500, { shutdownTimeout: 10000 });
+            hooks.add("preShutdown", function(payload) { return new Promise(resolve => setTimeout(resolve, 100)) });
+            const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+            await clock.tickAsync(499);
+            stop.called.should.be.false();
+            await clock.tickAsync(1);
+            await done;
+            stop.calledOnce.should.be.true();
+        });
+
+        it("a failing hook does not shorten the grace", async function() {
+            fakeTime();
+            initWith(500, { shutdownTimeout: 10000 });
+            hooks.add("preShutdown", function(payload) { return Promise.reject(new Error("boom")) });
+            const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+            await clock.tickAsync(499);
+            stop.called.should.be.false();
+            log.error.calledWithMatch("health.shutdown-hook-failed").should.be.true();
+            await clock.tickAsync(1);
+            await done;
+            stop.calledOnce.should.be.true();
+        });
+
+        it("without shutdownTimeout the hook is not called (R-37) and the shutdown waits exactly the grace", async function() {
+            fakeTime();
+            initWith(500);
+            const hook = sinon.spy(function() { return new Promise(() => {}) });
+            hooks.add("preShutdown", hook);
+            const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+            await clock.tickAsync(499);
+            stop.called.should.be.false();
+            await clock.tickAsync(1);
+            await done;
+            stop.calledOnce.should.be.true();
+            hook.called.should.be.false();
+            Date.now().should.equal(500);
+            log.info.calledWithMatch("health.draining").should.be.false();
+        });
+
+        it("is counted inside shutdownTimeout: capped by it", async function() {
+            fakeTime();
+            initWith(5000, { shutdownTimeout: 300 });
+            const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+            await clock.tickAsync(299);
+            stop.called.should.be.false();
+            await clock.tickAsync(1);
+            await done;
+            stop.calledOnce.should.be.true();
+            Date.now().should.equal(300);
+        });
+
+        it("capped by shutdownTimeout also with a hook that never completes", async function() {
+            fakeTime();
+            initWith(5000, { shutdownTimeout: 300 });
+            hooks.add("preShutdown", function(payload) { return new Promise(() => {}) });
+            const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+            await clock.tickAsync(300);
+            await done;
+            stop.calledOnce.should.be.true();
+            Date.now().should.equal(300);
+            log.warn.calledWithMatch("health.shutdown-timeout").should.be.true();
+        });
+
+        it("a second signal ends the grace at once", async function() {
+            fakeTime();
+            initWith(60000);
+            const done = health.shutdown({ reason: "SIGTERM", signal: "SIGTERM", stop: stop });
+            await clock.tickAsync(100);
+            stop.called.should.be.false();
+            const second = health.shutdown({ reason: "SIGTERM", signal: "SIGTERM", stop: stop });
+            await done;
+            await second;
+            stop.calledOnce.should.be.true();
+            Date.now().should.equal(100);
+            clock.countTimers().should.equal(0);
+        });
+
+        it("no timer is left after the grace", async function() {
+            fakeTime();
+            initWith(200);
+            const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+            await clock.tickAsync(200);
+            await done;
+            clock.countTimers().should.equal(0);
+        });
+
+        it("invalid values: a warning and no grace", async function() {
+            fakeTime();
+            for (const value of [-1, "500", NaN, Infinity, {}, true]) {
+                state.reset();
+                state.markStarting();
+                state.report({ errors: [] });
+                stop.resetHistory();
+                log.warn.resetHistory();
+                initWith(value);
+                log.warn.calledWithMatch("health.invalid-unready-grace").should.be.true();
+                const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+                await clock.tickAsync(0);
+                await done;
+                stop.calledOnce.should.be.true();
+            }
+        });
+
+        it("0 means off, without a warning", async function() {
+            fakeTime();
+            initWith(0);
+            log.warn.called.should.be.false();
+            const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+            await clock.tickAsync(0);
+            await done;
+            stop.calledOnce.should.be.true();
+        });
+
+        it("without health.enabled: a warning and no grace", async function() {
+            fakeTime();
+            health.init({ health: { unreadyGrace: 500 } });
+            log.warn.calledWithMatch("health.unready-grace-without-probes").should.be.true();
+            const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+            await clock.tickAsync(0);
+            await done;
+            stop.calledOnce.should.be.true();
+        });
+
+        it("resolveUnreadyGrace reads the setting without logging", function() {
+            health.resolveUnreadyGrace({}).ms.should.equal(0);
+            health.resolveUnreadyGrace({ health: { enabled: true, unreadyGrace: 250 } }).ms.should.equal(250);
+            health.resolveUnreadyGrace({ health: { enabled: true, unreadyGrace: "x" } }).should.eql({ ms: 0, problem: "invalid" });
+            health.resolveUnreadyGrace({ health: { unreadyGrace: 250 } }).should.eql({ ms: 0, problem: "no-probes" });
+            log.warn.called.should.be.false();
+        });
     });
 });
