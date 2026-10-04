@@ -272,6 +272,11 @@ Fixes
    the `message` of the response (or a generic one) instead of its raw JSON inserted as HTML. This
    also applies in the default mode; only the display changes, not saving or the API. A response that is
    not JSON no longer breaks the error handling of "Start"/"Stop" (#22)
+ - Editor: a failed save to the library (library dialog) and a failed export to the library (export
+   dialog of the clipboard) inserted the raw body of the server response into the notification as HTML
+   (`library.saveFailed`). It now shows the `message` of a JSON response (or a generic text with the HTTP
+   status) with `& < > " '` escaped, never the raw body; the message is built by the same function as
+   the deploy errors (`RED.deploy.translateErrorResponse`). No new texts, no change of the API (#30)
 
 #### Unreleased: Engine extensions
 
