@@ -1,6 +1,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-14: flow layout: add ui/view-layout.js to the editor build
+ *   #34: add ui/common/errors.js (RED.errors) before the modules that use it
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const path = require("path");
@@ -44,6 +45,7 @@ const concatEditor = {
         "history.js",
         "validators.js",
         "ui/utils.js",
+        "ui/common/errors.js",
         "ui/common/editableList.js",
         "ui/common/treeList.js",
         "ui/common/checkboxSet.js",

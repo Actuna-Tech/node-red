@@ -88,6 +88,7 @@ module.exports = {
 | Pakiet `auth` przez `/comms` bez `adminAuth` nie zatrzymuje procesu (odpowiedź `auth ok`) | P-04 | poprawka |
 | Nazwa użytkownika wstawiana jako tekst (XSS), odświeżenie danych po ponownym logowaniu | R-08, R-41 | poprawka |
 | Odpowiedź serwera przy błędzie zapisu/eksportu do biblioteki pokazywana jako escapowany tekst, nie jako HTML (XSS) | #30 | poprawka |
+| Komunikaty błędów palety, projektów, kontroli wersji, ładowania modułu węzła, importu i grup pokazywane jako escapowany tekst, nie jako HTML (XSS) | #34 | poprawka |
 | Subskrypcje `/comms` dopiero po uwierzytelnieniu | Z-01 | poprawka |
 | Trasy admin węzłów wymagają logowania: `httpAdminNodeRoutes: "authenticated"`, `RED.auth.publicRoute()` | Z-02 | `"open"` |
 | Telemetria blokowana przez administratora: `telemetry.locked` (także w edytorze) | P-03 | wyłączone |
@@ -268,6 +269,16 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `& < > " '`, nigdy surową treść; ten sam formater co błędy wdrożenia (`RED.deploy.translateErrorResponse`). Brak odpowiedzi
   HTTP (status 0) daje „brak odpowiedzi z serwera”. Polski edytor: przetłumaczone `library.saveFailed` i `user.notAuthorized`
   (komunikat nie miesza języków). Bez zmian API.
+- Edytor, błędy z serwera i błędy importu w powiadomieniach (#34): tekst z odpowiedzi serwera i nazwa modułu
+  były wstawiane do `RED.notify` (renderuje HTML) bez escapowania. Teraz są escapowane (`& < > " '`) w: palecie
+  (instalacja, aktualizacja, usunięcie, włączenie i wyłączenie modułu, instalacja z pliku i automatyczna),
+  projektach (błąd nieoczekiwany: `message` i `code`; błędy git zdalnych gałęzi), kontroli wersji (błędy git,
+  utrata połączenia przy pull – pokazuje teraz `message` zamiast „[object Object]”), ładowaniu modułu węzła
+  (`red.js`), imporcie i upuszczaniu węzłów (`view.js`; komunikat błędu importu zawiera fragment wklejonego tekstu) i
+  grupach (`group.js`). Tekst katalogu nadal jest HTML-em. Wspólny kod escapowania przeniesiony z `RED.deploy`
+  do nowego modułu `RED.errors` (`ui/common/errors.js`: `escape`, `parseResponse`, `translateEscaped`,
+  `translateResponse`, `translateException`); `RED.deploy.translateErrorResponse` i `RED.deploy.formatStartErrors`
+  działają jak dotąd, a biblioteka nie zależy już od modułu wdrożenia. Bez zmian API.
 
 ## 7. Testy i proces
 

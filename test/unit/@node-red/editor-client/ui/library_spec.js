@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #30: a failed save to the library (library dialog, export dialog of the clipboard) shows a
  *   readable, escaped message instead of the raw body of the response
+ *   #34: the library uses RED.errors (ui/common/errors.js), not the deploy module
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -26,7 +27,7 @@ const fs = require("fs");
 
 const NR_TEST_UTILS = require("nr-test-utils");
 
-const deployModulePath = NR_TEST_UTILS.resolve("@node-red/editor-client/src/js/ui/deploy.js");
+const errorsModulePath = NR_TEST_UTILS.resolve("@node-red/editor-client/src/js/ui/common/errors.js");
 const libraryModulePath = NR_TEST_UTILS.resolve("@node-red/editor-client/src/js/ui/library.js");
 const clipboardModulePath = NR_TEST_UTILS.resolve("@node-red/editor-client/src/js/ui/clipboard.js");
 
@@ -75,15 +76,15 @@ describe("editor-client/ui/library (#30)", function() {
         };
         global.$ = function() { return {}; };
         global.window = {};
-        delete require.cache[deployModulePath];
+        delete require.cache[errorsModulePath];
         delete require.cache[libraryModulePath];
-        require(deployModulePath);
+        require(errorsModulePath);
         library = require(libraryModulePath);
     });
 
     afterEach(function() {
         sinon.restore();
-        delete require.cache[deployModulePath];
+        delete require.cache[errorsModulePath];
         delete require.cache[libraryModulePath];
         Object.keys(savedGlobals).forEach(function(key) {
             if (savedGlobals[key] === undefined) {
