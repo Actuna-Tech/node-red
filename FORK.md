@@ -60,7 +60,7 @@ module.exports = {
 
 ### Język polski – częściowo (Z-13)
 
-- Dodane `locales/pl/editor.json` (317 z 1151 kluczy en-US, ok. 28%, oraz 8 form liczby mnogiej) i `locales/pl/messages.json` (98 z 869, ok. 11%) –
+- Dodane `locales/pl/editor.json` (317 z 1151 kluczy en-US, ok. 28%, oraz 8 form liczby mnogiej) i `locales/pl/messages.json` (102 z 873, ok. 12%) –
   tłumaczenie częściowe od Zamawiającego; brakujące klucze wracają do en-US (`fallbackLng`). Słownik: „węzeł”,
   `flow`/`subflow` bez tłumaczenia, „Wdróż”; forma bezosobowa. Liczba mnoga: `_one/_few/_many/_other` (i18next 25).
 - Pomoc węzłów (#12): `locales/pl/common/21-debug.html`, `function/10-function.html`, `function/15-change.html`
@@ -142,14 +142,14 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `/comms` z uprawnieniem odczytu), tak samo jak `runtime-state` i zdarzenia debug – nie tylko do użytkownika, który wdrażał.
 
 ### Wstrzymywanie żądań HTTP węzłów podczas restartu flow (#8)
-- **Surowe ciało (`skipBodyParsing`), tylko przy `enabled: true`:** żądanie do trasy `http in` z „surowym ciałem”, które przeszło przez
+- **Surowe ciało (`skipBodyParsing`) w oknie stop→start:** żądanie do trasy `http in` z „surowym ciałem”, które przeszło przez
   `rawBodyCapture` w oknie stop→start (klucz trasy chwilowo nieobecny), po wypuszczeniu dostałoby ciało sparsowane (obiekt/tekst zamiast
-  `Buffer`, np. psuje weryfikację podpisu HMAC). Przy włączonym ustawieniu trasa takiego węzła czyta więc surowe ciało sama, jeśli nie
-  zostało jeszcze odczytane (`21-httpin.js`, `rawBodyFallback`); gdy `rawBodyCapture` zadziałał (normalny przypadek), zachowanie jest
-  bez zmian. **Bez ustawienia zachowanie jest takie jak w 5.0.7** (bez zapasowego odczytu).
-- **Ograniczenie (surowe ciało):** `rawBodyCapture` dopasowuje dosłowny klucz `METODA:url`, więc trasa `skipBodyParsing` z parametrem
-  (`/hook/:id`) lub inną wielkością liter nigdy nie była przechwytywana i dostawała ciało sparsowane. Przy `enabled: true` taka trasa
-  dostaje `Buffer` – to, co obiecuje `skipBodyParsing`; bez ustawienia zachowanie upstream (ciało sparsowane) pozostaje.
+  `Buffer`, np. psuje weryfikację podpisu HMAC). Trasa takiego węzła czyta więc surowe ciało sama, jeśli nie zostało jeszcze odczytane
+  (`21-httpin.js`, `createRawBodyFallback`). W #8 robiła to tylko trasa przy `enabled: true`; od #16 robi to każda trasa `skipBodyParsing`,
+  **niezależnie od tego ustawienia** (zob. §6).
+- **Surowe ciało tras z parametrem i inną wielkością liter (#16):** `rawBodyCapture` dopasowuje dosłowny klucz `METODA:url`, więc trasa
+  `skipBodyParsing` z parametrem (`/hook/:id`) lub inną wielkością liter nigdy nie była przechwytywana i dostawała ciało sparsowane.
+  Teraz taka trasa dostaje `Buffer` zawsze (zapasowy odczyt wyżej) – zob. §6 (limit rozmiaru surowego ciała i opcja węzła `Max body size`).
 - **Problem:** trasy węzłów (`http in` i każdy węzeł rejestrujący trasę w `RED.httpNode`) są usuwane przy zatrzymaniu węzła
   i dodawane przy starcie nowych; żądanie w oknie stop→start dostaje 404, nieodróżnialne od nieistniejącego zasobu.
 - **Rozwiązanie:** `runtime/lib/httpHold.js` – middleware montowany na aplikacji `httpNode` **przed** trasami węzłów
@@ -308,6 +308,44 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
     moduł, jako błąd, a teksty są też w polskim katalogu.
   - Nie zrobione (opcjonalne, R2 przeglądu #36): maskowanie `//user:pass@` w stderr gita – właściwe miejsce to runtime
     (komunikat błędu jest budowany w `projects/git`, trafia do odpowiedzi API i logów), osobne zgłoszenie (#45).
+- `http in`, surowe ciało „Do not parse request body” (`skipBodyParsing`, #16): (1) trasa z parametrem (`/hook/:id`) lub adresowana inną
+  wielkością liter (`/HOOK`) dostaje teraz `Buffer` **niezależnie od `deploy.holdHttpNodeRequests`** (wcześniej – obiekt lub tekst,
+  bo `rawBodyCapture` zna tylko dosłowny klucz `METODA:url`; psuło to np. weryfikację podpisu ciała); każda trasa z tą opcją czyta
+  surowe ciało sama. (2) **Surowe ciało ma limit, domyślnie włączony:** wartość `apiMaxLength`
+  (domyślnie 5 MB; to samo ustawienie co parsery JSON i urlencoded); większe ciało → **413** (także bez `Content-Length`; z nagłówkami
+  CORS, bo odpowiedź wysyła trasa), flow się nie wykonuje. **Integracja wysyłająca surowe ciało powyżej 5 MB dostanie 413**, dopóki nie podniesie się limitu (`apiMaxLength` albo
+  pole węzła). Reszta odrzuconego ciała jest czytana i odrzucana (do 64 MB), żeby klient dostał 413, a nie reset połączenia; gdy `Content-Length`
+  deklaruje ponad 64 MB (albo odrzucone ciało przekroczy 64 MB), odpowiedź 413 z `Connection: close` idzie od razu.
+  (3) **Pole węzła „Max body size” (`maxBodySize`):** zastępuje limit dla jednego węzła (wyższy lub niższy), dla tras przyjmujących duże
+  pliki lub obrazy; liczba z opcjonalną jednostką `b`/`kb`/`mb`/`gb`/`tb`/`pb` (1024; np. `50mb`; sama liczba to bajty; tekst do 32 znaków). Dotyczy surowego
+  ciała oraz – przy „Accept file uploads” – **całego ciała żądania multipart** (wszystkie pliki i pola razem, z ramkami multipart, więc
+  pojedynczy plik przechodzi do nieco poniżej limitu); 413 po przekroczeniu: od razu, gdy `Content-Length` przekracza limit, a przy
+  `Transfer-Encoding: chunked` po przekroczeniu liczby odebranych bajtów (multer nie dostaje reszty); bez pola upload pozostaje **bez
+  limitu**, jak dotąd. Żądanie niebędące multipart na trasie z uploadem nie jest limitowane tym polem (jak dotąd). Puste pole = domyślny
+  limit; nieprawidłowa wartość → ostrzeżenie węzła i limit domyślny (pole jest brane pod uwagę tylko przy `skipBodyParsing` lub
+  uploadzie; w edytorze jest walidowane tylko, gdy widoczne). Nieprawidłowe `apiMaxLength` (liczba ≤ 0 albo tekst niebędący rozmiarem, np. `abc`) → jedno ostrzeżenie w logu
+  (nie na każdy węzeł) i 5 MB. Brak nowego ustawienia globalnego. Na trasie dzielonej przez kilka węzłów obowiązuje limit węzła, który
+  odpowiada (pierwszy zarejestrowany). Bez zmian: parsery JSON/urlencoded (nadal `apiMaxLength`) oraz `rawBodyParser` (ciało
+  tekstowe i binarne trasy bez `skipBodyParsing`, nadal bez limitu).
+  (4) **Miejsce odczytu (bezpieczeństwo):** `rawBodyCapture` jest zamontowany na aplikacji `httpNode` (`RED.httpNode`), a nie na aplikacji
+  głównej. `httpNodeAuth` jest zamontowany na aplikacji głównej przed `httpNode` (`red.js`), a wstrzymanie żądań (#8) jest pierwszą warstwą
+  `httpNode` (montowane przy inicjalizacji runtime, przed załadowaniem węzłów), więc **nic nie jest czytane przed uwierzytelnieniem ani
+  w czasie wstrzymania** (wcześniej bufor do najwyższego limitu rósł przed odmową 401). Odczyt jest **przed** `httpNodeMiddleware` i trasami,
+  więc middleware i obce trasy na tym samym kluczu nadal dostają `Buffer` w `req.body`, jak w upstream – **ale tylko do najwyższego limitu
+  węzłów `skipBodyParsing` na kluczu** (upstream nie miał limitu): ciało większe dostaje 413 od razu z przechwycenia (z nagłówkami CORS
+  węzłów) i **nic więcej** – ani middleware, ani obca trasa, ani węzeł bez `skipBodyParsing` na tym kluczu – go nie widzi (strumień jest
+  już wstrzymany; reszta jest czytana i odrzucana, zob. wyżej). Klucz trasy jest względem `httpNodeRoot` (bez prefiksu). Na wspólnym
+  kluczu przechwycenie czyta do najwyższego z limitów, a trasa każdego węzła sprawdza własny. Trasa węzła czyta ciało, gdy przechwycenie tego nie zrobiło (trasa
+  z parametrem, inna wielkość liter, okno #8), **także gdy middleware ustawił `req.skipRawBodyParser = true`** (przykład z `settings.js`;
+  flaga oznacza „pomiń parser”, nie „ciało przeczytane” – do tego służy osobna flaga `_rawBodyRead`). Uwaga (dwa odczyty): middleware, który na trasie
+  z parametrem sam czyta strumień ciała, ustawia `skipRawBodyParser` i nie zużywa go do końca, nie wyklucza odczytu przez trasę węzła –
+  ciało może być wtedy przeczytane dwa razy (przez middleware i przez trasę); strumień zużyty do końca trasa pomija (`readableEnded`). Ładowanie modułu ponownie na tej samej
+  aplikacji (`RED.stop()` i `RED.start()` w jednym procesie) zastępuje warstwę przechwycenia na jej miejscu, zamiast dodawać drugą.
+  **Nie opieraj autoryzacji na `httpNodeMiddleware` ani na `RED.httpNode.use(auth)` dodanym po `RED.start()` (tryb osadzony):** ciało trasy
+  `skipBodyParsing` jest czytane przed nimi (do limitu), a powyżej limitu klient dostaje 413 zamiast 401. Żeby nie czytać ciała żądań
+  nieuwierzytelnionych, użyj `httpNodeAuth` albo middleware aplikacji zewnętrznej przed `RED.httpNode`. 413 z przechwycenia dostaje
+  nagłówki CORS z globalnego `httpNodeCors`, także na trasie obcej z własnym CORS. Węzeł bez `skipBodyParsing` na tej samej ścieżce
+  i metodzie co węzeł z tą opcją dostaje 413 dla ciała większego niż limit tamtego węzła.
 
 ## 7. Testy i proces
 
