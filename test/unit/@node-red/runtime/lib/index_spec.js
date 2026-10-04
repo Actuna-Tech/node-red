@@ -864,16 +864,29 @@ describe("runtime", function() {
             saveSettings.called.should.be.false();
         });
 
-        it("an undefined value of settings.js (a missing environment variable) does not fail the start and counts as absent", async function() {
+        it("an undefined value of settings.js (a missing environment variable) counts as absent: an id is generated and saved", async function() {
             const userSettings = {testSettings: true, httpAdminRoot:"/", instanceId: process.env.NODE_RED_TEST_INSTANCE_ID_NOT_SET};
             userSettings.should.have.property("instanceId", undefined);
             runtime.init(userSettings);
             await runtime.start();
             userSettings.instanceId.should.match(GENERATED);
             settings.get("instanceId").should.equal(userSettings.instanceId);
-            // settings.set rejects the keys of settings.js: the generated id stays in memory
-            saveSettings.called.should.be.false();
+            settings.instanceId.should.equal(userSettings.instanceId);
+            saveSettings.calledOnce.should.be.true();
+            saveSettings.firstCall.args[0].should.have.property("instanceId", userSettings.instanceId);
             log._.calledWith("runtime.instance-id-save-failed").should.be.false();
+        });
+
+        it("an undefined value of settings.js counts as absent: the id of the storage is used and nothing is saved", async function() {
+            getSettings.callsFake(function() {return Promise.resolve({instanceId: "stored"})});
+            const userSettings = {testSettings: true, httpAdminRoot:"/", instanceId: undefined};
+            runtime.init(userSettings);
+            await runtime.start();
+            userSettings.instanceId.should.equal("stored");
+            settings.get("instanceId").should.equal("stored");
+            settings.instanceId.should.equal("stored");
+            saveSettings.called.should.be.false();
+            seenByCoordination.should.equal("stored");
         });
 
         it("other keys of settings.js that are undefined stay read-only", async function() {
@@ -900,7 +913,11 @@ describe("runtime", function() {
             saveSettings.callsFake(function() {return new Promise(resolve => { finishSave = resolve })});
             runtime.init({testSettings: true, httpAdminRoot:"/"});
             const started = runtime.start();
-            await new Promise(resolve => setTimeout(resolve, 50));
+            while (!saveSettings.called) {
+                await new Promise(resolve => setImmediate(resolve));
+            }
+            // the start would have reached the coordination by now if it did not wait
+            await new Promise(resolve => setTimeout(resolve, 20));
             saveSettings.calledOnce.should.be.true();
             coordStart.called.should.be.false();
             finishSave();

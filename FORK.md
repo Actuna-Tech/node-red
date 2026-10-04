@@ -205,9 +205,11 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   identyfikatorami – ponowny odczyt po zapisie tego nie naprawia. Wygenerowany identyfikator przy wtyczce koordynacji
   innej niż lokalna daje ostrzeżenie w logu (`coordination.instance-id-generated`). Jawny `instanceId` z `settings.js`
   ma pierwszeństwo przed magazynem. `instanceId: process.env.X` przy braku zmiennej daje `undefined`: wartość jest
-  traktowana jak brak i identyfikator jest generowany tylko w pamięci (nie jest zapisywany, zmienia się przy każdym
-  starcie); wcześniej start kończył się błędem `property-read-only`. Błąd zapisu wygenerowanego identyfikatora
-  jest logowany jako ostrzeżenie, start trwa dalej (wcześniej nieobsłużone odrzucenie obietnicy; zgłoszenie #3).
+  traktowana jak brak klucza (używany jest identyfikator z magazynu albo generowany i zapisywany); wcześniej start
+  kończył się błędem `property-read-only` (zgłoszenie #3). Identyfikator generuje i zapisuje tylko pierwsza instancja
+  (albo instancje ścigające się przy pierwszym starcie); pozostałe czytają go z magazynu. Ostrzeżenie o wygenerowanym
+  identyfikatorze pojawia się tylko przy starcie, który go wygenerował. Przy `readOnly`/`readOnlyUserDir` (ustawienia
+  tylko w pamięci) identyfikator zmienia się przy każdym starcie, więc w klastrze jest tam wymagany jawny `instanceId`.
 
 ## 6. Zmiany zachowania względem 5.0.7 (poprawki błędów)
 
@@ -220,6 +222,11 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 - Nieudane zatrzymanie po sygnale (np. odrzucone `RED.stop()`) – log `Shutdown failed: …` i kod wyjścia 1 (wcześniej nieobsłużone odrzucenie obietnicy, Z-08).
 - Przy `readOnly`/`readOnlyUserDir` pusty plik flow lub poświadczeń nie jest nadpisywany kopią `.backup` – kopia jest tylko czytana (Z-09/Z-11).
 - Przy `deploy.reload.retry.onExhausted: "keepReady"` (domyślnie wyłączone) `/health/ready` może odpowiedzieć 200 z treścią `{"status":"warn","reason":"reload_failed"}` zamiast `{"status":"ok"}`; monitoring dopasowujący treść `"ok"` zobaczy `"warn"` tylko po włączeniu opcji. Zdarzenie `instance:state` jest emitowane także przy zmianie samego warunku `reload` (bez zmiany `state`) – to nowa reguła kontraktu (R-47, MIGRACJA §4.5); odbiorca reagujący tylko na zmiany stanu porównuje `state`, `reason` i `since`. W trybie domyślnym (`"fail"`) nic się nie zmienia: brak warunku `reload`, dodatkowych zdarzeń, logów i powiadomień – ta sama sekwencja zdarzeń `instance:state` i te same odpowiedzi `/ready` co przed R-47 (R-36).
+- `instanceId` (#3): start czeka na zapis wygenerowanego identyfikatora w magazynie, **bez limitu czasu** (tak samo jak
+  na odczyt ustawień z magazynu) – zapis, który się nie kończy, wstrzymuje start. `instanceId: undefined` w `settings.js`
+  (np. `process.env.X` bez zmiennej) nie kończy już startu błędem `property-read-only`; jest traktowane jak brak klucza,
+  więc czytany jest identyfikator z magazynu (wcześniej start padał). Odrzucony zapis identyfikatora jest ostrzeżeniem
+  w logu, a nie nieobsłużonym odrzuceniem obietnicy; start trwa z wygenerowanym identyfikatorem.
 
 ## 7. Testy i proces
 

@@ -201,12 +201,13 @@ Fixes
 
  - A missing `instanceId` no longer breaks the start or leaves an unhandled rejection (#3).
    `instanceId: process.env.X` without the variable gives `undefined`; the start failed with
-   `property-read-only`. Now such a value counts as absent and an id is generated (kept in memory,
-   not saved - `settings.set` rejects a key of `settings.js`). A generated id is saved to the storage
-   settings with the save awaited; a failed save logs a warning (`runtime.instance-id-save-failed`)
-   and the start continues with the generated id (before, the rejected save was unhandled).
-   An explicit `instanceId` of `settings.js` already won over the storage and still does. Other
-   keys of `settings.js` keep their behaviour (`settings.set` still rejects them)
+   `property-read-only`. Now such a value counts as absent, as if the key was not in `settings.js`:
+   the id saved in the storage settings is used, or an id is generated and saved. The save of a generated id
+   is awaited (without a time limit, like reading the settings); a failed save logs a warning
+   (`runtime.instance-id-save-failed`) and the start continues with the generated id (before, the
+   rejected save was unhandled). An explicit `instanceId` of `settings.js` already won over the
+   storage and still does. Other keys of `settings.js` keep their behaviour (`settings.set` still
+   rejects them)
  - A warning is logged when the `instanceId` was generated and the coordination plugin is not the
    local one: instances that share a storage need the same explicit `instanceId`
    (`coordination.instance-id-generated`). The generated id is not made safe against instances that
