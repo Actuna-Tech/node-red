@@ -319,16 +319,18 @@ Features
    (5mb by default), the same setting as for the JSON and URL-encoded bodies; a larger body is answered
    with 413 `Payload Too Large` (also without `Content-Length`) and the flow does not run. Before, the raw
    body had no limit. An integration that sends more than 5mb raw gets 413 until the limit is raised
-   (`apiMaxLength` or the node option below). The 413 is sent by the route, after the authentication and
-   with the CORS headers. The rest of a rejected body is read and discarded (up to 64mb), so the client
+   (`apiMaxLength` or the node option below). The 413 is sent after the authentication and with the CORS
+   headers. The rest of a rejected body is read and discarded (up to 64mb), so the client
    receives the 413 instead of a reset connection; a declared `Content-Length` above 64mb gets the 413 and
    `Connection: close` at once (#16)
  - `http in` with "Do not parse request body": `rawBodyCapture` now runs on the httpNode app, behind
    `httpNodeAuth` and the hold of the requests (`deploy.holdHttpNodeRequests`), instead of the top of the
    root app, so a request that the authentication rejects (or the hold keeps) no longer makes the runtime
    buffer its body first. It still runs before `httpNodeMiddleware` and the routes, so they find the raw
-   body in `req.body` as before. A body above the limit is answered with 413 by the route of the node, after
-   CORS (#16)
+   body in `req.body` as before, up to the highest limit of the nodes on the key (upstream had no limit): a
+   larger body is answered with 413 (with the CORS headers) at once and nothing else on the route sees it,
+   neither a middleware, nor another route, nor a node without the option. Loading the module again on the same
+   app (`RED.stop()` and `RED.start()` in one process) replaces the capture instead of adding another (#16)
  - `http in`: new optional field "Max body size" (`maxBodySize`) replaces the limit for one node, higher or
    lower, for routes that receive large files or images. A number with an optional unit `b`, `kb`, `mb`
    `gb`, `tb` or `pb` (1024 based, for example `50mb`; a number alone is bytes; up to 32 characters). It applies to

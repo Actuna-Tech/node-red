@@ -302,12 +302,16 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   głównej. `httpNodeAuth` jest zamontowany na aplikacji głównej przed `httpNode` (`red.js`), a wstrzymanie żądań (#8) jest pierwszą warstwą
   `httpNode` (montowane przy inicjalizacji runtime, przed załadowaniem węzłów), więc **nic nie jest czytane przed uwierzytelnieniem ani
   w czasie wstrzymania** (wcześniej bufor do najwyższego limitu rósł przed odmową 401). Odczyt jest **przed** `httpNodeMiddleware` i trasami,
-  więc middleware i obce trasy na tym samym kluczu nadal dostają `Buffer` w `req.body`, jak w upstream. Klucz trasy jest względem
-  `httpNodeRoot` (bez prefiksu). Ciało powyżej limitu nie jest odrzucane przez przechwycenie: `rawBodyCapture` je oznacza, a **trasa
-  węzła** (po CORS) odpowiada 413 – dzięki temu 413 ma nagłówki CORS także na trasie dosłownej. Na wspólnym kluczu przechwycenie czyta do
-  najwyższego z limitów, a trasa każdego węzła sprawdza własny. Trasa węzła czyta ciało, gdy przechwycenie tego nie zrobiło (trasa
+  więc middleware i obce trasy na tym samym kluczu nadal dostają `Buffer` w `req.body`, jak w upstream – **ale tylko do najwyższego limitu
+  węzłów `skipBodyParsing` na kluczu** (upstream nie miał limitu): ciało większe dostaje 413 od razu z przechwycenia (z nagłówkami CORS
+  węzłów) i **nic więcej** – ani middleware, ani obca trasa, ani węzeł bez `skipBodyParsing` na tym kluczu – go nie widzi (strumień jest
+  już wstrzymany; reszta jest czytana i odrzucana, zob. wyżej). Klucz trasy jest względem `httpNodeRoot` (bez prefiksu). Na wspólnym
+  kluczu przechwycenie czyta do najwyższego z limitów, a trasa każdego węzła sprawdza własny. Trasa węzła czyta ciało, gdy przechwycenie tego nie zrobiło (trasa
   z parametrem, inna wielkość liter, okno #8), **także gdy middleware ustawił `req.skipRawBodyParser = true`** (przykład z `settings.js`;
-  flaga oznacza „pomiń parser”, nie „ciało przeczytane” – do tego służy osobna flaga `_rawBodyRead`).
+  flaga oznacza „pomiń parser”, nie „ciało przeczytane” – do tego służy osobna flaga `_rawBodyRead`). Uwaga (dwa odczyty): middleware, który na trasie
+  z parametrem sam czyta strumień ciała, ustawia `skipRawBodyParser` i nie zużywa go do końca, nie wyklucza odczytu przez trasę węzła –
+  ciało może być wtedy przeczytane dwa razy (przez middleware i przez trasę); strumień zużyty do końca trasa pomija (`readableEnded`). Ładowanie modułu ponownie na tej samej
+  aplikacji (`RED.stop()` i `RED.start()` w jednym procesie) zastępuje warstwę przechwycenia na jej miejscu, zamiast dodawać drugą.
 
 ## 7. Testy i proces
 

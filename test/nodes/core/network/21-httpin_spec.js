@@ -27,6 +27,7 @@
 const should = require("should");
 const supertest = require("nr-test-utils/supertest");
 const express = require("express");
+const bodyParser = require("body-parser");
 const helper = require("node-red-node-test-helper");
 const httpInNode = require("nr-test-utils").require("@node-red/nodes/core/network/21-httpin.js");
 
@@ -964,6 +965,62 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             stack.splice(stack.findIndex(l => l.route), 0, stack.pop());
             const res = await supertest(server).post("/hook").set("Content-Type", "application/json").send('{"x": 1}').expect(200);
             res.text.should.equal("buffer");
+        });
+    });
+
+    describe("another receiver of a body above the limit of a node with skipBodyParsing", function() {
+        const BIG = 3008;
+
+        // the body above the limit is answered by rawBodyCapture, whoever would answer the
+        // request: the others never wait for a body that is not read any more
+        async function chunkedStatus(path, size) {
+            const chunks = [];
+            for (let sent = 0; sent < size; sent += 512) { chunks.push(Buffer.alloc(Math.min(512, size - sent), 0x61)) }
+            return (await request(path, { "Content-Type": "application/octet-stream", "Transfer-Encoding": "chunked" }, chunks)).statusCode;
+        }
+
+        it("answers 413 for a node without skipBodyParsing that is registered first (Content-Length and chunked)", async function() {
+            await load([["n", { skipBodyParsing: false }], ["a", { maxBodySize: "1kb" }]]);
+            await raw("/hook", BIG).expect(413);
+            (await chunkedStatus("/hook", BIG)).should.equal(413);
+            received.should.have.length(0);
+            // within the limit the first node answers with the body it got
+            await raw("/hook", 500).expect(200);
+            received[0].id.should.equal("n");
+            Buffer.isBuffer(received[0].msg.payload).should.be.true();
+        });
+
+        it("answers 413 for a foreign route with a body parser that is before the nodes (Content-Length and chunked)", async function() {
+            await load([["a", { maxBodySize: "1kb" }]]);
+            const foreign = function(req, res) { res.status(200).send("parsed " + typeof req.body) };
+            RED.httpNode.post("/hook", bodyParser.text({ type: function() { return true }, limit: "1mb" }), foreign);
+            const stack = RED.httpNode._router.stack;
+            stack.splice(stack.findIndex(l => l.route), 0, stack.pop());
+            await raw("/hook", BIG).expect(413);
+            (await chunkedStatus("/hook", BIG)).should.equal(413);
+            received.should.have.length(0);
+        });
+
+        it("sends the CORS headers with that 413 (a node without skipBodyParsing first)", async function() {
+            await load([["n", { skipBodyParsing: false }], ["a", { maxBodySize: "1kb" }]], { httpNodeCors: { origin: "*" } });
+            const res = await raw("/hook", BIG).set("Origin", "http://example.test").expect(413);
+            res.headers["access-control-allow-origin"].should.equal("*");
+        });
+    });
+
+    describe("capture of an earlier load of the module", function() {
+        it("is replaced, at its place, not added again, when the module loads again on the same httpNode app", function() {
+            const app = express();
+            const hold = function hold(req, res, next) { next() };
+            app.use(hold);
+            const fakeRED = { httpNode: app, settings: {}, nodes: { registerType: function() {} }, _: function(k) { return k } };
+            const layers = () => app._router.stack.map(l => l.handle.name);
+            httpInNode(fakeRED);
+            layers().should.eql(["query", "expressInit", "hold", "rawBodyCapture"]);
+            // another layer after the capture: the new capture takes the place of the old one
+            app.use(function after(req, res, next) { next() });
+            httpInNode(fakeRED);
+            layers().should.eql(["query", "expressInit", "hold", "rawBodyCapture", "after"]);
         });
     });
 
