@@ -235,6 +235,16 @@ Fixes
 
  - Refresh the user details in the editor after logging in again when the session expired
  - Do not send comms subscriptions before websocket authentication completes
+ - Count the failures of the reload from storage (`deploy.reload`) until the whole cycle
+   succeeds, not until the first read succeeds: a failure of the second read under the deploy lock
+   or of the reload itself (for example `credentials_load_failed`) now exhausts
+   `deploy.reload.retry.attempts` - the instance becomes `failed` (`/ready` 503) like after failed
+   reads, instead of retrying for ever from attempt 1. With `onExhausted: "keepReady"` the
+   `attempts` of the `reload` condition now grow and the periodic error logs appear in this case
+   too. The count starts again after a cycle that applied the reload or found the revision
+   unchanged; a new notification from storage only shortens the delay of the next retry and no
+   longer resets the count, and a new failing reload after a recovery by a local deployment is
+   counted as a new series (#17)
 
 #### Unreleased: Engine extensions
 
