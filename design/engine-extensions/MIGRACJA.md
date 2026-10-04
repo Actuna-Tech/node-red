@@ -186,7 +186,7 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   przy domyślnym `"fail"` brak pola, dodatkowych zdarzeń i logów (sekwencja zdarzeń jak przed R-47); brak pola = brak warunku. **Nowa reguła kontraktu:** `instance:state` jest emitowane
   także, gdy zmienia się **samo** pole `reload` (ustawienie, zmiana liczby prób, przekroczenie `maxStaleTime`, skasowanie)
   przy niezmienionym `state` – odbiorca, który ma reagować tylko na zmiany stanu, porównuje `state`, `reason` i `since`
-  (nie liczy każdego zdarzenia jako przejścia). Wtyczki i monitoring mogą z tego przekazywać alarm (np. do systemu alertów).
+  (nie liczy każdego zdarzenia jako przejścia). Gdy `keepReady` eskaluje do błędu konfiguracji (z `storage_error` na np. `invalid_flows`), odbiorca może zobaczyć jedno zdarzenie przejściowe – zdarzenie `failed` nosi jeszcze poprzedni warunek z `keepReady: true` – a zaraz po nim poprawiony warunek. Wtyczki i monitoring mogą z tego przekazywać alarm (np. do systemu alertów).
 - **Sondy** (`health.enabled`, R-19, R-22): `/health/ready` → 200 w `ready` i `loaded`; 503 m.in. w `idle` (safe mode,
   zatrzymane flow), `failed`, `stopping`. Treść 503 jest **stała**: `{"status":"unavailable"}` – nie zawiera nazwy stanu
   (stan odczytywać ze zdarzenia `instance:state` / `runtime.state`, nie z sondy).

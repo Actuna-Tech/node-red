@@ -898,7 +898,7 @@ describe("flows/reload (Z-09)", function() {
             env.failAlways = true;
             env.change("B");
             env.notify();
-            await waitFor(() => logged("error", "reload.retries-exhausted").length > 0, 2000, "retries not exhausted");
+            await waitFor(() => logged("error", "reload.retries-exhausted").length > 0 || state.get().reload !== undefined, 2000, "retries not exhausted");
         }
         // Fake time: `reload` are the reload settings
         function fake(reload, envOpts) {
@@ -1415,6 +1415,24 @@ describe("flows/reload (Z-09)", function() {
                 entries[0].should.containEql("\"code\":\"storage_error\"").and.containEql("\"attempts\":2").and.containEql("\"rev\":\"A\"");
                 // the message text of the error is for the log only
                 entries[0].should.containEql("storage unavailable");
+            });
+            it("keepReady + storage_error: no contradicting retries-exhausted error log, only the keep-ready one", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                await exhaust();
+                logged("error", "reload.retries-exhausted").should.have.length(0);
+                logged("error", "reload.keep-ready").should.have.length(1);
+                env.logs.error.should.have.length(1);
+            });
+            it("keepReady + a configuration error (fails) keeps the retries-exhausted error log", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                env.failError = Object.assign(new Error("no flow configuration"), { code: "invalid_flows" });
+                await exhaust();
+                logged("error", "reload.retries-exhausted").should.have.length(1);
+            });
+            it("mode fail keeps the retries-exhausted error log", async function() {
+                env = createEnv({ reload: retry("fail") });
+                await exhaust();
+                logged("error", "reload.retries-exhausted").should.have.length(1);
             });
             it("an error log at most once per retry cycle while the condition lasts", async function() {
                 fake(retry("keepReady", { attempts: 1, max: 60000, maxStaleTime: 0 }));
