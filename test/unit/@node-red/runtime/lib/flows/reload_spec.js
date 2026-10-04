@@ -24,7 +24,8 @@
  *   #1 (R-47): tests of deploy.reload.retry.onExhausted / maxStaleTime (the
  *   condition `reload`, /ready warn, active reporting)
  *   #17: tests of the counting of the failures until the cycle succeeds (an error
- *   of the reread under the lock or of the reload step exhausts the retries)
+ *   of the reread under the lock or of the reload step exhausts the retries;
+ *   notifications reset the delay, not the count)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1519,6 +1520,171 @@ describe("flows/reload (Z-09)", function() {
                 await clock.tickAsync(3000);
                 state.get().reload.since.should.equal(start);
                 state.get().reload.attempts.should.be.above(3);
+            });
+            it("notifications that keep coming do not prevent failed (the notification resets the delay, not the count)", async function() {
+                fake(retry("fail", { min: 1000, max: 1000, attempts: 3 }));
+                env.reloadError = CREDENTIALS_ERROR();
+                await env.start();
+                const watch = atFailedState();
+                env.change("B");
+                for (let i = 0; i < 6 && state.get().state !== "failed"; i++) {
+                    env.notify();
+                    await clock.tickAsync(1500);
+                }
+                watch.off();
+                state.get().state.should.equal("failed");
+                watch.seen.reloads.should.equal(3);
+                logged("warn", "reload.read-failed").map(m => JSON.parse(m.slice("reload.read-failed ".length)).attempt).should.eql([1, 2, 3]);
+                logged("error", "reload.retries-exhausted").should.have.length(1);
+            });
+            it("a notification resets the delay of the retry (backoff starts again), not the attempts", async function() {
+                fake(retry("fail", { min: 1000, max: 60000, attempts: 10 }));
+                env.reloadError = CREDENTIALS_ERROR();
+                await env.start();
+                env.change("B");
+                env.notify();
+                // failures at 0, +1000 (delay 1000), +3000 (delay 2000), the next one would be at +7000 (delay 4000)
+                await clock.tickAsync(3500);
+                env.flows.reloadFromStorage.callCount.should.equal(3);
+                env.notify();
+                await clock.tickAsync(0);
+                env.flows.reloadFromStorage.callCount.should.equal(4);
+                // the delay started again at min (1000), the attempt number goes on
+                await clock.tickAsync(1000);
+                env.flows.reloadFromStorage.callCount.should.equal(5);
+                logged("warn", "reload.read-failed").map(m => JSON.parse(m.slice("reload.read-failed ".length)).attempt).should.eql([1, 2, 3, 4, 5]);
+            });
+            it("fail: after the recovery from the exhaustion a new series of failures exhausts again", async function() {
+                fake(retry("fail", { min: 1000, max: 1000, attempts: 2 }));
+                env.reloadError = CREDENTIALS_ERROR();
+                await env.start();
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(3000);
+                state.get().state.should.equal("failed");
+                env.reloadError = null;
+                await clock.tickAsync(1500);
+                state.get().state.should.equal("ready");
+                env.applied.should.have.length(1);
+                env.reloadError = CREDENTIALS_ERROR();
+                env.change("C");
+                env.notify();
+                await clock.tickAsync(5000);
+                state.get().state.should.equal("failed");
+                logged("error", "reload.retries-exhausted").should.have.length(2);
+            });
+            it("keepReady: after a successful cycle the next series has its own since and attempts", async function() {
+                const start = 1700000000000;
+                clock = sinon.useFakeTimers({ now: start, toFake: ["setTimeout", "clearTimeout", "Date"] });
+                env = createEnv({ reload: retry("keepReady", { min: 1000, max: 1000, attempts: 3, maxStaleTime: 600000 }) });
+                failRereads(new Error("storage unavailable under the lock"));
+                await env.start();
+                env.change("B");
+                env.notify();
+                // two failures, below attempts 3
+                await clock.tickAsync(1500);
+                logged("warn", "reload.read-failed").should.have.length(2);
+                state.get().should.not.have.property("reload");
+                env.rereadError = null;
+                await clock.tickAsync(1000);
+                env.applied.should.have.length(1);
+                // much later (longer than maxStaleTime) a new series starts
+                await clock.tickAsync(1000000);
+                const second = Date.now();
+                env.rereadError = new Error("storage unavailable under the lock");
+                env.change("C");
+                env.notify();
+                await clock.tickAsync(3500);
+                state.get().reload.since.should.equal(second);
+                state.get().reload.attempts.should.equal(4);
+                state.get().reload.should.not.have.property("stale", true);
+                readiness().should.eql(READY_WARN);
+            });
+            it("fail: after the recovery from the exhaustion a new series of read failures of storage exhausts again", async function() {
+                fake(retry("fail", { min: 1000, max: 1000, attempts: 2 }));
+                env.failAlways = true;
+                await env.start();
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(3000);
+                state.get().state.should.equal("failed");
+                env.failAlways = false;
+                await clock.tickAsync(1500);
+                state.get().state.should.equal("ready");
+                env.applied.should.have.length(1);
+                env.failAlways = true;
+                env.change("C");
+                env.notify();
+                await clock.tickAsync(5000);
+                state.get().state.should.equal("failed");
+                logged("error", "reload.retries-exhausted").should.have.length(2);
+            });
+            it("a cycle that ends unchanged after the drain (the reread finds the running revision) also resets the counter", async function() {
+                fake(retry("fail", { min: 1000, max: 1000, attempts: 3 }));
+                failRereads(new Error("storage unavailable under the lock"));
+                let drains = 0;
+                hooks.add("preReload", p => {
+                    drains++;
+                    if (drains === 3) {
+                        // the third cycle: storage holds the running revision again at the reread
+                        env.rereadError = null;
+                        env.change("A");
+                    }
+                });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(2500);
+                drains.should.equal(3);
+                logged("warn", "reload.read-failed").should.have.length(2);
+                env.flows.reloadFromStorage.called.should.be.false();
+                // two more failures do not exhaust: the series started again
+                env.rereadError = new Error("storage unavailable under the lock");
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(1500);
+                logged("warn", "reload.read-failed").should.have.length(4);
+                state.get().state.should.equal("ready");
+                logged("error", "reload.retries-exhausted").should.have.length(0);
+            });
+            it("fail: the retries exhausted earlier, recovery by a local deployment, then a failing reload of a new revision exhausts again", async function() {
+                fake(retry("fail", { min: 1000, max: 1000, attempts: 2 }));
+                env.failAlways = true;
+                await env.start();
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(3000);
+                state.get().state.should.equal("failed");
+                logged("error", "reload.retries-exhausted").should.have.length(1);
+                await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } });
+                await clock.tickAsync(0);
+                state.get().state.should.equal("ready");
+                env.failAlways = false;
+                env.reloadError = CREDENTIALS_ERROR();
+                env.change("E");
+                env.notify();
+                await clock.tickAsync(5000);
+                state.get().state.should.equal("failed");
+                logged("error", "reload.retries-exhausted").should.have.length(2);
+                // still failed: the periodic cycles do not start a new series each time
+                const warns = logged("warn", "reload.read-failed").length;
+                await clock.tickAsync(60000);
+                logged("warn", "reload.read-failed").should.have.length(warns);
+                logged("error", "reload.retries-exhausted").should.have.length(2);
+            });
+            it("fail: after a local deployment a pure read failure of storage still starts no new failed state (unchanged)", async function() {
+                fake(retry("fail", { min: 1000, max: 1000, attempts: 2 }));
+                env.failAlways = true;
+                await env.start();
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(3000);
+                state.get().state.should.equal("failed");
+                await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } });
+                await clock.tickAsync(0);
+                await clock.tickAsync(20000);
+                state.get().state.should.equal("ready");
+                logged("error", "reload.retries-exhausted").should.have.length(1);
             });
             it("keepReady: credentials_load_failed in the reload step fails after retry.attempts cycles (a configuration error)", async function() {
                 env = createEnv({ reload: retry("keepReady", { attempts: 3 }) });

@@ -215,7 +215,9 @@ Fixes
    reads, instead of retrying for ever from attempt 1. With `onExhausted: "keepReady"` the
    `attempts` of the `reload` condition now grow and the periodic error logs appear in this case
    too. The count starts again after a cycle that applied the reload or found the revision
-   unchanged (#17)
+   unchanged; a new notification from storage only shortens the delay of the next retry and no
+   longer resets the count, and a new failing reload after a recovery by a local deployment is
+   counted as a new series (#17)
 
 #### Unreleased: Engine extensions
 
