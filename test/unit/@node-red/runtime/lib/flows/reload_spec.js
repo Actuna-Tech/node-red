@@ -31,7 +31,9 @@
  *   cycle (retryQueued)
  *   #2: tests of the comparison of the credentials (the digest of the decrypted
  *   content): a change of the credentials alone, the flag of a notification as a
- *   hint, re-encryption, an own save, a key that does not decrypt
+ *   hint, re-encryption, an own save, a key that does not decrypt; credentials changed
+ *   during the drain of a diff reload (the extra preReload round for all flows); a running
+ *   configuration without a digest (credentials that could not be decrypted at start)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -139,6 +141,8 @@ function createEnv(opts) {
             }
             return contentOf(loaded.credentials) !== env.activeCredentials;
         }),
+        // false: the running configuration has no digest of its credentials (#2)
+        hasCredentialsRevision: () => env.credentialsKnown !== false,
         getChangedFlows: sinon.spy(function(loaded) {
             return opts.changedFlows ? opts.changedFlows(loaded, env.active) : ["t1"];
         }),
@@ -387,21 +391,70 @@ describe("flows/reload (Z-09)", function() {
                 await delay(20);
                 env.applied.should.have.length(0);
             });
-            it("the credentials changed during the drain of a diff reload - the reload is full", async function() {
+            it("the credentials changed during the drain of a diff reload - one more preReload round for all flows, then a full reload", async function() {
                 env = createEnv({ reload: { type: "diff" } });
                 const d = deferred();
-                let first;
-                hooks.add("preReload", p => { first = first || p; return d.promise });
+                const calls = [];
+                hooks.add("preReload", p => {
+                    calls.push({ rev: p.rev, type: p.type, changedFlows: p.changedFlows && p.changedFlows.slice(), credentialsChanged: p.credentialsChanged, locked: lock.isLocked() });
+                    return calls.length === 1 ? d.promise : undefined;
+                });
                 await env.start();
                 env.change("B");
                 env.notify();
-                await waitFor(() => !!first);
-                first.type.should.equal("diff");
-                first.credentialsChanged.should.be.false();
+                await waitFor(() => calls.length === 1);
+                calls[0].should.containEql({ type: "diff", credentialsChanged: false });
+                calls[0].changedFlows.should.eql(["t1"]);
                 env.change("B", { credentials: { $: "late:iv1" } });
                 d.resolve();
                 await waitFor(() => env.applied.length === 1);
+                // the contract: what is restarted (all flows) is drained
+                calls.should.have.length(2);
+                calls[1].should.containEql({ rev: "B", credentialsChanged: true, locked: false });
+                should(calls[1].changedFlows).be.null();
                 env.applied[0].should.containEql({ rev: "B", type: "full", credentialsChanged: true });
+                env.logs.warn.some(m => m.indexOf("reload.changed-during-drain") === 0 && m.indexOf('"*"') !== -1).should.be.true();
+            });
+            it("the credentials changed during the second round of a diff reload - at most one more round, a full reload with a warning", async function() {
+                const map = { B: ["t1"], C: ["t1", "t2"] };
+                env = createEnv({ reload: { type: "diff" }, changedFlows: loaded => map[loaded.rev] });
+                const calls = [];
+                hooks.add("preReload", p => {
+                    calls.push({ rev: p.rev, changedFlows: p.changedFlows && p.changedFlows.slice(), credentialsChanged: p.credentialsChanged });
+                    if (calls.length === 1) {
+                        env.change("C");
+                    } else if (calls.length === 2) {
+                        env.change("C", { credentials: { $: "late:iv1" } });
+                    }
+                });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => env.applied.length === 1);
+                calls.should.have.length(2);
+                calls[1].changedFlows.should.eql(["t2"]);
+                calls[1].credentialsChanged.should.be.false();
+                env.applied[0].should.containEql({ rev: "C", type: "full", credentialsChanged: true });
+                env.logs.warn.some(m => m.indexOf("reload.changed-after-extra-drain") === 0 && m.indexOf('"*"') !== -1).should.be.true();
+            });
+            it("the credentials changed with the flows in the first drain - the extra round is for all flows", async function() {
+                const map = { B: ["t1"], C: ["t1", "t2"] };
+                env = createEnv({ reload: { type: "diff" }, changedFlows: loaded => map[loaded.rev] });
+                const calls = [];
+                hooks.add("preReload", p => {
+                    calls.push({ rev: p.rev, changedFlows: p.changedFlows && p.changedFlows.slice(), credentialsChanged: p.credentialsChanged });
+                    if (calls.length === 1) {
+                        env.change("C", { credentials: { $: "late:iv1" } });
+                    }
+                });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => env.applied.length === 1);
+                calls.should.have.length(2);
+                should(calls[1].changedFlows).be.null();
+                calls[1].should.containEql({ rev: "C", credentialsChanged: true });
+                env.applied[0].should.containEql({ rev: "C", type: "full", credentialsChanged: true });
             });
             it("the credentials changed back during the drain, same revision - nothing is reloaded", async function() {
                 env = createEnv();
@@ -417,6 +470,69 @@ describe("flows/reload (Z-09)", function() {
                 d.resolve();
                 await waitFor(() => state.get().state === "ready" && states.length >= 3);
                 env.applied.should.have.length(0);
+            });
+            describe("a running configuration without a digest of its credentials", function() {
+                // it started with credentials that could not be decrypted (a reset), see flows.hasCredentialsRevision
+                const undecryptable = () => Object.assign(new Error("Failed to decrypt credentials"), { code: "credentials_load_failed" });
+                const retry = { min: 2, max: 60000, attempts: 1, onExhausted: "keepReady" };
+                it("the same revision, credentials that cannot be decrypted - not an error, nothing happens (as before #2)", async function() {
+                    env = createEnv({ reload: { retry: retry } });
+                    env.credentialsKnown = false;
+                    env.credentialsError = undecryptable();
+                    const hook = sinon.spy();
+                    hooks.add("preReload", hook);
+                    await env.start();
+                    env.change("A", { credentials: { $: "cipher:iv1" } });
+                    env.notify({ credentialsChanged: true });
+                    env.notify();
+                    await waitFor(() => env.getFlowsCalls >= 2);
+                    await delay(30);
+                    env.applied.should.have.length(0);
+                    hook.called.should.be.false();
+                    states.should.eql([]);
+                    state.get().state.should.equal("ready");
+                    state.get().should.not.have.property("reload");
+                    env.logs.warn.some(m => m.indexOf("reload.read-failed") === 0).should.be.false();
+                    env.logs.debug.some(m => m.indexOf("cannot be decrypted (credentials_load_failed)") !== -1).should.be.true();
+                    JSON.stringify(env.logs).should.not.containEql("cipher:iv1");
+                });
+                it("a new revision goes the normal way: credentials_load_failed", async function() {
+                    env = createEnv({ reload: { retry: retry } });
+                    env.credentialsKnown = false;
+                    env.credentialsError = undecryptable();
+                    await env.start();
+                    env.change("B", { credentials: { $: "cipher:iv1" } });
+                    env.notify();
+                    await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                    state.get().reload.should.containEql({ error: { code: "credentials_load_failed" }, keepReady: false });
+                    env.applied.should.have.length(0);
+                });
+                it("with a digest the same revision and credentials that cannot be decrypted is still an error", async function() {
+                    env = createEnv({ reload: { retry: retry } });
+                    env.credentialsError = undecryptable();
+                    await env.start();
+                    env.change("A", { credentials: { $: "cipher:iv1" } });
+                    env.notify();
+                    await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                    state.get().reload.should.containEql({ error: { code: "credentials_load_failed" } });
+                });
+                it("the reread under the lock: the revision is the running one again and the credentials cannot be decrypted - unchanged", async function() {
+                    env = createEnv({ reload: { retry: retry } });
+                    env.credentialsKnown = false;
+                    const d = deferred();
+                    let payload;
+                    hooks.add("preReload", p => { payload = p; return d.promise });
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => !!payload);
+                    env.credentialsError = undecryptable();
+                    env.change("A", { credentials: { $: "cipher:iv1" } });
+                    d.resolve();
+                    await waitFor(() => state.get().state === "ready" && states.length >= 3);
+                    env.applied.should.have.length(0);
+                    state.get().should.not.have.property("reload");
+                });
             });
             describe("with the real credentials module (random iv, key)", function() {
                 const credentialsModule = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");

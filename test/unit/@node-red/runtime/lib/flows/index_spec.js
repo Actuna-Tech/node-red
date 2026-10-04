@@ -1934,6 +1934,56 @@ describe('flows/index', function() {
             flows.credentialsChanged({credentials:{}}).should.be.true();
             flows.credentialsChanged({credentials:CREDS}).should.be.true();
         });
+        it('hasCredentialsRevision: true with a digest, false when the credentials could not be digested', async function() {
+            await startWith(CREDS);
+            flows.hasCredentialsRevision().should.be.true();
+            await flows.stopFlows();
+            credentialsLoad.callsFake(function() {
+                return Promise.reject(Object.assign(new Error("Failed to decrypt credentials"), {code:"credentials_load_failed"}));
+            });
+            await startWith({"$":"not a valid ciphertext"});
+            flows.hasCredentialsRevision().should.be.false();
+            // a deployment with credentials that can be digested gives it back
+            const exportStub = sinon.stub(credentials, "export").callsFake(async () => clone(CREDS));
+            const dirtyStub = sinon.stub(credentials, "dirty").returns(true);
+            try {
+                await flows.setFlows(clone(base));
+            } finally {
+                exportStub.restore();
+                dirtyStub.restore();
+            }
+            flows.hasCredentialsRevision().should.be.true();
+        });
+        it('any error of the digest of the active configuration: the deployment is not failed, the digest is unknown, only the code is logged', async function() {
+            await startWith(CREDS);
+            mockLog.debug.resetHistory();
+            const secret = "secret-password-from-an-unexpected-error";
+            const digestStub = sinon.stub(credentials, "digest").callsFake(function() {
+                throw Object.assign(new TypeError(secret), {code:"unexpected_code"});
+            });
+            try {
+                // an own save that is already stored must not fail because of the digest
+                const exportStub = sinon.stub(credentials, "export").callsFake(async () => clone(CREDS));
+                const dirtyStub = sinon.stub(credentials, "dirty").returns(true);
+                try {
+                    await flows.setFlows(clone(base)).should.be.fulfilled();
+                } finally {
+                    exportStub.restore();
+                    dirtyStub.restore();
+                }
+                // and a reload from storage
+                await flows.reloadFromStorage({flows:clone(base), rev:"B", credentials:clone(CREDS)}, {type:"full"});
+            } finally {
+                digestStub.restore();
+            }
+            flows.getFlows().rev.should.equal("B");
+            flows.hasCredentialsRevision().should.be.false();
+            // unknown = changed
+            flows.credentialsChanged({credentials:clone(CREDS)}).should.be.true();
+            const logged = JSON.stringify(mockLog.debug.args);
+            logged.should.containEql("unexpected_code");
+            logged.should.not.containEql(secret);
+        });
         it('without an active configuration (failed start) the credentials differ', async function() {
             storage.getFlows = function() {
                 return Promise.reject(Object.assign(new Error("no flows"), {code:"invalid_flows"}));

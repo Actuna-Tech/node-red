@@ -1,7 +1,7 @@
 #### Unreleased: Instances and reload
 
  - Reload from storage (`deploy.reload.watch: true`) compares the credentials like the flow
-   revision (#2): the runtime computes a digest (sha256 of the canonical JSON, sorted keys) of the
+   revision (#2): the runtime computes a digest (HMAC-SHA256 with a per-process random key, of the canonical JSON with sorted keys) of the
    **decrypted** credentials read from storage and compares it with the digest of the running
    configuration (computed after the credentials were loaded - on start, on a reload and on an
    own save); the ciphertext is never compared (a random IV changes it on every save). A reload
@@ -15,7 +15,10 @@
    credentials are read with the key the credentials load would use - also the old generated key
    while a migration to `credentialSecret` is pending - without migrating, saving or logging
    anything; credentials that this key cannot decrypt fail with `credentials_load_failed` (the same
-   path as a failed reload). The digest is internal: never logged and not part of the result of
+   path as a failed reload). An instance that started with credentials it could not decrypt has no
+   digest: with the running revision in storage that is not an error (as before), a new revision
+   goes the normal way. A change of the credentials during the drain of a `diff` reload gets an
+   extra `preReload` round for all flows (`changedFlows: null`), like a change of the flows. The digest is internal: never logged and not part of the result of
    `GET /flows` (still `{flows, rev}`). New `credentials.digest()` of the runtime is pure (it
    changes no cache, key or setting). Nothing changes without `deploy.reload.watch`
  - New settings `deploy.reload.retry.onExhausted` (`"fail"` by default - nothing changes: after

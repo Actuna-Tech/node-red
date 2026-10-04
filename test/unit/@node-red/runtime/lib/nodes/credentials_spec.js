@@ -529,13 +529,19 @@ describe('red/runtime/nodes/credentials', function() {
             };
         });
 
-        it("is the sha256 of the canonical JSON: the order of the keys does not matter", function() {
+        it("is a digest of the canonical JSON: the order of the keys does not matter", function() {
             credentials.init(runtime);
             var a = credentials.digest({"n1":{"user":"abc","password":"123"},"n2":{"k":[1,{"b":2,"a":1}]}});
             var b = credentials.digest({"n2":{"k":[1,{"a":1,"b":2}]},"n1":{"password":"123","user":"abc"}});
             a.should.match(/^[0-9a-f]{64}$/);
             a.should.equal(b);
-            a.should.equal(crypto.createHash("sha256").update('{"n1":{"password":"123","user":"abc"},"n2":{"k":[1,{"a":1,"b":2}]}}').digest("hex"));
+            // stable inside the process, and keyed: not a plain hash of the content that
+            // could be matched against a leaked value (HMAC with a per-process key)
+            credentials.digest({"n1":{"user":"abc","password":"123"},"n2":{"k":[1,{"a":1,"b":2}]}}).should.equal(a);
+            a.should.not.equal(crypto.createHash("sha256").update('{"n1":{"password":"123","user":"abc"},"n2":{"k":[1,{"a":1,"b":2}]}}').digest("hex"));
+            // init() of the module does not change the key of the digests inside the process
+            credentials.init(runtime);
+            credentials.digest({"n2":{"k":[1,{"b":2,"a":1}]},"n1":{"user":"abc","password":"123"}}).should.equal(a);
         });
         it("differs for different content, also the order of an array", function() {
             credentials.init(runtime);
@@ -727,6 +733,30 @@ describe('red/runtime/nodes/credentials', function() {
                         credentials.digest(saved).should.equal(before);
                     });
                 });
+            });
+            it("only exactly {\"$\": ...} is read with the default key, as in load() (a second property: the user key)", function() {
+                // load() decrypts with the default key only when the object has the one key "$";
+                // with another property the normal decryption (the user key) applies
+                var withDefault = Object.assign({ extra: 1 }, OLD);
+                (function() { credentials.digest(withDefault) }).should.throw({ code: "credentials_load_failed" });
+                var withUser = Object.assign({ extra: 1 }, encrypt(NEW_USER_KEY, JSON.stringify({"node":{"user1":"abc","password1":"123"}})));
+                credentials.digest(withUser).should.equal(PLAIN_DIGEST);
+                // the same as load() does with these objects
+                return credentials.load(withDefault).then(function() {
+                    throw new Error("load() should have failed");
+                }, function(err) {
+                    err.should.have.property("code", "credentials_load_failed");
+                    credentials.init(runtime);
+                    return credentials.load(withUser).then(function() {
+                        credentials.get("node").should.have.property("user1", "abc");
+                    });
+                });
+            });
+            it("encryption disabled by the user: a second property is not migrated (no key), as in load()", function() {
+                settingsValues = { _credentialSecret: DEFAULT_KEY, credentialSecret: false };
+                credentials.init(runtime);
+                (function() { credentials.digest(Object.assign({ extra: 1 }, OLD)) }).should.throw({ code: "credentials_load_failed" });
+                credentials.digest(OLD).should.equal(PLAIN_DIGEST);
             });
             it("a truly wrong key still gives credentials_load_failed during the migration", function() {
                 return credentials.load(OLD).then(function() {
