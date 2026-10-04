@@ -40,6 +40,13 @@
    error `invalid_hook_setting` that names the key, and nothing is registered. Hooks of
    `settings.js` are registered before the plugins load, so they run first; the same label added by a plugin is
    "already registered" (#7)
+ - A hook of the `hooks` setting that would never be called now logs a warning at start (#15):
+   `preShutdown.<label>` without `shutdownTimeout` (the hook is not called, R-37; `health.unreadyGrace`
+   alone only delays the stop) and `preReload.<label>` without `deploy.reload.watch: true` (the flows
+   are never reloaded from the storage). The warning names the hook and the missing setting. It is a
+   pure diagnostic: the hooks stay registered, nothing else changes; no warning without the `hooks`
+   setting, when the setting is there, or for hooks added by plugins. Test of `hooks` with
+   `health.unreadyGrace` (the hook is called, the stop takes at least the grace)
  - An editor-only instance (`editorOnly`) does not start the coordination plugin and is never the
    leader, so `inject` nodes with "Run only on one instance" fire on the instances that run the flows (#4)
  - Documented: health probes without `health.port` are public on the main server; `preReload` and

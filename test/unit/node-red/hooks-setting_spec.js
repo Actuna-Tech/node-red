@@ -17,6 +17,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #7: integration tests of the `hooks` setting (preShutdown/preReload) of settings.js
+ *   #15: the hook with health.unreadyGrace, the warnings for hooks that are never called
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -124,6 +125,66 @@ module.exports = Object.assign(${JSON.stringify({
         const code = await Promise.race([exited(child), new Promise(r => setTimeout(() => r("timeout"), 15000))]);
         should(code).not.equal("timeout");
         fs.readFileSync(stepLog, "utf8").split("\n").filter(l => l).should.eql(["hook SIGTERM", "hook-end"]);
+    });
+
+    it("a preShutdown hook of the setting is called with health.unreadyGrace and the stop takes at least the grace (#15)", async function() {
+        const GRACE = 700;
+        const userDir = tempDir();
+        const stepLog = path.join(userDir, "steps.log");
+        const port = await getFreePort();
+        const healthPort = await getFreePort();
+        const child = start(userDir, `
+const fs = require("fs");
+module.exports = Object.assign(${JSON.stringify({
+            flowFile: "flows.json",
+            disableEditor: true,
+            logging: { console: { level: "info" } },
+            health: { enabled: true, port: healthPort, host: "127.0.0.1", unreadyGrace: GRACE },
+            shutdownTimeout: 30000
+        })}, {
+    hooks: {
+        "preShutdown.drain": async function(payload) {
+            fs.appendFileSync(${JSON.stringify(stepLog)}, "hook " + payload.reason + "\\n");
+        }
+    }
+});
+`, port);
+        await waitFor(() => /Started flows/.test(child.output), 30000, "not started: " + child.output);
+        // both settings are there: no warning about a hook that is never called
+        child.output.should.not.containEql("is not called");
+        const signalled = Date.now();
+        child.kill("SIGTERM");
+        const code = await Promise.race([exited(child), new Promise(r => setTimeout(() => r("timeout"), 15000))]);
+        const stopTime = Date.now() - signalled;
+        should(code).not.equal("timeout");
+        fs.readFileSync(stepLog, "utf8").split("\n").filter(l => l).should.eql(["hook SIGTERM"]);
+        child.output.should.match(/Not ready for 700 ms before stopping/);
+        stopTime.should.be.aboveOrEqual(GRACE);
+    });
+
+    it("warns at start about the hooks that are never called, and a preShutdown hook is not called without shutdownTimeout (#15)", async function() {
+        const userDir = tempDir();
+        const stepLog = path.join(userDir, "steps.log");
+        const port = await getFreePort();
+        const child = start(userDir, `
+const fs = require("fs");
+module.exports = {
+    flowFile: "flows.json",
+    disableEditor: true,
+    logging: { console: { level: "info" } },
+    hooks: {
+        "preShutdown.drain": function(payload) { fs.appendFileSync(${JSON.stringify(stepLog)}, "hook\\n"); return Promise.resolve(); },
+        "preReload.sync": function(event) { return Promise.resolve(); }
+    }
+};
+`, port);
+        await waitFor(() => /Started flows/.test(child.output), 30000, "not started: " + child.output);
+        child.output.should.match(/preShutdown\.drain.*shutdownTimeout/);
+        child.output.should.match(/preReload\.sync.*deploy\.reload\.watch/);
+        child.kill("SIGTERM");
+        const code = await Promise.race([exited(child), new Promise(r => setTimeout(() => r("timeout"), 15000))]);
+        should(code).not.equal("timeout");
+        fs.existsSync(stepLog).should.be.false();
     });
 
     it("an invalid hook name fails the start with the key in the message and exit code 1", async function() {
