@@ -293,8 +293,8 @@ watchFlows(callback)
 | Pole (obiekt zamrożony) | Znaczenie |
 |---|---|
 | `rev` / `activeRev` | rewizja, która zostanie uruchomiona / działająca |
-| `type` | `"full"` \| `"diff"` (`deploy.reload.type`) |
-| `changedFlows` | id flow (zakładek, subflow) restartowanych; `null` = wszystkie (`full`, zmiana konfiguracji globalnej lub węzła konfiguracyjnego poza flow, zmiana poświadczeń) |
+| `type` | `"full"` \| `"diff"` – **typ z konfiguracji** (`deploy.reload.type`), a nie faktyczny typ przeładowania (#43): przy `"diff"` przeładowanie jest pełne, gdy zmieniły się poświadczenia (także w trakcie drenażu – wtedy dodatkowa runda ma `changedFlows: null`) albo przy zmianie globalnej, a w ładunku jest wtedy `{type: "diff", changedFlows: null}`; dodatkowa runda po zmianie samych flow ma listę nowych flow i przeładowanie pozostaje `diff`. **O zakresie przeładowania decyduje `changedFlows`**, nie `type` |
+| `changedFlows` | id flow (zakładek, subflow) restartowanych; `null` = wszystkie (`full`, zmiana konfiguracji globalnej lub węzła konfiguracyjnego poza flow, zmiana poświadczeń, dodatkowa runda po zmianie poświadczeń w trakcie drenażu). **To pole rozstrzyga o zakresie** |
 | `credentialsChanged` | **obliczone** (#2): poświadczenia w magazynie różnią się (skrót odszyfrowanej zawartości) od działających – nie jest kopią flagi powiadomienia |
 | `deadline` | `Date.now() + preReloadTimeout` z chwili rozpoczęcia drenażu (wspólny dla dodatkowej rundy D-17) |
 | `signal` | `AbortSignal`; `reason`: `"stopping"` (zatrzymanie procesu) lub `"superseded"` (wdrożenie na tej instancji) |
