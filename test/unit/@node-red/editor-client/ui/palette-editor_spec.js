@@ -16,6 +16,8 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #34: a failed install, update, remove or enable of a module shows the module name and the message of the server escaped
+ *   #37 (review): the module version, the catalog name and the catalog filter are text, the links and the
+ *   Review buttons take only http and https addresses, the handlers of enable and disable are driven
  *   #37: the confirmations and the progress message show the module name escaped; a failed enable or disable of a
  *   module names the action (enable / disable) and the module; a failed upload shows the file name escaped
  * This notice is required by section 4(b) of the Apache License 2.0.
@@ -25,7 +27,9 @@ const should = require("should");
 const cheerio = require("cheerio");
 
 const NR_TEST_UTILS = require("nr-test-utils");
+const sinon = require("sinon");
 const catalog = require("../helpers/catalog");
+const { createJQuery } = require("../helpers/jquery");
 
 const errorsModulePath = NR_TEST_UTILS.resolve("@node-red/editor-client/src/js/ui/common/errors.js");
 const paletteEditorModulePath = NR_TEST_UTILS.resolve("@node-red/editor-client/src/js/ui/palette-editor.js");
@@ -35,41 +39,19 @@ describe("editor-client/ui/palette-editor (#34)", function() {
     let editor;
     let notifier;
     let requests;
+    let jq;
     let savedGlobals;
 
-    // jQuery stand-in: any element call is chainable; $.ajax records the request and lets the test
-    // fail it (the callbacks run at once, like a settled request)
-    function createJQueryMock() {
-        function makeElement() {
-            const api = {};
-            const proxy = new Proxy(api, {
-                get(target, prop) {
-                    if (prop in target) { return target[prop]; }
-                    if (typeof prop === "symbol" || prop === "then") { return undefined; }
-                    return function() { return proxy; };
-                }
-            });
-            return proxy;
-        }
-        function jq() { return makeElement(); }
-        jq.ajax = function(opts) {
-            const callbacks = {};
-            const req = {
-                opts,
-                done(fn) { callbacks.done = fn; return req; },
-                fail(fn) { callbacks.fail = fn; return req; },
-                always(fn) { callbacks.always = fn; return req; },
-                // the server answers with an error response
-                failWith(xhr) {
-                    callbacks.fail(xhr, "error", "err");
-                    if (callbacks.always) { callbacks.always(); }
-                }
-            };
-            requests.push(req);
-            return req;
-        };
-        return jq;
-    }
+    // the specs restore the globals they set: what was there before the suite is there after it
+    const globalsBefore = {};
+    before(function() {
+        ["RED", "$", "window"].forEach(key => { globalsBefore[key] = global[key]; });
+    });
+    after(function() {
+        ["RED", "$", "window"].forEach(function(key) {
+            should(global[key]).equal(globalsBefore[key], "global." + key + " leaked out of the palette-editor spec");
+        });
+    });
 
     function lastNotification() {
         return notifier.notifications[notifier.notifications.length - 1];
@@ -86,7 +68,6 @@ describe("editor-client/ui/palette-editor (#34)", function() {
     beforeEach(function() {
         savedGlobals = { RED: global.RED, $: global.$, window: global.window };
         notifier = catalog.createNotifier();
-        requests = [];
         global.RED = {
             _: catalog.translate,
             notify: notifier.notify,
@@ -98,7 +79,9 @@ describe("editor-client/ui/palette-editor (#34)", function() {
             popover: { tooltip() {}, create() {} },
             events: { on() {} }
         };
-        global.$ = createJQueryMock();
+        jq = createJQuery();
+        requests = jq.record.requests;
+        global.$ = jq;
         global.window = {};
         delete require.cache[errorsModulePath];
         delete require.cache[paletteEditorModulePath];
@@ -272,6 +255,304 @@ describe("editor-client/ui/palette-editor (#34)", function() {
         it("shows the status text of the request when the server sent no JSON", function() {
             editor.notifyUploadFailed("x.tgz", "timeout <b>", { status: 0 });
             lastNotification().msg.should.containEql("<p>timeout &lt;b&gt;</p>");
+        });
+    });
+
+    describe("driven through init: the lists of the palette (#37)", function() {
+        let clock;
+        let nodeList;
+        let packageList;
+        let popovers;
+        let nodeSets;
+        let windowOpen;
+
+        function install() {
+            popovers = [];
+            nodeSets = {};
+            windowOpen = sinon.spy();
+            global.window = { open: windowOpen };
+            Object.assign(RED, {
+                settings: { get: (key, def) => def, theme: () => ["https://one.example/catalogue.json", "https://two.example/catalogue.json"] },
+                utils: {
+                    addSpinnerOverlay: () => ({ remove() {}, appendTo() {} }),
+                    parseModuleList: list => list,
+                    checkModuleAllowed: () => true
+                },
+                tabs: { create: () => ({ addTab() {}, activateTab() {}, resize() {} }) },
+                userSettings: { add() {}, show() {} },
+                statusBar: { add() {}, show() {}, hide() {} },
+                actions: { add() {}, invoke() {} },
+                events: { on() {}, emit() {} },
+                popover: { tooltip() {}, create(options) { popovers.push(options); return { open() {}, close() {} }; } },
+                nodes: {
+                    getType: () => undefined,
+                    registry: {
+                        getNodeSet: id => nodeSets[id],
+                        getNodeSetForType: () => undefined,
+                        getModule: () => undefined
+                    }
+                },
+                plugins: { getPlugin: () => undefined }
+            });
+        }
+
+        function catalogModule(overrides) {
+            return Object.assign({
+                id: "node-red-contrib-x", name: "node-red-contrib-x", version: "1.0.0", description: "d",
+                url: "https://example.org/x", updated_at: "2026-01-01T00:00:00.000Z", pkg_url: "https://example.org/x.tgz"
+            }, overrides);
+        }
+
+        function sinksAfter(count) {
+            return jq.record.htmlSinks.slice(count).map(s => s.html);
+        }
+
+        function assertNoRawInjection(sinks) {
+            sinks.forEach(function(html) {
+                html.should.not.containEql("onerror");
+                html.should.not.containEql("<img src=x");
+            });
+        }
+
+        beforeEach(function() {
+            clock = sinon.useFakeTimers();
+            install();
+            jq.documents["https://one.example/catalogue.json"] = { name: INJECTION, modules: [catalogModule({ version: INJECTION })] };
+            jq.documents["https://two.example/catalogue.json"] = { name: "two", modules: [] };
+            editor.init();
+            nodeList = jq.record.editableLists[0];
+            packageList = jq.record.editableLists[1];
+        });
+
+        afterEach(function() {
+            clock.restore();
+        });
+
+        it("builds the two lists of the palette", function() {
+            should.exist(nodeList);
+            should.exist(packageList);
+            nodeList.addItem.should.be.a.Function();
+            packageList.addItem.should.be.a.Function();
+        });
+
+        describe("the install tab (the module comes from the remote catalog)", function() {
+            function addItem(module) {
+                const before = jq.record.htmlSinks.length;
+                const container = jq("<li>");
+                packageList.addItem(container, 0, { info: module });
+                return { container, sinks: sinksAfter(before) };
+            }
+
+            function catalogModuleOfCatalog(index) {
+                return jq.documents[index === 0 ? "https://one.example/catalogue.json" : "https://two.example/catalogue.json"].modules[0];
+            }
+
+            it("takes the catalog (two catalogs, so the name of the catalog is shown) with the module from it", function() {
+                const module = catalogModuleOfCatalog(0);
+                module.catalog.should.have.property("name", INJECTION);
+            });
+
+            it("the version and the name of the catalog are text: nothing of them is parsed as HTML", function() {
+                const module = catalogModuleOfCatalog(0);
+                const texts = jq.record.texts.length;
+                const result = addItem(module);
+                assertNoRawInjection(result.sinks);
+                const set = jq.record.texts.slice(texts);
+                set.should.containEql(" " + INJECTION);     // the version
+                set.filter(t => t === " " + INJECTION).length.should.equal(2); // the version and the name of the catalog
+            });
+
+            it("the name and the version with quotes and ampersands stay as they are, as text", function() {
+                const module = catalogModuleOfCatalog(0);
+                module.version = "1\"'&<b>";
+                const texts = jq.record.texts.length;
+                addItem(module);
+                jq.record.texts.slice(texts).should.containEql(" 1\"'&<b>");
+            });
+
+            it("a module with the address javascript: has no link", function() {
+                const module = catalogModuleOfCatalog(0);
+                module.url = "javascript:alert(1)";
+                const elements = jq.record.elements.length;
+                addItem(module);
+                const links = jq.record.elements.slice(elements).filter(e => e.state.attrs.href !== undefined && /palette-module-link/.test(e.state.source));
+                links.should.have.length(0);
+            });
+
+            it("a module with an https address has the link, that opens without access to the editor", function() {
+                const module = catalogModuleOfCatalog(0);
+                const elements = jq.record.elements.length;
+                addItem(module);
+                const links = jq.record.elements.slice(elements).filter(e => /palette-module-link/.test(e.state.source));
+                links.should.have.length(1);
+                links[0].state.attrs.href.should.equal("https://example.org/x");
+                links[0].state.source.should.containEql('rel="noopener"');
+            });
+
+            it("the hint of a conflict shows the module that conflicts as text", function() {
+                RED.nodes.registry.getNodeSetForType = () => ({ module: INJECTION });
+                const module = catalogModuleOfCatalog(0);
+                module.types = ["some-type"];
+                addItem(module);
+                const hints = popovers.filter(p => typeof p.content === "string");
+                hints.should.have.length(1);
+                catalog.assertNoElement(hints[0].content, "img");
+                hints[0].content.should.containEql("<code>&lt;img src=x onerror=alert(1)&gt;</code>");
+            });
+        });
+
+        describe("the filter of the catalogs", function() {
+            it("the name of a catalog is the text of its option, not HTML", function() {
+                const texts = jq.record.texts.length;
+                const sinks = jq.record.htmlSinks.length;
+                editor.updateCatalogFilter([{ name: INJECTION }, { name: "two" }]);
+                assertNoRawInjection(sinksAfter(sinks));
+                jq.record.texts.slice(texts).should.containEql(INJECTION);
+            });
+
+            it("the option is made with the name as the value and as the text", function() {
+                const option = editor.catalogOption({ name: "a\"b" });
+                option.state.attrs.value.should.equal("a\"b");
+                option.state.texts.should.eql(["a\"b"]);
+            });
+        });
+
+        describe("the version of a module that is updated but not running yet", function() {
+            it("shows both versions as text", function() {
+                const span = jq("<span>");
+                const sinks = jq.record.htmlSinks.length;
+                editor.renderPendingVersion(span, INJECTION, INJECTION);
+                assertNoRawInjection(sinksAfter(sinks));
+                span.state.texts.should.eql([INJECTION + " "]);
+                jq.record.texts.should.containEql(" " + INJECTION);
+            });
+        });
+
+        describe("the nodes tab: enable and disable (the click handlers of the real list)", function() {
+            let object;
+            let container;
+
+            function addModule(nodeSet) {
+                object = {
+                    info: { name: "node-red-contrib-x", version: "1.0.0", local: true, nodeSet: nodeSet },
+                    setUseCount: { set1: 0 },
+                    totalUseCount: 0
+                };
+                container = jq("<li>");
+                nodeList.addItem(container, 0, object);
+                clock.reset(); // the refresh of the module that addItem asked for is not what is tested
+            }
+
+            function answerWithError(message) {
+                const request = jq.record.requests[jq.record.requests.length - 1];
+                request.failWith(errorResponse(message));
+                clock.tick(1000); // the result is shown after the shortest time of the spinner
+            }
+
+            const SET = { id: "node-red-contrib-x/set1", name: "set1", types: ["x-type"], enabled: true };
+
+            it("a failed enable of a disabled module says \"enable\" and names the module", function() {
+                addModule({ set1: SET });
+                container.addClass("disabled");
+                object.elements.enableButton.click();
+                const request = jq.record.requests[0];
+                request.options.url.should.equal("nodes/node-red-contrib-x");
+                JSON.parse(request.options.data).should.eql({ enabled: true });
+                answerWithError("no <b>way</b>");
+                const n = lastNotification();
+                n.msg.should.equal("<p>Failed to enable: node-red-contrib-x</p><p>no &lt;b&gt;way&lt;/b&gt;</p><p>Check the log for more information</p>");
+                n.options.should.equal("error");
+            });
+
+            it("a failed disable of an enabled module says \"disable\" and names the module", function() {
+                addModule({ set1: SET });
+                object.elements.enableButton.click();
+                JSON.parse(jq.record.requests[0].options.data).should.eql({ enabled: false });
+                answerWithError("no");
+                lastNotification().msg.should.startWith("<p>Failed to disable: node-red-contrib-x</p>");
+                lastNotification().options.should.equal("error");
+            });
+
+            it("a failed change of a node set names the set (its id) and the action", function() {
+                nodeSets[SET.id] = { enabled: true };
+                addModule({ set1: SET });
+                object.elements.setButton.click();
+                should.exist(object.elements.sets.set1);
+                object.elements.sets.set1.enableButton.click();
+                jq.record.requests[0].options.url.should.equal("nodes/node-red-contrib-x/set1");
+                answerWithError(INJECTION);
+                const n = lastNotification();
+                n.msg.should.equal("<p>Failed to disable: node-red-contrib-x/set1</p><p>&lt;img src=x onerror=alert(1)&gt;</p><p>Check the log for more information</p>");
+                catalog.assertNoElement(n.msg, "img");
+                n.options.should.equal("error");
+            });
+
+            it("a failed enable of a disabled node set says \"enable\"", function() {
+                nodeSets[SET.id] = { enabled: false };
+                addModule({ set1: Object.assign({}, SET, { enabled: false }) });
+                object.elements.setButton.click();
+                object.elements.sets.set1.enableButton.click();
+                answerWithError("no");
+                lastNotification().msg.should.startWith("<p>Failed to enable: node-red-contrib-x/set1</p>");
+            });
+
+            it("a change that succeeded shows nothing", function() {
+                addModule({ set1: SET });
+                object.elements.enableButton.click();
+                jq.record.requests[0].succeed();
+                clock.tick(1000);
+                notifier.notifications.should.have.length(0);
+            });
+        });
+    });
+
+    describe("the Review button and the links (#37)", function() {
+        beforeEach(function() {
+            global.window = { open: sinon.spy() };
+        });
+
+        it("a button is made only for an http or https address", function() {
+            should.not.exist(editor.reviewButton("javascript:alert(1)", "x"));
+            should.not.exist(editor.reviewButton("data:text/html,<img src=x onerror=alert(1)>", "x"));
+            should.not.exist(editor.reviewButton("vbscript:x", "x"));
+            should.not.exist(editor.reviewButton(undefined, "x"));
+            should.not.exist(editor.reviewButton("", "x"));
+            should.not.exist(editor.reviewButton("not an address", "x"));
+            should.exist(editor.reviewButton("https://example.org/a", "x"));
+            should.exist(editor.reviewButton("http://example.org/a", "x"));
+        });
+
+        it("opens the address in a new window without access to the editor", function() {
+            const review = editor.reviewButton("https://example.org/a b", "red-class");
+            review.class.should.equal("red-class");
+            review.text.should.equal("Open node information");
+            review.click();
+            window.open.calledOnce.should.be.true();
+            window.open.firstCall.args.should.eql(["https://example.org/a%20b", "_blank", "noopener"]);
+        });
+
+        it("the install confirmation has the button only for a safe address", function() {
+            editor.install({ id: "m", version: "1.0.0", url: "javascript:alert(1)" }, {}, function() {});
+            lastNotification().options.buttons.map(b => b.text).should.eql(["Cancel", "Install"]);
+            editor.install({ id: "m", version: "1.0.0", url: "https://example.org/m" }, {}, function() {});
+            lastNotification().options.buttons.map(b => b.text).should.eql(["Cancel", "Open node information", "Install"]);
+        });
+
+        it("the update confirmation of a major version has the button only for a safe address", function() {
+            editor.nodeEntries["m"] = { info: { version: "1.0.0" } };
+            editor.update({ name: "m", url: "javascript:alert(1)" }, "2.0.0", undefined, {}, function() {});
+            lastNotification().options.buttons.map(b => b.text).should.eql(["Cancel", "Update"]);
+            editor.update({ name: "m", url: "https://example.org/m" }, "2.0.0", undefined, {}, function() {});
+            lastNotification().options.buttons.map(b => b.text).should.eql(["Cancel", "Open node information", "Update"]);
+        });
+    });
+
+    describe("the conflict hint (#37)", function() {
+        it("shows the module as text and keeps the HTML of the catalog", function() {
+            const html = editor.conflictTipMessage(INJECTION);
+            catalog.assertNoElement(html, "img");
+            html.should.containEql("<code>&lt;img src=x onerror=alert(1)&gt;</code>");
+            html.should.startWith("<p>This module cannot be installed");
         });
     });
 });

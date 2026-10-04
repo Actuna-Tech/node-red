@@ -57,6 +57,21 @@ describe("editor-client/ui/projects/tab-versionControl (#34)", function() {
         });
     });
 
+    describe("diffTitle (the window with the changes of a file; the tray shows its title as HTML, #37)", function() {
+        it("shows the file name as text in every state", function() {
+            [["unstaged", "Unstaged changes"], ["staged", "Staged changes"], ["unmerged", "Resolve conflicts"]].forEach(function(pair) {
+                const title = versionControl.diffTitle(pair[0], "dir/" + INJECTION + ".json");
+                title.should.equal(pair[1] + " : dir/&lt;img src=x onerror=alert(1)&gt;.json");
+                catalog.assertNoElement(title, "img");
+            });
+        });
+
+        it("keeps a normal file name and escapes the quotes", function() {
+            versionControl.diffTitle("staged", "flows.json").should.endWith(" : flows.json");
+            versionControl.diffTitle("staged", "a\"b'c").should.endWith(" : a&quot;b&#39;c");
+        });
+    });
+
     describe("revertConfirmMessage (#37)", function() {
         it("shows the file name as text", function() {
             const html = versionControl.revertConfirmMessage("flows/" + INJECTION + ".json");

@@ -15,11 +15,18 @@
  **/
 /*
  * Modified by Actuna Sp. z o.o.:
- *   #37: a static guard of the editor sources - the message of RED.notify (HTML) does not take text of
- *   an exception, a server response or a user without escaping it, and RED.utils.sanitize is used
- *   only where its output goes to HTML (R1 of the review of #36)
+ *   #37: a static guard of the editor sources against text from outside the catalog reaching HTML.
+ *   It checks the first argument of RED.notify / notification.update, the concatenation of text into
+ *   HTML ($("<..."+x), .html(), .append(), .prepend()) in the files that #37 changed, the places that
+ *   were fixed (pinned), and the call sites of RED.utils.sanitize. It is a heuristic over the text of the
+ *   sources - it does NOT see a text that reaches HTML through a variable that is made elsewhere
+ *   (var text = ...; RED.notify(text)), a tray title or the content of a popover that is passed as a
+ *   variable, the other files, an attribute that gets an address, or the HTML built by a node. The
+ *   behaviour of the fixes is tested by the driving tests of the modules (palette-editor, projects,
+ *   tab-versionControl, library, errors, utils); this guard only keeps a fixed place from coming back
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
+
 
 const should = require("should");
 const fs = require("fs");
@@ -39,6 +46,10 @@ function sources(dir, out) {
         }
     });
     return out;
+}
+
+function read(relative) {
+    return fs.readFileSync(path.join(sourceRoot, relative), "utf8");
 }
 
 /**
@@ -70,8 +81,38 @@ function balanced(text, start, firstArgument) {
     throw new Error("unbalanced text from " + start);
 }
 
-// calls whose result is escaped (or built by the escaping helpers): what they take is safe
-const ESCAPING_CALLS = /(?:(?<![\w.])escape|RED\.errors\.\w+|moduleFailedMessage|stateChangeFailedMessage|revertConfirmMessage|RED\.utils\.sanitize|authRequiredHtml)\(/;
+/** The top-level parts of a list (arguments, entries of an object) split at the commas. */
+function splitTop(text) {
+    const parts = [];
+    let from = 0;
+    let depth = 0;
+    for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (c === "'" || c === '"' || c === "`") {
+            i++;
+            while (i < text.length && text[i] !== c) {
+                if (text[i] === "\\") { i++; }
+                i++;
+            }
+        } else if (c === "(" || c === "[" || c === "{") {
+            depth++;
+        } else if (c === ")" || c === "]" || c === "}") {
+            depth--;
+        } else if (c === "," && depth === 0) {
+            parts.push(text.substring(from, i));
+            from = i + 1;
+        }
+    }
+    if (text.substring(from).trim() !== "") {
+        parts.push(text.substring(from));
+    }
+    return parts;
+}
+
+// The calls whose result is escaped, or built from escaped values: what they take is safe. The
+// escaping of RED.errors only - parseResponse, httpUrl and the rest are not escaping.
+const ESCAPING_CALLS = new RegExp("(?:(?<![\\w.])escape|RED\\.errors\\.(?:escape|translateEscaped|translateResponse|translateException|notifyGitError)|" +
+    "RED\\.utils\\.sanitize|moduleFailedMessage|stateChangeFailedMessage|revertConfirmMessage|diffTitle|conflictTipMessage|authRequiredHtml)\\(");
 
 function withoutEscapingCalls(text) {
     let match;
@@ -85,8 +126,41 @@ function withoutEscapingCalls(text) {
 // text that is not from the message catalog: an exception, a server response, a name or a file
 const TAINTED = /\.message\b|\.toString\(\)|\bresponseJSON\b|\bresponseText\b|\b(?:err|error|xhr|entry|msg|data)\.\w+|\bfilename\b|\bmoduleName\b/;
 
-describe("editor-client sources: the text that RED.notify shows as HTML (#37)", function() {
-    // [file relative to the source root]: the calls that are checked
+/**
+ * The values of the parameters of the catalog texts (`RED._(key, {...})`) in `text` that are not
+ * escaped: every value must be escaped (the call is replaced by ESCAPED), a message of the catalog
+ * (`RED._(...)`), a literal, a length, or the parameter must be `count`. Parameters that are not an
+ * object literal (`RED._(key, msg)`) cannot be told, they are reported.
+ */
+function unescapedParameters(text) {
+    const found = [];
+    const call = /(?<![\w.])RED\._\(/g;
+    let match;
+    while ((match = call.exec(text)) !== null) {
+        const args = splitTop(balanced(text, match.index + match[0].length, false).text);
+        if (args.length < 2) {
+            continue;
+        }
+        const params = args[1].trim();
+        if (params.charAt(0) !== "{") {
+            found.push(params);
+            continue;
+        }
+        splitTop(params.substring(1, params.length - 1)).forEach(function(entry) {
+            const colon = entry.indexOf(":");
+            const name = (colon === -1 ? entry : entry.substring(0, colon)).trim();
+            const value = (colon === -1 ? entry : entry.substring(colon + 1)).trim();
+            const allowed = name === "count" || value === "ESCAPED" || /^RED\._\(/.test(value) || /^(?:\d+|"[^"]*"|'[^']*')$/.test(value) ||
+                /\.length$/.test(value);
+            if (!allowed) {
+                found.push(name + ": " + value);
+            }
+        });
+    }
+    return found;
+}
+
+describe("editor-client sources: the first argument of RED.notify (#37)", function() {
     const NOTIFY_CALL = /(?:RED\.notify|[nN]otification\.update)\(/g;
     const files = sources(sourceRoot, []);
     const calls = [];
@@ -107,6 +181,10 @@ describe("editor-client sources: the text that RED.notify shows as HTML (#37)", 
         });
     });
 
+    function describeCall(call) {
+        return call.file + ":" + call.line + "  " + call.message.replace(/\s+/g, " ").trim();
+    }
+
     it("finds the notifications of the editor (the guard is not empty)", function() {
         files.length.should.be.above(50);
         calls.length.should.be.above(80);
@@ -116,12 +194,17 @@ describe("editor-client sources: the text that RED.notify shows as HTML (#37)", 
     });
 
     it("no message takes an exception, a response, a name or a file without escaping it", function() {
-        const offending = calls.filter(function(call) {
+        calls.filter(function(call) {
             // a count is not a text
             const rest = withoutEscapingCalls(call.message).replace(/[\w.]+\.length\b/g, "0");
             return TAINTED.test(rest);
-        }).map(c => c.file + ":" + c.line + "  " + c.message.replace(/\s+/g, " ").trim());
-        offending.should.eql([]);
+        }).map(describeCall).should.eql([]);
+    });
+
+    it("every parameter of a catalog text in a message is escaped (or a count, a literal, or a catalog text)", function() {
+        calls.filter(call => unescapedParameters(withoutEscapingCalls(call.message)).length > 0)
+            .map(call => describeCall(call) + "   -> " + unescapedParameters(withoutEscapingCalls(call.message)).join("; "))
+            .should.eql([]);
     });
 
     describe("the guard sees what it should", function() {
@@ -129,14 +212,213 @@ describe("editor-client sources: the text that RED.notify shows as HTML (#37)", 
             TAINTED.test(withoutEscapingCalls('"<p>"+err.message+"</p>"')).should.be.true();
         });
 
-        it("takes a raw message of a response in the parameters of a catalog text", function() {
-            TAINTED.test(withoutEscapingCalls('RED._("x.y",{module:entry.name,message:xhr.responseJSON.message})')).should.be.true();
+        it("takes a raw value in the parameters of a catalog text", function() {
+            unescapedParameters('RED._("x.y",{module:entry.name,message:xhr.responseJSON.message})').should.eql(["module: entry.name", "message: xhr.responseJSON.message"]);
+            unescapedParameters('RED._("x.y",{type:fullType, error:error})').should.eql(["type: fullType", "error: error"]);
+            unescapedParameters('RED._("library.savedType", {type:activeLibrary.type})').should.eql(["type: activeLibrary.type"]);
         });
 
-        it("lets an escaped one pass", function() {
-            TAINTED.test(withoutEscapingCalls('RED.errors.translateEscaped("x.y",{message:err.message})')).should.be.false();
+        it("takes parameters that are not an object literal", function() {
+            unescapedParameters('RED._("notification.state.flowsStopped", msg)').should.eql(["msg"]);
+        });
+
+        it("lets an escaped value, a count, a literal, a length and a catalog text pass", function() {
+            unescapedParameters(withoutEscapingCalls('RED._("x",{a:RED.errors.escape(err.message),count:n,b:"x",c:list.length,d:RED._("y")})')).should.eql([]);
+            unescapedParameters(withoutEscapingCalls('RED.errors.translateEscaped("x.y",{message:err.message})')).should.eql([]);
             TAINTED.test(withoutEscapingCalls('moduleFailedMessage("k",entry.name,xhr.responseJSON.message)')).should.be.false();
             TAINTED.test(withoutEscapingCalls('RED.errors.escape(error.message)+"x"')).should.be.false();
+        });
+
+        it("does not take parseResponse, httpUrl and the like for escaping", function() {
+            TAINTED.test(withoutEscapingCalls('RED.errors.parseResponse(xhr).message')).should.be.true();
+            TAINTED.test(withoutEscapingCalls('RED.errors.httpUrl(entry.url)+entry.name')).should.be.true();
+            withoutEscapingCalls("RED.errors.parseResponse(xhr)").should.equal("RED.errors.parseResponse(xhr)");
+        });
+    });
+});
+
+describe("editor-client sources: text put into HTML by concatenation, in the files #37 changed", function() {
+    // the files where #37 escaped or rebuilt a place; the other files of the editor are not scanned
+    const SCANNED = [
+        "ui/palette-editor.js", "ui/projects/tab-versionControl.js", "ui/projects/projects.js", "ui/library.js",
+        "ui/projects/projectSettings.js", "ui/projects/projectUserSettings.js", "red.js", "nodes.js", "runtime.js"
+    ];
+    // Operands that were reviewed: they are not text of a remote catalog, a repository or a user.
+    // Keyed by the file and the text of the operand, with the reason.
+    const REVIEWED = {
+        "ui/palette-editor.js::new Intl.NumberFormat().format(entry.downloads.week)": "a formatted number, NaN for anything else",
+        "ui/palette-editor.js::formatUpdatedAt(entry.updated_at)": "a text of the message catalog (a time) or a count of it",
+        "ui/projects/tab-versionControl.js::(state==='unstaged')?\"plus\":\"minus\"": "one of two constants",
+        "ui/projects/projects.js::(RED.settings.flowEncryptionType !== 'user')?'disabled':''": "one of two constants",
+        "ui/projects/projects.js::(RED.settings.flowEncryptionType !== 'user')?RED._(\"projects.encryption-config.disabled\"):''": "a constant or a message of the catalog",
+        "ui/library.js::options.type": "the type of a library of a node definition (the module of the node, not the remote)",
+        "ui/projects/projectSettings.js::desc": "the markdown of the project description, cleaned by RED.utils.renderMarkdown (DOMPurify), or a catalog text",
+        "ui/projects/projectSettings.js::RED.text.bidi.resolveBaseTextDir(desc)": "the direction of the text: ltr or rtl",
+        "ui/projects/projectSettings.js::iconClass": "one of two constants",
+        "ui/projects/projectSettings.js::fileIcon": "a constant chosen by the file name",
+        "ui/projects/projectSettings.js::entry.status.ahead": "a number of commits (git status of the runtime)",
+        "ui/projects/projectSettings.js::entry.status.behind": "a number of commits (git status of the runtime)",
+        "red.js::config": "the HTML of the configuration of a node module, which the runtime serves to be HTML"
+    };
+
+    // the calls that parse a string as HTML
+    const HTML_CALLS = /\$\(|\.html\(|\.append\(|\.prepend\(|\.before\(|\.after\(/g;
+
+    /**
+     * The operands of an expression that builds HTML: the parts between the `+` and the string
+     * literals at the top level (a literal or a `+` inside a call belongs to the operand).
+     */
+    function operands(expr) {
+        const result = [];
+        let current = "";
+        let depth = 0;
+        let hasMarkup = false;
+        function flush() {
+            if (current.trim() !== "") { result.push(current.trim()); }
+            current = "";
+        }
+        function literalEnd(from, quote) {
+            let j = from + 1;
+            while (j < expr.length && expr[j] !== quote) { if (expr[j] === "\\") { j++; } j++; }
+            return j;
+        }
+        for (let i = 0; i < expr.length; i++) {
+            const c = expr[i];
+            if (c === "'" || c === '"' || c === "`") {
+                const end = literalEnd(i, c);
+                if (depth > 0) {
+                    current += expr.substring(i, end + 1);
+                } else if (c === "`") {
+                    flush();
+                    for (let j = i + 1; j < end; j++) {
+                        if (expr[j] === "$" && expr[j + 1] === "{") {
+                            const inner = balanced(expr, j + 2, false);
+                            result.push(inner.text.trim());
+                            j = inner.end;
+                        } else if (expr[j] === "<") {
+                            hasMarkup = true;
+                        }
+                    }
+                } else {
+                    if (expr.substring(i + 1, end).indexOf("<") !== -1) { hasMarkup = true; }
+                    flush();
+                }
+                i = end;
+            } else if (c === "+" && depth === 0) {
+                flush();
+            } else {
+                if (c === "(" || c === "[" || c === "{") { depth++; }
+                if (c === ")" || c === "]" || c === "}") { depth--; }
+                current += c;
+            }
+        }
+        flush();
+        return { operands: result, hasMarkup };
+    }
+
+    function unsafeOperands(expr, file) {
+        const parsed = operands(expr);
+        if (!parsed.hasMarkup) {
+            return [];
+        }
+        return parsed.operands.filter(function(operand) {
+            operand = withoutEscapingCalls(operand).trim();
+            // (a + b) or (a || b): the parentheses of the expression are no part of it
+            while (operand.charAt(0) === "(" && balanced(operand, 1, false).end === operand.length - 1) {
+                operand = operand.substring(1, operand.length - 1).trim();
+            }
+            if (operand === "" || operand === "ESCAPED") { return false; }
+            if (/^\d+$/.test(operand) || Object.prototype.hasOwnProperty.call(REVIEWED, file + "::" + operand)) { return false; }
+            if (/^RED\._\(/.test(operand)) {
+                // a message of the catalog; its parameters are checked
+                return unescapedParameters(operand).length > 0;
+            }
+            return true;
+        });
+    }
+
+    function findings() {
+        const found = [];
+        SCANNED.forEach(function(relative) {
+            // the comments are not code: block comments and whole-line comments are blanked, line numbers stay
+            const text = read(relative).replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, " ")).replace(/^(\s*)\/\/.*$/gm, "$1");
+            let match;
+            HTML_CALLS.lastIndex = 0;
+            while ((match = HTML_CALLS.exec(text)) !== null) {
+                const arg = balanced(text, match.index + match[0].length, true).text;
+                unsafeOperands(withoutEscapingCalls(arg), relative).forEach(function(operand) {
+                    found.push(relative + ":" + text.substring(0, match.index).split("\n").length + "  " + operand);
+                });
+            }
+        });
+        return found;
+    }
+
+    it("every text that is put into HTML is escaped, a message of the catalog, or reviewed", function() {
+        findings().should.eql([]);
+    });
+
+    describe("the guard sees what it should", function() {
+        it("takes a text that is concatenated into HTML", function() {
+            unsafeOperands("'<span>'+entry.version+'</span>'", "test").should.eql(["entry.version"]);
+            unsafeOperands("'<option value=\"'+catalog.name+'\">'+catalog.name+'</option>'", "test").should.eql(["catalog.name", "catalog.name"]);
+            unsafeOperands("`<option value=\"${catalog.name}\">${catalog.name}</option>`", "test").should.eql(["catalog.name", "catalog.name"]);
+            unsafeOperands("'<td>'+file.props.name+'</td>'", "test").should.eql(["file.props.name"]);
+        });
+
+        it("lets pass an escaped text, a message of the catalog and the HTML without text", function() {
+            unsafeOperands("'<span>'+RED.errors.escape(entry.version)+'</span>'", "test").should.eql([]);
+            unsafeOperands("'<span>'+RED._('palette.editor.install')+'</span>'", "test").should.eql([]);
+            unsafeOperands("'<span>'+RED._('x.y',{count:n})+'</span>'", "test").should.eql([]);
+            unsafeOperands("'<i class=\"fa fa-x\"></i>'", "test").should.eql([]);
+            unsafeOperands("RED._('x')+': '+name", "test").should.eql([]);   // no markup in the literals: not HTML
+        });
+
+        it("takes a message of the catalog with a parameter that is not escaped", function() {
+            unsafeOperands("'<p>'+RED._('x.y',{name:entry.name})+'</p>'", "test").should.eql(["RED._('x.y',{name:entry.name})"]);
+        });
+    });
+});
+
+describe("editor-client sources: the places that #37 fixed stay fixed (pinned)", function() {
+    // [file, text that must be in the file, text that must not be]
+    const PINNED = [
+        ["ui/projects/projects.js", "$(authRequiredHtml(url))", "+url+"],
+        ["ui/projects/projects.js", "RED.errors.escape(url)", "'+url"],
+        ["ui/projects/tab-versionControl.js", "diffTitle(state, entry.file)", "+' : '+entry.file"],
+        ["ui/projects/tab-versionControl.js", "revertConfirmMessage(entry.file)", "RED._(\"sidebar.project.versionControl.revert\""],
+        ["ui/library.js", "<td>'+RED._(\"library.name\")+'</td><td></td></tr>'", "+file.props.name+"],
+        ["red.js", "RED.errors.translateEscaped(msg.text,msg)", "RED._(msg.text,msg)"],
+        ["nodes.js", "RED.errors.translateEscaped(\"palette.event.unknownNodeRegistered\"", "RED._(\"palette.event.unknownNodeRegistered\""],
+        ["ui/library.js", "RED.errors.translateEscaped(\"library.savedType\"", "RED._(\"library.savedType\""],
+        ["runtime.js", "RED.errors.translateEscaped(\"notification.state.flows\"", "RED._(\"notification.state.flows\""],
+        ["ui/palette-editor.js", "RED.errors.translateEscaped('palette.editor.conflictTip'", "RED._('palette.editor.conflictTip'"],
+        ["ui/palette-editor.js", "catalogSelection.append(catalogOption(catalog))", "<option value=\"${catalog.name}\">"],
+        ["ui/palette-editor.js", "metaItem(\"red-ui-palette-module-version\"", "'+entry.version+'"],
+        ["ui/palette-editor.js", "renderPendingVersion(nodeEntry.versionSpan", "versionSpan.html("]
+    ];
+
+    PINNED.forEach(function(pin) {
+        it(pin[0] + " has " + pin[1] + " and does not have " + pin[2], function() {
+            const text = read(pin[0]);
+            text.should.containEql(pin[1]);
+            text.should.not.containEql(pin[2]);
+        });
+    });
+
+    describe("palette-editor.js: enable and disable (the handlers are driven by palette-editor_spec)", function() {
+        it("a failed change of the state is shown by exactly two calls, with the node set id and the module name", function() {
+            const text = read("ui/palette-editor.js");
+            const calls = text.match(/(?<!function )notifyStateChangeFailed\(newState,[^)]*\)/g);
+            calls.should.eql(["notifyStateChangeFailed(newState,set.id,xhr)", "notifyStateChangeFailed(newState,entry.name,xhr)"]);
+        });
+
+        it("the text \"installFailed\" is in the install, the upload and the automatic install only", function() {
+            const text = read("ui/palette-editor.js");
+            const lines = text.split("\n").map((line, i) => ({ line, n: i + 1 })).filter(l => /errors\.installFailed|installFailed'/.test(l.line));
+            // install (entry.id), upload (filename), automatic install (moduleName)
+            lines.map(l => /entry\.id|filename|moduleName/.test(l.line)).should.eql(lines.map(() => true));
+            lines.should.have.length(3);
         });
     });
 });
@@ -172,12 +454,11 @@ describe("editor-client sources: the call sites of RED.utils.sanitize (#37)", fu
     });
 
     it("the text that is processed further uses sanitizeContent (markdown, words of a palette label)", function() {
-        fs.readFileSync(path.join(sourceRoot, "ui/tab-help.js"), "utf8").should.containEql("RED.utils.sanitizeContent(data)");
-        fs.readFileSync(path.join(sourceRoot, "ui/palette.js"), "utf8").should.containEql("RED.utils.sanitizeContent(label)");
+        read("ui/tab-help.js").should.containEql("RED.utils.sanitizeContent(data)");
+        read("ui/palette.js").should.containEql("RED.utils.sanitizeContent(label)");
     });
 
     it("the tooltip of a tab is a plain text: the label is not escaped", function() {
-        fs.readFileSync(path.join(sourceRoot, "ui/common/tabs.js"), "utf8")
-            .should.containEql("RED.popover.tooltip(link,function() { return tab.label; });");
+        read("ui/common/tabs.js").should.containEql("RED.popover.tooltip(link,function() { return tab.label; });");
     });
 });
