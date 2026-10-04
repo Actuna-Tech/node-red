@@ -115,14 +115,37 @@ describe("runtime", function() {
                 httpHold.dispose();
                 instanceState.reset();
             });
-            it("holds the requests of the httpNode app during a deployment when enabled", async function() {
+            function removeRoute(path) {
+                const stack = runtime._.nodeApp._router.stack;
+                stack.splice(0, stack.length, ...stack.filter(layer => !(layer.route && layer.route.path === path)));
+            }
+            it("holds the requests of the httpNode app for a route that is missing during a deployment when enabled", async function() {
                 runtime.init({testSettings: true, httpAdminRoot:"/", deploy: { holdHttpNodeRequests: { enabled: true, timeout: 50 } }});
                 runtime._.nodeApp.get("/hello", (req, res) => res.send("hello"));
                 (await request(runtime.httpNode).get("/hello")).text.should.equal("hello");
                 instanceState.begin("deploy");
+                // the route of the node is removed while the node restarts
+                removeRoute("/hello");
                 const res = await request(runtime.httpNode).get("/hello");
                 res.status.should.equal(503);
                 res.headers["retry-after"].should.equal("1");
+            });
+            it("does not hold the requests of the httpNode app for a route that exists during a deployment and a reload", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: { holdHttpNodeRequests: { enabled: true, timeout: 50 } }});
+                runtime._.nodeApp.get("/hello", (req, res) => res.send("hello"));
+                instanceState.begin("deploy");
+                const start = Date.now();
+                (await request(runtime.httpNode).get("/hello")).text.should.equal("hello");
+                (Date.now() - start).should.be.below(40);
+                httpHold.pending().should.equal(0);
+                instanceState.reset();
+                instanceState.markStarting();
+                instanceState.report({ errors: [] });
+                instanceState.markReloadPending();
+                instanceState.markDraining();
+                instanceState.begin("reload");
+                (await request(runtime.httpNode).get("/hello")).text.should.equal("hello");
+                httpHold.pending().should.equal(0);
             });
             it("does not change the httpNode app when the setting is off", async function() {
                 runtime.init({testSettings: true, httpAdminRoot:"/"});

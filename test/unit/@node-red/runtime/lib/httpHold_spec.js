@@ -380,6 +380,111 @@ describe("runtime/httpHold (#8)", function() {
         });
     });
 
+    describe("routes that exist during a restart", function() {
+        it("an existing route is served at once during a deployment (a partial deployment keeps it)", async function() {
+            await setup({ enabled: true, timeout: 5000 });
+            addRoute("/unchanged", "kept");
+            addRoute("/changed", "old");
+            const token = instanceState.begin("deploy");
+            removeRoute("/changed");
+            const res = await get("/unchanged");
+            res.status.should.equal(200);
+            res.text.should.equal("kept");
+            httpHold.pending().should.equal(0);
+            // the route that is gone is held, the unchanged one is still served
+            const pendingRes = getHeld("/changed");
+            await waitHeld(1);
+            (await get("/unchanged")).text.should.equal("kept");
+            addRoute("/changed", "new");
+            instanceState.end(token, { errors: [] });
+            const released = await pendingRes;
+            released.status.should.equal(200);
+            released.text.should.equal("new");
+        });
+
+        it("an existing route is served at once during a reload from storage", async function() {
+            await setup({ enabled: true, timeout: 5000 });
+            addRoute("/unchanged", "kept");
+            instanceState.markReloadPending();
+            instanceState.markDraining();
+            instanceState.begin("reload");
+            const res = await get("/unchanged");
+            res.status.should.equal(200);
+            res.text.should.equal("kept");
+            httpHold.pending().should.equal(0);
+        });
+
+        it("an existing route is not answered with 503 even when the deployment outlasts the timeout", async function() {
+            await setup({ enabled: true, timeout: 30 });
+            addRoute("/unchanged", "kept");
+            instanceState.begin("deploy");
+            await new Promise(r => setTimeout(r, 60));
+            (await get("/unchanged")).status.should.equal(200);
+        });
+
+        it("a missing route is held and released after the start, then the new route answers 200", async function() {
+            await setup({ enabled: true, timeout: 5000 });
+            const token = instanceState.begin("deploy");
+            const pendingRes = getHeld("/new");
+            await waitHeld(1);
+            addRoute("/new", "created");
+            instanceState.end(token, { errors: [] });
+            const res = await pendingRes;
+            res.status.should.equal(200);
+            res.text.should.equal("created");
+        });
+
+        it("matches the parameters of a route and ignores the query string", async function() {
+            await setup({ enabled: true, timeout: 5000 });
+            app.get("/items/:id", (req, res) => res.send("item " + req.params.id));
+            instanceState.begin("deploy");
+            (await get("/items/7?x=1")).text.should.equal("item 7");
+            httpHold.pending().should.equal(0);
+        });
+
+        it("a HEAD request is served by a GET route; another method without a route is held", async function() {
+            await setup({ enabled: true, timeout: 100 });
+            addRoute("/hello", "v1");
+            instanceState.begin("deploy");
+            (await get("/hello", { method: "HEAD" })).status.should.equal(200);
+            httpHold.pending().should.equal(0);
+            // no POST route on that path: held, then 503 after the timeout
+            const res = await get("/hello", { method: "POST" });
+            res.status.should.equal(503);
+            JSON.parse(res.text).code.should.equal("http_hold_timeout");
+        });
+
+        it("an OPTIONS request for a path with a route is not held", async function() {
+            await setup({ enabled: true, timeout: 100 });
+            addRoute("/hello", "v1");
+            instanceState.begin("deploy");
+            const res = await get("/hello", { method: "OPTIONS" });
+            res.status.should.equal(200);
+            httpHold.pending().should.equal(0);
+        });
+
+        it("a handler mounted with use() is not a route: the request is held", async function() {
+            await setup({ enabled: true, timeout: 100 });
+            app.use("/mounted", (req, res) => res.send("mounted"));
+            instanceState.begin("deploy");
+            (await get("/mounted/x")).status.should.equal(503);
+        });
+
+        it("holds the request when the router of the app cannot be inspected", async function() {
+            await setup({ enabled: true, timeout: 5000 });
+            instanceState.begin("deploy");
+            const next = sinon.spy();
+            const res = new (require("events").EventEmitter)();
+            httpHold.middleware({ method: "GET", path: "/x" }, res, next);
+            next.called.should.be.false();
+            httpHold.pending().should.equal(1);
+            httpHold.middleware({ method: "GET", path: "/x", app: {} }, new (require("events").EventEmitter)(), next);
+            httpHold.pending().should.equal(2);
+            httpHold.dispose();
+            next.calledTwice.should.be.true();
+        });
+    });
+
     describe("settings validation", function() {
         it("uses the defaults and warns for invalid options", async function() {
             await setup({ enabled: true, timeout: -5, maxPending: 1.5, retryAfter: "x" });

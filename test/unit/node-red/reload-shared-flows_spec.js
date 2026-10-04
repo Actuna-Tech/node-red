@@ -18,6 +18,8 @@
  *   Z-09: acceptance test - two instances on one shared flow file reload the
  *   flows in the process after the file changed, with a drain of the work in
  *   progress (preReload) and /ready 503 during the drain
+ *   #8: acceptance test of deploy.holdHttpNodeRequests with a real "http in" node
+ *   in the window between the stop of the old flows and the start of the new ones
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -32,6 +34,12 @@
  * another tab is written: the turns complete with 200, /ready answers 503
  * during the drain, the new route answers afterwards and the processes are
  * not restarted (same process, the HTTP server always answers).
+ *
+ * A second case (#8) widens the stop->start window of a full reload with a node
+ * whose close takes 1.5 s: the route of an "http in" is removed when its node
+ * closes, so for about 1.5 s the route does not exist. Requests sent all the
+ * time during the reload get 404 without `deploy.holdHttpNodeRequests` and, with
+ * it, are held and answered by the new flows (never 404, never 503).
  */
 const should = require("should");
 const path = require("path");
@@ -107,6 +115,20 @@ module.exports = function(RED) {
     RED.nodes.registerType("hold-turn", HoldTurn);
 };
 `);
+    // The close of this node takes `closeDelay` ms: it keeps the stop of the old flows
+    // (and so the window without the routes) open
+    fs.writeFileSync(path.join(nodesDir, "slow-close.js"), `
+module.exports = function(RED) {
+    function SlowClose(n) {
+        RED.nodes.createNode(this, n);
+        this.on("close", function(done) {
+            setTimeout(done, Number(n.closeDelay) || 0);
+        });
+    }
+    RED.nodes.registerType("slow-close", SlowClose);
+};
+`);
+    fs.writeFileSync(path.join(nodesDir, "slow-close.html"), `<script type="text/javascript">RED.nodes.registerType("slow-close",{category:"function",defaults:{closeDelay:{value:0}},inputs:0,outputs:0,label:"slow close"});</script>`);
     fs.writeFileSync(path.join(nodesDir, "hold-turn.html"), `<script type="text/javascript">RED.nodes.registerType("hold-turn",{category:"function",defaults:{delay:{value:0}},inputs:1,outputs:1,label:"hold"});</script>`);
 }
 
@@ -120,6 +142,15 @@ function routeNodes(tab, url, extra) {
 
 const FLOWS_A = [{ id: "tA", type: "tab", label: "A" }].concat(routeNodes("tA", "/turn", { type: "hold-turn", delay: 2000 }));
 const FLOWS_B = FLOWS_A.concat([{ id: "tB", type: "tab", label: "B" }]).concat(routeNodes("tB", "/new"));
+
+// #8: /stable answers 200 in the old flows and 202 in the new ones; /turn is a request
+// in progress that the drain waits for; slow-close widens the window without routes
+function windowFlows(statusCode) {
+    return [{ id: "tW", type: "tab", label: "W" }]
+        .concat(routeNodes("tW", "/stable").map(n => n.type === "http response" ? Object.assign(n, { statusCode: statusCode }) : n))
+        .concat(routeNodes("tT", "/turn", { type: "hold-turn", delay: 1000 }).map(n => Object.assign(n, { z: "tW" })))
+        .concat([{ id: "slow", type: "slow-close", z: "tW", closeDelay: 1500, wires: [] }]);
+}
 
 describe("reload of shared flows in two instances (acceptance, Z-09)", function() {
     this.timeout(90000);
@@ -137,7 +168,7 @@ describe("reload of shared flows in two instances (acceptance, Z-09)", function(
         dirs.forEach(d => fs.rmSync(d, { recursive: true, force: true }));
     });
 
-    async function startInstance(flowFile) {
+    async function startInstance(flowFile, deploy) {
         const userDir = tempDir("nr-reload-");
         writeHoldNode(userDir);
         const port = await getFreePort();
@@ -160,7 +191,7 @@ module.exports = ${JSON.stringify({
             disableEditor: true,
             logging: { console: { level: "off" } },
             health: { enabled: true, port: healthPort, host: "127.0.0.1" },
-            deploy: { reload: { watch: true, preReloadTimeout: 30000 } }
+            deploy: Object.assign({ reload: { watch: true, preReloadTimeout: 30000 } }, deploy)
         })};
 `);
         const child = spawn(process.execPath, [RED_JS, "-u", userDir, "-p", String(port)], { stdio: "ignore" });
@@ -225,5 +256,56 @@ module.exports = ${JSON.stringify({
         (await request("GET", instances[0].base + "/turn")).status.should.equal(200);
         // The shared flow file was not written by the instances
         JSON.parse(fs.readFileSync(flowFile, "utf8")).should.eql(FLOWS_B);
+    });
+
+    // Sends GET /stable all the time (two sequential pollers) during a reload of the
+    // flows written to the shared file; returns the statuses in the order of the answers
+    async function reloadUnderLoad(deploy) {
+        const shared = tempDir("nr-reload-hold-");
+        const flowFile = path.join(shared, "flows.json");
+        fs.writeFileSync(flowFile, JSON.stringify(windowFlows("200")));
+        const inst = await startInstance(flowFile, deploy);
+        await waitFor(async () => (await status(inst.ready)) === 200, 30000, "not ready");
+        (await status(inst.base + "/stable")).should.equal(200);
+
+        const statuses = [];
+        let polling = true;
+        const pollers = [0, 1].map(() => (async () => {
+            while (polling) {
+                statuses.push(await status(inst.base + "/stable"));
+                await new Promise(r => setTimeout(r, 10));
+            }
+        })());
+        // A request in progress: the drain waits for it, the reload starts when it completes
+        const turn = request("GET", inst.base + "/turn");
+        await new Promise(r => setTimeout(r, 300));
+        fs.writeFileSync(flowFile + ".tmp", JSON.stringify(windowFlows("202")));
+        fs.renameSync(flowFile + ".tmp", flowFile);
+        (await turn).status.should.equal(200);
+        // the new flows answer 202 on /stable once started
+        await waitFor(async () => statuses.indexOf(202) !== -1, 20000, "the new flows did not answer");
+        await new Promise(r => setTimeout(r, 300));
+        polling = false;
+        await Promise.all(pollers);
+        should(inst.child.exitCode).be.null();
+        return statuses;
+    }
+
+    it("with deploy.holdHttpNodeRequests a request in the stop->start window gets the answer of the new flows, never 404 (#8)", async function() {
+        const statuses = await reloadUnderLoad({ holdHttpNodeRequests: { enabled: true, timeout: 5000 } });
+        statuses.should.not.containEql(404);
+        statuses.should.not.containEql(503);
+        statuses.should.not.containEql(0);
+        statuses.should.containEql(200);
+        statuses.should.containEql(202);
+        // once the new flows answer, the old ones never do again
+        statuses.slice(statuses.indexOf(202)).should.not.containEql(200);
+    });
+
+    it("control: without the setting the same window gives 404 (#8)", async function() {
+        const statuses = await reloadUnderLoad();
+        // the route is gone for the 1.5 s the old flows take to stop
+        statuses.should.containEql(404);
+        statuses.should.containEql(202);
     });
 });
