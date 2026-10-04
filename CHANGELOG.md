@@ -69,8 +69,8 @@ Features
    used by a browser set to Polish when the user has not selected a language.
  - Polish help of the `debug`, `function`, `change` and `json` nodes (`locales/pl/common/21-debug.html`,
    `function/10-function.html`, `function/15-change.html`, `parsers/70-JSON.html`). The files follow the
-   en-US 5.0.7 help: the same sections, property names and code samples (Z-13, #12). In the editor
-   with `lang` `pl` these nodes show the Polish help instead of the English one
+   en-US 5.0.7 help: the same sections, property names and code samples (Z-13, #12). When the
+   editor language is Polish, these nodes show the Polish help instead of the English one.
 
  - New API for the coordination of instances that run the same flows: `RED.coordination`
    for nodes (`isLeader()`, `onLeaderChange(node, listener)`, `claim(key, ttlMs)`,
