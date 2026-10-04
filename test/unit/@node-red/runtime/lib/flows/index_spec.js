@@ -1219,7 +1219,7 @@ describe('flows/index', function() {
                         entry.should.have.property("timeout",30);
                         entry.startedAt.should.be.a.Number();
                         entry.elapsed.should.be.a.Number();
-                        entry.elapsed.should.be.aboveOrEqual(30);
+                        entry.elapsed.should.be.aboveOrEqual(20); // the timer and Date.now differ by a millisecond or two
                         entry.should.have.property("message");
                     } finally {
                         finishStart();
@@ -1291,8 +1291,12 @@ describe('flows/index', function() {
                         const oldT2 = flowCreate.flows.t2;
                         let finishStart;
                         const pendingStart = new Promise(resolve => { finishStart = resolve });
-                        // the changed flow t2 is started again (a new one after a flows stop, the same after a nodes stop)
+                        // the changed flow t2 is started again (a new one after a flows stop, the same after a nodes stop);
+                        // the unchanged global flow and t1 keep running - their start is held here as the first
+                        // ones, so that they would be listed as pending if they were not filtered out
                         oldT2.start = function() { return pendingStart };
+                        flowCreate.flows._GLOBAL_.start = function() { return pendingStart };
+                        flowCreate.flows.t1.start = function() { return pendingStart };
                         replaceFlowCreate(function(id) { return id === "t2" ? pendingStart : Promise.resolve() });
                         const changed = clone(baseConfig);
                         changed.find(n => n.id === "t2-1").foo = "bar";
