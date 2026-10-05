@@ -17,7 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #19: the test server hook calls done exactly once, retries on a taken port and answers with one ACK per connection, whatever the split of the chunks (flaky tests)
  *   #41: the test server listens on a port assigned by the system (port 0), no fixed port
- *   #54: acceptance tests of the "sit" mode with an answer that arrives in two chunks (flaky tests)
+ *   #54: acceptance tests of the "sit" mode with an answer that arrives in two chunks; the "time" test of the latest message has a server that answers once (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -369,21 +369,37 @@ describe('TCP Request Node', function() {
         });
 
         it('should only retain the latest message', function(done) {
-            var flow = [{id:"n1", type:"tcp request", server:"localhost", port:port, out:"time", splitc: "0", wires:[["n2"]] },
-                        {id:"n2", type:"helper"}];
-            testTCPMany(flow, [{
-                payload: 'f',
-                topic: 'bar'
-            }, {
-                payload: 'o',
-                topic: 'baz'
-            }, {
-                payload: 'o',
-                topic: 'quux'
-            }], {
-                payload: 'ACK:foo',
-                topic: 'quux'
-            }, done);
+            // The "time" mode passes on what has arrived in the first splitc ms and closes the connection, so the
+            // answer must come in one chunk: this server answers once, when all three messages have arrived
+            var once = stoppable(net.createServer(function(c) {
+                var got = "";
+                c.on('data', function(data) {
+                    got += data.toString();
+                    if (got.length === 3) {
+                        c.write("ACK:" + got);
+                    }
+                });
+                c.on('error', function() { c.destroy() });
+            }));
+            once.once('error', done);
+            once.listen(0, "127.0.0.1", function() {
+                once.removeAllListeners('error');
+                var flow = [{id:"n1", type:"tcp request", server:"localhost", port:once.address().port, out:"time", splitc: "0", wires:[["n2"]] },
+                            {id:"n2", type:"helper"}];
+                testTCPMany(flow, [{
+                    payload: 'f',
+                    topic: 'bar'
+                }, {
+                    payload: 'o',
+                    topic: 'baz'
+                }, {
+                    payload: 'o',
+                    topic: 'quux'
+                }], {
+                    payload: 'ACK:foo',
+                    topic: 'quux'
+                }, function(err) { once.stop(function() { done(err) }) });
+            });
         });
     });
     // #54: the answer of a connection arrives in more than one chunk
