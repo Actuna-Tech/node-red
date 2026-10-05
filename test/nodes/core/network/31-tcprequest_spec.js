@@ -426,38 +426,47 @@ describe('TCP Request Node', function() {
     });
     // #54: the answer of a connection arrives in more than one chunk
     describe('the answer arrives in two chunks (#54)', function () {
-        // The pause between two writes of the server: the client reads them one by one
-        const PAUSE = 25;
+        // How long AC-5 waits after the second message to see that no third one comes
+        const QUIET = 100;
         let splitServer = undefined;
         let splitPort = undefined;
+        // release(): the test has taken a message of the current connection, so the server may write the next
+        // part of the answer
+        let release = function() {};
+        // the onMessage of testTCPMany: every message taken lets the server write the next part
+        function releaseNext() {
+            release();
+        }
 
         // A server that answers a connection in separate writes, with "ACK:" once at the start.
         // surplus: the answer gets one more character at its end.
         // The first write holds the "ACK:" and the first `firstLength` bytes of what the server
-        // receives; whatever follows (in the same chunk or in the next ones) goes in writes of its own,
-        // each one PAUSE ms after the previous one has been written out.
+        // receives; whatever follows (in the same chunk or in the next ones) goes in writes of its own.
+        // Each write after the first one waits for a release() from the test, so the client has passed on
+        // the previous part as a message of its own before the next part is written.
         function listenSplit(firstLength, surplus, done) {
             const candidate = stoppable(net.createServer(function(c) {
                 c.setNoDelay(true);
                 let acknowledged = false;
                 const queue = [];
-                let writing = false;
+                // the writes allowed now: the first one, then one more for every release()
+                let allowed = 1;
                 function pump() {
-                    if (queue.length === 0) {
-                        writing = false;
-                        return;
+                    while (allowed > 0 && queue.length > 0) {
+                        allowed -= 1;
+                        c.write(queue.shift());
                     }
-                    writing = true;
-                    c.write(queue.shift(), function() { setTimeout(pump, PAUSE) });
                 }
+                release = function() {
+                    allowed += 1;
+                    pump();
+                };
                 function enqueue(text) {
                     if (text.length === 0) {
                         return;
                     }
                     queue.push(text);
-                    if (!writing) {
-                        pump();
-                    }
+                    pump();
                 }
                 c.on('data', function(data) {
                     let text = data.toString();
@@ -503,14 +512,14 @@ describe('TCP Request Node', function() {
                 }], {
                     payload: "ACK:foobar<A>\nfoo",
                     topic: 'boo'
-                }, done);
+                }, done, releaseNext);
             });
 
             it('AC-2: should limit the queue size', function (done) {
                 RED.settings.tcpMsgQueueSize = 10;
                 const msgs = new Array(RED.settings.tcpMsgQueueSize + 1).fill('x');
                 const expected = msgs.slice(0, -1);
-                testTCPMany(sitFlow({splitc: "5"}), msgs, "ACK:" + expected.join(''), done);
+                testTCPMany(sitFlow({splitc: "5"}), msgs, "ACK:" + expected.join(''), done, releaseNext);
             });
 
             it('AC-3: should send & receive, then keep connection', function(done) {
@@ -526,7 +535,7 @@ describe('TCP Request Node', function() {
                 }], {
                     payload: "ACK:foobarbaz",
                     topic: 'bar'
-                }, done);
+                }, done, releaseNext);
             });
 
             it('AC-5: the node passes on one message per chunk it receives', function(done) {
@@ -537,6 +546,7 @@ describe('TCP Request Node', function() {
                     const n2 = helper.getNode("n2");
                     n2.on("input", function(msg) {
                         seen.push(msg.payload);
+                        release();
                         if (seen.length === 2) {
                             // nothing more arrives after the second one
                             setTimeout(function() {
@@ -546,7 +556,7 @@ describe('TCP Request Node', function() {
                                 } catch(err) {
                                     done(err);
                                 }
-                            }, 4 * PAUSE);
+                            }, QUIET);
                         }
                     });
                     n1.receive({payload: "foo", topic: 'boo'});
@@ -574,7 +584,7 @@ describe('TCP Request Node', function() {
                     } catch(e) {
                         done(e);
                     }
-                });
+                }, releaseNext);
             });
         });
     });
