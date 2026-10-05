@@ -29,6 +29,7 @@
  *   #2: the v2 result of getFlows is only {flows, rev} - no digest of the credentials
  *   #40: setState stop with deploy.drainHttpNodeRequests waits for the accepted requests and answers
  *   the open ones with 503
+ *   Z-06 (#10): a rejected single-flow request does not change the instance state (A24, U1)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -227,18 +228,20 @@ describe("runtime-api/flows", function() {
         var addFlow;
         beforeEach(function() {
             addFlow = sinon.spy(function(flow) {
-                if (flow === "error") {
-                    var err = new Error("error");
-                    err.code = "error";
-                    var p = Promise.reject(err);
-                    p.catch(()=>{});
-                    return p;
-                }
                 return Promise.resolve("newId");
             });
             flows.init({
                 log: mockLog(),
                 flows: {
+                    // Z-06 (U1): the build runs in step 2 (prepare), so its errors are thrown there
+                    buildAddFlowConfig: function(flow) {
+                        if (flow === "error") {
+                            var err = new Error("error");
+                            err.code = "error";
+                            throw err;
+                        }
+                        return {config: [], id: "newId"};
+                    },
                     addFlow: addFlow
                 }
             });
@@ -297,26 +300,26 @@ describe("runtime-api/flows", function() {
         var updateFlow;
         beforeEach(function() {
             updateFlow = sinon.spy(function(id,flow) {
-                if (id === "unknown") {
-                    var err = new Error();
-                    // TODO: quirk of internal api - uses .code for .status
-                    err.code = 404;
-                    var p = Promise.reject(err);
-                    p.catch(()=>{});
-                    return p;
-                } else if (id === "error") {
-                    var err = new Error();
-                    // TODO: quirk of internal api - uses .code for .status
-                    err.code = "error";
-                    var p = Promise.reject(err);
-                    p.catch(()=>{});
-                    return p;
-                }
                 return Promise.resolve();
             });
             flows.init({
                 log: mockLog(),
                 flows: {
+                    // Z-06 (U1): the build runs in step 2 (prepare), so its errors are thrown there
+                    buildUpdateFlowConfig: function(id) {
+                        if (id === "unknown") {
+                            var err = new Error();
+                            // TODO: quirk of internal api - uses .code for .status
+                            err.code = 404;
+                            throw err;
+                        } else if (id === "error") {
+                            var err = new Error();
+                            // TODO: quirk of internal api - uses .code for .status
+                            err.code = "error";
+                            throw err;
+                        }
+                        return {config: [], label: id, created: false};
+                    },
                     updateFlow: updateFlow
                 }
             });
@@ -355,26 +358,26 @@ describe("runtime-api/flows", function() {
         var removeFlow;
         beforeEach(function() {
             removeFlow = sinon.spy(function(flow) {
-                if (flow === "unknown") {
-                    var err = new Error();
-                    // TODO: quirk of internal api - uses .code for .status
-                    err.code = 404;
-                    var p = Promise.reject(err);
-                    p.catch(()=>{});
-                    return p;
-                } else if (flow === "error") {
-                    var err = new Error();
-                    // TODO: quirk of internal api - uses .code for .status
-                    err.code = "error";
-                    var p = Promise.reject(err);
-                    p.catch(()=>{});
-                    return p;
-                }
                 return Promise.resolve();
             });
             flows.init({
                 log: mockLog(),
                 flows: {
+                    // Z-06 (U1): the build runs in step 2 (prepare), so its errors are thrown there
+                    buildRemoveFlowConfig: function(flow) {
+                        if (flow === "unknown") {
+                            var err = new Error();
+                            // TODO: quirk of internal api - uses .code for .status
+                            err.code = 404;
+                            throw err;
+                        } else if (flow === "error") {
+                            var err = new Error();
+                            // TODO: quirk of internal api - uses .code for .status
+                            err.code = "error";
+                            throw err;
+                        }
+                        return {config: [], flow: {id: flow}};
+                    },
                     removeFlow: removeFlow
                 }
             });
@@ -787,6 +790,9 @@ describe("runtime-api/flows", function() {
                     setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
                     loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
                     readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    buildAddFlowConfig: function() { return {config: [], id: "newId"} },
+                    buildUpdateFlowConfig: function() { return {config: [], label: "l", created: false} },
+                    buildRemoveFlowConfig: function() { return {config: [], flow: {id: "1"}} },
                     addFlow: sinon.spy(function() { order.push("addFlow"); return Promise.resolve("newId") }),
                     updateFlow: sinon.spy(function() { order.push("updateFlow"); return Promise.resolve() }),
                     removeFlow: sinon.spy(function() { order.push("removeFlow"); return Promise.resolve() }),
@@ -920,6 +926,9 @@ describe("runtime-api/flows", function() {
                     setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
                     loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
                     readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    buildAddFlowConfig: function() { return {config: [], id: "newId"} },
+                    buildUpdateFlowConfig: function() { return {config: [], label: "l", created: false} },
+                    buildRemoveFlowConfig: function() { return {config: [], flow: {id: "1"}} },
                     addFlow: sinon.spy(function() { return Promise.resolve("newId") }),
                     updateFlow: sinon.spy(function() { return Promise.resolve() }),
                     removeFlow: sinon.spy(function() { return Promise.resolve() })
@@ -1098,13 +1107,18 @@ describe("runtime-api/flows", function() {
                     getFlows: function() { return {rev:"rev-all",flows:[]} },
                     getFlow: sinon.spy(function(id) { return id === "t1" ? {id:"t1",label:"Flow 1",nodes:[]} : null }),
                     getFlowRevision: sinon.spy(function(id) { return revisions[id] || null }),
-                    addFlow: sinon.spy(function(flow) { revisions.added = "rev-added"; return Promise.resolve("added") }),
-                    updateFlow: sinon.spy(function(id, flow, user, deployOpts, opts) {
+                    buildAddFlowConfig: sinon.spy(function(flow) { return {config: [], id: "added"} }),
+                    buildUpdateFlowConfig: sinon.spy(function(id, flow, opts) {
                         if (!revisions[id] && !(opts && opts.create)) {
                             const err = new Error();
                             err.code = 404;
-                            return Promise.reject(err);
+                            throw err;
                         }
+                        return {config: [], label: id, created: !revisions[id]};
+                    }),
+                    buildRemoveFlowConfig: function() { return {config: [], flow: {id: "1"}} },
+                    addFlow: sinon.spy(function(flow) { revisions.added = "rev-added"; return Promise.resolve("added") }),
+                    updateFlow: sinon.spy(function(id, flow, user, deployOpts, opts) {
                         const created = !revisions[id];
                         revisions[id] = "rev-" + id + "-updated";
                         return Promise.resolve({created: created});
@@ -1179,7 +1193,9 @@ describe("runtime-api/flows", function() {
                 const err = await rejected(flows.updateFlow({id:"new1", flow:{nodes:[]}}));
                 err.should.have.property("code","not_found");
                 err.should.have.property("status",404);
-                should.not.exist(runtime.flows.updateFlow.firstCall.args[4]);
+                // Z-06: the build (step 2) got no `create`; updateFlow is not called
+                runtime.flows.buildUpdateFlowConfig.firstCall.args[2].should.not.have.property("create");
+                runtime.flows.updateFlow.called.should.be.false();
             }
         });
         it("a missing flow with a rev returns 404 before the revision check (as in 5.0.7)", async function() {
@@ -1195,13 +1211,14 @@ describe("runtime-api/flows", function() {
         it("deleteFlow of a missing flow with a rev returns 404 before the revision check", async function() {
             for (const deploySettings of [undefined, {requireRevision:true}]) {
                 initRuntime(deploySettings);
-                runtime.flows.removeFlow = sinon.spy(function(id) {
+                // Z-06: reported by the build of the pipeline step 2
+                runtime.flows.buildRemoveFlowConfig = sinon.spy(function(id) {
                     if (id === "global") {
-                        return Promise.reject(new Error("not allowed to remove global"));
+                        throw new Error("not allowed to remove global");
                     }
                     const err = new Error();
                     err.code = 404;
-                    return Promise.reject(err);
+                    throw err;
                 });
                 let err = await rejected(flows.deleteFlow({id:"new1", rev:"rev-x"}));
                 err.should.have.property("code","not_found");
@@ -1366,6 +1383,92 @@ describe("runtime-api/flows", function() {
         });
     });
 
+    describe("a rejected single-flow request does not change the instance state (Z-06, A24, U1)", function() {
+        const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+        const runtimeFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        let load;
+        let saved;
+        let seen;
+        let off;
+        const config = () => [
+            {id: "t1", type: "tab", label: "Flow 1"},
+            {id: "n1", type: "test", z: "t1", wires: []},
+            {id: "t2", type: "tab", label: "Flow 2"},
+            {id: "n2", type: "test", z: "t2", wires: []},
+            {id: "g1", type: "test-config"}
+        ];
+        async function setup(deploySettings) {
+            saved = [];
+            await runtimeFlows.init({
+                log: mockLog(),
+                settings: {},
+                storage: {
+                    getFlows: async () => ({flows: config(), rev: "A"}),
+                    saveFlows: async (conf) => { saved.push(conf); return "B" }
+                }
+            });
+            await runtimeFlows.load();
+            flows.init({log: mockLog(), settings: deploySettings ? {deploy: deploySettings} : {}, flows: runtimeFlows});
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({errors: []});
+            seen = [];
+            off = instanceState.onChange(info => seen.push(info.state));
+        }
+        beforeEach(function() {
+            load = sinon.stub(credentials, "load").callsFake(async function() {});
+        });
+        afterEach(function() {
+            if (off) {
+                off();
+            }
+            instanceState.reset();
+            load.restore();
+        });
+        // [description, call, expected status, expected code]
+        const cases = [
+            ["addFlow 409 (globalRev)", () => flows.addFlow({flow: {nodes: [], globalConfigs: [], globalRev: "old"}}), 409, "version_mismatch"],
+            ["addFlow duplicate_id (a global node with the id of a node of a flow)", () => flows.addFlow({flow: {nodes: [], globalConfigs: [{id: "n1", type: "test-config"}]}}), 400, "duplicate_id"],
+            ["addFlow duplicate id of a node", () => flows.addFlow({flow: {nodes: [{id: "n1", type: "test"}]}}), 400, undefined],
+            ["updateFlow 409 (rev)", () => flows.updateFlow({id: "t1", flow: {nodes: [], rev: "old"}}), 409, "version_mismatch"],
+            ["updateFlow 404", () => flows.updateFlow({id: "nope", flow: {nodes: []}}), 404, "not_found"],
+            ["updateFlow duplicate_id (a node of another flow)", () => flows.updateFlow({id: "t2", flow: {nodes: [{id: "n1", type: "test"}]}}), 400, "duplicate_id"],
+            ["updateFlow invalid_flow_id (putCreatesFlow, the id of a node)", () => flows.updateFlow({id: "n1", flow: {nodes: []}}), 400, "invalid_flow_id", {putCreatesFlow: true}],
+            ["deleteFlow 409 (rev)", () => flows.deleteFlow({id: "t1", rev: "old"}), 409, "version_mismatch"],
+            ["deleteFlow 404", () => flows.deleteFlow({id: "nope"}), 404, "not_found"],
+            ["deleteFlow global 400", () => flows.deleteFlow({id: "global"}), 400, undefined]
+        ];
+        cases.forEach(function(c) {
+            it(c[0] + ": no instance:state event, state unchanged, nothing saved", async function() {
+                await setup(c[4]);
+                const before = instanceState.get();
+                const err = await c[1]().then(() => { throw new Error("not rejected") }, e => e);
+                err.should.have.property("status", c[2]);
+                if (c[3] !== undefined) {
+                    err.should.have.property("code", c[3]);
+                }
+                seen.should.eql([]);
+                instanceState.get().should.eql(before);
+                instanceState.get().state.should.equal("ready");
+                saved.should.have.length(0);
+                NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock").isLocked().should.be.false();
+            });
+        });
+        it("a rejected request does not supersede a pending reload from storage (D19)", async function() {
+            await setup();
+            instanceState.markReloadPending();
+            await flows.deleteFlow({id: "nope"}).should.be.rejected();
+            instanceState.get().state.should.equal("reloadPending");
+        });
+        it("an accepted request still goes through deploying", async function() {
+            await setup();
+            await flows.deleteFlow({id: "t2"});
+            seen[0].should.equal("deploying");
+            saved.should.have.length(1);
+        });
+    });
+
     describe("requireRevision (Z-05)", function() {
         let runtime;
         let revisions;
@@ -1380,13 +1483,18 @@ describe("runtime-api/flows", function() {
                     setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
                     loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
                     readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
-                    addFlow: sinon.spy(function() { return Promise.resolve("added") }),
-                    updateFlow: sinon.spy(function(id, flow, user, deployOpts, opts) {
+                    buildAddFlowConfig: function() { return {config: [], id: "added"} },
+                    buildUpdateFlowConfig: sinon.spy(function(id, flow, opts) {
                         if (!revisions[id] && !(opts && opts.create)) {
                             const err = new Error();
                             err.code = 404;
-                            return Promise.reject(err);
+                            throw err;
                         }
+                        return {config: [], label: id, created: !revisions[id]};
+                    }),
+                    buildRemoveFlowConfig: function() { return {config: [], flow: {id: "1"}} },
+                    addFlow: sinon.spy(function() { return Promise.resolve("added") }),
+                    updateFlow: sinon.spy(function(id, flow, user, deployOpts, opts) {
                         return Promise.resolve({created: !revisions[id]});
                     }),
                     removeFlow: sinon.spy(function() { return Promise.resolve() })

@@ -31,6 +31,7 @@
  *   #40: tests of the stop with deploy.drainHttpNodeRequests (the order beforeStop, stop of the nodes,
  *   afterStop; no change with the setting off; the serialisation of the stops; a node type registered
  *   during the drain)
+ *   Z-06 (#10): tests of opts.built of addFlow/updateFlow/removeFlow (the configuration built by the pipeline)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -953,6 +954,26 @@ describe('flows/index', function() {
             await flows.removeFlow("t1");
             storage.conf.flows.should.eql(expected);
             (function() { flows.buildRemoveFlowConfig("global") }).should.throw('not allowed to remove global');
+        });
+        it('addFlow, updateFlow and removeFlow with opts.built deploy that configuration and do not build again (Z-06)', async function() {
+            await loadAndStart();
+            // an input that the build rejects: with `built` it is not built again
+            const addBuilt = { config: clone(baseConfig).concat([{id:"b1",type:"tab",label:"B"}]), id: "b1" };
+            const flow = { id: "b1" };
+            (await flows.addFlow(flow, null, undefined, { built: addBuilt })).should.equal("b1");
+            storage.conf.flows.should.eql(addBuilt.config);
+            const updateBuilt = { config: clone(baseConfig).slice(0,2), label: "x", created: true };
+            (await flows.updateFlow("nope", {}, null, undefined, { built: updateBuilt })).should.eql({ created: true });
+            storage.conf.flows.should.eql(updateBuilt.config);
+            const removeBuilt = { config: [{id:"t2",type:"tab",label:"Flow 2"}], flow: { id: "t1", label: "Flow 1" } };
+            await flows.removeFlow("not-built", null, undefined, { built: removeBuilt });
+            storage.conf.flows.should.eql(removeBuilt.config);
+        });
+        it('addFlow, updateFlow and removeFlow without opts.built still build (and reject) as before', async function() {
+            await loadAndStart();
+            await flows.addFlow({}).should.be.rejectedWith('missing nodes property');
+            await flows.updateFlow("unknown", {nodes:[]}).should.be.rejected();
+            await flows.removeFlow("global").should.be.rejectedWith('not allowed to remove global');
         });
         it('start returns no errors when flows start', async function() {
             storage.getFlows = function() { return Promise.resolve({flows:clone(baseConfig)}) };

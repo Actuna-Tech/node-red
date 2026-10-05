@@ -19,6 +19,7 @@
  *   E-01: the lock is held until the start completes (R-43); a failed storage read releases it
  *   E-02: the instance state in steps 4 and 8
  *   Z-09: reload from storage (source "storage" with reread)
+ *   Z-06 (#10): prepare/apply of the single-flow api (U1)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -296,6 +297,74 @@ describe("flows/pipeline", function() {
             finishStart();
             await lock.runExclusive(async () => {});
             instanceState.get().state.should.equal("ready");
+        });
+    });
+    describe("prepare and apply of the single-flow api (Z-06, U1)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        beforeEach(function() {
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({ errors: [] });
+        });
+        afterEach(function() {
+            instanceState.reset();
+        });
+        it("prepare runs under the lock in step 2 - before the state deploying - and its result goes to apply", async function() {
+            const prepared = { config: [1] };
+            const deployOpts = {};
+            const prepare = sinon.spy(async function() {
+                calls.push({ fn: "prepare", locked: lock.isLocked(), state: instanceState.get().state });
+                return prepared;
+            });
+            const apply = sinon.spy(async function() {
+                calls.push({ fn: "apply", locked: lock.isLocked(), state: instanceState.get().state });
+                return "flowId";
+            });
+            const result = await pipeline.deploy({ type: "flows", prepare: prepare, apply: apply, deployOpts: deployOpts });
+            result.should.eql({ result: "flowId" });
+            prepare.calledOnce.should.be.true();
+            apply.calledOnce.should.be.true();
+            apply.firstCall.args[0].should.equal(deployOpts);
+            apply.firstCall.args[1].should.equal(prepared);
+            calls.should.eql([
+                { fn: "prepare", locked: true, state: "ready" },
+                { fn: "apply", locked: true, state: "deploying" }
+            ]);
+        });
+        it("a rejection in prepare does not touch the instance state, does not call apply and releases the lock (A24)", async function() {
+            const seen = [];
+            const off = instanceState.onChange(info => seen.push(info.state));
+            const apply = sinon.spy(async () => "x");
+            const error = Object.assign(new Error("missing"), { code: 404 });
+            const caught = await pipeline.deploy({ type: "flows", prepare: () => { throw error }, apply: apply }).should.be.rejected();
+            off();
+            caught.should.equal(error);
+            seen.should.eql([]);
+            instanceState.get().state.should.equal("ready");
+            apply.called.should.be.false();
+            lock.isLocked().should.be.false();
+        });
+        it("a prepare that rejects asynchronously behaves the same", async function() {
+            const seen = [];
+            const off = instanceState.onChange(info => seen.push(info.state));
+            await pipeline.deploy({ type: "flows", prepare: async () => { throw new Error("late") }, apply: async () => "x" }).should.be.rejectedWith("late");
+            off();
+            seen.should.eql([]);
+            lock.isLocked().should.be.false();
+        });
+        it("a rejected single-flow request does not cancel a pending reload from storage (D19)", async function() {
+            instanceState.markReloadPending();
+            await pipeline.deploy({ type: "flows", prepare: () => { throw new Error("409") }, apply: async () => "x" }).should.be.rejected();
+            instanceState.get().state.should.equal("reloadPending");
+        });
+        it("without prepare apply gets no prepared value (compatibility)", async function() {
+            const apply = sinon.spy(async () => "x");
+            await pipeline.deploy({ type: "flows", apply: apply });
+            should.not.exist(apply.firstCall.args[1]);
+        });
+        it("an error of apply returns to the state before the deployment", async function() {
+            await pipeline.deploy({ type: "flows", prepare: async () => ({}), apply: async () => { throw new Error("apply failed") } }).should.be.rejectedWith("apply failed");
+            instanceState.get().should.containEql({ state: "ready", previous: "deploying" });
         });
     });
     describe("reload from storage (Z-09)", function() {
