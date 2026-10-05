@@ -21,6 +21,7 @@
  *   #22: a saved deployment whose flows did not start takes over the revision; readable, escaped
  *   messages instead of the raw JSON of the response (deploy, restart, start/stop flows)
  *   #34: RED.errors (the escaping shared with the deploy module) is loaded with the deploy module
+ *   Z-06 (#10): the errors of the preDeploy hook (deploy_rejected, deploy_hook_failed, deploy_hook_timeout)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -715,6 +716,67 @@ describe("editor-client/ui/deploy", function() {
                 dirty.should.be.true();
                 mockRED.diff.getRemoteDiff.calledOnce.should.be.true();
                 lastNotification().options.should.have.property("modal", true);
+            });
+        });
+
+        describe("errors of the preDeploy hook (Z-06): nothing was saved", function() {
+            const enPl = JSON.parse(fs.readFileSync(NR_TEST_UTILS.resolve("@node-red/editor-client/locales/pl/editor.json")));
+            beforeEach(function() {
+                load();
+                actions["core:deploy-flows"](true);
+            });
+            function rejected(obj, status) {
+                return { status: status || 400, responseJSON: obj, responseText: JSON.stringify(obj) };
+            }
+            it("deploy_rejected: the text with the message of the validator, escaped; reason and details are not shown; the changes stay", function() {
+                fail(rejected({ code: "deploy_rejected", message: "forbidden node " + INJECTION, reason: "forbidden_node <b>x</b>", details: { nodes: ["<script>alert(1)</script>"] } }));
+                dirty.should.be.true();
+                version.should.equal("rev-1");
+                mockRED.nodes.originalFlow.called.should.be.false();
+                deployButton().hasClass("disabled").should.be.false();
+                const n = lastNotification();
+                notificationType(n).should.equal("error");
+                n.msg.should.equal("Deployment rejected by validation: forbidden node &lt;img src=x onerror=alert(1)&gt;");
+                assertNoRawResponse(n);
+                n.msg.should.not.containEql("forbidden_node");
+                n.msg.should.not.containEql("script");
+            });
+            it("deploy_rejected without a message gives the generic text, not the JSON", function() {
+                fail(rejected({ code: "deploy_rejected", reason: "rejected" }));
+                lastNotification().msg.should.equal("Deployment rejected by validation: unexpected response from the server (HTTP 400)");
+            });
+            it("deploy_hook_failed: the text of the catalog, not the message of the response", function() {
+                fail(rejected({ code: "deploy_hook_failed", message: "from the server " + INJECTION }, 503));
+                dirty.should.be.true();
+                version.should.equal("rev-1");
+                const n = lastNotification();
+                notificationType(n).should.equal("error");
+                n.msg.should.equal("Deployment validation is unavailable \u2013 nothing was saved. Try again later or contact the administrator.");
+                assertNoRawResponse(n);
+            });
+            it("deploy_hook_timeout: the text of the catalog", function() {
+                fail(rejected({ code: "deploy_hook_timeout", message: "from the server" }, 503));
+                dirty.should.be.true();
+                lastNotification().msg.should.equal("Deployment validation did not finish in time. Try again later.");
+            });
+            it("the same texts for the restart of the flows", function() {
+                load();
+                actions["core:restart-flows"]();
+                fail(rejected({ code: "deploy_rejected", message: "no" }));
+                lastNotification().msg.should.equal("Deployment rejected by validation: no");
+                actions["core:restart-flows"]();
+                fail(rejected({ code: "deploy_hook_timeout" }, 503));
+                lastNotification().msg.should.equal("Deployment validation did not finish in time. Try again later.");
+            });
+            it("the Polish texts exist for all three codes", function() {
+                ["rejected", "hookTimeout", "hookFailed"].forEach(function(name) {
+                    enPl.deploy.errors.should.have.property(name);
+                });
+                enPl.deploy.errors.rejected.should.containEql("__message__");
+            });
+            it("another 503 keeps the generic text with the message of the response", function() {
+                fail(rejected({ code: "unexpected_error", message: "maintenance" }, 503));
+                lastNotification().msg.should.equal("Deploy failed: maintenance");
             });
         });
 
