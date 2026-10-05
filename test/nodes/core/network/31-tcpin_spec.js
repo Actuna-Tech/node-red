@@ -13,8 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #41: no fixed ports - the test server listens on a port assigned by the system and the port of
+ *   the "tcp in" server is a free port found before the node starts (nr-test-utils/free-port) (two test runs on one machine do not collide)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var net = require("net");
+var getFreePort = require("nr-test-utils/free-port").freePort;
 var should = require("should");
 var stoppable = require('stoppable');
 var helper = require("node-red-node-test-helper");
@@ -23,13 +30,22 @@ var tcpinNode = require("nr-test-utils").require("@node-red/nodes/core/network/3
 
 
 describe('TCP in Node', function() {
-    var port = 9200;
+    // the port of the "tcp in" node in the server mode: a free port found before the node starts
+    var port = undefined;
     var server = undefined;
-    var server_port = 9300;
+    // the port of the test server (the "tcp in" node in the client mode): assigned by the system
+    var server_port = undefined;
     var reply_data = undefined;
 
+    // The "tcp in" server listens on all interfaces and the port is in the configuration of
+    // the node, so it is found before the node starts: a port that is free also on the
+    // loopback addresses, where a foreign server (a dev tool on 127.0.0.1) could answer
+    // instead of the node.
     beforeEach(function(done) {
-        startServer(done);
+        getFreePort().then(function(freePort) {
+            port = freePort;
+            startServer(done);
+        }, done);
     });
 
     afterEach(function(done) {
@@ -49,11 +65,14 @@ describe('TCP in Node', function() {
     }
 
     function startServer(done) {
-        server_port += 1;
         server = stoppable(net.createServer(function(c) {
             sendArray(c, reply_data);
-        })).listen(server_port, "localhost", function(err) {
-            done(err);
+        }));
+        server.once("error", done);
+        server.listen(0, "localhost", function() {
+            server.removeListener("error", done);
+            server_port = server.address().port;
+            done();
         });
     }
 

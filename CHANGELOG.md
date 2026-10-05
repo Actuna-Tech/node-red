@@ -1,5 +1,10 @@
 #### Unreleased: Instances and reload
 
+ - Tests only (no change under `packages/`): `credentials_spec.js` (block "key selection of load() (a pending
+   migration)") finishes the migration after each test (`export()`). The tests left the module flag
+   `removeDefaultKey` set, `credentials.init()` does not reset it, and in `npm run mocha` (one process) the
+   next redeploy in a node test failed with `settings.not-available` (4 tests: `60-link`, `21-httpin` x2,
+   `70-CSV`). Fixes the test regression that came with Merge #38
  - Documentation only (#43, R4): the `type` field of the `preReload` payload is the **configured** type
    (`deploy.reload.type`), not the actual one, and the contract does not change. The scope of a reload is
    decided by `changedFlows` (`null` = all flows): with `type: "diff"` the reload is a full one when the
@@ -414,6 +419,16 @@ Fixes
    shared helper `nr-test-utils/supertest` listens on `127.0.0.1`), the `tcp request` test server hook calls
    `done` once, the `watch` test ignores a macOS event of the test preparation and the limits of the
    time-dependent hold tests are wider (#19)
+ - Tests only, no change of the product: the tests are more resistant to other processes and to a failed check
+   (#41). The TCP, UDP and HTTP request tests (`tcp in`, `tcp request`, `udp in`, `udp out`, `http request`) no longer use
+   fixed ports (9000-9300, 10234-10664): the test servers listen on a port assigned by the system and a node that needs the port
+   in its configuration (and the servers on all interfaces) get a free port found just before it starts
+   (the new helper `nr-test-utils/free-port` also checks the loopback, where a foreign server of a dev tool could answer
+   instead), so two runs of `npm run mocha:nodes`
+   on one machine do not meet on a port; the tests of `inject` and `debug` use `nr-test-utils/supertest`
+   (127.0.0.1) instead of `helper.request()`; the helper reports an explicit error for a TLS server, a URL
+   given as text and http2; the macOS event of the `watch` test is explained (node-watch replays the
+   events of the preparation of the test); the reload test waits for its pollers after a failed check
 
 Features
 

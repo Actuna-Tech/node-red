@@ -13,6 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #41: no fixed port - every test uses a free UDP port found before the node starts
+ *   (two test runs on one machine do not collide)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var dgram = require("dgram");
 var should = require("should");
@@ -21,7 +27,21 @@ var udpNode = require("nr-test-utils").require("@node-red/nodes/core/network/32-
 
 
 describe('UDP in Node', function() {
-    var port = 9100;
+    // A free UDP port of the given type (udp4 or udp6): the "udp in" node binds the port
+    // given in its configuration, so it is known only before the node starts.
+    // Not checked: a foreign UDP socket on 127.0.0.1 that shares the port (the node binds with
+    // reuseAddr: true, so on macOS it can coexist with such a socket); only the port that the
+    // system gives for a plain bind is used.
+    function getFreePort(proto, done) {
+        var probe = dgram.createSocket(proto);
+        probe.once("error", done);
+        probe.bind(0, function() {
+            var freePort = probe.address().port;
+            probe.close(function() {
+                done(null, freePort);
+            });
+        });
+    }
 
     before(function(done) {
         helper.startServer(done);
@@ -35,7 +55,7 @@ describe('UDP in Node', function() {
         helper.unload();
     });
 
-    function sendIPv4(msg) {
+    function sendIPv4(msg, port) {
         var sock = dgram.createSocket('udp4');
         sock.send(msg, 0, msg.length, port, "127.0.0.1", function(msg) {
             sock.close();
@@ -43,6 +63,13 @@ describe('UDP in Node', function() {
     }
 
     function checkRecv(dt, proto, val0, val1, done) {
+        getFreePort(proto, function(err, port) {
+            if (err) { return done(err); }
+            checkRecvOnPort(port, dt, proto, val0, val1, done);
+        });
+    }
+
+    function checkRecvOnPort(port, dt, proto, val0, val1, done) {
         var flow = [{id:"n1", type:"udp in",
                      group: "", multicast:false,
                      port:port, ipv:proto,
@@ -63,7 +90,7 @@ describe('UDP in Node', function() {
                     done(err);
                 }
             });
-            sendIPv4(val0);
+            sendIPv4(val0, port);
         });
     }
     

@@ -24,6 +24,7 @@
  *   #19: longer limits of the hold test, the pollers stop when a check fails (flaky tests)
  *   #40: acceptance tests of deploy.drainHttpNodeRequests for the reload from storage (full and diff, the
  *   hard limit, the order after the preReload hook) and for the stop signal during a drain
+ *   #41: after a failed check the test waits for the pollers to end
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -100,6 +101,19 @@ function waitFor(check, timeout, message) {
             }
         })();
     });
+}
+
+// Waits until the pollers have ended. The instances are killed first: a poller can be
+// waiting for a request that a failed (hung) instance never answers, which would hold
+// the test for up to the 30 s of the request timeout. Called when the checks are over,
+// the instances are not used afterwards.
+async function stopPollers(pollers, instances) {
+    instances.forEach(inst => {
+        if (inst.child.exitCode === null && inst.child.signalCode === null) {
+            inst.child.kill("SIGKILL");
+        }
+    });
+    await Promise.all(pollers);
 }
 
 function writeHoldNode(userDir) {
@@ -269,8 +283,10 @@ module.exports = Object.assign(${JSON.stringify({
             // The shared flow file was not written by the instances
             JSON.parse(fs.readFileSync(flowFile, "utf8")).should.eql(FLOWS_B);
         } finally {
-            // a failed check must not leave the pollers running: they keep mocha alive
+            // a failed check must not leave the pollers running (they keep mocha alive and
+            // could still be sending requests during the next test): wait for them to end
             polling = false;
+            await stopPollers(pollers, instances);
         }
     });
 
@@ -307,8 +323,10 @@ module.exports = Object.assign(${JSON.stringify({
             should(inst.child.exitCode).be.null();
             return statuses;
         } finally {
-            // a failed check must not leave the pollers running: they keep mocha alive
+            // a failed check must not leave the pollers running (they keep mocha alive and
+            // could still be sending requests during the next test): wait for them to end
             polling = false;
+            await stopPollers(pollers, [inst]);
         }
     }
 
