@@ -331,15 +331,19 @@ describe('TCP in Node', function() {
             }
         });
 
+        // The test servers listen on a port of nr-test-utils/free-port, not on port 0: on macOS listen(0) on all
+        // interfaces can get a port that a foreign listener holds on 127.0.0.1, which the client would reach instead
         function listen(srv, host) {
-            return new Promise(function(resolve, reject) {
-                srv.once("error", reject);
-                const args = host ? [0, host] : [0];
-                srv.listen.apply(srv, args.concat([function() {
-                    srv.removeListener("error", reject);
-                    cleanups.push(function() { return new Promise(function(r) { srv.close(function() { r() }) }) });
-                    resolve(srv.address().port);
-                }]));
+            return getFreePort().then(function(freePort) {
+                return new Promise(function(resolve, reject) {
+                    srv.once("error", reject);
+                    const args = host ? [freePort, host] : [freePort];
+                    srv.listen.apply(srv, args.concat([function() {
+                        srv.removeListener("error", reject);
+                        cleanups.push(function() { return new Promise(function(r) { srv.close(function() { r() }) }) });
+                        resolve(srv.address().port);
+                    }]));
+                });
             });
         }
 
@@ -354,7 +358,12 @@ describe('TCP in Node', function() {
         }
 
         it('AC-7: a connection reset by the server before the messages arrive is reported to the test', function(done) {
-            const resetter = net.createServer(function(sock) { sock.resetAndDestroy() });
+            // reset once the data of the client has arrived: a reset on accept reaches a client that has already
+            // written and closed as EPIPE as well as ECONNRESET
+            const resetter = net.createServer(function(sock) {
+                sock.on("error", function() {});
+                sock.once("data", function() { sock.resetAndDestroy() });
+            });
             listen(resetter).then(function(resetPort) {
                 port = resetPort;
                 send(["foo"], function(err) {
