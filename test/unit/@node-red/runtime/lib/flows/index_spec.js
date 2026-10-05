@@ -28,6 +28,9 @@
  *   flow_start_failed and of the runtime event deploy-start-result after a start_timeout response
  *   #2: tests of credentialsChanged (the digest of the credentials of the active configuration,
  *   kept apart from getFlows())
+ *   #40: tests of the stop with deploy.drainHttpNodeRequests (the order beforeStop, stop of the nodes,
+ *   afterStop; no change with the setting off; the serialisation of the stops; a node type registered
+ *   during the drain)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -2141,6 +2144,262 @@ describe('flows/index', function() {
             mockLog.warn.called.should.be.true();
             result.should.eql({errors:[]});
             flowCreate.called.should.be.true();
+        });
+    });
+    describe('stop with the drain of the HTTP requests (#40)', function() {
+        const httpDrain = NR_TEST_UTILS.require("@node-red/runtime/lib/httpDrain");
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const EventEmitter = require("events");
+        const okConfig = [
+            {id:"t1-1",x:10,y:10,z:"t1",type:"test",wires:[]},
+            {id:"t1",type:"tab"}
+        ];
+        let stubs;
+        let calls;
+
+        function loadAndStart(config) {
+            storage.getFlows = function() {
+                return Promise.resolve({flows:clone(config||okConfig), rev:"loadedRev"});
+            }
+            flows.init({log:mockLog, settings:{},storage:storage});
+            return flows.load().then(function() {
+                return flows.startFlows();
+            });
+        }
+        // The drain enabled, its steps recorded; beforeStop waits for `gate` when given
+        function enable(gate) {
+            calls = [];
+            stubs = [
+                sinon.stub(httpDrain, "isEnabled").returns(true),
+                sinon.stub(httpDrain, "beforeStop").callsFake(async function() { calls.push("beforeStop"); if (gate) { await gate } }),
+                sinon.stub(httpDrain, "afterStop").callsFake(function(scope) { calls.push("afterStop:" + scope) })
+            ];
+        }
+        function flush() {
+            return new Promise(resolve => setImmediate(resolve));
+        }
+        async function settled(promise) {
+            let done = false;
+            promise.then(() => { done = true }, () => { done = true });
+            await flush();
+            return done;
+        }
+        function deferred() {
+            let resolve;
+            const promise = new Promise(r => { resolve = r });
+            return { promise, resolve };
+        }
+        beforeEach(function() {
+            stubs = [];
+            instanceState.reset();
+            instanceState.markStarting();
+        });
+        afterEach(async function() {
+            stubs.forEach(stub => stub.restore());
+            httpDrain.dispose();
+            // a configuration without missing types: a type registered by later tests must not start these flows
+            await flows.stopFlows();
+            storage.getFlows = function() { return Promise.resolve({flows:clone(okConfig), rev:"cleanRev"}) };
+            await flows.load();
+            instanceState.reset();
+        });
+
+        it('stopFlows of the nodes module is the wrapper that drains', async function() {
+            RED.stopFlows.should.equal(flows.stopFlows);
+            await loadAndStart();
+            enable();
+            await RED.stopFlows();
+            calls.should.eql(["beforeStop", "afterStop:full"]);
+        });
+        it('waits for beforeStop, then stops the nodes, then calls afterStop', async function() {
+            await loadAndStart();
+            const gate = deferred();
+            enable(gate.promise);
+            const order = [];
+            events.once("flows:stopping", () => { order.push("flows:stopping"); calls.push("stopNodes") });
+            const promise = flows.stopFlows("full");
+            await flush();
+            calls.should.eql(["beforeStop"]);
+            flowCreate.flows.t1.stop.called.should.be.false();
+            flows.started.should.be.true();
+            gate.resolve();
+            await promise;
+            calls.should.eql(["beforeStop", "stopNodes", "afterStop:full"]);
+            flowCreate.flows.t1.stop.called.should.be.true();
+            flows.started.should.be.false();
+        });
+        it('with the setting off nothing of the drain is called and the flows are stopped synchronously (off_identical)', async function() {
+            await loadAndStart();
+            const spies = ["beforeStop", "afterStop", "abortWait", "finalize"].map(name => sinon.spy(httpDrain, name));
+            stubs = spies;
+            httpDrain.isEnabled().should.be.false();
+            const promise = flows.stopFlows();
+            // as before: the nodes are stopped in the same tick
+            flows.started.should.be.false();
+            flowCreate.flows.t1.stop.calledOnce.should.be.true();
+            await promise;
+            spies.forEach(spy => spy.called.should.be.false());
+            // a second stop is a no-op
+            await flows.stopFlows();
+        });
+        it('with the setting off a rejected stop is passed on unchanged and the next one is a no-op', async function() {
+            await loadAndStart();
+            flowCreate.flows.t1.stop = sinon.spy(() => Promise.reject(new Error("close failed")));
+            await flows.stopFlows().should.be.rejectedWith("close failed");
+            await flows.stopFlows();
+        });
+        [
+            ["no type", undefined, undefined, "full"],
+            ["full", "full", undefined, "full"],
+            ["nodes", "nodes", {added:[], changed:["t1-1"], removed:[], rewired:[], linked:[], flowChanged:[]}, "partial"],
+            ["flows", "flows", {added:[], changed:[], removed:[], rewired:[], linked:[], flowChanged:["t1"]}, "partial"],
+            ["nodes with a changed global configuration node", "nodes", {added:[], changed:[], removed:[], rewired:[], linked:[], flowChanged:[], globalConfigChanged:true}, "full"]
+        ].forEach(function(entry) {
+            it('afterStop gets the scope ' + entry[3] + ' for ' + entry[0], async function() {
+                await loadAndStart();
+                enable();
+                await flows.stopFlows(entry[1], entry[2]);
+                calls.should.eql(["beforeStop", "afterStop:" + entry[3]]);
+            });
+        });
+        it('does nothing when the flows are not started', async function() {
+            flows.init({log:mockLog, settings:{},storage:storage});
+            enable();
+            await flows.stopFlows();
+            calls.should.eql([]);
+        });
+        it('a rejected stop of the nodes still calls afterStop and the next stop() does not fail (A3)', async function() {
+            await loadAndStart();
+            enable();
+            flowCreate.flows.t1.stop = sinon.spy(() => Promise.reject(new Error("close failed")));
+            const first = flows.stopFlows();
+            const second = flows.stopFlows();
+            await first.should.be.rejectedWith("close failed");
+            // the second one waited for the first, then ran again: the flows are stopped, nothing to do
+            await second;
+            calls.should.eql(["beforeStop", "afterStop:full"]);
+            // and the guard is cleared: a later stop() of started flows drains again
+            await loadAndStart();
+            await flows.stopFlows();
+            calls.should.eql(["beforeStop", "afterStop:full", "beforeStop", "afterStop:full"]);
+        });
+        it('a stop that is called during the drain waits for it and drains once', async function() {
+            await loadAndStart();
+            const gate = deferred();
+            enable(gate.promise);
+            const first = flows.stopFlows();
+            const second = flows.stopFlows();
+            await flush();
+            (await settled(second)).should.be.false();
+            gate.resolve();
+            await Promise.all([first, second]);
+            calls.should.eql(["beforeStop", "afterStop:full"]);
+            flowCreate.flows.t1.stop.calledOnce.should.be.true();
+        });
+        it('a node type registered while the flows are being stopped does not start the flows (A2, D4)', async function() {
+            await loadAndStart([
+                {id:"t1-1",x:10,y:10,z:"t1",type:"test",wires:[]},
+                {id:"t1-2",x:10,y:10,z:"t1",type:"missing",wires:[]},
+                {id:"t1",type:"tab"}
+            ]);
+            flowCreate.called.should.be.false();
+            const gate = deferred();
+            enable(gate.promise);
+            mockLog.debug.resetHistory();
+            const promise = flows.stopFlows();
+            await flush();
+            events.emit("type-registered", "missing");
+            await flush();
+            flowCreate.called.should.be.false();
+            mockLog.debug.called.should.be.true();
+            gate.resolve();
+            await promise;
+            flowCreate.called.should.be.false();
+        });
+        it('a node type registered while no stop runs starts the flows (unchanged)', async function() {
+            await loadAndStart([
+                {id:"t1-1",x:10,y:10,z:"t1",type:"test",wires:[]},
+                {id:"t1-2",x:10,y:10,z:"t1",type:"missing",wires:[]},
+                {id:"t1",type:"tab"}
+            ]);
+            enable();
+            events.emit("type-registered", "missing");
+            await flush();
+            flowCreate.called.should.be.true();
+        });
+
+        describe('with the real drain', function() {
+            function fakeRequest() {
+                const req = new EventEmitter();
+                req.method = "POST";
+                req.complete = true;
+                req.route = { stack: [{ handle: Object.assign(function() {}, { [httpDrain.S]: true }) }] };
+                const res = new EventEmitter();
+                const headers = {};
+                Object.assign(res, { statusCode: 200, headersSent: false, writableEnded: false, destroyed: false, ends: 0 });
+                res.getHeaderNames = () => Object.keys(headers);
+                res.setHeader = (name, value) => { headers[name.toLowerCase()] = value };
+                res.removeHeader = name => { delete headers[name.toLowerCase()] };
+                res.end = function(body) {
+                    this.ends++;
+                    if (this.fail) { throw new Error("cannot write") }
+                    this.body = body;
+                    this.writableEnded = true;
+                    this.emit("finish");
+                };
+                httpDrain.middleware(req, res, function() {});
+                return { req, res };
+            }
+            beforeEach(function() {
+                httpDrain.init({ deploy: { drainHttpNodeRequests: { enabled: true, timeout: 20000 } } });
+            });
+
+            it('an error while answering one request does not stop the others and stop() resolves (test 5)', async function() {
+                await loadAndStart();
+                const bad = fakeRequest();
+                bad.res.fail = true;
+                const good = fakeRequest();
+                await flows.stopFlows();
+                good.res.statusCode.should.equal(503);
+                good.res.writableEnded.should.be.true();
+                flowCreate.flows.t1.stop.calledOnce.should.be.true();
+                flows.started.should.be.false();
+            });
+            it('waits for an accepted request, which the flow answers (the nodes stop afterwards)', async function() {
+                await loadAndStart();
+                const request = fakeRequest();
+                request.req[httpDrain.S].accepted = true;
+                const promise = flows.stopFlows();
+                await flush();
+                flowCreate.flows.t1.stop.called.should.be.false();
+                request.res.end("answered by the flow");
+                await promise;
+                request.res.body.should.equal("answered by the flow");
+                request.res.ends.should.equal(1);
+                flowCreate.flows.t1.stop.called.should.be.true();
+            });
+            it('RED.stop in the middle of the drain: markStopping does not end the wait, the second stop() does (D5)', async function() {
+                await loadAndStart();
+                instanceState.markStarting();
+                instanceState.report({ errors: [] });
+                const token = instanceState.begin("deploy");
+                const request = fakeRequest();
+                request.req[httpDrain.S].accepted = true;
+                const first = flows.stopFlows("nodes", {added:[], changed:["t1-1"], removed:[], rewired:[], linked:[], flowChanged:[]});
+                await flush();
+                instanceState.markStopping("SIGTERM");
+                (await settled(first)).should.be.false();
+                request.res.writableEnded.should.be.false();
+                // runtime.stop() -> stopFlows() in the state stopping: ends the wait of the first stop
+                const second = flows.stopFlows();
+                await first;
+                await second;
+                flowCreate.flows.t1.stop.called.should.be.true();
+                // afterStop of the partial stop leaves the request; finalize (RED.stop) answers it
+                httpDrain.finalize();
+                request.res.statusCode.should.equal(503);
+                instanceState.end(token, { errors: [] });
+            });
         });
     });
     describe('#updateFlow', function() {

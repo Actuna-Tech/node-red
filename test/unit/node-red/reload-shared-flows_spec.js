@@ -22,6 +22,8 @@
  *   in the window between the stop of the old flows and the start of the new ones
  *   #7: the preReload hook is registered with the `hooks` setting of settings.js
  *   #19: longer limits of the hold test, the pollers stop when a check fails (flaky tests)
+ *   #40: acceptance tests of deploy.drainHttpNodeRequests for the reload from storage (full and diff, the
+ *   hard limit, the order after the preReload hook) and for the stop signal during a drain
  *   #41: after a failed check the test waits for the pollers to end
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
@@ -349,3 +351,204 @@ module.exports = Object.assign(${JSON.stringify({
         statuses.should.containEql(202);
     });
 });
+
+// A GET that gives up after `waitMs`: {hang: true} when there is no answer
+function get(url, waitMs) {
+    return new Promise(resolve => {
+        const started = Date.now();
+        const req = http.request(url, { method: "GET", agent: false, headers: { "Connection": "close" } }, res => {
+            let text = "";
+            res.on("data", d => text += d);
+            res.on("end", () => {
+                let body;
+                try { body = text ? JSON.parse(text) : undefined } catch (err) { body = undefined }
+                resolve({ status: res.statusCode, text, body, headers: res.headers, ms: Date.now() - started });
+            });
+        });
+        const timer = setTimeout(() => { resolve({ hang: true, ms: Date.now() - started }); req.destroy() }, waitMs);
+        req.on("error", err => { clearTimeout(timer); resolve({ error: err.message, ms: Date.now() - started }) });
+        req.on("close", () => clearTimeout(timer));
+        req.end();
+    });
+}
+
+describe("drain of the HTTP requests on a reload and on the stop signal (acceptance, #40)", function() {
+    this.timeout(120000);
+    const children = [];
+    const dirs = [];
+
+    function tempDir(prefix) {
+        const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+        dirs.push(d);
+        return d;
+    }
+
+    after(function() {
+        children.forEach(c => { if (c.exitCode === null && c.signalCode === null) { c.kill("SIGKILL") } });
+        dirs.forEach(d => fs.rmSync(d, { recursive: true, force: true }));
+    });
+
+    // options.drain: deploy.drainHttpNodeRequests (undefined: off); options.reloadType: "full" | "diff" (reload from
+    // the shared file, watch); options.preReloadMs / options.preShutdownMs: how long the hooks wait;
+    // options.shutdownTimeout; options.watch false: no reload, the Admin API writes the flows
+    async function startInstance(flows, options) {
+        const userDir = tempDir("nr-drain-reload-");
+        writeHoldNode(userDir);
+        const port = await getFreePort();
+        const flowFile = path.join(userDir, "flows.json");
+        fs.writeFileSync(flowFile, JSON.stringify(flows));
+        const watch = options.watch !== false;
+        const deploy = { reload: { watch: watch, type: options.reloadType || "full", preReloadTimeout: 30000 } };
+        if (options.drain) {
+            deploy.drainHttpNodeRequests = Object.assign({ enabled: true }, options.drain);
+        }
+        const settings = {
+            flowFile: flowFile,
+            readOnlyUserDir: watch,
+            disableEditor: true,
+            runtimeState: { enabled: true, ui: false },
+            logging: { console: { level: "off" } },
+            deploy: deploy
+        };
+        if (options.shutdownTimeout) {
+            settings.shutdownTimeout = options.shutdownTimeout;
+        }
+        fs.writeFileSync(path.join(userDir, "settings.js"), `
+const wait = ms => ms > 0 ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve();
+module.exports = Object.assign(${JSON.stringify(settings)}, {
+    hooks: {
+        "preReload.wait": function(event) { return wait(${Number(options.preReloadMs) || 0}) },
+        "preShutdown.wait": function(event) { return wait(${Number(options.preShutdownMs) || 0}) }
+    }
+});
+`);
+        const child = spawn(process.execPath, [RED_JS, "-u", userDir, "-p", String(port)], { stdio: "ignore" });
+        children.push(child);
+        const inst = { child, base: "http://127.0.0.1:" + port, flowFile, exited: new Promise(resolve => child.on("exit", (code, signal) => resolve({ code, signal, at: Date.now() }))) };
+        await waitFor(async () => (await get(inst.base + "/flows", 2000)).status === 200 && (await get(inst.base + "/ping", 2000)).status === 200, 30000, "Node-RED did not start");
+        return inst;
+    }
+
+    // Writes the flows like another instance does (a rename), which starts the reload
+    function writeShared(inst, flows) {
+        fs.writeFileSync(inst.flowFile + ".tmp", JSON.stringify(flows));
+        fs.renameSync(inst.flowFile + ".tmp", inst.flowFile);
+    }
+
+    // /ping answers at once: the flows are running when it does (the Admin API answers earlier)
+    function turnFlows(ms) {
+        return [{ id: "tA", type: "tab", label: "A" }].concat(routeNodes("tA", "/turn", { type: "hold-turn", delay: ms }), [
+            { id: "ping-in", type: "http in", z: "tA", url: "/ping", method: "get", wires: [["ping-out"]] },
+            { id: "ping-out", type: "http response", z: "tA", statusCode: "", wires: [] }
+        ]);
+    }
+
+    it("full reload, the setting off: the request in progress gets no answer, as before", async function() {
+        const inst = await startInstance(turnFlows(1500), { reloadType: "full" });
+        const turn = get(inst.base + "/turn", 4500);
+        await sleep(300);
+        writeShared(inst, turnFlows(1500).concat([{ id: "tB", type: "tab", label: "B" }]).concat(routeNodes("tB", "/new")));
+        await waitFor(async () => (await status(inst.base + "/new")) === 200, 15000, "new route not available");
+        (await turn).hang.should.be.true();
+    });
+
+    it("full reload, on: the request in progress is answered by the flow and the new flows start", async function() {
+        const inst = await startInstance(turnFlows(1500), { reloadType: "full", drain: { timeout: 10000 } });
+        const turn = get(inst.base + "/turn", 8000);
+        await sleep(300);
+        writeShared(inst, turnFlows(1500).concat([{ id: "tB", type: "tab", label: "B" }]).concat(routeNodes("tB", "/new")));
+        const result = await turn;
+        result.status.should.equal(200);
+        await waitFor(async () => (await status(inst.base + "/new")) === 200, 15000, "new route not available");
+    });
+
+    it("diff reload, on: a long request of a flow that is not reloaded gets 503 http_drain_outcome_unknown after the limit (hard limit)", async function() {
+        const inst = await startInstance(turnFlows(6000), { reloadType: "diff", drain: { timeout: 700 } });
+        const turn = get(inst.base + "/turn", 9000);
+        await sleep(300);
+        writeShared(inst, turnFlows(6000).concat([{ id: "tB", type: "tab", label: "B" }]).concat(routeNodes("tB", "/new")));
+        const result = await turn;
+        result.status.should.equal(503);
+        result.body.code.should.equal("http_drain_outcome_unknown");
+        result.headers["retry-after"].should.equal("1");
+        // answered after the limit, long before the flow would have answered
+        result.ms.should.be.above(900);
+        result.ms.should.be.below(4000);
+        await waitFor(async () => (await status(inst.base + "/new")) === 200, 15000, "new route not available");
+    });
+
+    it("diff reload, on, a long limit: the request of the unchanged flow is answered by the flow", async function() {
+        const inst = await startInstance(turnFlows(1500), { reloadType: "diff", drain: { timeout: 10000 } });
+        const turn = get(inst.base + "/turn", 8000);
+        await sleep(300);
+        writeShared(inst, turnFlows(1500).concat([{ id: "tB", type: "tab", label: "B" }]).concat(routeNodes("tB", "/new")));
+        (await turn).status.should.equal(200);
+        await waitFor(async () => (await status(inst.base + "/new")) === 200, 15000, "new route not available");
+    });
+
+    it("the drain of the HTTP requests comes after the preReload hook: the new flows start after both, not after their sum in the other order", async function() {
+        // the request lasts 3500 ms, the hook 2000 ms: the hook starts first and runs while the request is
+        // still in progress, then the drain waits for the rest of it (the new flows start at about 3500 ms).
+        // The other order would take 3500 + 2000.
+        const inst = await startInstance(turnFlows(3500), { reloadType: "full", preReloadMs: 2000, drain: { timeout: 10000 } });
+        const started = Date.now();
+        const turn = get(inst.base + "/turn", 9000);
+        await sleep(300);
+        writeShared(inst, turnFlows(3500).concat([{ id: "tB", type: "tab", label: "B" }]).concat(routeNodes("tB", "/new")));
+        let appearedAt = null;
+        await waitFor(async () => {
+            if ((await status(inst.base + "/new")) === 200) {
+                appearedAt = Date.now() - started;
+                return true;
+            }
+            return false;
+        }, 20000, "new route not available");
+        (await turn).status.should.equal(200);
+        appearedAt.should.be.above(3300);
+        appearedAt.should.be.below(5200);
+    });
+
+    it("the stop signal during the drain of a deployment: the drain goes on while the shutdown prepares, then the request gets 503 and the process exits (D5)", async function() {
+        // the request would last 15 s; the deployment drains for it (limit 30 s); the signal comes at ~500 ms and the
+        // preShutdown hook takes 1000 ms; markStopping does not end the drain, RED.stop does
+        const inst = await startInstance(turnFlows(15000), { watch: false, drain: { timeout: 30000 }, shutdownTimeout: 4000, preShutdownMs: 1000 });
+        const turn = get(inst.base + "/turn", 12000);
+        await sleep(300);
+        const deployed = api(inst.base, "POST", "/flows", { flows: turnFlows(15000).concat([{ id: "tB", type: "tab", label: "B" }]) }, { "Node-RED-Deployment-Type": "full" });
+        await sleep(300);
+        const signalAt = Date.now();
+        inst.child.kill("SIGTERM");
+        const result = await turn;
+        result.status.should.equal(503);
+        result.body.code.should.equal("http_drain_outcome_unknown");
+        // not at the signal (the hook of the shutdown runs first, the drain goes on), and long before the 15 s
+        (result.ms - 600).should.be.above(800);
+        (Date.now() - signalAt).should.be.below(5000);
+        const exit = await inst.exited;
+        should(exit.signal).be.null();
+        // the deployment waited for the drain and ended with the stop: its answer is of no interest here
+        await deployed.catch(() => {});
+    });
+});
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// The request of the Admin API (JSON, v2)
+function api(base, method, urlPath, body, headers) {
+    return new Promise((resolve, reject) => {
+        const data = body === undefined ? "" : JSON.stringify(body);
+        const req = http.request(base + urlPath, {
+            method,
+            agent: false,
+            headers: Object.assign({ "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data), "Connection": "close", "Node-RED-API-Version": "v2" }, headers || {})
+        }, res => {
+            let text = "";
+            res.on("data", d => text += d);
+            res.on("end", () => resolve({ status: res.statusCode, text }));
+        });
+        req.on("error", reject);
+        req.end(data);
+    });
+}

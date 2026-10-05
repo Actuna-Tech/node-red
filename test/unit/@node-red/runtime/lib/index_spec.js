@@ -29,6 +29,9 @@
  *   and the warning for a generated id with a coordination plugin of a cluster
  *   #15: the warning at start for a hook of the `hooks` setting that is never called
  *   #19: supertest bound to 127.0.0.1; a limit of the hold test independent of the machine speed (flaky tests)
+ *   #40: the drain of the HTTP requests is mounted on the httpNode app only with
+ *   deploy.drainHttpNodeRequests.enabled, after the hold and before rawBodyCapture; RED.stop answers
+ *   the requests that are still open
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -515,6 +518,161 @@ describe("runtime", function() {
             return done(err)
         });
     });
+    describe("deploy.drainHttpNodeRequests (#40)", function() {
+        const EventEmitter = require("events");
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const httpHold = NR_TEST_UTILS.require("@node-red/runtime/lib/httpHold");
+        const httpDrain = NR_TEST_UTILS.require("@node-red/runtime/lib/httpDrain");
+        const httpInNode = NR_TEST_UTILS.require("@node-red/nodes/core/network/21-httpin.js");
+        const DRAIN = { drainHttpNodeRequests: { enabled: true, timeout: 20000 } };
+        const HOLD = { holdHttpNodeRequests: { enabled: true } };
+        let stubs;
+        beforeEach(function() {
+            stubs = [];
+            instanceState.reset();
+        });
+        afterEach(function() {
+            stubs.forEach(s => s.restore());
+            httpDrain.dispose();
+            httpHold.dispose();
+            instanceState.reset();
+        });
+        function stub(obj, name, fn) {
+            const s = sinon.stub(obj, name).callsFake(fn);
+            stubs.push(s);
+            return s;
+        }
+        // The handlers of the httpNode app in order, with the node module loaded as the runtime does
+        function layers(app) {
+            // the router of an Express app exists once something is mounted on it
+            return app._router ? app._router.stack.map(layer => layer.handle) : [];
+        }
+        function loadHttpIn(app) {
+            httpInNode({ httpNode: app, settings: {}, nodes: { registerType: function() {} }, _: function(k) { return k } });
+        }
+        function names(app) {
+            return layers(app).map(handle => {
+                if (handle === httpHold.middleware) { return "hold" }
+                if (handle === httpDrain.middleware) { return "drain" }
+                return handle.name;
+            });
+        }
+        function fakeRequest(runtimeApp) {
+            const req = new EventEmitter();
+            req.method = "POST";
+            req.complete = true;
+            req.route = { stack: [{ handle: Object.assign(function() {}, { [httpDrain.S]: true }) }] };
+            const res = new EventEmitter();
+            const headers = {};
+            Object.assign(res, { statusCode: 200, headersSent: false, writableEnded: false, destroyed: false });
+            res.getHeaderNames = () => Object.keys(headers);
+            res.setHeader = (name, value) => { headers[name.toLowerCase()] = value };
+            res.removeHeader = name => { delete headers[name.toLowerCase()] };
+            res.end = function(body) { this.body = body; this.writableEnded = true; this.emit("finish") };
+            httpDrain.middleware(req, res, function() {});
+            return { req, res };
+        }
+
+        it("is not mounted without the setting, with enabled: false and with an invalid setting", function() {
+            mockUtil();
+            stubs.push({ restore: unmockUtil });
+            [undefined, { drainHttpNodeRequests: { enabled: false } }, { drainHttpNodeRequests: "yes" }].forEach(function(deploy) {
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: deploy});
+                httpDrain.isEnabled().should.be.false();
+                layers(runtime._.nodeApp).should.not.containEql(httpDrain.middleware);
+            });
+        });
+        it("is mounted on the httpNode app with enabled: true", function() {
+            runtime.init({testSettings: true, httpAdminRoot:"/", deploy: DRAIN});
+            httpDrain.isEnabled().should.be.true();
+            layers(runtime._.nodeApp).should.containEql(httpDrain.middleware);
+            layers(runtime.httpAdmin).should.not.containEql(httpDrain.middleware);
+        });
+        it("a second init without the setting disposes the drain", function() {
+            runtime.init({testSettings: true, httpAdminRoot:"/", deploy: DRAIN});
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            httpDrain.isEnabled().should.be.false();
+        });
+        it("the order is the hold, the drain, then rawBodyCapture of the node module - also after the runtime was initialised again in the same process", function() {
+            for (let round = 0; round < 3; round++) {
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: Object.assign({}, HOLD, DRAIN)});
+                const app = runtime._.nodeApp;
+                names(app).should.eql(["query", "expressInit", "hold", "drain"]);
+                loadHttpIn(app);
+                names(app).should.eql(["query", "expressInit", "hold", "drain", "rawBodyCapture"]);
+                // the module loaded again on the same app (RED.stop() and RED.start()): the capture keeps its place
+                loadHttpIn(app);
+                names(app).should.eql(["query", "expressInit", "hold", "drain", "rawBodyCapture"]);
+            }
+        });
+        it("the order without the hold is the drain, then rawBodyCapture", function() {
+            runtime.init({testSettings: true, httpAdminRoot:"/", deploy: DRAIN});
+            loadHttpIn(runtime._.nodeApp);
+            names(runtime._.nodeApp).should.eql(["query", "expressInit", "drain", "rawBodyCapture"]);
+        });
+        it("the order without the drain is unchanged: the hold, then rawBodyCapture", function() {
+            runtime.init({testSettings: true, httpAdminRoot:"/", deploy: HOLD});
+            loadHttpIn(runtime._.nodeApp);
+            names(runtime._.nodeApp).should.eql(["query", "expressInit", "hold", "rawBodyCapture"]);
+        });
+
+        describe("stop()", function() {
+            let seen;
+            beforeEach(function() {
+                mockUtil();
+                stubs.push({ restore: unmockUtil });
+                seen = [];
+                const off = instanceState.onChange(info => seen.push(info.state));
+                stubs.push({ restore: off });
+                stub(redNodes, "closeContextsPlugin", () => { seen.push("closeContextsPlugin"); return Promise.resolve() });
+            });
+            it("answers the requests that are still open after the flows stopped and before the state is stopped (D3)", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: DRAIN});
+                const request = fakeRequest();
+                let openInStop;
+                stub(redNodes, "stopFlows", () => { openInStop = !request.res.writableEnded; return Promise.resolve() });
+                await runtime.stop();
+                openInStop.should.be.true();
+                request.res.statusCode.should.equal(503);
+                JSON.parse(request.res.body).code.should.equal("http_drain_not_accepted");
+                seen.should.eql(["stopping", "closeContextsPlugin", "stopped"]);
+            });
+            it("answers them when the stop of the flows failed, and the stop is still rejected", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: DRAIN});
+                const request = fakeRequest();
+                stub(redNodes, "stopFlows", () => Promise.reject(new Error("stop failed")));
+                await runtime.stop().should.be.rejectedWith("stop failed");
+                request.res.statusCode.should.equal(503);
+                instanceState.get().state.should.equal("stopped");
+            });
+            it("does not answer anything when the drain is not enabled (off_identical)", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/"});
+                stub(redNodes, "stopFlows", () => Promise.resolve());
+                const finalize = sinon.spy(httpDrain, "finalize");
+                stubs.push(finalize);
+                await runtime.stop();
+                finalize.calledOnce.should.be.true();
+                httpDrain.size().should.equal(0);
+            });
+            it("ends the wait of a drain that is running through stopFlows (the second stop in the state stopping)", async function() {
+                runtime.init({testSettings: true, httpAdminRoot:"/", deploy: DRAIN});
+                const request = fakeRequest();
+                request.req[httpDrain.S].accepted = true;
+                // the drain of a deployment that waits for the request
+                const waiting = httpDrain.beforeStop();
+                let settled = false;
+                waiting.then(() => { settled = true });
+                await new Promise(resolve => setImmediate(resolve));
+                settled.should.be.false();
+                stub(redNodes, "stopFlows", () => { httpDrain.abortWait(); return Promise.resolve() });
+                await runtime.stop();
+                settled.should.be.true();
+                request.res.statusCode.should.equal(503);
+                JSON.parse(request.res.body).code.should.equal("http_drain_outcome_unknown");
+            });
+        });
+    });
+
     describe("instance state (E-02)", function() {
         const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
         let stubs;

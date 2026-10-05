@@ -71,6 +71,7 @@ nowego flow tuż po wdrożeniu (wraca zachowanie 5.0.7).
 | Z-09 | – | `deploy.reload: {watch, type, preReloadTimeout, concurrency}` (kontrakt wtyczek – §5.2) | `watch: false`, `type: "full"`, `preReloadTimeout: 1200000` (20 min) | to samo przeładowanie, co typ wdrożenia `reload` w Admin API; rekomendowane `type: "diff"`; `concurrency` – tylko liczba; bez łączności z koordynatorem przeładowanie czeka (działa stara konfiguracja) (R-20) |
 | Z-09 | – | `deploy.reload.retry: { min, max, attempts }` | `min: 1000`, `max: 60000` (ms), `attempts: 10` (~8 min) (R-36) | ponowienia nieudanych cykli przeładowania (odczyt magazynu, ponowny odczyt pod blokadą, samo przeładowanie); licznik zeruje się dopiero po udanym cyklu (#17); po wyczerpaniu `attempts` → stan `failed`, `/ready` 503 (R-20, D-18, R-36); przy `watch: true` błąd rejestracji `watchFlows` → błąd startu (R-36) |
 | #8 | – | `deploy.holdHttpNodeRequests: {enabled, timeout, maxPending, retryAfter}` | `enabled: false`, `timeout: 5000` ms, `maxPending: 1000`, `retryAfter: 1` s | żądania do tras węzłów (`httpNode`) bez istniejącej trasy (trasy niezmienionych węzłów odpowiadają od razu) czekają na koniec restartu flow (wdrożenie, przeładowanie z magazynu) zamiast 404; po limicie 503 `http_hold_timeout` / `http_hold_queue_full` z `Retry-After`; klienci powinni ponawiać 503 po `Retry-After` |
+| #40 | – | `deploy.drainHttpNodeRequests: {enabled, timeout, retryAfter}` | `enabled: false`, `timeout: 30000` ms, `retryAfter: 1` s | drenaż zapytań HTTP przed zatrzymaniem flow: runtime czeka (≤ `timeout`, limit twardy) na zapytania przyjęte przez `http in`, po zatrzymaniu odpowiada 503 na otwarte (`http_drain_not_accepted` / `http_drain_outcome_unknown`); zalecane `timeout` 5000–10000 dla Bot-Engine i ruchu publicznego; szczegóły: §4.7 (R-49) |
 | P-01 / Z-08 | – | `deploy.startTimeout` (ms) | wyłączony | limit czasu startu w trybie `deploy.response: "started"`; po przekroczeniu 500 `deploy_start_failed` z `errors[].code: "start_timeout"`, flow startują dalej w tle (R-38) |
 | Z-06 | – | `deploy.hookTimeout` | 30000 ms | |
 | Z-10 | – | `coordination: {plugin, options}`; `singleInstance` w węźle `inject` | wtyczka lokalna | wtyczkę zewnętrzną wybiera się **tylko jawnie** w `coordination.plugin` (bez automatycznego wykrywania) (R-21) |
@@ -226,6 +227,52 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   połączenie z niedozwolonego źródła jest odrzucane; własne źródło edytora jest przyjmowane zawsze (R-35) – klienty
   spoza przeglądarki i edytory osadzone w innych domenach muszą być na liście.
 
+### 4.7 Drenaż zapytań HTTP przed zatrzymaniem flow (#40, R-49)
+
+Dotyczy rozwiązań, które wołają Admin API (wdrożenie, `POST /flows/state`), klientów HTTP węzłów `http in` oraz węzłów
+zewnętrznych rejestrujących trasy na `RED.httpNode`. Przy `deploy.drainHttpNodeRequests.enabled: false` (domyślnie) nic się nie zmienia.
+
+- **Ustawienie:** `deploy: { drainHttpNodeRequests: { enabled, timeout, retryAfter } }` – `timeout` 30000 ms, `retryAfter` 1 s. Zakres:
+  zapytania do tras `httpNode` z oznaczonym handlerem (rdzeń: `http in`), globalnie (nie per flow).
+- **Czas wdrożenia:** `POST /flows`, `POST /flows/state` stop i przeładowanie z magazynu trwają **do `timeout` dłużej** (drenaż jest pod blokadą
+  wdrożeń, a w klastrze trzyma slot Z-10: przejście klastra wydłuża się o N × `timeout`; zalecane `deploy.reload.concurrency`).
+  Najgorszy czas przeładowania Z-09: czekanie na blokadę (drenaż poprzedniej operacji + `nodeCloseTimeout` + start) + `preReloadTimeout` +
+  `timeout` + `nodeCloseTimeout` + start; `PreReloadEvent.deadline` jest limitem hooka, **nie najpóźniejszą chwilą zatrzymania flow**.
+  Klienci Admin API muszą mieć limit czasu żądania dłuższy niż `timeout` + czas zatrzymania węzłów.
+- **Limit twardy (P1):** zapytanie dłuższe niż `timeout` dostaje 503 także we flow, których wdrożenie nie zmieniało. Długie raporty i eksporty
+  powinny mieć `timeout` dłuższy niż najdłuższe zwykłe zapytanie albo być asynchroniczne (zwracać identyfikator zadania). Endpointy long-poll
+  i SSE na `http in` wstrzymują każde wdrożenie o pełny `timeout`, a potem są zrywane (wyjątki dla nich – faza 2).
+- **Dwa kody 503 (ciało stałe `{code, message}`, `Cache-Control: no-store`, bez URL i tekstu błędu):**
+  - `http_drain_not_accepted` – zapytanie nie trafiło do flow (np. ciało jeszcze nie było odczytane, uwierzytelnianie w toku): **bezpieczne do
+    ponowienia**; zawsze `Retry-After`; `Connection: close`, gdy ciało nie zostało odczytane do końca;
+  - `http_drain_outcome_unknown` – zapytanie trafiło do flow, a flow zatrzymano przed odpowiedzią: **wynik nieznany**; `Retry-After` tylko dla
+    GET, HEAD i OPTIONS.
+  Przyczyna (limit czy zatrzymanie) idzie tylko do logu operatora. Odpowiedź już rozpoczęta (strumień) jest niszczona (połączenie zerwane).
+  Nagłówki ustawione wcześniej przez handler trasy (np. `Set-Cookie`, `Content-Encoding`) są usuwane z tego 503; zostają `Access-Control-*`
+  i `Vary`.
+- **Idempotencja (SEC-002, SEC-007):** `outcome_unknown` oznacza, że flow mógł zadziałać. Flow z zapisami lub płatnościami wymagają **klucza
+  idempotencji** po stronie klienta (ponowienie z tym samym kluczem). Przy włączonym drenażu klient ma prawo traktować GET jako bezpieczny do
+  ponowienia (`Retry-After`) – flow z efektami ubocznymi na GET są niedozwolone; efekty uboczne obsługuj przez POST.
+- **Kontrakt dla węzłów zewnętrznych (opcjonalny):** jeden symbol `Symbol.for("node-red.httpNode.drain")` (bez `require` runtime), którego
+  właścicielem jest runtime, ma **dwa znaczenia** (A17): na handlerze trasy – `handler[S] = true` (trasa jest drenowana); na `req` i `res` –
+  wpis runtime (istnieje tylko przy włączonym ustawieniu; węzeł go **nie tworzy**). Węzeł, który chce być drenowany: (1) oznacza handler trasy,
+  (2) na początku handlera: `const e = req[S]; if (e) { if (e.drained) return; e.accepted = true; }` tuż przed przekazaniem wiadomości do flow,
+  (3) przy późnej odpowiedzi sprawdza `res[S] && res[S].drained` i nic nie wysyła (zapytanie dostało już 503). Trasy bez znacznika (np. `bot-start`)
+  nie są drenowane – wymagają własnej obsługi.
+- **Zapytania w czasie drenażu:** nowe zapytania są przepuszczane do starych flow (nie przedłużają drenażu, ale dostają termin); `holdHttpNodeRequests`
+  (#8) nie jest zmieniony. Zapytanie w fazie `rawBodyCapture` (upload do trasy z `skipBodyParsing`, jeszcze bez dopasowanej trasy) nie jest objęte
+  gwarancją: po zatrzymaniu dostaje 404 albo trasę nowego flow.
+- **Różnice względem wyłączonego ustawienia (świadome):** wiadomość odłożona w kontekście i odpowiedziana później przez nowe flow (stash/LATE)
+  przy zatrzymaniu pełnym dostaje 503 zamiast późnego 200 (późna odpowiedź `http response` jest tylko w logu `debug`); symbol na handlerze `http in`
+  jest nieobserwowalny (nie dodaje warstwy trasy).
+- **Stan instancji i sondy:** brak nowego stanu (R-23), `/ready` bez zmian: `deploying`/`reloading`/`stopping` → 503; przy `POST /flows/state` stop
+  i przełączeniu projektu `/ready` odpowiada 200 przez cały drenaż.
+- **Znane okno konfiguracji (A5):** w czasie drenażu konfiguracja jest już nowa, więc `checkTypeInUse` widzi nową konfigurację – da się usunąć
+  moduł używany tylko przez stare flow (dziś to samo okno trwa przez `nodeCloseTimeout`); `credentials.clean` też działa na nowej konfiguracji.
+- **Zatrzymanie procesu:** `RED.stop` nie czeka na zapytania (R-37): po zatrzymaniu flow `finalize` odpowiada 503 albo niszczy odpowiedź; trwający
+  drenaż wdrożenia przerywa dopiero `RED.stop`, więc przy `shutdownTimeout` trwa w czasie `preShutdown`. Czekanie na zapytania w `shutdownTimeout` –
+  faza 2.
+
 ## 5. Wtyczki i produkt
 
 | Obszar | Zmiana | Pakiet |
@@ -344,6 +391,7 @@ Nagłówki „Modified by Actuna Sp. z o.o.” – zachowane w forku (D-19); pli
 - [ ] Monitoring stanu: nazwy stanów i zdarzenie `instance:state` wg §4.5; brak parsowania treści 503 sondy (R-22, R-23).
 - [ ] Lista `Origin` dla `/comms` i `editorTheme.embedding.allowedOrigins` ustawione na naszych instalacjach (R-06, R-35); klienty `/comms` bez założenia `auth fail` przy wyłączonym `adminAuth` (R-05).
 - [ ] Konfiguracja uploadu tylko przez `externalModules.palette.allowUpload` (R-17); instancje tylko do odczytu – `readOnlyUserDir` lub zmienna środowiskowa (R-18).
+- [ ] Drenaż HTTP (#40, §4.7): limit czasu żądań Admin API dłuższy niż `deploy.drainHttpNodeRequests.timeout`; klienty HTTP obsługują 503 `http_drain_not_accepted` (ponowienie) i `http_drain_outcome_unknown` (klucz idempotencji; GET traktowany jako bezpieczny); węzły zewnętrzne z trasami na `httpNode` – opcjonalny kontrakt symbolu.
 - [ ] Teksty i dokumentacja po polsku zgodne z terminologią §5.1 (R-29).
 - [ ] Test po migracji: wdrożenie przez narzędzie → natychmiastowe wywołanie endpointu nowego flow (200), konflikt rewizji (409), wdrożenie bez rewizji (409 `version_required`).
 

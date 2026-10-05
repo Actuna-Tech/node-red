@@ -21,6 +21,9 @@
  *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  *   #16: the raw body of routes with parameters or another letter case without
  *   deploy.holdHttpNodeRequests, the size limit of the raw body and of an upload
+ *   #40: the contract with the drain of the HTTP requests of the runtime: the marked handler, accepted,
+ *   no message and no 500 for a request that the drain answered, "http response" drops a late response,
+ *   no change of the routes with the setting off
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1123,6 +1126,318 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             await load([["a", { upload: true, skipBodyParsing: false, maxBodySize: "abc" }]], { apiMaxLength: "1kb" });
             sizeWarnings().should.have.length(1);
             await upload("/hook", 4096).expect(200);
+        });
+    });
+});
+
+// The contract with the drain of the HTTP requests of the runtime (#40, deploy.drainHttpNodeRequests)
+describe("HTTP In node - drain of the HTTP requests (#40)", function() {
+    const http = require("http");
+    const sinon = require("sinon");
+    const NR_TEST_UTILS = require("nr-test-utils");
+    const httpDrain = NR_TEST_UTILS.require("@node-red/runtime/lib/httpDrain");
+    const S = httpDrain.S;
+    let RED;
+    let received;
+    // the callbacks `next` of the held requests: a stand-in of a slow authentication (httpNodeMiddleware)
+    let held;
+    let savedSettings;
+
+    // The runtime mounts the middleware of the drain on the httpNode app before the node module loads
+    function wrapper(_RED) {
+        RED = _RED;
+        if (httpDrain.isEnabled()) {
+            _RED.httpNode.use(httpDrain.middleware);
+        }
+        return httpInNode(_RED);
+    }
+
+    function flow(method, extra) {
+        return [
+            Object.assign({ id: "in", type: "http in", url: "/hook", method: method || "post", wires: [["sink"]] }, extra),
+            { id: "sink", type: "helper" },
+            { id: "out", type: "http response", statusCode: "200", wires: [] }
+        ];
+    }
+
+    // drain: the setting `deploy.drainHttpNodeRequests` (undefined: off); withAuth: a request waits in a middleware
+    function load(nodes, options) {
+        options = options || {};
+        const settings = {};
+        if (options.drain) {
+            settings.deploy = { drainHttpNodeRequests: Object.assign({ enabled: true, timeout: 5000 }, options.drain) };
+            httpDrain.init(settings);
+        } else {
+            httpDrain.dispose();
+        }
+        if (options.withAuth) {
+            settings.httpNodeMiddleware = function(req, res, next) { held.push({ req, res, next }) };
+        }
+        if (options.middleware) {
+            settings.httpNodeMiddleware = options.middleware;
+        }
+        helper.settings(settings);
+        return new Promise(function(resolve, reject) {
+            helper.load(wrapper, nodes, function(err) {
+                if (err) { return reject(err) }
+                received = [];
+                helper.getNode("sink").on("input", function(msg) {
+                    received.push(msg);
+                    if (!options.silentSink) {
+                        msg.req.res.status(200).end("sink");
+                    }
+                });
+                resolve();
+            });
+        });
+    }
+    function waitFor(check, what) {
+        return new Promise(function(resolve, reject) {
+            const started = Date.now();
+            (function poll() {
+                if (check()) { return resolve() }
+                if (Date.now() - started > 3000) { return reject(new Error("timeout waiting for " + what)) }
+                setTimeout(poll, 5);
+            })();
+        });
+    }
+    function flush() {
+        return new Promise(resolve => setImmediate(resolve));
+    }
+    function route(app) {
+        const layer = app._router.stack.find(l => l.route && l.route.path === "/hook");
+        should.exist(layer);
+        return layer.route;
+    }
+
+    before(function(done) {
+        savedSettings = helper._settings;
+        helper.startServer(done);
+    });
+    after(function(done) {
+        helper._settings = savedSettings;
+        helper.stopServer(done);
+    });
+    beforeEach(function() {
+        held = [];
+    });
+    afterEach(function(done) {
+        // a stop with the drain enabled answers what is still open (the contract under test)
+        helper.unload().then(function() {
+            httpDrain.dispose();
+            done();
+        }, function(err) {
+            httpDrain.dispose();
+            done(err);
+        });
+    });
+
+    describe("the marked handler", function() {
+        ["get", "post", "put", "patch", "delete"].forEach(function(method) {
+            it("the route of a " + method + " node has a handler marked for the drain, also with the drain off", async function() {
+                await load(flow(method));
+                route(RED.httpNode).stack.filter(l => l.handle[S] === true).length.should.equal(1);
+                httpDrain.isEnabled().should.be.false();
+            });
+        });
+        it("the marked handler is the callback of the node", async function() {
+            await load(flow("post"));
+            const node = helper.getNode("in");
+            node.callback[S].should.be.true();
+            route(RED.httpNode).stack.some(l => l.handle === node.callback).should.be.true();
+        });
+        it("with the drain off the app has no new layer and a post route no new handler (A11, D10)", async function() {
+            await load(flow("post"));
+            RED.httpNode._router.stack.map(l => l.handle.name).should.eql(["query", "expressInit", "rawBodyCapture", "bound dispatch"]);
+            // cookie parser, middleware, cors, metrics, raw body, json, urlencoded, multipart, raw parser, callback, error handler
+            route(RED.httpNode).stack.length.should.equal(11);
+        });
+        it("with the drain off a get route has no new handler either", async function() {
+            await load(flow("get"));
+            // cookie parser, middleware, cors, metrics, callback, error handler
+            route(RED.httpNode).stack.length.should.equal(6);
+        });
+    });
+
+    describe("with the drain off", function() {
+        it("the request has no entry and the flow answers as before", async function() {
+            await load(flow("post"), { middleware: function(req, res, next) { req.sawEntry = req[S]; next() } });
+            const res = await supertest(RED.httpNode).post("/hook").send({ a: 1 }).expect(200);
+            res.text.should.equal("sink");
+            should.not.exist(received[0].req.sawEntry);
+            should.not.exist(received[0].req[S]);
+            httpDrain.size().should.equal(0);
+        });
+    });
+
+    describe("with the drain on", function() {
+        it("the request is accepted when the node passes it into the flow, not before", async function() {
+            const seen = [];
+            await load(flow("post"), {
+                drain: {},
+                middleware: function(req, res, next) { seen.push(req[S].accepted); next() }
+            });
+            const res = await supertest(RED.httpNode).post("/hook").send({ a: 1 }).expect(200);
+            res.text.should.equal("sink");
+            seen.should.eql([false]);
+            received[0].req[S].accepted.should.be.true();
+            received[0].req[S].drained.should.be.false();
+        });
+        it("the entry is removed when the response has finished", async function() {
+            await load(flow("get"), { drain: {} });
+            await supertest(RED.httpNode).get("/hook").expect(200);
+            await waitFor(() => httpDrain.size() === 0, "the entry to be removed");
+        });
+        it("the middleware does not touch the request stream before the authentication", async function() {
+            const seen = [];
+            await load(flow("post"), {
+                drain: {},
+                middleware: function(req, res, next) {
+                    seen.push({ data: req.listenerCount("data"), readable: req.listenerCount("readable"), flowing: req.readableFlowing });
+                    next();
+                }
+            });
+            await supertest(RED.httpNode).post("/hook").send({ a: 1 }).expect(200);
+            seen.should.eql([{ data: 0, readable: 0, flowing: null }]);
+        });
+        it("a request that waits in the authentication does not extend the wait of the drain, and gets 503 not_accepted after the stop", async function() {
+            await load(flow("post"), { drain: {}, withAuth: true });
+            const pending = supertest(RED.httpNode).post("/hook").send({ a: 1 }).then(res => res);
+            await waitFor(() => held.length === 1, "the request to reach the authentication");
+            const started = Date.now();
+            await httpDrain.beforeStop();
+            (Date.now() - started).should.be.below(1000);
+            httpDrain.afterStop("full");
+            const res = await pending;
+            res.status.should.equal(503);
+            res.body.code.should.equal("http_drain_not_accepted");
+            res.headers["retry-after"].should.equal("1");
+            received.length.should.equal(0);
+        });
+    });
+
+    describe("a request that the drain already answered with 503", function() {
+        it("is not sent into the flow when the authentication ends later (SEC-003)", async function() {
+            await load(flow("post"), { drain: {}, withAuth: true });
+            const pending = supertest(RED.httpNode).post("/hook").send({ a: 1 }).then(res => res);
+            await waitFor(() => held.length === 1, "the request to reach the authentication");
+            await httpDrain.beforeStop();
+            httpDrain.afterStop("full");
+            (await pending).status.should.equal(503);
+            const node = helper.getNode("in");
+            node.warn.resetHistory();
+            // the authentication ends, the parsers read the body, the handler runs
+            held[0].next();
+            await flush();
+            await flush();
+            received.length.should.equal(0);
+            node.warn.called.should.be.false();
+            held[0].req[S].accepted.should.be.false();
+        });
+        it("does not send into the flow when the handler is called after the answer (callback)", async function() {
+            await load(flow("post"));
+            const node = helper.getNode("in");
+            const send = node.send;
+            send.resetHistory();
+            const entry = { accepted: false, drained: true };
+            node.callback({ [S]: entry, headers: {}, body: {} }, { [S]: entry });
+            send.called.should.be.false();
+            entry.accepted.should.be.false();
+        });
+        it("does not answer 500 to an error of the parser after the answer (errorHandler, no ERR_HTTP_HEADERS_SENT)", async function() {
+            await load(flow("post"));
+            const node = helper.getNode("in");
+            node.warn.resetHistory();
+            const res = { sendStatus: function() { throw new Error("must not be called") } };
+            node.errorHandler(new Error("request aborted"), { [S]: { drained: true } }, res, function() {});
+            node.warn.called.should.be.false();
+        });
+        it("an error of the parser answers 500 as before when the request was not answered by the drain", async function() {
+            await load(flow("post"));
+            const node = helper.getNode("in");
+            node.warn.resetHistory();
+            const res = { sendStatus: sinon.stub() };
+            node.errorHandler(new Error("bad"), { [S]: { drained: false } }, res, function() {});
+            res.sendStatus.calledWith(500).should.be.true();
+            node.warn.calledOnce.should.be.true();
+            const plain = { sendStatus: sinon.stub() };
+            node.errorHandler(new Error("bad"), {}, plain, function() {});
+            plain.sendStatus.calledWith(500).should.be.true();
+        });
+        it("an error of the parser after the answer reaches no response (integration)", async function() {
+            await load(flow("post"), { drain: {}, withAuth: true });
+            const pending = supertest(RED.httpNode).post("/hook").send({ a: 1 }).then(res => res);
+            await waitFor(() => held.length === 1, "the request to reach the authentication");
+            await httpDrain.beforeStop();
+            httpDrain.afterStop("full");
+            const res = await pending;
+            res.status.should.equal(503);
+            const node = helper.getNode("in");
+            node.warn.resetHistory();
+            held[0].next(new Error("failed after the answer"));
+            await flush();
+            node.warn.called.should.be.false();
+            res.body.code.should.equal("http_drain_not_accepted");
+        });
+        it("http response drops a late response and does not write (SEC-005)", async function() {
+            await load(flow("post"));
+            const out = helper.getNode("out");
+            const debug = out.debug;
+            debug.resetHistory();
+            const _res = { status: sinon.stub(), set: sinon.stub(), get: sinon.stub(), send: sinon.stub(), jsonp: sinon.stub(), [S]: { drained: true } };
+            out.receive({ payload: "late", res: { _res } });
+            await flush();
+            _res.status.called.should.be.false();
+            _res.send.called.should.be.false();
+            debug.calledOnce.should.be.true();
+            debug.firstCall.args[0].should.equal("httpin.errors.drained-response");
+        });
+        it("http response answers a request that has an entry and was not answered by the drain", async function() {
+            await load(flow("post"), { drain: {}, silentSink: true });
+            const pending = supertest(RED.httpNode).post("/hook").send({ a: 1 }).then(res => res);
+            await waitFor(() => received.length === 1, "the message");
+            helper.getNode("out").receive({ payload: "from the flow", res: received[0].res });
+            const res = await pending;
+            res.status.should.equal(200);
+            res.text.should.equal("from the flow");
+        });
+        it("http response with a response that is not an http in response still warns as before", async function() {
+            await load(flow("post"));
+            const out = helper.getNode("out");
+            const warn = out.warn;
+            warn.resetHistory();
+            out.receive({ payload: "x" });
+            await flush();
+            warn.calledOnce.should.be.true();
+        });
+    });
+
+    describe("the request of a route with skipBodyParsing in rawBodyCapture", function() {
+        it("is not waited for at the stop: it has no route yet, and after it the router answers 404, not nothing (the upload before the route)", async function() {
+            await load(flow("post", { skipBodyParsing: true }), { drain: {} });
+            const server = http.createServer(RED.httpNode);
+            await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+            try {
+                const answer = new Promise(function(resolve, reject) {
+                    const req = http.request({ host: "127.0.0.1", port: server.address().port, path: "/hook", method: "POST", agent: false, headers: { "Content-Type": "application/octet-stream", "Content-Length": 20 } }, function(res) {
+                        res.resume();
+                        res.on("end", () => resolve(res.statusCode));
+                    });
+                    req.on("error", reject);
+                    req.write("0123456789");
+                    // the capture reads the body, the route is not matched yet
+                    waitFor(() => httpDrain.size() === 1, "the request").then(async function() {
+                        const started = Date.now();
+                        // the stop: the node closes, its route is removed
+                        await helper.unload();
+                        (Date.now() - started).should.be.below(1000);
+                        req.end("0123456789");
+                    }).catch(reject);
+                });
+                (await answer).should.equal(404);
+            } finally {
+                server.close();
+            }
         });
     });
 });

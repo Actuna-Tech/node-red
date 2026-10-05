@@ -33,7 +33,8 @@ module.exports = {
         response: "started",                // odpowiedź API po starcie flow (P-01)
         requireRevision: true,              // każde wdrożenie z aktualną rewizją (Z-05)
         reload: { retry: { onExhausted: "keepReady" } }, // z deploy.reload.watch: awaria magazynu nie wyłącza instancji z ruchu; /ready 200 „warn”, po 30 min 503 (R-47)
-        holdHttpNodeRequests: { enabled: true } // żądania HTTP węzłów czekają na restart flow zamiast 404 (#8)
+        holdHttpNodeRequests: { enabled: true }, // żądania HTTP węzłów czekają na restart flow zamiast 404 (#8)
+        drainHttpNodeRequests: { enabled: true, timeout: 10000 } // wdrożenie czeka na zapytania w toku, po limicie 503 zamiast braku odpowiedzi (#40); 5000–10000 dla Bot-Engine
     },
     editorTheme: {
         flowLayout: { enabled: true },      // kontrolki układu flow (Z-14) – WYMAGANE przy aktualizacji
@@ -108,6 +109,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 | `deploy.startTimeoutReleasesLock` | `false` | `true` – blokada wdrożeń zwalniana po limicie (ryzyko równoległego startu) | R-45 |
 | `deploy.putCreatesFlow` | `false` | `PUT /flow/:id` tworzy brakujący flow pod tym id | Z-04 |
 | `deploy.holdHttpNodeRequests: {enabled, timeout, maxPending, retryAfter}` | `enabled: false`, `timeout: 5000` ms, `maxPending: 1000`, `retryAfter: 1` s | `enabled: true` – żądania do tras węzłów (`httpNodeRoot`, np. `http in`), **dla których w danym momencie nie ma trasy**, są wstrzymywane na czas restartu flow (wdrożenie i przeładowanie z magazynu) i obsługiwane przez nowe flow po ich starcie, zamiast 404; trasy niezmienionych węzłów odpowiadają od razu; po `timeout` lub przy przepełnieniu `maxPending` (limit globalny, nie na klienta) → 503 z `Retry-After` (kody `http_hold_timeout`, `http_hold_queue_full`, `http_hold_release_failed`); szczegóły niżej | #8 |
+| `deploy.drainHttpNodeRequests: {enabled, timeout, retryAfter}` | `enabled: false`, `timeout: 30000` ms, `retryAfter: 1` s | `enabled: true` – przed zatrzymaniem flow (wdrożenie dowolnego typu, przeładowanie z magazynu, `POST /flows/state` stop, przełączenie projektu) runtime czeka najwyżej `timeout` na zapytania **przyjęte** przez `http in`, po zatrzymaniu odpowiada 503 na zapytania, które nadal są otwarte (kody `http_drain_not_accepted`, `http_drain_outcome_unknown`); **limit twardy** – także flow niezmieniane; szczegóły niżej | #40 |
 | `deploy.requireRevision` | `false` | wdrożenie bez rewizji → 409 `version_required`; v1 zawsze 409 | Z-05 |
 | `httpAdminNodeRoutes` | `"open"` | `"authenticated"` – ochrona tras admin węzłów | Z-02 |
 | `telemetry.locked` | brak | blokada ustawienia telemetrii | P-03 |
@@ -181,6 +183,45 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 - **Wybory projektowe:** nazwa `deploy.holdHttpNodeRequests` (rodzina `deploy.*`, ZASADY §2.1; nie `deploy.reload.*`, bo obejmuje także
   zwykłe wdrożenie); okno wstrzymania to cały stan `deploying`/`reloading`, ale wstrzymywane są tylko żądania bez trasy (patrz wyżej),
   więc zdrowe trasy nie dostają 503 przy długim wdrożeniu. Ustaw `timeout` poniżej limitów czasu load balancera i klientów.
+
+### Drenaż zapytań HTTP przed zatrzymaniem flow (#40, R-49)
+- **Problem:** zapytanie przyjęte przez `http in`, którego wiadomość jest w drodze (np. w `delay`), zostawało **bez żadnej odpowiedzi**, gdy
+  zatrzymywany był węzeł trzymający wiadomość (wdrożenie `full`/`flows`/`nodes`, przeładowanie Z-09, zatrzymanie flow). Klient czekał do własnego
+  limitu (nginx: 60 s → 504). Wstrzymanie z #8 tego nie obejmuje (dotyczy zapytań bez trasy).
+- **Działanie (`enabled: true`):** (1) `beforeStop` – przed zatrzymaniem węzłów runtime czeka do `timeout` na zapytania przyjęte przez `http in`
+  (migawka w chwili zatrzymania); (2) zatrzymanie flow; (3) `afterStop` – 503 dla zapytań, które nadal są otwarte: po zatrzymaniu **pełnym** wszystkie
+  z dopasowaną trasą, po **częściowym** (`nodes`/`flows`) te po terminie. Zapytania przychodzące w oknie zatrzymania dostają termin
+  `max(t0, dopasowanie) + timeout`. Przy zatrzymaniu procesu (`RED.stop`) pozostałe zapytania dostają 503 od razu (bez czekania).
+- **Tylko zapytania przyjęte wydłużają wdrożenie:** wolne ciało lub trwające uwierzytelnianie nie przedłuża czekania; takie zapytanie dostaje po
+  zatrzymaniu 503 `http_drain_not_accepted` z `Connection: close`. Śledzenie nic nie czyta ze strumienia zapytania (nic przed uwierzytelnieniem, SEC-001 z #16).
+- **Dwa kody 503** (ciało stałe `{code, message}`): `http_drain_not_accepted` – zapytanie nie trafiło do flow, **można bezpiecznie ponowić**
+  (zawsze z `Retry-After`); `http_drain_outcome_unknown` – trafiło, flow mógł zadziałać; `Retry-After` tylko dla GET, HEAD i OPTIONS. Przyczyna (limit,
+  zatrzymanie) tylko w logu. Wcześniej ustawione nagłówki odpowiedzi (np. `Set-Cookie`) są usuwane z 503, zostają `Access-Control-*` i `Vary`.
+  Odpowiedź już rozpoczęta (strumień) jest niszczona. **Zalecenie:** flow z zapisami lub płatnościami wymagają klucza idempotencji po stronie klienta;
+  przy włączonym drenażu GET jest traktowany jako bezpieczny do ponowienia – flow z efektami ubocznymi powinny używać POST (SEC-007).
+- **Limit twardy (P1, decyzja właściciela):** zapytanie dłuższe niż `timeout` dostaje 503 **także we flow niezmienianych** przez wdrożenie. Długie
+  raporty i eksporty dostają 503 przy każdym wdrożeniu w ich trakcie, jeśli trwają dłużej niż `timeout`; endpointy long-poll i SSE na `http in`
+  wstrzymują każde wdrożenie o pełny `timeout`, a potem są zrywane. Ustaw `timeout` dłuższy niż najdłuższe zwykłe zapytanie albo skróć go (5000–10000)
+  tam, gdzie takich zapytań nie ma (Bot-Engine, ruch publiczny).
+- **Czas wdrożenia:** `POST /flows`, `POST /flows/state` stop i przeładowanie trwają do `timeout` dłużej (drenaż pod blokadą wdrożeń; w klastrze trzyma
+  slot Z-10 – przejście klastra wydłuża się o N × `timeout`, zalecane `deploy.reload.concurrency`). Najgorszy czas przeładowania Z-09:
+  czekanie na blokadę + `preReloadTimeout` + `timeout` + `nodeCloseTimeout` + start; `PreReloadEvent.deadline` nie jest najpóźniejszą chwilą zatrzymania.
+  Drenaż HTTP jest po hookach `preReload` i dodatkowej rundzie (D-17). Ryzyko szczątkowe: publiczny `http in`, którego flow odpowiada wolno, pozwala
+  klientowi wydłużyć każde wdrożenie o `timeout` – krótszy `timeout`, w klastrze `deploy.reload.concurrency`, w trybie osadzonym `server.requestTimeout`/`headersTimeout`.
+- **Zakres:** wszystkie zapytania do tras `httpNode` z oznaczonym handlerem (rdzeń: `http in`), globalnie (nie per flow); wiadomość może przejść przez
+  link, link call lub kontekst. Trasy innych węzłów (np. `bot-start`) nie są drenowane; mogą przyjąć kontrakt symbolu (MIGRACJA §4.7). Zapytanie w fazie
+  `rawBodyCapture` (upload do trasy `skipBodyParsing` przed dopasowaniem trasy) nie jest objęte gwarancją – po zatrzymaniu dostaje 404 albo trasę nowego flow.
+  Nowe zapytania w czasie drenażu są przepuszczane do starych flow; `holdHttpNodeRequests` (#8) bez zmian i bez zależności.
+- **Różnice względem wyłączonego ustawienia:** wiadomość odłożona w kontekście (stash) i odpowiedziana później przez nowe flow – przy zatrzymaniu
+  pełnym klient dostaje 503 zamiast późnego 200 (późna odpowiedź `http response` jest tylko w logu `debug`). Brak nowego stanu instancji; `/ready` bez
+  zmian (przy `POST /flows/state` stop i przełączeniu projektu 200 przez cały drenaż). Przy wyłączonym ustawieniu nie ma middleware ani wpisów,
+  `stop()` działa jak dotąd; jedyna różnica to właściwość-symbol na handlerze `http in` (nieobserwowalna).
+- **Znane ograniczenia:** w czasie drenażu konfiguracja jest już nowa – `checkTypeInUse` pozwala usunąć moduł używany tylko przez stare flow (to samo okno
+  istnieje dziś przez `nodeCloseTimeout`); wyścig `RED.stop` z wdrożeniem może uruchomić nowe flow po `RED.stop` (jak w wersji bazowej; zgłoszenie osobno:
+  `start()` odmawia w stanie `stopping`); okno zatrzymania zapytań nie ma końca przy starcie, który się nie kończy (limity startu: `deploy.startTimeout`,
+  ostrzeżenie po 2 × `timeout`). Faza 2 (poza tym wydaniem): czekanie na zapytania przy SIGTERM w `shutdownTimeout`, stan w `instance:state`, wyjątki dla SSE.
+- **Wybory projektowe:** nazwa z rodziny `deploy.*`, symetryczna z `holdHttpNodeRequests`; `timeout` ma inne znaczenie niż `holdHttpNodeRequests.timeout`
+  (limit czekania na zapytania przyjęte i odstęp terminu); w logach i dokumentach „drenaż HTTP” (nie mylić z `preReload`/`preShutdown`).
 
 ### Potok wdrożenia (E-01)
 - Wspólna blokada (`runtime/lib/flows/lock.js`) dla `POST /flows`, `/flow`, `POST /flows/state` i operacji
@@ -384,6 +425,10 @@ Z-02 nie jest piaskownicą; Z-09 – pełna ochrona przed pustą konfiguracją w
 wtyczce magazynu; wspólny wolumen sieciowy (NFS) i klastrowa wtyczka koordynacji nie testowane na żywo;
 różne strefy czasowe instancji – podwójne wyzwolenie crona w `inject` „tylko jedna instancja”; ostrzeżenie o
 brakujących typach na instancji `editorOnly` tylko w logu.
+
+**#40 (drenaż zapytań HTTP):** zrealizowany w MVP (R-49). Faza 2: czekanie na zapytania przy SIGTERM w `shutdownTimeout` (część HTTP w
+`health.shutdown`), pole `httpDrain` w `instance:state` i powiadomienie w edytorze, wyjątki dla SSE i long-poll, zakres per flow, `start()` odmawia
+w stanie `stopping`, awaryjne pominięcie drenażu przez operatora, ochrona usuwania modułu w czasie drenażu, wspólne walidatory `httpHold`/`httpDrain`.
 
 **Poza zakresem (kolejny etap):** Z-06 (hooki `preDeploy`/`postDeploy`), Z-03, Z-07, Z-12 (rozszerzenia
 edytora), Z-13 (język polski), FL-B-011.

@@ -27,6 +27,8 @@
  *   W-3: revisions of the flow and of the whole configuration in deploy errors of /flow
  *   P-02: warning for editorTheme.deploy.staleFlows "reload-only" without deploy.requireRevision
  *   #2: the v2 result of getFlows is only {flows, rev} - no digest of the credentials
+ *   #40: setState stop with deploy.drainHttpNodeRequests waits for the accepted requests and answers
+ *   the open ones with 503
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -611,6 +613,99 @@ describe("runtime-api/flows", function() {
             startFlows.called.should.not.be.true();
             should(err).have.property("code", "invalid_run_state")
             should(err).have.property("status", 400)
+        });
+        describe("stop with the drain of the HTTP requests (#40)", function() {
+            const EventEmitter = require("events");
+            const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+            const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+            const runtimeFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+            const httpDrain = NR_TEST_UTILS.require("@node-red/runtime/lib/httpDrain");
+            const typeRegistry = NR_TEST_UTILS.require("@node-red/registry");
+            let load;
+            let checkDependencies;
+            function fakeRequest(method) {
+                const req = new EventEmitter();
+                req.method = method || "POST";
+                req.complete = true;
+                req.route = { stack: [{ handle: Object.assign(function() {}, { [httpDrain.S]: true }) }] };
+                const res = new EventEmitter();
+                const headers = {};
+                Object.assign(res, { statusCode: 200, headersSent: false, writableEnded: false, destroyed: false });
+                res.getHeaderNames = () => Object.keys(headers);
+                res.setHeader = (name, value) => { headers[name.toLowerCase()] = value };
+                res.removeHeader = name => { delete headers[name.toLowerCase()] };
+                res.end = function(body) { this.body = body; this.writableEnded = true; this.emit("finish") };
+                httpDrain.middleware(req, res, function() {});
+                return { req, res, entry: req[httpDrain.S] };
+            }
+            function flush() {
+                return new Promise(resolve => setImmediate(resolve));
+            }
+            beforeEach(async function() {
+                instanceState.reset();
+                instanceState.markStarting();
+                load = sinon.stub(credentials, "load").callsFake(async function() {});
+                checkDependencies = sinon.stub(typeRegistry, "checkFlowDependencies").callsFake(async function() {});
+                runtimeFlows.init({
+                    log: mockLog(),
+                    settings: {},
+                    storage: { getFlows: async () => ({ flows: [{ id: "t1", type: "tab" }], rev: "A" }) }
+                });
+                await runtimeFlows.load();
+                await runtimeFlows.startFlows();
+                runtimeFlows.started.should.be.true();
+                instanceState.get().should.containEql({state:"ready"});
+                runtime.flows = runtimeFlows;
+            });
+            afterEach(async function() {
+                httpDrain.dispose();
+                await runtimeFlows.stopFlows();
+                load.restore();
+                checkDependencies.restore();
+                instanceState.reset();
+            });
+
+            it("waits for the accepted requests, which the flows answer, and then stops", async function() {
+                httpDrain.init({ deploy: { drainHttpNodeRequests: { enabled: true, timeout: 5000 } } });
+                const request = fakeRequest();
+                request.entry.accepted = true;
+                flows.init(runtime);
+                const promise = flows.setState({state:"stop"});
+                await flush();
+                runtimeFlows.started.should.be.true();
+                request.res.end("answered by the flow");
+                const state = await promise;
+                state.should.have.property("state", "stop");
+                request.res.body.should.equal("answered by the flow");
+                runtimeFlows.started.should.be.false();
+                instanceState.get().should.containEql({state:"idle", reason:"set-state"});
+            });
+            it("answers 503 to every open request after the stop, by the outcome for the client", async function() {
+                // the limit of the wait: 30 ms of real time
+                httpDrain.init({ deploy: { drainHttpNodeRequests: { enabled: true, timeout: 30 } } });
+                const accepted = fakeRequest("POST");
+                accepted.entry.accepted = true;
+                const notAccepted = fakeRequest("POST");
+                const unrouted = fakeRequest("GET");
+                unrouted.req.route = null;
+                flows.init(runtime);
+                const state = await flows.setState({state:"stop"});
+                state.should.have.property("state", "stop");
+                accepted.res.statusCode.should.equal(503);
+                JSON.parse(accepted.res.body).code.should.equal("http_drain_outcome_unknown");
+                notAccepted.res.statusCode.should.equal(503);
+                JSON.parse(notAccepted.res.body).code.should.equal("http_drain_not_accepted");
+                unrouted.res.writableEnded.should.be.false();
+                runtimeFlows.started.should.be.false();
+            });
+            it("without the setting the open requests are not touched", async function() {
+                const request = fakeRequest();
+                request.res.writableEnded.should.be.false();
+                flows.init(runtime);
+                await flows.setState({state:"stop"});
+                request.res.writableEnded.should.be.false();
+                httpDrain.size().should.equal(0);
+            });
         });
         describe("instance state (E-02)", function() {
             const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
