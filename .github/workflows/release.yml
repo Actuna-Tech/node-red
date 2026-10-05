@@ -1,6 +1,7 @@
 # Modified by Actuna Sp. z o.o.:
 #   #57: the job runs only in the upstream repository - in the fork a published release
-#   must not open pull requests in other repositories (D-04); actions on Node 24 (v7)
+#   must not open pull requests in other repositories (D-04); checkout/setup-node v7
+#   (create-pull-request@v6 unchanged: the job does not run in the fork)
 # This notice is required by section 4(b) of the Apache License 2.0.
 
 name: Publish Release

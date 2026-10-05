@@ -1,8 +1,9 @@
 # Modified by Actuna Sp. z o.o.:
-#   #57: actions on Node 24 (checkout/setup-node v7, without the automatic npm cache of
-#   setup-node v5+, so the job behaves as before); fail-fast off, so every Node version
-#   reports its own result. ubuntu-latest kept: the suite passed on ubuntu-26.04, which
-#   ubuntu-latest becomes from 2026-10-19
+#   #57: actions on Node 24 (checkout/setup-node v7); package-manager-cache: false is a
+#   safeguard - setup-node v5+ would cache npm on its own if package.json named npm in
+#   packageManager; fail-fast off, so every Node version reports its own result.
+#   ubuntu-latest kept: the suite passed on ubuntu-26.04, which ubuntu-latest becomes
+#   from 2026-10-19
 # This notice is required by section 4(b) of the Apache License 2.0.
 
 name: Run tests
