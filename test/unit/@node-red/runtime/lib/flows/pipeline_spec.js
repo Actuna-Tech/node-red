@@ -518,20 +518,26 @@ describe("flows/pipeline", function() {
 
         describe("without a handler (I1, off_identical)", function() {
             it("no copy, no timer, no accessor call, no extra read of the active configuration", async function() {
-                const handlers = sinon.spy(hooks, "handlers");
+                // hooks.handlers is read-only (S-C3), so it cannot be spied on; only the two functions of deployHooks
+                // read it, and neither may be called
+                const deployHooks = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/deployHooks");
+                const pre = sinon.spy(deployHooks, "runPreDeploy");
+                const post = sinon.spy(deployHooks, "notifyPostDeploy");
                 const has = sinon.spy(hooks, "has");
                 const clock = sinon.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
                 try {
                     await pipeline.deploy({ type: "full", source: "api", flows: { flows: [1, 2] } });
                     await pipeline.deploy({ type: "reload", source: "api" });
                     await pipeline.deploy({ type: "flows", prepare: async () => ({ config: [] }), apply: async () => "x", operation: "addFlow" });
-                    handlers.called.should.be.false();
+                    pre.called.should.be.false();
+                    post.called.should.be.false();
                     flows.getFlows.called.should.be.false();
                     clock.countTimers().should.equal(0);
                     has.calledWith("preDeploy").should.be.true();
                 } finally {
                     clock.restore();
-                    handlers.restore();
+                    pre.restore();
+                    post.restore();
                     has.restore();
                 }
             });

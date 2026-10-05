@@ -578,6 +578,21 @@ describe("util/hooks", function() {
             hooks.should.have.property("handlers");
             Object.getOwnPropertyDescriptor(hooks, "handlers").enumerable.should.be.false();
         });
+        it("S-C3: handlers cannot be replaced, deleted or redefined by a node", function() {
+            const original = hooks.handlers;
+            const descriptor = Object.getOwnPropertyDescriptor(hooks, "handlers");
+            descriptor.writable.should.be.false();
+            descriptor.configurable.should.be.false();
+            descriptor.enumerable.should.be.false();
+            (function() { "use strict"; hooks.handlers = function() { return [] } }).should.throw(TypeError);
+            // sloppy mode: the assignment is ignored
+            (new Function("hooks", "hooks.handlers = function() { return [] }; return hooks.handlers"))(hooks).should.equal(original);
+            (function() { "use strict"; delete hooks.handlers }).should.throw(TypeError);
+            (function() { Object.defineProperty(hooks, "handlers", { value: function() { return [] } }) }).should.throw(TypeError);
+            hooks.handlers.should.equal(original);
+            hooks.add("preDeploy.a", function() {});
+            hooks.handlers("preDeploy").should.have.length(1);
+        });
         it("addFromSettings still rejects preDeploy and postDeploy (P4: only RED.hooks.add registers them)", function() {
             ["preDeploy.x", "postDeploy.x"].forEach(function(key) {
                 let error;
