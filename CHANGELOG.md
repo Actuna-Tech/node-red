@@ -449,10 +449,13 @@ Fixes
    `RED.hooks.trigger` rejects (promise form) or calls `done` (callback form) once with an `Error` with the message
    `Hook handler rejected without an error: <value>` (for an empty string the value is `""`, quotes included), the
    handler is called once and the next handlers are not called; the caller follows its existing error path
-   (`preShutdown` and `preReload` log the error and go on, message hooks call `node.error`, install hooks fail the
-   install). A rejection with a truthy value, a handler with two arguments and a synchronous `return` or `throw`
-   behave as before. A handler that was removed while its promise was pending and then rejects without a value now
-   ends the chain too (it used to move to the next handler)
+   (`preShutdown` and `preReload` log the error and go on; `onSend`, `preRoute`, `preDeliver` and `onReceive` report
+   it with `node.error` and the message is not delivered; `postDeliver`, `postReceive` and `onComplete` only report
+   it with `node.error`, as the message was already delivered; `preInstall`, `postInstall` and `preUninstall` fail
+   the install or uninstall; `postUninstall` only logs a warning, as the module was already removed). A rejection
+   with a truthy value, a handler with two arguments and a synchronous `return` or `throw` behave as before. A
+   handler that was removed while its promise was pending and then rejects without a value now ends the chain too
+   (it used to move to the next handler)
 
 Features
 
