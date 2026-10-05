@@ -32,11 +32,10 @@ var writeUtil = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesy
 var logger = NR_TEST_UTILS.require("@node-red/util").log;
 
 describe('storage/localfilesystem/library', function() {
-    var userDir = path.join(__dirname,".testUserHome");
-    beforeEach(function(done) {
-        fs.remove(userDir,function(err) {
-            fs.mkdir(userDir,done);
-        });
+    // #54: a directory of its own for each test, so that two runs of this spec do not touch each other's files
+    var userDir;
+    beforeEach(function() {
+        userDir = fs.mkdtempSync(path.join(os.tmpdir(), "nr-library-legacy-"));
     });
     afterEach(function(done) {
         fs.remove(userDir,done);
@@ -166,7 +165,7 @@ describe('storage/localfilesystem/library', function() {
                 flows.should.eql([ 'C', { ghi: 'jkl', fn: 'file2.js' } ]);
                 var ft = path.join("B","D","file3.js");
                 localfilesystemLibrary.saveLibraryEntry('functions',ft,{mno:'pqr'},"// another non meta line\n\n Hi There").then(function() {
-                    setTimeout(function() {
+                    (function() {
                         localfilesystemLibrary.getLibraryEntry('functions',path.join("B","D")).then(function(flows) {
                             flows.should.eql([ { mno: 'pqr', fn: 'file3.js' } ]);
                             localfilesystemLibrary.getLibraryEntry('functions',ft).then(function(body) {
@@ -178,7 +177,7 @@ describe('storage/localfilesystem/library', function() {
                         }).catch(function(err) {
                             done(err);
                         })
-                    }, 50);
+                    })();
                 }).catch(function(err) {
                     done(err);
                 });
@@ -197,7 +196,7 @@ describe('storage/localfilesystem/library', function() {
                 flows.should.eql([ 'C', {fn:'flow.json'} ]);
                 var ft = path.join("B","D","file3");
                 localfilesystemLibrary.saveLibraryEntry('flows',ft,{mno:'pqr'},"Hi").then(function() {
-                    setTimeout(function() {
+                    (function() {
                         localfilesystemLibrary.getLibraryEntry('flows',path.join("B","D")).then(function(flows) {
                             flows.should.eql([ { mno: 'pqr', fn: 'file3.json' } ]);
                             localfilesystemLibrary.getLibraryEntry('flows',ft+".json").then(function(body) {
@@ -209,7 +208,7 @@ describe('storage/localfilesystem/library', function() {
                         }).catch(function(err) {
                             done(err);
                         })
-                    }, 50);
+                    })();
                 }).catch(function(err) {
                     done(err);
                 });
@@ -228,7 +227,7 @@ describe('storage/localfilesystem/library', function() {
                 flows.should.eql([ 'C', {fn:'flow.json'} ]);
                 var ft = path.join("B","D","file4");
                 localfilesystemLibrary.saveLibraryEntry('flows',ft,{mno:'pqr'},"こんにちわこんにちわこんにちわ").then(function() {
-                    setTimeout(function() {
+                    (function() {
                         localfilesystemLibrary.getLibraryEntry('flows',path.join("B","D")).then(function(flows) {
                             flows.should.eql([ { mno: 'pqr', fn: 'file4.json' } ]);
                             localfilesystemLibrary.getLibraryEntry('flows',ft+".json").then(function(body) {
@@ -240,7 +239,7 @@ describe('storage/localfilesystem/library', function() {
                         }).catch(function(err) {
                             done(err);
                         })
-                    }, 50);
+                    })();
                 }).catch(function(err) {
                     done(err);
                 });

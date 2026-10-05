@@ -330,10 +330,12 @@ module.exports = Object.assign(${JSON.stringify({
 
     // Sends GET /stable all the time (two sequential pollers) during a reload of the
     // flows written to the shared file; returns the statuses in the order of the answers
-    async function reloadUnderLoad(deploy) {
+    // flowsFor(statusCode): the flows of the window (#54: the hold test takes the ones with a slow /stable)
+    async function reloadUnderLoad(deploy, flowsFor) {
+        flowsFor = flowsFor || windowFlows;
         const shared = tempDir("nr-reload-hold-");
         const flowFile = path.join(shared, "flows.json");
-        fs.writeFileSync(flowFile, JSON.stringify(windowFlows("200")));
+        fs.writeFileSync(flowFile, JSON.stringify(flowsFor("200")));
         const inst = await startInstance(flowFile, deploy);
         await waitFor(async () => (await status(inst.ready)) === 200, 30000, "not ready");
         (await status(inst.base + "/stable")).should.equal(200);
@@ -350,7 +352,7 @@ module.exports = Object.assign(${JSON.stringify({
             // A request in progress: the drain waits for it, the reload starts when it completes
             const turn = request("GET", inst.base + "/turn");
             await new Promise(r => setTimeout(r, 300));
-            fs.writeFileSync(flowFile + ".tmp", JSON.stringify(windowFlows("202")));
+            fs.writeFileSync(flowFile + ".tmp", JSON.stringify(flowsFor("202")));
             fs.renameSync(flowFile + ".tmp", flowFile);
             (await turn).status.should.equal(200);
             // the new flows answer 202 on /stable once started
@@ -369,7 +371,13 @@ module.exports = Object.assign(${JSON.stringify({
     }
 
     it("with deploy.holdHttpNodeRequests a request in the stop->start window gets the answer of the new flows, never 404 (#8)", async function() {
-        const statuses = await reloadUnderLoad({ holdHttpNodeRequests: { enabled: true, timeout: 15000 } });
+        // #54: with the drain on and a slow /stable in the old flows, so that a request of the pollers is always
+        // in progress at the stop (without the drain such a request gets no answer, as documented, and without
+        // a slow route whether there is one depends on the timing); the configuration that FORK.md recommends
+        const statuses = await reloadUnderLoad({
+            holdHttpNodeRequests: { enabled: true, timeout: 15000 },
+            drainHttpNodeRequests: { enabled: true }
+        }, function(statusCode) { return slowWindowFlows(statusCode, statusCode === "200") });
         if (statuses.indexOf(-1) !== -1) {
             throw new Error("a request got no answer within 30 s (held too long): " + JSON.stringify(statuses));
         }

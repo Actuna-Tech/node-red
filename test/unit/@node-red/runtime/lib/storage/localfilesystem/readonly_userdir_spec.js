@@ -170,7 +170,6 @@ describe("storage/localfilesystem with readOnlyUserDir (Z-11)", function() {
             await localfilesystem.saveSessions({ a: 1 });
             fs.existsSync(path.join(userDir, ".sessions.json")).should.be.true();
             await localfilesystem.saveLibraryEntry("flows", "test", {}, "[]");
-            await new Promise(r => setTimeout(r, 50));
             fs.existsSync(path.join(userDir, "lib", "flows", "test.json")).should.be.true();
         });
 

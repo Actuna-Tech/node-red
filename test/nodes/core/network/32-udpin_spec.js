@@ -70,14 +70,27 @@ describe('UDP in Node', function() {
         });
     }
 
+    // The port is found before the node starts, so another program can take it before the node binds (#54).
+    // The node reports a failed bind as an error ("udp.errors.error"; the only way a bind fails here is a port
+    // in use) and logs once it listens: the test starts again on the next port until the node listens, for 10
+    // ports in all.
+    var UDP_PORTS = 10;
     function checkRecv(dt, proto, val0, val1, done) {
-        portSource(proto, function(err, port) {
-            if (err) { return done(err); }
-            checkRecvOnPort(port, dt, proto, val0, val1, done);
-        });
+        (function attempt(n) {
+            portSource(proto, function(err, port) {
+                if (err) { return done(err); }
+                checkRecvOnPort(port, dt, proto, val0, val1, done, function taken() {
+                    if (n >= UDP_PORTS) {
+                        return done(new Error("udp in did not bind any of " + UDP_PORTS + " ports, the last one was " + port + ": EADDRINUSE"));
+                    }
+                    attempt(n + 1);
+                });
+            });
+        })(1);
     }
 
-    function checkRecvOnPort(port, dt, proto, val0, val1, done) {
+    // taken() is called, after the unload of the flow, when the node could not bind the port
+    function checkRecvOnPort(port, dt, proto, val0, val1, done, taken) {
         var flow = [{id:"n1", type:"udp in",
                      group: "", multicast:false,
                      port:port, ipv:proto,
@@ -85,23 +98,40 @@ describe('UDP in Node', function() {
                      wires:[["n2"]] },
                     {id:"n2", type:"helper"}];
         helper.load(udpNode, flow, function() {
+            var n1 = helper.getNode("n1");
             var n2 = helper.getNode("n2");
-            n2.on("input", function(msg) {
-                try {
-                    var ip = ((proto === 'udp6') ? '::ffff:':'') +'127.0.0.1';
-                    msg.should.have.property('ip', ip);
-                    msg.should.have.property('port');
-                    msg.should.have.property('payload');
-                    msg.payload.should.deepEqual(val1);
-                    done();
-                } catch(err) {
-                    done(err);
+            var settled = false;
+            function listening() {
+                n2.on("input", function(msg) {
+                    try {
+                        var ip = ((proto === 'udp6') ? '::ffff:':'') +'127.0.0.1';
+                        msg.should.have.property('ip', ip);
+                        msg.should.have.property('port');
+                        msg.should.have.property('payload');
+                        msg.payload.should.deepEqual(val1);
+                        done();
+                    } catch(err) {
+                        done(err);
+                    }
+                });
+                sendIPv4(val0, port);
+            }
+            n1.on("call:log", function() {
+                if (!settled) {
+                    settled = true;
+                    listening();
                 }
             });
-            sendIPv4(val0, port);
+            n1.on("call:error", function() {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                Promise.resolve(helper.unload()).then(taken, done);
+            });
         });
     }
-    
+
     it('should recv IPv4 data (Buffer)', function(done) {
         checkRecv('buffer', 'udp4', 'hello', Buffer('hello'), done);
     });

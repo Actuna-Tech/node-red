@@ -693,6 +693,20 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
     function request413(path, headers, chunks, record) {
         return request(path, headers, chunks).then(function(res) {
             return { statusCode: res.statusCode, connection: res.headers.connection };
+        }, async function(err) {
+            if (err.code !== "EPIPE" && err.code !== "ECONNRESET") {
+                throw err;
+            }
+            // The server records its answer when it has written it, before it closes the connection, so the
+            // record is there when the reset is seen; a few turns of the event loop (not a time) allow for
+            // the order of the events of the two sides in this process
+            await Promise.race([record.next(), new Promise(function(resolve) {
+                (function turn(n) { n === 0 ? resolve() : setImmediate(turn, n - 1) })(20);
+            })]);
+            if (record.entries.length === 1 && record.entries[0].statusCode === 413 && record.entries[0].connection === "close") {
+                return record.entries[0];
+            }
+            throw err;
         });
     }
 
@@ -1086,9 +1100,19 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             const chunk = Buffer.alloc(1024 * 1024, 0x61);
             const chunks = [];
             for (let i = 0; i < 66; i++) { chunks.push(chunk) }
-            const res = await request("/hook", { "Content-Type": "application/octet-stream", "Transfer-Encoding": "chunked" }, chunks);
+            // #54: the server answers early and closes, so a client that is still sending can see a reset
+            // before it has parsed the answer; the answer that the server wrote counts then
+            const record = servedRecord();
+            server.on("request", function(req, res) {
+                res.on("finish", function() {
+                    record.add({ statusCode: res.statusCode, connection: res.getHeader("connection") });
+                });
+            });
+            const res = await request413("/hook", { "Content-Type": "application/octet-stream", "Transfer-Encoding": "chunked" }, chunks, record);
             res.statusCode.should.equal(413);
-            res.headers.connection.should.equal("close");
+            res.connection.should.equal("close");
+            await record.next();
+            record.entries.should.eql([{ statusCode: 413, connection: "close" }]);
         });
 
         // #54: the 66 MiB body of the test above, and a server that answers and resets

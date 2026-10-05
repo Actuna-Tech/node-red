@@ -208,9 +208,26 @@ describe("storage/localfilesystem watchFlows (Z-09)", function() {
             nodeFs.watch = original;
             nodeFs.watchFile = originalWatchFile;
         }
-        writeAtomically(path.join(userDir, "flows.json"), JSON.stringify(flowsB));
-        await waitFor(() => notifications.length > 0);
+        const file = path.join(userDir, "flows.json");
+        writeAtomically(file, JSON.stringify(flowsB));
+        // #54: the first stat of the poller is the base of its comparison and may come before or after the
+        // write above (it runs in a thread of its own); a poller that took its base after the write sees
+        // a change only when the file changes again. So the time of the file (not its content) is moved on
+        // once per poll interval until the poller has notified: the content then decides, as in a real
+        // shared volume where the file is written again later.
+        const POLL_INTERVAL = 1000;
+        let mtime = fs.statSync(file).mtimeMs;
+        const touch = setInterval(function() {
+            mtime += POLL_INTERVAL;
+            fs.utimesSync(file, new Date(mtime), new Date(mtime));
+        }, POLL_INTERVAL);
+        try {
+            await waitFor(() => notifications.length > 0);
+        } finally {
+            clearInterval(touch);
+        }
         notifications[0].rev.should.equal(revOf(flowsB));
+        notifications.should.have.length(1);
     });
 
     // #54: the polling with a replaced fs.watchFile: the test decides when, and whether, the poller sees a change

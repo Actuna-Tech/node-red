@@ -21,7 +21,38 @@ describe("editor-client/nodes", function() {
     let viewSettings;
     let editorTheme;
 
+    // The timers that are set while a test runs and have not run yet (#54). nodes.js sets a timer of 0 ms when
+    // a node, group or junction of a tab is changed or moved; it reads RED when it runs, so it must not run
+    // after RED is gone, nor in the next test, where it would emit to the RED of that test.
+    let pendingTimers;
+    let originalSetTimeout;
+    let originalClearTimeout;
+
+    function trackTimers() {
+        pendingTimers = new Set();
+        originalSetTimeout = global.setTimeout;
+        originalClearTimeout = global.clearTimeout;
+        global.setTimeout = trackedSetTimeout;
+        global.clearTimeout = trackedClearTimeout;
+    }
+
+    function trackedSetTimeout(callback, ms) {
+        const args = Array.prototype.slice.call(arguments, 2);
+        const timer = originalSetTimeout(function() {
+            pendingTimers.delete(timer);
+            return callback.apply(this, args);
+        }, ms);
+        pendingTimers.add(timer);
+        return timer;
+    }
+
+    function trackedClearTimeout(timer) {
+        pendingTimers.delete(timer);
+        return originalClearTimeout(timer);
+    }
+
     beforeEach(function() {
+        trackTimers();
         viewSettings = {};
         // The flow layout functions are enabled unless a test says otherwise
         editorTheme = { flowLayout: { enabled: true } };
@@ -45,8 +76,19 @@ describe("editor-client/nodes", function() {
         require(nodesModulePath);
     });
 
-    // The clean-up after a test; also called by the tests of the timers (#54), which end with it
+    // The clean-up after a test; also called by the tests of the timers (#54), which end with it.
+    // It runs twice for those tests; the second run finds nothing left to do.
     function cleanup() {
+        // the timers that did not run yet are cleared (through the clearTimeout that is installed now, which
+        // a test may have wrapped), and the timer functions are put back unless a test has replaced them
+        Array.from(pendingTimers).forEach(function(timer) { global.clearTimeout(timer) });
+        pendingTimers.clear();
+        if (global.setTimeout === trackedSetTimeout) {
+            global.setTimeout = originalSetTimeout;
+        }
+        if (global.clearTimeout === trackedClearTimeout) {
+            global.clearTimeout = originalClearTimeout;
+        }
         delete global.RED;
         delete require.cache[viewLayoutModulePath];
         delete require.cache[nodesModulePath];

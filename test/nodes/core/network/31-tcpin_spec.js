@@ -91,38 +91,98 @@ describe('TCP in Node', function() {
             client.write(wdata[0], function() {
                 client.end();
                 if(wdata.length > 1) {
-                    send(wdata.slice(1));
+                    send(wdata.slice(1), onError);
                 }
             });
         });
+        if (onError) {
+            client.on("error", onError);
+        }
     }
 
     function eql(v0, v1) {
         return((v0 === v1) || ((typeof v0) === 'object' && v0.equals(v1)));
     }
 
+    // The port of a "tcp in" server is found before the node starts, so another program can take it in
+    // between (#54). The node reports that as "cannot-listen" (the only way a listen fails here is a port in
+    // use) and logs once it listens: the flow is loaded again on the next port until the node listens,
+    // for 10 ports in all. ready() is called once the node listens, fail(err) when no port was free.
+    var LISTEN_PORTS = 10;
+    function loadListening(flow, ready, fail, attempt) {
+        attempt = attempt || 1;
+        helper.load(tcpinNode, flow, function() {
+            var n1 = helper.getNode("n1");
+            var settled = false;
+            n1.on("call:log", function() {
+                if (!settled) {
+                    settled = true;
+                    ready();
+                }
+            });
+            n1.on("call:error", function() {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                if (attempt >= LISTEN_PORTS) {
+                    fail(new Error("tcp in did not listen on any of " + LISTEN_PORTS + " ports, the last one was " + port + ": EADDRINUSE"));
+                    return;
+                }
+                Promise.resolve(helper.unload()).then(nextPort).then(function(freePort) {
+                    port = freePort;
+                    flow[0].port = port;
+                    loadListening(flow, ready, fail, attempt + 1);
+                }).catch(fail);
+            });
+        });
+    }
+
     function testTCP(flow, wdata, rdata, is_server, done) {
         if(is_server) {
             reply_data = wdata;
         }
-        helper.load(tcpinNode, flow, function() {
+        // an error of the connection or a message that does not fit ends this test once; what comes
+        // after that is of no interest to it
+        var finished = false;
+        function finish(err) {
+            if (!finished) {
+                finished = true;
+                done(err);
+            }
+        }
+        function receive() {
             var n2 = helper.getNode("n2");
             var rcount = 0;
             n2.on("input", function(msg) {
-                if(eql(msg.payload, rdata[rcount])) {
-                    rcount++;
+                if (finished) {
+                    return;
                 }
-                else {
-                    should.fail();
+                try {
+                    if(eql(msg.payload, rdata[rcount])) {
+                        rcount++;
+                    }
+                    else {
+                        should.fail();
+                    }
+                } catch(err) {
+                    finish(err);
+                    return;
                 }
                 if(rcount === rdata.length) {
-                    done();
+                    finish();
                 }
             });
-            if(!is_server) {
-                send(wdata);
-            }
-        });
+        }
+        if(is_server) {
+            helper.load(tcpinNode, flow, receive);
+        }
+        else {
+            loadListening(flow, function() {
+                receive();
+                send(wdata, finish);
+            }, finish);
+        }
     }
 
     function testTCP0(flow, wdata, rdata, done) {

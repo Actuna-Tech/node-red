@@ -100,27 +100,38 @@ describe('TCP Request Node', function() {
         });
     }
 
+    // The messages of a connection in "sit" mode arrive one per chunk of the answer, and how the answer is
+    // split into chunks depends on the timing of the sockets (#54). The payloads are joined and compared with
+    // the whole expected answer; the other properties (the topic) are checked on every message.
     function testTCPMany(flow, values, result, done) {
         helper.load(tcpinNode, flow, () => {
             const n1 = helper.getNode("n1");
             const n2 = helper.getNode("n2");
+            const asString = flow[0].ret === "string";
+            const expected = (typeof result === 'object') ? result : {payload: result};
+            const wanted = asString ? expected.payload : Buffer.from(expected.payload);
+            const others = Object.assign({}, expected);
+            delete others.payload;
+            const chunks = [];
+            let finished = false;
             n2.on("input", msg => {
+                if (finished) {
+                    return;
+                }
                 try {
-                    if (typeof result === 'object') {
-                        if (flow[0].ret === "string") {
-                            msg.should.have.properties(Object.assign({}, result, {payload: result.payload}));
-                        } else {
-                            msg.should.have.properties(Object.assign({}, result, {payload: Buffer.from(result.payload)}));
-                        }
-                    } else {
-                        if (flow[0].ret === "string") {
-                            msg.should.have.property('payload', result);
-                        } else {
-                            msg.should.have.property('payload', Buffer.from(result));
-                        }
+                    msg.should.have.properties(others);
+                    chunks.push(msg.payload);
+                    const joined = asString ? chunks.join('') : Buffer.concat(chunks);
+                    if (joined.length < wanted.length) {
+                        // not all of the answer yet: what came must be the start of it
+                        should(joined).eql(wanted.slice(0, joined.length));
+                        return;
                     }
+                    should(joined).eql(wanted);
+                    finished = true;
                     done();
                 } catch(err) {
+                    finished = true;
                     done(err);
                 }
             });
