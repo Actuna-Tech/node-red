@@ -376,6 +376,9 @@ describe('storage/localfilesystem/library', function() {
 
         it('AC-26: a failed fsync is logged and the entry is saved in full', async function() {
             const warn = sinon.stub(logger, 'warn');
+            // The text of a message depends on the catalogs that other specs have loaded (none: undefined; the
+            // runtime catalog: the translated sentence). The key and the path are what the test looks for.
+            sinon.stub(logger, '_').callsFake(function(key, opts) { return key + ' ' + opts.path });
             const fs2 = require('fs-extra');
             sinon.stub(fs2, 'fsync').callsFake(function(fd, callback) { callback(new Error('fsync failed')) });
             await save('functions', 'B/file.js', { a: 'b' }, 'content');
