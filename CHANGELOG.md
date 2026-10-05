@@ -78,6 +78,22 @@
    leader, so `inject` nodes with "Run only on one instance" fire on the instances that run the flows (#4)
  - Documented: health probes without `health.port` are public on the main server; `preReload` and
    `preShutdown` hooks must take exactly one parameter (#5)
+ - Drain of the HTTP requests before the flows stop (#40, R-49): a request that `http in` accepted no longer
+   stays without an answer when a deployment (any type), a reload from storage, `POST /flows/state` stop or a project
+   switch stops the node that holds its message. New setting `deploy.drainHttpNodeRequests: {enabled, timeout,
+   retryAfter}` (`enabled: false` by default - unchanged behaviour: no middleware, no tracking, `stop()` works as
+   before). When enabled, the runtime waits, at most `timeout` (30000 ms), until the requests accepted by an
+   `http in` node are answered, stops the flows, and then answers the requests that are still open with 503: all of
+   them after a full stop, the ones past their deadline after a partial one (`nodes`/`flows`). The limit is hard: a
+   request longer than `timeout` gets 503 also in flows the deployment does not change. The 503 has a fixed body and
+   one of two codes: `http_drain_not_accepted` (the request did not reach a flow, safe to repeat; `Retry-After`) and
+   `http_drain_outcome_unknown` (it did; `Retry-After` only for GET, HEAD and OPTIONS); headers set earlier by a
+   handler are removed except `Access-Control-*` and `Vary`; a response that already started is destroyed. Only
+   accepted requests extend the wait, nothing is read from a request before the authentication, and `RED.stop` answers
+   the open requests at once. Deployments, reloads and `POST /flows/state` take up to `timeout` longer. Requests to the
+   routes of other nodes are drained only when the node follows the optional contract (`Symbol.for("node-red.httpNode.drain")`
+   on the handler and on `req`/`res`, see `MIGRACJA.md`). A message kept in the context and answered after a full stop
+   now gets 503 instead of a late 200. New translated messages (`httpDrain.*`, `httpin.errors.drained-response`)
  - Requests to the routes of the nodes (`http in` and every node that registers a route on `RED.httpNode`)
    no longer get 404 while the flows restart (#8): new setting `deploy.holdHttpNodeRequests:
    {enabled, timeout, maxPending, retryAfter}` (`enabled: false` by default - unchanged behaviour). When

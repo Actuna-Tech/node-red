@@ -45,6 +45,7 @@
 | Z-06 | – | `deploy.hookTimeout: 30000` (ms) | hook `preDeploy` działa pod blokadą wdrożeń – limit chroni przed zablokowaniem API |
 | Z-09 | – | `deploy.reload: { watch: false, type: "full" \| "diff", preReloadTimeout: 1200000, concurrency: <opcjonalnie> }` | `type` domyślnie `"full"` (jak dzisiejszy `reload`); dla długich rozmów rekomendowane `"diff"`; `concurrency` wymaga wtyczki koordynacji (Z-10) – tylko wartość liczbowa; bez łączności z koordynatorem przeładowanie czeka, działa stara konfiguracja (R-20); przy `watch: true` błąd rejestracji `watchFlows` → błąd startu (R-36); dodatkowy `preReload` (D-17) poza blokadą – najwyżej jedna runda, potem przeładowanie z ostrzeżeniem (R-36) |
 | #8 | – | `deploy.holdHttpNodeRequests: { enabled: false, timeout: 5000, maxPending: 1000, retryAfter: 1 }` | `enabled: false` = zachowanie 5.0.7 (404 w oknie restartu) | żądania do tras węzłów (`httpNode`) **bez istniejącej trasy** wstrzymywane na czas wdrożenia i przeładowania z magazynu (stany E-02 `deploying`/`reloading`), po `timeout` lub `maxPending` → 503 z `Retry-After`; rodzina `deploy.*` (nie `deploy.reload.*` – obejmuje też zwykłe wdrożenie); opis: FORK.md §5 |
+| #40 | – | `deploy.drainHttpNodeRequests: { enabled: false, timeout: 30000, retryAfter: 1 }` | `enabled: false` = zachowanie 5.0.7 (bez śledzenia, `stop()` jak dotąd) | przed zatrzymaniem flow runtime czeka (≤ `timeout`, limit twardy – także dla flow niezmienianych, **R-49**) na zapytania przyjęte przez trasy `httpNode` z oznaczonym handlerem (rdzeń: `http in`), po zatrzymaniu odpowiada 503 na otwarte (`http_drain_not_accepted` / `http_drain_outcome_unknown`); rodzina `deploy.*`, symetryczna z `holdHttpNodeRequests` (#8); `timeout` ma inne znaczenie niż `hold.timeout` (limit czekania na S0 i odstęp terminu); w logach i dokumentach „drenaż HTTP” (nie mylić z `preReload`/`preShutdown`); opis: FORK.md §5 |
 | Z-09 | – | `deploy.reload.retry: { min: 1000, max: 60000, attempts }` (ms) | ponawianie odczytu magazynu po błędzie, opóźnienie wykładnicze `min`…`max`; po wyczerpaniu `attempts` – stan `failed` i `/ready` 503 (D-18, **R-20**); `attempts` domyślnie **10** (~8 min), potem `failed` (**R-36**) |
 | Z-09 (#1) | – | `deploy.reload.retry.onExhausted: "fail" \| "keepReady"` (domyślnie `"fail"`), `deploy.reload.retry.maxStaleTime` (ms, domyślnie 1800000, tylko z `"keepReady"`, `0` = bez limitu) | zachowanie po wyczerpaniu `attempts` odczytów magazynu: `"fail"` – R-36 bez zmian; `"keepReady"` – dla błędu odczytu magazynu (`storage_error`) gotowa instancja zostaje gotowa na poprzedniej rewizji (`/ready` 200 `warn`), błąd raportowany aktywnie; limit nieaktualności chroni przed partycją pojedynczego poda; nazwa `onExhausted` obejmuje tylko odczyt magazynu (odrzucona `health.readyWhenReloadFailed` – sugerowała błąd startu po przeładowaniu, który zawsze zostaje 503); **R-47** |
 | Z-10 | – | `coordination: { plugin, options }`; właściwość węzła `inject`: `singleInstance` | wybór wtyczki jak `contextStorage`; domyślnie wtyczka lokalna |
@@ -115,9 +116,15 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
        przekroczenie limitu → 503 deploy_hook_timeout (R-15)
  4. stan = "deploying"          – E-02 / Z-08 (/ready → 503)
  5. zapis do magazynu           – (typ reload: brak zapisu – treść odczytana w kroku 2)
+ 6a. drenaż zapytań HTTP        – #40 (R-49), tylko z `deploy.drainHttpNodeRequests.enabled`: `httpDrain.beforeStop()` czeka (≤ `timeout`, pod
+       blokadą) na zapytania PRZYJĘTE przez trasy `httpNode` z oznaczonym handlerem; nie czeka w stanie `stopping`; nie odrzuca
  6. zatrzymanie zmienionych węzłów
        tryb domyślny: jak 5.0.6 (błędy zatrzymania połykane – D-05);
        tryb deploy.response="started": błąd zatrzymania → 500 deploy_stop_failed (z rev)
+ 6b. odpowiedzi na otwarte zapytania – #40: `httpDrain.afterStop(scope)` (nie rzuca; także po błędzie kroku 6): zakres pełny (typ `full`,
+       `globalConfigChanged`, `setState` stop, `RED.stop`, projekty) – 503 wszystkim otwartym zapytaniom z dopasowaną trasą; zakres
+       częściowy (`nodes`/`flows`) – tylko tym po terminie (P1: twardy limit, także flow niezmieniane); okno zapytań trwa do końca
+       kroku 8 (stan `deploying`/`reloading`) – zapytania przychodzące w oknie dostają termin
  7. start nowych węzłów         – Z-15 editorOnly: krok pominięty; tryb "started" → odpowiedź {rev, started: false} (R-39)
  8. stan = "ready" (lub "failed" przy błędzie startu)
  ── koniec blokady ─────────────────────────────────────────────────────────────
@@ -142,7 +149,12 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
     (wdrożenie samo ustala nową konfigurację).
  ── blokada wdrożeń ─────────────────────────────────────────────────────────────
  4. ponowny odczyt magazynu (najnowsza rewizja)
- 5. stan = "reloading"; kroki A6–A8 (type "full": wszystkie flow; "diff": tylko zmienione)
+ 5. stan = "reloading"; kroki A6–A8, w tym 6a/6b (type "full": wszystkie flow; "diff": tylko zmienione)
+       drenaż HTTP (#40) jest PO hookach `preReload` i dodatkowej rundzie D-17 (poza blokadą, bez zatrzymania), pod blokadą, raz na
+       `stop()` – bez podwójnego drenażu i podwójnej odpowiedzi; najgorszy czas przeładowania = czekanie na blokadę (drenaż poprzedniej
+       operacji + `nodeCloseTimeout` + start) + `preReloadTimeout` + `deploy.drainHttpNodeRequests.timeout` + `nodeCloseTimeout` + start;
+       `PreReloadEvent.deadline` NIE jest już najpóźniejszą chwilą zatrzymania flow; slot Z-10 jest trzymany i odnawiany przez cały
+       drenaż HTTP (przejście klastra wydłuża się o N × `timeout`; zalecane `deploy.reload.concurrency`)
  ── koniec blokady ──
  6. zdarzenie runtime-deploy; hook postDeploy (source: "storage"); BEZ preDeploy
     (zmianę zatwierdziła instancja, która ją zapisała – jej preDeploy już się wykonał)
@@ -152,6 +164,18 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
 hook `preShutdown` / oczekiwanie do `shutdownTimeout` → `RED.stop(reason)` → zamknięcie serwera HTTP → wyjście.
 Bez ustawionego `shutdownTimeout` – zachowanie 5.0.6 (natychmiastowe zatrzymanie, hook `preShutdown` nie jest wywoływany – R-37).
 Brak osobnego limitu `RED.stop()` – ostatecznym limitem jest `terminationGracePeriodSeconds` orkiestratora (R-37).
+
+- **Drenaż HTTP przy zatrzymaniu procesu (#40, R-49):** `markStopping` NIE przerywa trwającego drenażu wdrożenia – przerywa go dopiero
+  `RED.stop` → `stopFlows()` (`httpDrain.abortWait()`), więc przy `shutdownTimeout` drenaż wdrożenia trwa w czasie `preShutdown`/`unreadyGrace`.
+  Własne zatrzymanie `RED.stop` (stan `stopping`) nie czeka na zapytania (R-37): po zatrzymaniu flow `httpDrain.finalize()` (po
+  `stopFlows()`, także gdy ten odrzucił; niezależny od `started`; nie rzuca; przy wyłączonym ustawieniu kończy się od razu) odpowiada 503
+  albo niszczy odpowiedź (strumień) na zapytania, które były otwarte w chwili wywołania. Wdrożenie w stanie `stopping` (token `null`) też nie
+  czeka, pozostałe zapytania obejmuje `finalize`. Wyścig `RED.stop` z wdrożeniem: ochrona nie zapobiega startowi nowych flow po `RED.stop`
+  (jak w wersji bazowej; osobne zgłoszenie „`start()` odmawia w stanie `stopping`”) – po `finalize` nie ma otwartego zapytania przyjętego
+  przed `finalize`. Faza 2: czekanie na zapytania w `shutdownTimeout` (część HTTP w `health.shutdown`).
+- **`POST /flows/state` stop i przełączenie projektu (#40):** `setState` stop (pod blokadą) wykonuje 6a → zatrzymanie pełne → 6b; przełączenie
+  projektu idzie przez `stopFlows()` bez argumentów (zakres pełny; start nowego projektu nie ma okna, jak w wersji bazowej). Przy tych
+  operacjach `/ready` odpowiada 200 przez cały drenaż (D9; bez nowego mapowania R-23) – zapytania po zatrzymaniu dostają 503 albo 404.
 
 - `RED.stop(reason)` – powód (np. `"SIGTERM"`) trafia do hooka `preShutdown`, logu i pola `reason` zdarzenia `instance:state` (R-23).
 - Drenaż domyślnie wyłączony – bez `shutdownTimeout` jak dotąd (R-22).
@@ -178,7 +202,9 @@ w którym pakiet dopisuje swój krok (bez pustych hooków).
 | A10 | wynik `pipeline.deploy` (`{rev}` lub `{result}` kroku `apply`) → `api/flows.js` | E-01; P-01 |
 | A11 | kotwica w `pipeline.deploy` (po zwolnieniu blokady) | Z-06 |
 | B | `readFlowsFromStorage()` + `pipeline.deploy({type:"reload", source:"storage", loaded})` (bez ponownego odczytu) | Z-09 |
-| `setState`, Projekty | tylko blokada – bez kroków A2–A5 i bez hooków (R-11, R-15) | E-01 |
+| A6a, A6b | `flows/index.js` `stop()` – opakowanie przy włączonym `deploy.drainHttpNodeRequests`: `httpDrain.beforeStop()` → `stopNow()` (dotychczasowa treść `stop()`, bez zmian) → `httpDrain.afterStop(scope)` (`runtime/lib/httpDrain.js`). **Semantyka `stopInProgress`:** serializuje zatrzymania tylko przy włączonym ustawieniu; kolejne `stop()` czeka (`.then(f, f)` – odrzucenie pierwszego NIE przechodzi na kolejne) i wykonuje się ponownie (no-op przy zatrzymanych flow); w stanie `stopping` kolejne `stop()` wywołuje `abortWait()`; `stopInProgress` jest czyszczony zawsze (`afterStop` nie rzuca); handler `type-registered` nie startuje flow, gdy `stopInProgress` (log `debug`). Przy wyłączonym ustawieniu `stop()` = `stopNow()`, wołane synchronicznie jak dotąd | #40 (R-49) |
+| `RED.stop` | `runtime/lib/index.js` `stop()`: po `redNodes.stopFlows()` (także po odrzuceniu) `httpDrain.finalize()` | #40 (R-49) |
+| `setState`, Projekty | tylko blokada – bez kroków A2–A5 i bez hooków (R-11, R-15); zatrzymanie flow przechodzi przez A6a/A6b (#40) | E-01 |
 
 ### 2.4 Katalog kodów błędów (propozycja)
 
@@ -205,6 +231,8 @@ w którym pakiet dopisuje swój krok (bez pustych hooków).
 | `http_hold_timeout` | 503 | #8 | żądanie do trasy węzła czekało na restart flow dłużej niż `deploy.holdHttpNodeRequests.timeout`; nagłówek `Retry-After` |
 | `http_hold_queue_full` | 503 | #8 | liczba wstrzymanych żądań osiągnęła `deploy.holdHttpNodeRequests.maxPending` (limit globalny, nie na klienta); nagłówek `Retry-After` |
 | `http_hold_release_failed` | 503 | #8 | wyjątek przy wypuszczaniu wstrzymanego żądania po restarcie flow; nagłówek `Retry-After` |
+| `http_drain_not_accepted` | 503 | #40 | drenaż HTTP: zapytanie nie trafiło do flow (nie zostało przyjęte przez węzeł `http in`, np. wolne ciało lub uwierzytelnianie w toku w chwili zatrzymania) – można bezpiecznie ponowić; zawsze z `Retry-After`; `Connection: close`, gdy ciało nie zostało odczytane; ciało stałe `{code, message}` (R-49) |
+| `http_drain_outcome_unknown` | 503 | #40 | drenaż HTTP: zapytanie trafiło do flow, a flow zatrzymano przed odpowiedzią (limit `deploy.drainHttpNodeRequests.timeout` albo zatrzymanie) – flow mógł zadziałać; `Retry-After` tylko dla GET/HEAD/OPTIONS; przyczyna (limit/zatrzymanie) tylko w logu (R-49) |
 | `state_operation_in_progress` | 409 | E-02 | (wewnętrzny) próba drugiej operacji stanu pod blokadą |
 | `reload_failed` | 200 (`reason` w treści `/health/ready`) | Z-09 (#1) | `deploy.reload.retry.onExhausted: "keepReady"`: przeładowanie z magazynu nie powiodło się, gotowa instancja uruchamia poprzednią rewizję – treść `{"status":"warn","reason":"reload_failed"}`; stały kod, bez rewizji i tekstu błędu (R-47). Kody w warunku `reload` stanu instancji (`error.code`): `storage_error`, `credentials_load_failed`, `invalid_flows`, `invalid_json`, `empty_file` (uszkodzony plik – błędy konfiguracji, zawsze `failed`), `reload_failed` (inny błąd samego przeładowania); warunek ustawiany tylko przy `"keepReady"` |
 
