@@ -21,7 +21,8 @@
  *   Z-09: reload from storage (source "storage" with reread)
  *   Z-06 (#10): prepare/apply of the single-flow api (U1); reload: read in step 2, credentials in step 3a (D15);
  *   the preDeploy hook (step 3): the order, a rejection/failure/timeout without effects, no credentials in the
- *   event, I10, I13, I14, SEC-104(a); without a handler nothing is done (I1)
+ *   event, I10, I13, I14, SEC-104(a); without a handler nothing is done (I1); the postDeploy hook (step 11):
+ *   once per saved or reloaded configuration (I11, D18, D22/A31, D23, D24), the dictionary of start.status, I7
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -828,6 +829,345 @@ describe("flows/pipeline", function() {
                 const result = await pipeline.deploy({ type: "reload", source: "storage", reread: async () => ({ apply: { flows: [], rev: "B" }, reloadType: "full" }) });
                 result.should.eql({ rev: "B" });
                 hook.called.should.be.false();
+            });
+        });
+    });
+    describe("postDeploy hook (Z-06, step 11)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const { hooks, log } = NR_TEST_UTILS.require("@node-red/util");
+        let logStubs;
+        let logged;
+        let posts;
+        let active;
+        let counter;
+        const flush = async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)) };
+        // flows.setFlows / loadFlows / reloadFromStorage that replace the active configuration like flows/index.js
+        function replacing(rev, extra) {
+            return sinon.spy(async function() {
+                active = { rev: rev || ("N" + (++counter)), flows: [] };
+                if (extra) {
+                    await extra();
+                }
+                return active.rev;
+            });
+        }
+        beforeEach(function() {
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({ errors: [] });
+            logged = { warn: [], error: [] };
+            logStubs = [
+                sinon.stub(log, "_").callsFake(k => "[" + k + "]"),
+                sinon.stub(log, "warn").callsFake(m => logged.warn.push(m)),
+                sinon.stub(log, "error").callsFake(m => logged.error.push(m)),
+                sinon.stub(log, "debug")
+            ];
+            counter = 0;
+            active = { rev: "A", flows: [] };
+            flows.getFlows = sinon.spy(() => active);
+            flows.setFlows = replacing();
+            flows.loadFlows = replacing("L");
+            flows.reloadFromStorage = sinon.spy(async function(loaded) { active = { rev: loaded.rev, flows: [] }; return loaded.rev });
+            posts = [];
+            hooks.add("postDeploy.test", function(event) { posts.push(event) });
+            pipeline.init({ flows: flows, settings: { deploy: { hookTimeout: 100 } } });
+        });
+        afterEach(function() {
+            logStubs.forEach(s => s.restore());
+            hooks.clear();
+            instanceState.reset();
+        });
+        const savedError = (code, extra) => Object.assign(new Error(code), { code: code, status: 500 }, extra);
+
+        describe("when and what", function() {
+            it("once per deployment, after the result is returned, asynchronously; the event has the facts", async function() {
+                const result = await pipeline.deploy({ type: "nodes", source: "api", req: {}, operation: "setFlows", flows: { flows: [1] }, user: { username: "u", permissions: "*" } });
+                result.should.eql({ rev: "N1" });
+                posts.should.have.length(0);
+                await flush();
+                posts.should.have.length(1);
+                posts[0].rev.should.equal("N1");
+                posts[0].type.should.equal("nodes");
+                posts[0].source.should.equal("api");
+                posts[0].operation.should.equal("setFlows");
+                should.equal(posts[0].flowId, null);
+                posts[0].user.should.eql({ username: "u", permissions: "*" });
+                posts[0].start.should.eql({ status: "not_started" });
+                posts[0].should.not.have.property("reloadType");
+            });
+            it("the single-flow api: operation and flowId; the revision is that of the whole configuration", async function() {
+                await pipeline.deploy({
+                    type: "flows", req: {}, operation: "addFlow", describe: p => ({ flowId: p.id }),
+                    prepare: async () => ({ config: [], id: "new1" }),
+                    apply: async (deployOpts, prepared) => { await flows.setFlows(); return prepared.id }
+                });
+                await flush();
+                posts.should.have.length(1);
+                posts[0].operation.should.equal("addFlow");
+                posts[0].flowId.should.equal("new1");
+                posts[0].rev.should.equal("N1");
+            });
+            it("source is internal without a request", async function() {
+                await pipeline.deploy({ type: "full", source: "api", operation: "setFlows", flows: { flows: [1] } });
+                await flush();
+                posts[0].source.should.equal("internal");
+            });
+            it("an API reload: type reload and reloadType full, the revision loaded", async function() {
+                await pipeline.deploy({ type: "reload", source: "api", req: {}, operation: "setFlows" });
+                await flush();
+                posts.should.have.length(1);
+                posts[0].type.should.equal("reload");
+                posts[0].reloadType.should.equal("full");
+                posts[0].rev.should.equal("L");
+            });
+            it("D17: pending in the default mode with a registered start, started with deploy.response started", async function() {
+                const holding = () => sinon.spy(async function() {
+                    active = { rev: "N" + (++counter), flows: [] };
+                    lock.holdUntil(new Promise(() => {}), { limit: 5 });
+                    return active.rev;
+                });
+                flows.setFlows = holding();
+                await pipeline.deploy({ type: "full", flows: { flows: [1] } });
+                await flush();
+                posts[0].start.should.eql({ status: "pending" });
+                flows.setFlows = holding();
+                await pipeline.deploy({ type: "full", flows: { flows: [1] }, deployOpts: { waitForStart: true } });
+                await flush();
+                posts[1].start.should.eql({ status: "started" });
+            });
+            it("the state at the call: deploying with the lock held while the start goes on (a handler must not assume ready)", async function() {
+                let finishStart;
+                flows.setFlows = sinon.spy(async function() {
+                    active = { rev: "N", flows: [] };
+                    lock.holdUntil(new Promise(resolve => { finishStart = () => resolve({ errors: [] }) }));
+                    return "N";
+                });
+                let seen;
+                hooks.clear();
+                hooks.add("postDeploy.test", function() { seen = { state: instanceState.get().state, locked: lock.isLocked() } });
+                await pipeline.deploy({ type: "full", flows: { flows: [1] } });
+                await flush();
+                seen.should.eql({ state: "deploying", locked: true });
+                finishStart();
+                await lock.runExclusive(async () => {});
+            });
+            it("D23: the default mode, a swallowed stop error (no start registered, flows.setFlows resolves): not_started", async function() {
+                flows.setFlows = sinon.spy(async function() { active = { rev: "N", flows: [] }; return undefined });
+                const result = await pipeline.deploy({ type: "full", flows: { flows: [1] } });
+                result.should.eql({ rev: undefined });
+                await flush();
+                posts.should.have.length(1);
+                posts[0].start.should.eql({ status: "not_started" });
+                instanceState.get().state.should.equal("idle");
+            });
+            it("the order of the deployments is kept (FIFO) and each is notified once", async function() {
+                await pipeline.deploy({ type: "full", flows: { flows: [1] } });
+                await pipeline.deploy({ type: "full", flows: { flows: [2] } });
+                await pipeline.deploy({ type: "full", flows: { flows: [3] } });
+                await flush();
+                posts.map(p => p.rev).should.eql(["N1", "N2", "N3"]);
+            });
+        });
+
+        describe("an error after the save is a deployed configuration too (I11, D18, D24)", function() {
+            it("deploy_start_failed with a start_timeout: one call, pending with the errors; the deployment still rejects", async function() {
+                flows.setFlows = sinon.spy(async function() {
+                    active = { rev: "N", flows: [] };
+                    lock.holdUntil(new Promise(() => {}), { limit: 5 });
+                    throw savedError("deploy_start_failed", { rev: "N", errors: [{ code: "start_timeout", message: "t", timeout: 30 }] });
+                });
+                const err = await pipeline.deploy({ type: "full", flows: { flows: [1] }, deployOpts: { waitForStart: true } }).should.be.rejected();
+                err.should.have.property("code", "deploy_start_failed");
+                await flush();
+                posts.should.have.length(1);
+                posts[0].start.should.eql({ status: "pending", errors: [{ code: "start_timeout", message: "t", timeout: 30 }] });
+                posts[0].rev.should.equal("N");
+            });
+            it("deploy_start_failed without a start_timeout: start_failed with the errors; deploy_stop_failed: stop_failed", async function() {
+                flows.setFlows = sinon.spy(async function() {
+                    active = { rev: "N" + (++counter), flows: [] };
+                    throw savedError("deploy_start_failed", { errors: [{ code: "missing_types", message: "m", types: ["x"] }] });
+                });
+                await pipeline.deploy({ type: "full", flows: { flows: [1] }, deployOpts: { waitForStart: true } }).should.be.rejected();
+                flows.setFlows = sinon.spy(async function() {
+                    active = { rev: "N" + (++counter), flows: [] };
+                    throw savedError("deploy_stop_failed", { rev: "N2" });
+                });
+                await pipeline.deploy({ type: "full", flows: { flows: [1] }, deployOpts: { waitForStart: true } }).should.be.rejected();
+                await flush();
+                posts.map(p => p.start.status).should.eql(["start_failed", "stop_failed"]);
+                posts[0].start.errors.should.eql([{ code: "missing_types", message: "m", types: ["x"] }]);
+            });
+            it("an unexpected error in apply after the save: one call, the start status from the registered start, the error apart (D24)", async function() {
+                const err = await pipeline.deploy({
+                    type: "flows", req: {}, operation: "updateFlow", prepare: async () => ({ config: [] }),
+                    apply: async () => { await flows.setFlows(); throw Object.assign(new Error("lookup"), { code: "revision_lookup_failed" }) }
+                }).should.be.rejected();
+                err.should.have.property("code", "revision_lookup_failed");
+                await flush();
+                posts.should.have.length(1);
+                posts[0].start.should.eql({ status: "not_started" });
+                posts[0].error.should.eql({ code: "revision_lookup_failed" });
+            });
+            it("an unexpected error of flows.setFlows itself after the save: unknown", async function() {
+                flows.setFlows = sinon.spy(async function() {
+                    active = { rev: "N", flows: [] };
+                    throw new TypeError("unexpected");
+                });
+                await pipeline.deploy({ type: "full", flows: { flows: [1] } }).should.be.rejectedWith("unexpected");
+                await flush();
+                posts.should.have.length(1);
+                posts[0].start.should.eql({ status: "unknown" });
+                posts[0].error.should.eql({ code: "unexpected_error" });
+            });
+            it("a failed save (the active configuration is not replaced): no call", async function() {
+                flows.setFlows = sinon.spy(async () => { throw new Error("save failed") });
+                await pipeline.deploy({ type: "full", flows: { flows: [1] } }).should.be.rejectedWith("save failed");
+                await pipeline.deploy({
+                    type: "flows", prepare: async () => ({ config: [] }),
+                    apply: async () => { throw Object.assign(new Error("save failed"), { code: "storage_error" }) }
+                }).should.be.rejected();
+                await flush();
+                posts.should.have.length(0);
+            });
+            it("rejections before the save (409, an error of prepare, the hook, a read of storage): no call", async function() {
+                await pipeline.deploy({ type: "full", flows: { flows: [1], rev: "other" } }).should.be.rejected();
+                await pipeline.deploy({ type: "flows", prepare: () => { throw Object.assign(new Error(), { code: 404 }) }, apply: async () => "x" }).should.be.rejected();
+                hooks.add("preDeploy.no", () => false);
+                await pipeline.deploy({ type: "full", flows: { flows: [1] } }).should.be.rejected();
+                hooks.remove("preDeploy.no");
+                flows.readStoredFlows = sinon.spy(async () => { throw new Error("read failed") });
+                await pipeline.deploy({ type: "reload" }).should.be.rejected();
+                await flush();
+                posts.should.have.length(0);
+            });
+        });
+
+        describe("a handler never delays the deployment (I7)", function() {
+            it("a handler that does not finish: the response and the next deployments are not delayed, the lock is free", async function() {
+                hooks.clear();
+                let calls = 0;
+                hooks.add("postDeploy.hang", () => { calls++; return new Promise(() => {}) });
+                const started = Date.now();
+                await pipeline.deploy({ type: "full", flows: { flows: [1] } });
+                await pipeline.deploy({ type: "full", flows: { flows: [2] } });
+                (Date.now() - started).should.be.below(50);
+                lock.isLocked().should.be.false();
+                await flush();
+                calls.should.equal(2);
+            });
+            it("a handler that throws does not change the result of the deployment", async function() {
+                hooks.clear();
+                hooks.add("postDeploy.bad", () => { throw new Error("boom") });
+                (await pipeline.deploy({ type: "full", flows: { flows: [1] } })).should.eql({ rev: "N1" });
+                await flush();
+                logged.warn.should.have.length(1);
+                logged.warn[0].should.containEql("deploy.post-hook-failed");
+            });
+        });
+
+        describe("a reload from storage (source storage, step 11 of part B)", function() {
+            const reread = (decision) => async () => decision;
+            it("once, after the reload was applied: source storage, operation null, reloadType, the revision loaded", async function() {
+                instanceState.markReloadPending();
+                const result = await pipeline.deploy({ type: "reload", source: "storage", reread: reread({ apply: { flows: [], rev: "B" }, reloadType: "diff", credentialsChanged: false }) });
+                result.should.eql({ rev: "B" });
+                await flush();
+                posts.should.have.length(1);
+                posts[0].source.should.equal("storage");
+                posts[0].type.should.equal("reload");
+                posts[0].reloadType.should.equal("diff");
+                should.equal(posts[0].operation, null);
+                should.equal(posts[0].flowId, null);
+                should.equal(posts[0].user, null);
+                posts[0].rev.should.equal("B");
+                posts[0].start.should.eql({ status: "not_started" });
+            });
+            it("pending with a registered start", async function() {
+                instanceState.markReloadPending();
+                flows.reloadFromStorage = sinon.spy(async function(loaded) {
+                    active = { rev: loaded.rev, flows: [] };
+                    lock.holdUntil(Promise.resolve({ errors: [] }));
+                    return loaded.rev;
+                });
+                await pipeline.deploy({ type: "reload", source: "storage", reread: reread({ apply: { flows: [], rev: "B" }, reloadType: "full" }) });
+                await flush();
+                posts[0].start.should.eql({ status: "pending" });
+            });
+            it("no preDeploy for a reload from storage, also with a postDeploy handler (R-15)", async function() {
+                const pre = sinon.spy();
+                hooks.add("preDeploy.a", pre);
+                instanceState.markReloadPending();
+                await pipeline.deploy({ type: "reload", source: "storage", reread: reread({ apply: { flows: [], rev: "B" }, reloadType: "full" }) });
+                await flush();
+                pre.called.should.be.false();
+                posts.should.have.length(1);
+            });
+            it("D22/A31: a pending reload superseded by a deployment of this instance: exactly one postDeploy (api), none for storage", async function() {
+                instanceState.markReloadPending();
+                instanceState.markDraining();
+                let rereadCalled = false;
+                // the deployment A takes the lock first and supersedes the pending reload B
+                const a = pipeline.deploy({ type: "full", source: "api", req: {}, operation: "setFlows", flows: { flows: [1] } });
+                const b = pipeline.deploy({ type: "reload", source: "storage", reread: async () => { rereadCalled = true; return { apply: { flows: [], rev: "B" }, reloadType: "full" } } });
+                (await a).should.eql({ rev: "N1" });
+                (await b).should.eql({ skipped: "superseded" });
+                await flush();
+                rereadCalled.should.be.false();
+                flows.reloadFromStorage.called.should.be.false();
+                posts.should.have.length(1);
+                posts[0].source.should.equal("api");
+                posts[0].rev.should.equal("N1");
+            });
+            it("D22: a round of D-17 without a decision to apply (skip, unchanged, an extra round): no postDeploy", async function() {
+                for (const decision of [
+                    { skip: "unchanged" },
+                    { skip: "aborted" },
+                    { extra: ["t1"], fresh: { rev: "C", flows: [] }, credentialsChanged: false },
+                    { error: new Error("read failed") },
+                    undefined
+                ]) {
+                    instanceState.markReloadPending();
+                    const result = await pipeline.deploy({ type: "reload", source: "storage", reread: reread(decision) });
+                    result.should.have.property("skipped");
+                    // the cycle restores the state, as reload.js does
+                    instanceState.cancelPending();
+                }
+                await flush();
+                posts.should.have.length(0);
+                flows.reloadFromStorage.called.should.be.false();
+            });
+            it("an error before the active configuration is replaced (the credentials cannot be loaded): no call; after it: one call with the error", async function() {
+                instanceState.markReloadPending();
+                flows.reloadFromStorage = sinon.spy(async function() { throw Object.assign(new Error("credentials"), { code: "credentials_load_failed" }) });
+                await pipeline.deploy({ type: "reload", source: "storage", reread: reread({ apply: { flows: [], rev: "B" }, reloadType: "full" }) }).should.be.rejectedWith("credentials");
+                await flush();
+                posts.should.have.length(0);
+                instanceState.get().state.should.equal("ready");
+                instanceState.markReloadPending();
+                flows.reloadFromStorage = sinon.spy(async function() { active = { rev: "B", flows: [] }; throw new TypeError("after the replacement") });
+                await pipeline.deploy({ type: "reload", source: "storage", reread: reread({ apply: { flows: [], rev: "B" }, reloadType: "full" }) }).should.be.rejectedWith("after the replacement");
+                await flush();
+                posts.should.have.length(1);
+                posts[0].start.should.eql({ status: "unknown" });
+                posts[0].error.should.eql({ code: "unexpected_error" });
+            });
+        });
+
+        describe("without a postDeploy handler (I1)", function() {
+            it("the active configuration is not read for the facts; a preDeploy handler alone changes nothing about it", async function() {
+                hooks.clear();
+                hooks.add("preDeploy.a", () => {});
+                flows.getFlows.resetHistory();
+                await pipeline.deploy({ type: "nodes", flows: { flows: [1] } });
+                // the event of preDeploy reads the active revision once
+                flows.getFlows.callCount.should.equal(1);
+                hooks.clear();
+                flows.getFlows.resetHistory();
+                await pipeline.deploy({ type: "nodes", flows: { flows: [1] } });
+                instanceState.markReloadPending();
+                await pipeline.deploy({ type: "reload", source: "storage", reread: async () => ({ apply: { flows: [], rev: "B" }, reloadType: "full" }) });
+                flows.getFlows.called.should.be.false();
             });
         });
     });

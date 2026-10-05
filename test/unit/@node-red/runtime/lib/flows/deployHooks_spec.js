@@ -18,7 +18,8 @@
  *   Z-06 (#10): tests of the preDeploy hook of the deploy pipeline (flows/deployHooks.js): the copy
  *   for the handler (no credentials), the calling styles, the results (400 deploy_rejected, 503
  *   deploy_hook_failed, 503 deploy_hook_timeout), the sanitising of what leaves the runtime, the
- *   limits for a handler that does not finish
+ *   limits for a handler that does not finish; the postDeploy hook (step 11): classifyStart, the event, the
+ *   parallel calls, a failure only in the log, the limit of 10 unfinished calls
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -660,6 +661,240 @@ describe("flows/deployHooks", function() {
             settled.should.be.false();
             await tick(1);
             (await promise).should.have.property("code", "deploy_hook_timeout");
+        });
+    });
+
+    describe("classifyStart: the dictionary of start.status (D17, D23, D24)", function() {
+        const waited = { waitForStart: true, held: true };
+        const notWaited = { waitForStart: false, held: true };
+        it("no error: started with deploy.response started, pending in the default mode, not_started without a registered start", function() {
+            deployHooks.classifyStart(null, waited).should.eql({ start: { status: "started" } });
+            deployHooks.classifyStart(null, notWaited).should.eql({ start: { status: "pending" } });
+            deployHooks.classifyStart(null, { waitForStart: true, held: false }).should.eql({ start: { status: "not_started" } });
+            deployHooks.classifyStart(null, { waitForStart: false, held: false }).should.eql({ start: { status: "not_started" } });
+            deployHooks.classifyStart(undefined, {}).should.eql({ start: { status: "not_started" } });
+        });
+        it("D23: a swallowed stop error of the default mode leaves no registered start: not_started, not pending", function() {
+            // flows.setFlows resolves (no error) and registered nothing with the lock
+            deployHooks.classifyStart(null, { waitForStart: false, held: false, direct: true }).start.status.should.equal("not_started");
+        });
+        it("deploy_start_failed with start_timeout is pending with the errors; without it start_failed with the errors", function() {
+            const timeout = Object.assign(new Error("x"), { code: "deploy_start_failed", errors: [{ code: "start_timeout", message: "t", timeout: 30, phase: "flows", pending: ["t1"] }] });
+            deployHooks.classifyStart(timeout, waited).should.eql({ start: { status: "pending", errors: [{ code: "start_timeout", message: "t", timeout: 30, phase: "flows", pending: ["t1"] }] } });
+            const failed = Object.assign(new Error("x"), { code: "deploy_start_failed", errors: [{ code: "missing_types", message: "m", types: ["a"] }, { code: "start_timeout" }].slice(0, 1) });
+            deployHooks.classifyStart(failed, waited).should.eql({ start: { status: "start_failed", errors: [{ code: "missing_types", message: "m", types: ["a"] }] } });
+            const mixed = Object.assign(new Error("x"), { code: "deploy_start_failed", errors: [{ code: "flow_start_failed", flow: "t2" }, { code: "start_timeout" }] });
+            deployHooks.classifyStart(mixed, waited).start.status.should.equal("pending");
+            deployHooks.classifyStart(Object.assign(new Error("x"), { code: "deploy_start_failed" }), waited).should.eql({ start: { status: "start_failed", errors: [] } });
+        });
+        it("the errors are a copy", function() {
+            const errors = [{ code: "missing_types", types: ["a"] }];
+            const result = deployHooks.classifyStart(Object.assign(new Error("x"), { code: "deploy_start_failed", errors: errors }), waited);
+            result.start.errors.should.not.equal(errors);
+            result.start.errors[0].types.should.not.equal(errors[0].types);
+        });
+        it("deploy_stop_failed is stop_failed", function() {
+            deployHooks.classifyStart(Object.assign(new Error("x"), { code: "deploy_stop_failed" }), waited).should.eql({ start: { status: "stop_failed" } });
+        });
+        it("D24: an unexpected error after the save keeps the status of the registered start and is reported apart; unknown only for an error of the deployment step itself", function() {
+            const other = Object.assign(new Error("late failure"), { code: "revision_lookup_failed" });
+            deployHooks.classifyStart(other, { waitForStart: true, held: true, direct: false }).should.eql({ start: { status: "started" }, error: { code: "revision_lookup_failed" } });
+            deployHooks.classifyStart(other, { waitForStart: false, held: true, direct: false }).should.eql({ start: { status: "pending" }, error: { code: "revision_lookup_failed" } });
+            deployHooks.classifyStart(other, { waitForStart: false, held: false, direct: false }).should.eql({ start: { status: "not_started" }, error: { code: "revision_lookup_failed" } });
+            deployHooks.classifyStart(other, { waitForStart: false, held: false, direct: true }).should.eql({ start: { status: "unknown" }, error: { code: "revision_lookup_failed" } });
+            // a code that is not a short identifier, or none
+            deployHooks.classifyStart(new Error("x"), { direct: true }).should.eql({ start: { status: "unknown" }, error: { code: "unexpected_error" } });
+            deployHooks.classifyStart(Object.assign(new Error("x"), { code: 404 }), {}).error.code.should.equal("unexpected_error");
+            deployHooks.classifyStart(Object.assign(new Error("x"), { code: "has space\n" }), {}).error.code.should.equal("unexpected_error");
+        });
+    });
+
+    describe("notifyPostDeploy (step 11)", function() {
+        const flush = () => new Promise(resolve => setImmediate(resolve));
+        const facts = (overrides) => Object.assign({
+            rev: "r2", type: "full", source: "api", operation: "setFlows", flowId: null,
+            user: { username: "u", permissions: "*", token: "secret" }, start: { status: "pending" }
+        }, overrides);
+
+        it("calls the handlers asynchronously, not before the caller continues", async function() {
+            const calls = [];
+            hooks.add("postDeploy.a", e => { calls.push("a") });
+            deployHooks.notifyPostDeploy(facts());
+            calls.should.eql([]);
+            await flush();
+            calls.should.eql(["a"]);
+        });
+        it("the event: rev, type, source, operation, flowId, user (whitelist), start, deadline, signal; frozen, the signal is not", async function() {
+            let event;
+            hooks.add("postDeploy.a", e => { event = e });
+            deployHooks.notifyPostDeploy(facts({ type: "flows", operation: "updateFlow", flowId: "t1", start: { status: "start_failed", errors: [{ code: "missing_types" }] }, error: { code: "x_1" } }));
+            await flush();
+            event.rev.should.equal("r2");
+            event.type.should.equal("flows");
+            event.source.should.equal("api");
+            event.operation.should.equal("updateFlow");
+            event.flowId.should.equal("t1");
+            event.user.should.eql({ username: "u", permissions: "*" });
+            event.start.should.eql({ status: "start_failed", errors: [{ code: "missing_types" }] });
+            event.error.should.eql({ code: "x_1" });
+            event.should.not.have.property("reloadType");
+            event.deadline.should.be.a.Number();
+            Object.isFrozen(event).should.be.true();
+            Object.isFrozen(event.start.errors[0]).should.be.true();
+            Object.isFrozen(event.signal).should.be.false();
+            event.should.not.have.property("flows");
+        });
+        it("a reload from storage: source storage, operation null, flowId null, user null, reloadType", async function() {
+            let event;
+            hooks.add("postDeploy.a", e => { event = e });
+            deployHooks.notifyPostDeploy(facts({ type: "reload", source: "storage", operation: null, user: undefined, reloadType: "diff" }));
+            await flush();
+            event.source.should.equal("storage");
+            should.equal(event.operation, null);
+            should.equal(event.flowId, null);
+            should.equal(event.user, null);
+            event.reloadType.should.equal("diff");
+        });
+        it("all handlers are started in parallel in the order of registration; a slow one does not hold back the next", async function() {
+            const order = [];
+            hooks.add("postDeploy.a", () => { order.push("a:start"); return new Promise(() => {}) });
+            hooks.add("postDeploy.b", () => { order.push("b:start") });
+            hooks.add("postDeploy.c", (e, done) => { order.push("c:start"); setImmediate(() => { order.push("c:end"); done() }) });
+            deployHooks.notifyPostDeploy(facts());
+            await flush();
+            order.slice(0, 3).should.eql(["a:start", "b:start", "c:start"]);
+            await flush();
+            order.should.eql(["a:start", "b:start", "c:start", "c:end"]);
+        });
+        it("a failure is a warning with the hook id, the code and a cleaned message; nothing else; the other handlers still run", async function() {
+            const order = [];
+            hooks.add("postDeploy.bad", () => { throw Object.assign(new Error("boom\n\x1b[31m\x9b" + "x".repeat(500)), { code: "EBOOM" }) });
+            hooks.add("postDeploy.rejects", () => Promise.reject(new Error("net")));
+            hooks.add("postDeploy.done", (e, done) => done(new Error("cb")));
+            hooks.add("postDeploy.ok", () => { order.push("ok") });
+            deployHooks.notifyPostDeploy(facts());
+            await flush();
+            await flush();
+            order.should.eql(["ok"]);
+            logged.warn.should.have.length(3);
+            logged.warn.forEach(m => m.should.containEql("deploy.post-hook-failed"));
+            logged.warn[0].should.containEql('"id":"postDeploy.bad"');
+            logged.warn[0].should.containEql('"code":"EBOOM"');
+            const params = JSON.parse(logged.warn[0].slice(logged.warn[0].indexOf("{")).replace(/\]$/, ""));
+            params.message.should.have.length(200);
+            /[\u0000-\u001F\u007F-\u009F]/.test(params.message).should.be.false();
+            logged.error.should.eql([]);
+        });
+        it("a returned value is ignored (false, an object, done(false), done('x'))", async function() {
+            hooks.add("postDeploy.a", () => false);
+            hooks.add("postDeploy.b", () => Promise.resolve({ x: 1 }));
+            hooks.add("postDeploy.c", (e, done) => done(false));
+            hooks.add("postDeploy.d", (e, done) => done("x"));
+            deployHooks.notifyPostDeploy(facts());
+            await flush();
+            await flush();
+            logged.warn.should.eql([]);
+        });
+        it("does nothing without handlers, and a handler removed before the call is not called", async function() {
+            deployHooks.notifyPostDeploy(facts());
+            await flush();
+            let called = false;
+            hooks.add("postDeploy.a", () => { called = true });
+            deployHooks.notifyPostDeploy(facts());
+            hooks.remove("postDeploy.a");
+            await flush();
+            called.should.be.false();
+        });
+        it("a facts object that cannot be turned into an event is a warning, not an exception", async function() {
+            hooks.add("postDeploy.a", () => {});
+            const cyclic = { status: "pending" };
+            cyclic.self = cyclic;
+            deployHooks.notifyPostDeploy(facts({ start: cyclic }));
+            await flush();
+            logged.warn.should.have.length(1);
+            logged.warn[0].should.containEql("deploy.post-hook-failed");
+        });
+
+        describe("limits", function() {
+            let clock;
+            beforeEach(function() {
+                clock = sinon.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+            });
+            afterEach(function() {
+                clock.restore();
+            });
+            async function tick(ms) {
+                await clock.tickAsync(ms);
+                await flush();
+            }
+            it("a handler that has not finished within hookTimeout: a warning and the signal aborted with 'timeout', it is not interrupted", async function() {
+                let signal;
+                let finish;
+                hooks.add("postDeploy.slow", e => { signal = e.signal; return new Promise(resolve => { finish = resolve }) });
+                deployHooks.notifyPostDeploy(facts());
+                await tick(0);
+                signal.aborted.should.be.false();
+                await tick(199);
+                signal.aborted.should.be.false();
+                logged.warn.should.eql([]);
+                await tick(1);
+                signal.aborted.should.be.true();
+                signal.reason.should.equal("timeout");
+                logged.warn.should.have.length(1);
+                logged.warn[0].should.containEql("deploy.post-hook-slow");
+                logged.warn[0].should.containEql("postDeploy.slow");
+                finish();
+                await tick(0);
+                logged.warn.should.have.length(1);
+            });
+            it("no timer is left when the handlers finish quickly", async function() {
+                hooks.add("postDeploy.a", () => {});
+                hooks.add("postDeploy.b", () => Promise.resolve());
+                deployHooks.notifyPostDeploy(facts());
+                await tick(0);
+                clock.countTimers().should.equal(0);
+            });
+            it("SEC-103: at most 10 unfinished calls of a handler; the 11th is skipped with a warning; finished calls free the slots", async function() {
+                let calls = 0;
+                const finishers = [];
+                hooks.add("postDeploy.hang", () => { calls++; return new Promise(resolve => finishers.push(resolve)) });
+                for (let i = 0; i < 10; i++) {
+                    deployHooks.notifyPostDeploy(facts());
+                }
+                await tick(0);
+                calls.should.equal(10);
+                logged.warn.length = 0;
+                deployHooks.notifyPostDeploy(facts());
+                await tick(0);
+                calls.should.equal(10);
+                logged.warn.should.have.length(1);
+                logged.warn[0].should.containEql("deploy.post-hook-skipped");
+                logged.warn[0].should.containEql("postDeploy.hang");
+                finishers[0]();
+                await tick(0);
+                deployHooks.notifyPostDeploy(facts());
+                await tick(0);
+                calls.should.equal(11);
+                // a handler that does not hang is not affected by the limit of another
+                let other = 0;
+                hooks.add("postDeploy.fine", () => { other++ });
+                deployHooks.notifyPostDeploy(facts());
+                await tick(0);
+                other.should.equal(1);
+            });
+            it("a handler added again under the same label after the removal of a hanging one is not blocked", async function() {
+                hooks.add("postDeploy.v", () => new Promise(() => {}));
+                for (let i = 0; i < 10; i++) {
+                    deployHooks.notifyPostDeploy(facts());
+                }
+                await tick(0);
+                hooks.remove("postDeploy.v");
+                let called = false;
+                hooks.add("postDeploy.v", () => { called = true });
+                deployHooks.notifyPostDeploy(facts());
+                await tick(0);
+                called.should.be.true();
+            });
         });
     });
 });

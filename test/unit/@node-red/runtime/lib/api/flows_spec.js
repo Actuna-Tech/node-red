@@ -1576,7 +1576,7 @@ describe("runtime-api/flows", function() {
         });
     });
 
-    describe("deploy hooks (Z-06): preDeploy through the runtime api", function() {
+    describe("deploy hooks (Z-06): preDeploy and postDeploy through the runtime api", function() {
         const { hooks, log: utilLog } = NR_TEST_UTILS.require("@node-red/util");
         let runtime;
         let logStubs;
@@ -1710,6 +1710,47 @@ describe("runtime-api/flows", function() {
                 audit[0].should.not.have.property("reason");
                 runtime.log.warn.called.should.be.false();
             });
+        });
+        it("postDeploy: called once for every operation with the operation, the flow and start.status (stateful active configuration)", async function() {
+            setup({putCreatesFlow: true});
+            // the active configuration is replaced by every deployment, as flows/index.js does
+            let active = {rev: "A", flows: []};
+            let n = 0;
+            runtime.flows.getFlows = () => active;
+            ["setFlows", "loadFlows", "addFlow", "updateFlow", "removeFlow"].forEach(function(fn) {
+                const original = runtime.flows[fn];
+                runtime.flows[fn] = sinon.spy(function() { active = {rev: "R" + (++n), flows: []}; return original.apply(this, arguments) });
+            });
+            const posts = [];
+            hooks.add("postDeploy.test", function(event) { posts.push(event) });
+            for (const name of Object.keys(calls)) {
+                await calls[name]();
+            }
+            await new Promise(r => setImmediate(r));
+            await new Promise(r => setImmediate(r));
+            posts.map(p => p.operation).should.eql(["setFlows", "setFlows", "setFlows", "setFlows", "addFlow", "updateFlow", "updateFlow", "updateFlow", "deleteFlow"]);
+            posts.map(p => p.rev).should.eql(["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"]);
+            posts.map(p => p.flowId).should.eql([null, null, null, null, "new1", "t1", "global", "new9", "t1"]);
+            posts.forEach(p => { p.source.should.equal("api"); p.start.should.eql({status: "not_started"}) });
+            posts[3].type.should.equal("reload");
+            posts[3].reloadType.should.equal("full");
+        });
+        it("postDeploy: with deploy.response started the status is started only when the start is registered; an error of the start is start_failed", async function() {
+            setup({response: "started"});
+            let active = {rev: "A", flows: []};
+            runtime.flows.getFlows = () => active;
+            runtime.flows.setFlows = sinon.spy(function() {
+                active = {rev: "B", flows: []};
+                return Promise.reject(Object.assign(new Error("Deployment saved, but the flows did not start"), {code: "deploy_start_failed", status: 500, rev: "B", errors: [{code: "missing_types", message: "m"}]}));
+            });
+            const posts = [];
+            hooks.add("postDeploy.test", function(event) { posts.push(event) });
+            const err = await rejected(calls["setFlows full"]());
+            err.should.have.property("code", "deploy_start_failed");
+            err.should.have.property("status", 500);
+            await new Promise(r => setImmediate(r));
+            posts.should.have.length(1);
+            posts[0].start.should.eql({status: "start_failed", errors: [{code: "missing_types", message: "m"}]});
         });
         it("the deployed configuration of /flows is the client's (I4)", async function() {
             setup();
