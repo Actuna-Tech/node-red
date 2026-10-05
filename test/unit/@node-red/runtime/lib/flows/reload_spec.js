@@ -41,6 +41,7 @@
  *   (init() resets a migration that was started and not finished by a failed test)
  *   #51: tests of the error code of a failed comparison of the credentials in the reread
  *   under the lock (reload_failed, as in step 2; a read error of storage stays storage_error)
+ *   #61: test of a preReload handler that rejects without a value
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -846,6 +847,20 @@ describe("flows/reload (Z-09)", function() {
             env.notify();
             await waitFor(() => env.applied.length === 1);
             env.logs.error.some(m => m.indexOf("reload.hook-failed") === 0 && m.indexOf("boom") > 0).should.be.true();
+        });
+        it("AC-9: a preReload handler that rejects with undefined proceeds with an error log and is called once (#61)", async function() {
+            env = createEnv();
+            let calls = 0;
+            // rejects on the first call only: with the defect the second call shows up in the count
+            // instead of an endless loop
+            hooks.add("preReload", p => { calls++; return calls === 1 ? Promise.reject(undefined) : Promise.resolve() });
+            await env.start();
+            env.change("B");
+            env.notify();
+            await waitFor(() => env.applied.length === 1);
+            env.applied.should.have.length(1);
+            env.logs.error.some(m => m.indexOf("reload.hook-failed") === 0 && m.indexOf("Hook handler rejected without an error") > 0).should.be.true();
+            calls.should.equal(1);
         });
         it("preReload returning false is no veto", async function() {
             env = createEnv();

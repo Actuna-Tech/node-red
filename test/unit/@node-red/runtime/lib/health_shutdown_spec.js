@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-08: tests of the drain on shutdown (shutdownTimeout, preShutdown hook)
  *   Z-16: tests of health.unreadyGrace on shutdown
+ *   #61: test of a preShutdown handler that rejects without a value
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -115,6 +116,23 @@ describe("runtime/health shutdown (Z-08, D-11)", function() {
         await health.shutdown({ reason: "SIGTERM", stop: stop });
         stop.calledOnce.should.be.true();
         log.error.calledWithMatch("health.shutdown-hook-failed").should.be.true();
+    });
+
+    it("AC-8: a preShutdown handler that rejects with undefined proceeds with an error log and is called once (#61)", async function() {
+        health.init({ shutdownTimeout: 1000 });
+        // rejects on the first call only: with the defect the second call shows up in the count
+        // instead of an endless loop
+        const hook = sinon.spy(function(payload) {
+            return hook.callCount === 1 ? Promise.reject(undefined) : Promise.resolve();
+        });
+        log._.callsFake((key, params) => key + (params ? " " + params.message : ""));
+        hooks.add("preShutdown", hook);
+        await health.shutdown({ reason: "SIGTERM", stop: stop });
+        stop.calledOnce.should.be.true();
+        log.error.calledOnce.should.be.true();
+        log.error.firstCall.args[0].should.startWith("health.shutdown-hook-failed");
+        log.error.firstCall.args[0].should.containEql("Hook handler rejected without an error: undefined");
+        hook.calledOnce.should.be.true();
     });
 
     it("no hook - no wait", async function() {
