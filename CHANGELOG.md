@@ -1,5 +1,14 @@
 #### Unreleased: Instances and reload
 
+ - Fix (#56): `credentials.init()` resets the module flag `removeDefaultKey`. A migration of the credentials to a
+   user key that `load()` had started and `export()` had not finished (generated key `_credentialSecret` and
+   `credentialSecret` both set) was carried over to the next `init()` in the same process, and the first `export()`
+   of the new instance deleted `_credentialSecret` from its settings without migrating its credentials (with
+   settings that cannot delete: `settings.not-available`). It matters for embedding (a repeated `RED.init()`) and
+   for tests; a single `init()` per process behaves as before. The other module variables are not reset: `load()`
+   overwrites the key, its type and `encryptedCredentials`, and `export()` reads them only after `load()` or `setKey()`.
+   Tests: `credentials_spec.js` (a started migration is not carried over), `reload_spec.js` (REV-N01: the tests with
+   the real credentials module drop the state after each test, also when an assertion fails)
  - Tests only (no change under `packages/`): `credentials_spec.js` (block "key selection of load() (a pending
    migration)") finishes the migration after each test (`export()`). The tests left the module flag
    `removeDefaultKey` set, `credentials.init()` does not reset it, and in `npm run mocha` (one process) the
