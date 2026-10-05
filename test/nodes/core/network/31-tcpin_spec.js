@@ -104,6 +104,17 @@ describe('TCP in Node', function() {
         return((v0 === v1) || ((typeof v0) === 'object' && v0.equals(v1)));
     }
 
+    // Why a port cannot be used, for the message of a failed retry: the error that the node logged (the test
+    // runtime logs the message key only, without the error) and the code that a listen of the test on the same
+    // port gets, like the node on all interfaces (EADDRINUSE when the port is taken)
+    function listenOutcome(port) {
+        return new Promise(function(resolve) {
+            const probe = net.createServer();
+            probe.once("error", function(err) { resolve(err.code || String(err)) });
+            probe.listen(port, function() { probe.close(function() { resolve("no error") }) });
+        });
+    }
+
     // The port of a "tcp in" server is found before the node starts, so another program can take it in
     // between (#54). The node reports that as "cannot-listen" (the only way a listen fails here is a port in
     // use) and logs once it listens: the flow is loaded again on the next port until the node listens,
@@ -120,13 +131,17 @@ describe('TCP in Node', function() {
                     ready();
                 }
             });
-            n1.on("call:error", function() {
+            n1.on("call:error", function(call) {
                 if (settled) {
                     return;
                 }
                 settled = true;
                 if (attempt >= LISTEN_PORTS) {
-                    fail(new Error("tcp in did not listen on any of " + LISTEN_PORTS + " ports, the last one was " + port + ": EADDRINUSE"));
+                    const logged = JSON.stringify(String(call.args[0]));
+                    listenOutcome(port).then(function(outcome) {
+                        fail(new Error("tcp in did not listen on any of " + LISTEN_PORTS + " ports, the last one was " + port +
+                            ": the node logged " + logged + ", a listen of the test on that port gets " + outcome));
+                    });
                     return;
                 }
                 Promise.resolve(helper.unload()).then(nextPort).then(function(freePort) {

@@ -74,14 +74,28 @@ describe('UDP in Node', function() {
     // The node reports a failed bind as an error ("udp.errors.error"; the only way a bind fails here is a port
     // in use) and logs once it listens: the test starts again on the next port until the node listens, for 10
     // ports in all.
+    // Why a port cannot be bound, for the message of a failed retry: the error that the node logged (the test
+    // runtime logs the message key only, without the error) and the code that a bind of the test on the same
+    // port gets, with the options of the node (EADDRINUSE when the port is taken)
+    function bindOutcome(proto, port) {
+        return new Promise(function(resolve) {
+            const probe = dgram.createSocket({type: proto, reuseAddr: true});
+            probe.once("error", function(err) { probe.close(); resolve(err.code || String(err)) });
+            probe.bind(port, function() { probe.close(function() { resolve("no error") }) });
+        });
+    }
+
     var UDP_PORTS = 10;
     function checkRecv(dt, proto, val0, val1, done) {
         (function attempt(n) {
             portSource(proto, function(err, port) {
                 if (err) { return done(err); }
-                checkRecvOnPort(port, dt, proto, val0, val1, done, function taken() {
+                checkRecvOnPort(port, dt, proto, val0, val1, done, function taken(logged) {
                     if (n >= UDP_PORTS) {
-                        return done(new Error("udp in did not bind any of " + UDP_PORTS + " ports, the last one was " + port + ": EADDRINUSE"));
+                        return bindOutcome(proto, port).then(function(outcome) {
+                            done(new Error("udp in did not bind any of " + UDP_PORTS + " ports, the last one was " + port +
+                                ": the node logged " + logged + ", a bind of the test on that port gets " + outcome));
+                        });
                     }
                     attempt(n + 1);
                 });
@@ -89,7 +103,8 @@ describe('UDP in Node', function() {
         })(1);
     }
 
-    // taken() is called, after the unload of the flow, when the node could not bind the port
+    // taken(logged) is called, after the unload of the flow, when the node could not bind the port; logged is the
+    // error that the node logged, in quotes
     function checkRecvOnPort(port, dt, proto, val0, val1, done, taken) {
         var flow = [{id:"n1", type:"udp in",
                      group: "", multicast:false,
@@ -122,12 +137,13 @@ describe('UDP in Node', function() {
                     listening();
                 }
             });
-            n1.on("call:error", function() {
+            n1.on("call:error", function(call) {
                 if (settled) {
                     return;
                 }
                 settled = true;
-                Promise.resolve(helper.unload()).then(taken, done);
+                const logged = JSON.stringify(String(call.args[0]));
+                Promise.resolve(helper.unload()).then(function() { taken(logged) }, done);
             });
         });
     }
