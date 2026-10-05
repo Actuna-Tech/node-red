@@ -25,6 +25,8 @@
  *   #40: acceptance tests of deploy.drainHttpNodeRequests for the reload from storage (full and diff, the
  *   hard limit, the order after the preReload hook) and for the stop signal during a drain
  *   #41: after a failed check the test waits for the pollers to end
+ *   Z-06 (#10): a reload from storage calls the postDeploy hook with source "storage" and not preDeploy (the test plugin
+ *   of deploy-hooks_spec.js)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -53,6 +55,7 @@ const fs = require("fs");
 const http = require("http");
 const net = require("net");
 const { spawn } = require("child_process");
+const { writePlugin, readLog } = require("./deploy-hooks-plugin");
 
 const RED_JS = path.resolve(__dirname, "../../../packages/node_modules/node-red/red.js");
 
@@ -189,9 +192,14 @@ describe("reload of shared flows in two instances (acceptance, Z-09)", function(
         dirs.forEach(d => fs.rmSync(d, { recursive: true, force: true }));
     });
 
-    async function startInstance(flowFile, deploy) {
+    // withPlugin (Z-06): the test plugin of the deploy hooks, its logs are in `hookLogDir`
+    async function startInstance(flowFile, deploy, withPlugin) {
         const userDir = tempDir("nr-reload-");
         writeHoldNode(userDir);
+        const hookLogDir = tempDir("nr-reload-hooks-");
+        if (withPlugin) {
+            writePlugin(userDir);
+        }
         const port = await getFreePort();
         const healthPort = await getFreePort();
         // The drain hook is registered with the `hooks` setting (#7)
@@ -219,11 +227,15 @@ module.exports = Object.assign(${JSON.stringify({
     }
 });
 `);
-        const child = spawn(process.execPath, [RED_JS, "-u", userDir, "-p", String(port)], { stdio: "ignore" });
+        const child = spawn(process.execPath, [RED_JS, "-u", userDir, "-p", String(port)], {
+            stdio: "ignore",
+            env: Object.assign({}, process.env, { HOOK_CONTROL_FILE: path.join(hookLogDir, "control.json"), HOOK_LOG_DIR: hookLogDir })
+        });
         children.push(child);
         return {
             child: child,
             pid: child.pid,
+            hookLog: name => readLog(hookLogDir, name),
             base: "http://127.0.0.1:" + port,
             ready: "http://127.0.0.1:" + healthPort + "/health/ready"
         };
@@ -288,6 +300,30 @@ module.exports = Object.assign(${JSON.stringify({
             polling = false;
             await stopPollers(pollers, instances);
         }
+    });
+
+    it("the reload from storage calls postDeploy with source storage and does not call preDeploy (Z-06)", async function() {
+        const shared = tempDir("nr-reload-hooks-shared-");
+        const flowFile = path.join(shared, "flows.json");
+        fs.writeFileSync(flowFile, JSON.stringify(FLOWS_A));
+        const inst = await startInstance(flowFile, undefined, true);
+        await waitFor(async () => (await status(inst.ready)) === 200, 30000, "not ready");
+        (await status(inst.base + "/new")).should.equal(404);
+        // another instance writes the new flows
+        fs.writeFileSync(flowFile + ".tmp", JSON.stringify(FLOWS_B));
+        fs.renameSync(flowFile + ".tmp", flowFile);
+        await waitFor(async () => (await status(inst.base + "/new")) === 200, 20000, "new route not available");
+        await waitFor(async () => inst.hookLog("post.log").length >= 1, 10000, "postDeploy was not called");
+        const posts = inst.hookLog("post.log");
+        posts.should.have.length(1);
+        posts[0].should.containEql({ source: "storage", type: "reload" });
+        posts[0].should.have.property("rev");
+        posts[0].should.have.property("reloadType", "full");
+        // the pending status of the start or not yet started: never a failure
+        ["pending", "not_started", "started"].should.containEql(posts[0].status);
+        // preDeploy was not called by the reload (R-15)
+        inst.hookLog("pre.log").should.eql([]);
+        should(inst.child.exitCode).be.null();
     });
 
     // Sends GET /stable all the time (two sequential pollers) during a reload of the

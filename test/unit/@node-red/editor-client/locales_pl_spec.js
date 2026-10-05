@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-13: consistency tests of the partial Polish (pl) message catalogs
  *   #37: the texts of a failed install, update, remove, enable and disable of a module are in pl
+ *   Z-06 (#10): the texts of the errors of the preDeploy hook are in pl
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -91,6 +92,18 @@ describe("locales/pl", function() {
         ["install", "update", "remove", "enable", "disable"].forEach(function(action) {
             pl.should.have.property("palette.editor.errors." + action + "Failed");
         });
+    });
+
+    it("has the texts of the errors of the preDeploy hook (rejected, hookTimeout, hookFailed; Z-06)", function() {
+        const en = flatten(load(catalogs["editor.json"], "en-US", "editor.json"), "", {});
+        const pl = flatten(load(catalogs["editor.json"], "pl", "editor.json"), "", {});
+        ["rejected", "hookTimeout", "hookFailed"].forEach(function(name) {
+            const key = "deploy.errors." + name;
+            en.should.have.property(key);
+            pl.should.have.property(key);
+            pl[key].should.not.equal(en[key]);
+        });
+        placeholders(pl["deploy.errors.rejected"]).should.equal("__message__");
     });
 
     it("is registered in the language list of the editor", function() {

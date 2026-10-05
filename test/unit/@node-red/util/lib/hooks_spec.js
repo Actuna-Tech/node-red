@@ -498,4 +498,142 @@ describe("util/hooks", function() {
             }).catch(done);
         });
     })
+
+    describe("preDeploy and postDeploy, handlers() (Z-06)", function() {
+        it("allows preDeploy and postDeploy", function() {
+            hooks.has("preDeploy").should.be.false();
+            hooks.has("postDeploy").should.be.false();
+            hooks.add("preDeploy.a", function(event) {});
+            hooks.add("postDeploy.a", function(event) {});
+            hooks.has("preDeploy").should.be.true();
+            hooks.has("postDeploy").should.be.true();
+            hooks.has("preDeploy.a").should.be.true();
+            hooks.remove("preDeploy.a");
+            hooks.has("preDeploy").should.be.false();
+        });
+        it("still rejects an unknown hook name", function() {
+            (function() { hooks.add("preDeployed.x", function() {}) }).should.throw("Invalid hook 'preDeployed'");
+            (function() { hooks.add("deploy", function() {}) }).should.throw("Invalid hook 'deploy'");
+        });
+        it("handlers() lists the handlers in the order of registration with id, location and cb", function() {
+            const a = function(event) {};
+            const b = function(event, done) {};
+            const c = function(event) {};
+            hooks.add("preDeploy.first", a);
+            hooks.add("preDeploy", b);
+            hooks.add("preDeploy.third", c);
+            hooks.add("postDeploy.other", function() {});
+            const list = hooks.handlers("preDeploy");
+            list.map(h => h.id).should.eql(["preDeploy.first", "preDeploy", "preDeploy.third"]);
+            list.map(h => h.cb).should.eql([a, b, c]);
+            list[0].location.should.match(/hooks_spec\.js/);
+            hooks.handlers("postDeploy").map(h => h.id).should.eql(["postDeploy.other"]);
+        });
+        it("handlers() of a hook without handlers (and of an unknown name) is an empty list", function() {
+            hooks.handlers("preDeploy").should.eql([]);
+            hooks.handlers("nothing").should.eql([]);
+        });
+        it("handlers() omits removed handlers; the snapshot tells with isRemoved() when one is removed later", function() {
+            hooks.add("preDeploy.a", function() {});
+            hooks.add("preDeploy.b", function() {});
+            hooks.add("preDeploy.c", function() {});
+            hooks.remove("preDeploy.b");
+            hooks.handlers("preDeploy").map(h => h.id).should.eql(["preDeploy.a", "preDeploy.c"]);
+            const snapshot = hooks.handlers("preDeploy");
+            snapshot.map(h => h.isRemoved()).should.eql([false, false]);
+            hooks.remove("preDeploy.a");
+            snapshot.map(h => h.isRemoved()).should.eql([true, false]);
+            hooks.handlers("preDeploy").map(h => h.id).should.eql(["preDeploy.c"]);
+        });
+        it("handlers() is a snapshot: a handler added later is not in it (unlike the chain of trigger)", function() {
+            hooks.add("preDeploy.a", function() {});
+            const snapshot = hooks.handlers("preDeploy");
+            hooks.add("preDeploy.b", function() {});
+            snapshot.should.have.length(1);
+            hooks.handlers("preDeploy").should.have.length(2);
+        });
+        it("the object of a handler is stable for the registration; a handler added again under the same label is a new object", function() {
+            const fn = function() {};
+            hooks.add("preDeploy.a", fn);
+            const first = hooks.handlers("preDeploy")[0];
+            hooks.handlers("preDeploy")[0].should.equal(first);
+            hooks.remove("preDeploy.a");
+            hooks.add("preDeploy.a", fn);
+            const second = hooks.handlers("preDeploy")[0];
+            second.should.not.equal(first);
+            first.isRemoved().should.be.true();
+            second.isRemoved().should.be.false();
+            Object.isFrozen(second).should.be.true();
+        });
+        it("clear() does not mark the handlers as removed (documented)", function() {
+            hooks.add("preDeploy.a", function() {});
+            const snapshot = hooks.handlers("preDeploy");
+            hooks.clear();
+            hooks.handlers("preDeploy").should.eql([]);
+            snapshot[0].isRemoved().should.be.false();
+        });
+        it("handlers is not enumerable: it is not listed with the other functions of RED.hooks", function() {
+            Object.keys(hooks).should.not.containEql("handlers");
+            Object.keys(hooks).sort().should.eql(["add","addFromSettings","clear","has","remove","removeFromSettings","trigger"]);
+            hooks.should.have.property("handlers");
+            Object.getOwnPropertyDescriptor(hooks, "handlers").enumerable.should.be.false();
+        });
+        it("S-C3: handlers cannot be replaced, deleted or redefined by a node", function() {
+            const original = hooks.handlers;
+            const descriptor = Object.getOwnPropertyDescriptor(hooks, "handlers");
+            descriptor.writable.should.be.false();
+            descriptor.configurable.should.be.false();
+            descriptor.enumerable.should.be.false();
+            (function() { "use strict"; hooks.handlers = function() { return [] } }).should.throw(TypeError);
+            // sloppy mode: the assignment is ignored
+            (new Function("hooks", "hooks.handlers = function() { return [] }; return hooks.handlers"))(hooks).should.equal(original);
+            (function() { "use strict"; delete hooks.handlers }).should.throw(TypeError);
+            (function() { Object.defineProperty(hooks, "handlers", { value: function() { return [] } }) }).should.throw(TypeError);
+            hooks.handlers.should.equal(original);
+            hooks.add("preDeploy.a", function() {});
+            hooks.handlers("preDeploy").should.have.length(1);
+        });
+        it("addFromSettings still rejects preDeploy and postDeploy (P4: only RED.hooks.add registers them)", function() {
+            ["preDeploy.x", "postDeploy.x"].forEach(function(key) {
+                let error;
+                try {
+                    hooks.addFromSettings({[key]: function() {}});
+                } catch(err) {
+                    error = err;
+                }
+                should.exist(error);
+                error.should.have.property("code", "invalid_hook_setting");
+                error.message.should.containEql("only preReload and preShutdown can be set");
+            });
+            hooks.has("preDeploy").should.be.false();
+        });
+        it("regression: trigger of preReload still halts on a promise resolved with true", function(done) {
+            hooks.add("preReload.a", function(event) { return Promise.resolve(true) });
+            hooks.trigger("preReload", {}).then(() => done(new Error("resolved")), err => {
+                err.should.be.an.Error();
+                err.message.should.equal("true");
+                done();
+            }).catch(done);
+        });
+        it("regression: trigger of onSend still halts on a thrown error", function(done) {
+            const order = [];
+            hooks.add("onSend.a", function(event) { order.push("a"); throw new Error("stop") });
+            hooks.add("onSend.b", function(event) { order.push("b") });
+            hooks.trigger("onSend", {}).then(() => done(new Error("resolved")), err => {
+                err.message.should.equal("stop");
+                order.should.eql(["a"]);
+                done();
+            }).catch(done);
+        });
+        it("trigger of preDeploy behaves as for any other hook (the semantics of the deploy hooks are in the runtime, deployHooks.js)", function(done) {
+            const order = [];
+            hooks.add("preDeploy.a", function(event) { order.push("a"); return false });
+            hooks.add("preDeploy.b", function(event) { order.push("b") });
+            hooks.trigger("preDeploy", {}).then(result => {
+                should(result).equal(false);
+                order.should.eql(["a"]);
+                done();
+            }).catch(done);
+        });
+    });
 });

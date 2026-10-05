@@ -42,7 +42,7 @@
 | Z-15 | – | `editorOnly: false` (alternatywa: `runtimeState.autoStart`) | jedno znaczenie: instancja wczytuje flow, nie uruchamia ich i nie zapisuje stanu w magazynie; przy `deploy.response: "started"` odpowiedź `{rev, started: false}` (R-39) |
 | P-01 / Z-08 | – | `deploy.startTimeout` (ms), domyślnie wyłączony | limit czasu startu w trybie `deploy.response: "started"`; po przekroczeniu 500 `deploy_start_failed` z `errors[].code: "start_timeout"`, flow startują dalej w tle, wynik w logu (**R-38**); blokada wdrożeń trwa do końca startu (R-43, **R-45**) |
 | P-01 | – | `deploy.startTimeoutReleasesLock: false` | `true` (przy ustawionym `startTimeout`) – blokada wdrożeń zwalniana po upływie `startTimeout` w obu trybach odpowiedzi (ostrzeżenie w logu); ryzyko równoległego startu flow przez kolejne wdrożenie; domyślnie blokada do końca startu (**R-45**) |
-| Z-06 | – | `deploy.hookTimeout: 30000` (ms) | hook `preDeploy` działa pod blokadą wdrożeń – limit chroni przed zablokowaniem API |
+| Z-06 (#10) | – | `deploy.hookTimeout: 30000` (ms) | jeden limit dla całego łańcucha hooków `preDeploy`, które działają pod blokadą wdrożeń – limit chroni przed zablokowaniem API; w `postDeploy` tylko ostrzeżenie i `abort("timeout")` sygnału, bez przerywania. Zakres: skończona liczba > 0 i ≤ 2147483647; wartość niepoprawna (napis, ≤ 0, `Infinity`) → ostrzeżenie w logu przy starcie i 30000 (walidacja: `deployHooks.isValidHookTimeout`, jedna implementacja); wartość czytana przy każdym wdrożeniu. Hooki rejestruje się **wyłącznie** przez `RED.hooks.add("preDeploy.<etykieta>", fn)` / `"postDeploy.<etykieta>"` (wtyczka, węzeł) – bez zmian w ustawieniu `hooks` (**R-50**) |
 | Z-09 | – | `deploy.reload: { watch: false, type: "full" \| "diff", preReloadTimeout: 1200000, concurrency: <opcjonalnie> }` | `type` domyślnie `"full"` (jak dzisiejszy `reload`); dla długich rozmów rekomendowane `"diff"`; `concurrency` wymaga wtyczki koordynacji (Z-10) – tylko wartość liczbowa; bez łączności z koordynatorem przeładowanie czeka, działa stara konfiguracja (R-20); przy `watch: true` błąd rejestracji `watchFlows` → błąd startu (R-36); dodatkowy `preReload` (D-17) poza blokadą – najwyżej jedna runda, potem przeładowanie z ostrzeżeniem (R-36) |
 | #8 | – | `deploy.holdHttpNodeRequests: { enabled: false, timeout: 5000, maxPending: 1000, retryAfter: 1 }` | `enabled: false` = zachowanie 5.0.7 (404 w oknie restartu) | żądania do tras węzłów (`httpNode`) **bez istniejącej trasy** wstrzymywane na czas wdrożenia i przeładowania z magazynu (stany E-02 `deploying`/`reloading`), po `timeout` lub `maxPending` → 503 z `Retry-After`; rodzina `deploy.*` (nie `deploy.reload.*` – obejmuje też zwykłe wdrożenie); opis: FORK.md §5 |
 | #40 | – | `deploy.drainHttpNodeRequests: { enabled: false, timeout: 30000, retryAfter: 1 }` | `enabled: false` = zachowanie 5.0.7 (bez śledzenia, `stop()` jak dotąd) | przed zatrzymaniem flow runtime czeka (≤ `timeout`, limit twardy – także dla flow niezmienianych, **R-49**) na zapytania przyjęte przez trasy `httpNode` z oznaczonym handlerem (rdzeń: `http in`), po zatrzymaniu odpowiada 503 na otwarte (`http_drain_not_accepted` / `http_drain_outcome_unknown`); rodzina `deploy.*`, symetryczna z `holdHttpNodeRequests` (#8); `timeout` ma inne znaczenie niż `hold.timeout` (limit czekania na S0 i odstęp terminu); w logach i dokumentach „drenaż HTTP” (nie mylić z `preReload`/`preShutdown`); opis: FORK.md §5 |
@@ -53,7 +53,7 @@
 | Z-03 | – | `externalModules.palette.allowDowngrade: true` (domyślnie = zachowanie 5.0.6) | `false` blokuje instalację starszej wersji z `.tgz` (rekomendowane w produkcji); domyślna wartość nie zmienia dzisiejszego zachowania (DoD §3) |
 | Z-08 | – | `health.host` (opcjonalnie); **`shutdownTimeout`** (płasko, domyślnie wyłączony drenaż – zachowanie 5.0.6); API osadzających `RED.health` | drenaż przy SIGTERM (D-11); nazwa płaska jak `nodeCloseTimeout`/`functionTimeout` – to cykl życia procesu, nie sonda; bez `shutdownTimeout` hook `preShutdown` nie jest wywoływany; brak osobnego limitu `RED.stop()` – ostatecznym limitem jest `terminationGracePeriodSeconds` orkiestratora (R-37) |
 | Z-16 | – | `health.unreadyGrace` (ms), domyślnie wyłączone (zgłoszenia #8, #1) | czas, przez który `/ready` odpowiada 503 PRZED zatrzymaniem flow przy planowanym zatrzymaniu (SIGTERM – Z-08, przeładowanie z magazynu – Z-09); liczony od początku planowanego zatrzymania/przeładowania (najpóźniej wtedy `/ready` odpowiada 503; instancja już niegotowa czeka pełny czas ponownie), równolegle z hookami `preShutdown`/`preReload`, w limitach `shutdownTimeout`/`preReloadTimeout`; nie dotyczy wdrożenia z edytora/Admin API; leży pod `health`, bo dotyczy kontraktu gotowości, nie cyklu życia procesu; wymaga `health.enabled` |
-| Z-08 / Z-09 (#7) | – | `hooks: { "preReload.<etykieta>": fn, "preShutdown.<etykieta>": fn }` (płasko, domyślnie brak) | rejestracja hooków z `settings.js` przy `init` runtime, przed wtyczkami; identyfikator `nazwa.etykieta` jak w `RED.hooks.add`; dozwolone tylko `preReload` i `preShutdown`; niepoprawny klucz lub wartość = błąd startu `invalid_hook_setting` (komunikat bez i18n – katalog `runtime` jest ładowany w `start`); `hooks` na liście kluczy zarezerwowanych (§2.1a) |
+| Z-08 / Z-09 (#7) | – | `hooks: { "preReload.<etykieta>": fn, "preShutdown.<etykieta>": fn }` (płasko, domyślnie brak) | rejestracja hooków z `settings.js` przy `init` runtime, przed wtyczkami; identyfikator `nazwa.etykieta` jak w `RED.hooks.add`; dozwolone tylko `preReload` i `preShutdown`; niepoprawny klucz lub wartość = błąd startu `invalid_hook_setting` (komunikat bez i18n – katalog `runtime` jest ładowany w `start`); `hooks` na liście kluczy zarezerwowanych (§2.1a); **zasada W7 (R-50):** z `settings.js` (`hooks`) wolno rejestrować wyłącznie hooki **cyklu życia procesu i przeładowania** (`preShutdown`, `preReload`); hooków ścieżki komunikatów (`onSend`, `preRoute`, …) i potoku wdrożenia (`preDeploy`, `postDeploy`) – nigdy bez nowej decyzji w rejestrze; wpis `hooks: {"preDeploy.x": …}` nadal kończy start błędem `invalid_hook_setting` |
 | E-02 | – | zdarzenie `instance:state` `{state, previous, reason}`, odczyt `runtime.state`; `RED.stop(reason)` | jedno źródło stanu dla P-01, Z-08, Z-09, Z-15; stany: `init, starting, ready, deploying, reloadPending, reloading, idle, loaded, failed, stopping, stopped` – kontrakt w [MIGRACJA.md](MIGRACJA.md) (**R-23**) |
 | P-04 / D-07 | – | `httpAdminCommsOrigins: ["https://…"]` (R-33) | kontrola nagłówka `Origin` przy połączeniu `/comms`; brak ustawienia = zachowanie 5.0.7 (bez kontroli, ostrzeżenie w logu przy starcie); ustawiona lista – tylko wymienione źródła oraz własne źródło edytora; w naszych instalacjach lista zawsze ustawiona (**R-06**, **R-35**); nazwa z rodziny `httpAdmin*` (D-02), bo `/comms` działa pod `httpAdminRoot` |
 | Z-12.10 | – | `editorTheme.embedding.allowedOrigins` (R-33; zamiast `…embedding.postMessage.allowedOrigins`) | lista źródeł dla `postMessage` osadzonego edytora; obejmuje także istniejący kanał `set-theme` (**R-28**); brak ustawienia = zachowanie 5.0.7 (bez kontroli, ostrzeżenie w logu przy starcie); ustawiona lista – tylko wymienione źródła; w naszych instalacjach lista zawsze ustawiona (**R-35**) |
@@ -97,9 +97,11 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
   pod tą samą blokadą wdrożeń (`runtime/lib/flows/lock.js`); druga operacja czeka na zakończenie pierwszej.
   Blokada trwa do końca startu nowych flow (krok A8, R-43), także gdy odpowiedź HTTP wraca wcześniej i po przekroczeniu
   `deploy.startTimeout`; zwolnienie po limicie tylko przy `deploy.startTimeoutReleasesLock: true` (R-45).
-- **Hooki (R-15):** `preDeploy` – tylko walidacja (bez modyfikacji treści), limit `deploy.hookTimeout` (30 s);
+- **Hooki (R-15, doprecyzowane w R-50 – #10):** `preDeploy` – tylko walidacja (bez modyfikacji treści), limit `deploy.hookTimeout` (30 s);
   `postDeploy` – asynchronicznie, błąd tylko w logu; **brak hooków** `preDeploy`/`postDeploy` przy starcie procesu
-  (wczytanie flow z magazynu) i przy operacjach Projektów.
+  (wczytanie flow z magazynu) i przy operacjach Projektów (`POST /flows/state`, przełączenie projektu). Rejestracja tylko
+  przez `RED.hooks.add`; wykonanie przez `flows/deployHooks.js` na podstawie akcesora `hooks.handlers(id)` (nie przez
+  `hooks.trigger`, który zostaje bez zmian). `POST /flows` w trybie Projektów jest wdrożeniem (hooki działają).
 
 **A. Wdrożenie przez Admin API lub wywołanie wewnętrzne** (`/flows`, `/flow`, `/flow/:id`, typ `reload`):
 ```
@@ -107,13 +109,33 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
  ── blokada wdrożeń (runtime/lib/flows/lock.js) ─────────────────────────────────
  2. kontrola rewizji            – istniejące 409 version_mismatch; Z-05 version_required (także klient v1 przy
        requireRevision – R-14; DELETE /flow/:id wymaga ?rev= – R-14); Z-04 rewizja flow
-       (typ reload: zwolniony z wymogu rewizji – R-14; odczyt magazynu tutaj, pod blokadą, PRZED preDeploy – R-11;
-        preDeploy w kroku 3 widzi treść, która zostanie uruchomiona)
+       (typ reload: zwolniony z wymogu rewizji – R-14; odczyt magazynu tutaj, pod blokadą, PRZED preDeploy – R-11 – także typ `load` przy zarejestrowanym `preDeploy`: ignoruje treść żądania i wdraża zawartość magazynu, więc jest walidowany na tej zawartości jak reload, R-C1;
+        preDeploy w kroku 3 widzi treść, która zostanie uruchomiona; krok 2 tylko CZYTA: `readStoredFlows()` – bez zmiany
+        poświadczeń i bez zdarzenia `runtime-state`, #10 D15)
+       `/flow`: sprawdzenie rewizji i budowa nowej konfiguracji (`build*FlowConfig`) – funkcja `prepare` w `pipeline.deploy` –
+        też tutaj, przed krokiem 3 i 4 (#10, U1): odrzucone żądanie (409, 404, `duplicate_id`, `invalid_flow_id`, 400 `global`)
+        nie przechodzi przez stan `deploying`, nie emituje `instance:state`, nie wstrzymuje `/ready` i nie unieważnia
+        oczekującego przeładowania Z-09 (dawniej robiło to w kroku `apply`, po kroku 4)
  2a. kontrola uprawnień do typów węzłów – Z-12.08: dodane/zmienione węzły typu niedozwolonego dla użytkownika
        (odebrany `nodes.type.<typ>` lub brak przyznania przy `!nodes.type.*`) → 403 node_type_not_permitted,
        odrzucenie całego wdrożenia, bez zapisu (R-27, R-42); typ reload – bez kontroli (brak użytkownika; R-42)
- 3. hook preDeploy              – Z-06; tylko walidacja, limit deploy.hookTimeout; odrzucenie → 400 deploy_rejected;
-       przekroczenie limitu → 503 deploy_hook_timeout (R-15)
+ 3. hook preDeploy              – Z-06 (#10, R-15, R-50); tylko walidacja (zamrożona kopia wynikowej konfiguracji, bez `credentials`
+       i bez `value` wpisów `env` typu `cred`), pod blokadą, wywoływany najwyżej raz na wdrożenie, jeden limit `deploy.hookTimeout`
+       dla łańcucha; handlery po kolei w kolejności rejestracji, pierwszy wynik inny niż akceptacja kończy łańcuch:
+         • `undefined` albo wartość ≠ `false` (także w obietnicy), `done()` → akceptacja;
+         • `false` / `done(false)` albo `Error` ze `status: 400` → 400 `deploy_rejected` {message, reason = `err.code`, details?} –
+           to jedyne odrzucenie zamierzone;
+         • każdy inny wynik (wyjątek, `Promise.reject()`, `done("x")`, mutacja zamrożonej kopii) → 503 `deploy_hook_failed`
+           (stały komunikat, przyczyna tylko w logu; fail-closed);
+         • brak wyniku przed `deadline` → 503 `deploy_hook_timeout`; także od razu (bez wywołania), gdy poprzednie, spóźnione wywołanie
+           tego samego handlera jeszcze trwa (SEC-103: najwyżej jedno spóźnione wywołanie `preDeploy` na handler);
+       odpowiedź budowana od nowa z białej listy i oczyszczona (znaki sterujące, C1, U+2028/9, nadpisania dwukierunkowe; `message` ≤ 1000,
+       `reason` `[A-Za-z0-9_.:-]{1,64}`, `details` obiekt/tablica ≤ 8 KB). Przy odrzuceniu, awarii i limicie nic się nie zmienia (brak
+       zapisu, zatrzymania, stanu, drenażu, wstrzymywania, poświadczeń, `runtime-deploy` i `postDeploy`), blokada jest zwalniana.
+       Bez handlera: brak kopii, timera i wywołania akcesora. To nie jest granica bezpieczeństwa (R-50, SEC-105)
+ 3a. (tylko `reload` oraz `load` przy zarejestrowanym `preDeploy`) poświadczenia i `runtime-state` – `loadStoredCredentials()`: załadowanie poświadczeń odczytanej konfiguracji i
+       zdarzenie `runtime-state` (retain), PO hooku, przed stanem `deploying` (#10, D15) – odrzucony `reload` niczego nie zmienia;
+       błąd `credentials_load_failed` (Projekty) pojawia się po hooku, przed `deploying`, jak dotąd przed `deploying`
  4. stan = "deploying"          – E-02 / Z-08 (/ready → 503)
  5. zapis do magazynu           – (typ reload: brak zapisu – treść odczytana w kroku 2)
  6a. drenaż zapytań HTTP        – #40 (R-49), tylko z `deploy.drainHttpNodeRequests.enabled`: `httpDrain.beforeStop()` czeka (≤ `timeout`, pod
@@ -136,7 +158,21 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
        konstruktorów pojedynczych węzłów (R-10); limit czasu startu – deploy.startTimeout (domyślnie wyłączony):
        po przekroczeniu 500 deploy_start_failed z errors[].code "start_timeout", flow startują dalej w tle (R-38)
        tryb domyślny: odrzucenie start() jest logowane (dziś połykane) – poprawka błędu (R-10)
-11. hook postDeploy             – Z-06; asynchronicznie, nie wstrzymuje odpowiedzi, błąd tylko w logu (nie cofa wdrożenia)
+11. hook postDeploy             – Z-06 (#10, R-50); `setImmediate` po wyniku, bez `await`: dokładnie raz dla każdej ZAPISANEJ albo przeładowanej
+       konfiguracji – także gdy wdrożenie zakończyło się potem błędem – i nigdy dla niezapisanej (odrzucenie, limit, 409/400, błąd zapisu).
+       Fakt „zapisano” = podmiana aktywnej konfiguracji (`flows.getFlows()` zwraca ten sam obiekt do chwili zapisu albo odczytu),
+       odczytana pod blokadą po kroku 4 (`savedSince`), nie lista kodów błędów. Handlery równolegle (start w kolejności rejestracji),
+       błąd tylko w logu (nie cofa wdrożenia), wartości zwracane ignorowane; najwyżej 10 niezakończonych wywołań na handler (potem
+       pominięcie z ostrzeżeniem). Zdarzenie: `{rev, type, source: "api"|"internal"|"storage", operation, flowId, user, reloadType?,
+       start: {status, errors?}, error?: {code}, deadline, signal}`. W trybie domyślnym w chwili wywołania stan to jeszcze `deploying`
+       (start trwa); ostateczny wynik – `instance:state` i `deploy-start-result` (#22).
+       Słownik `start.status`: `started` (tryb `"started"`, flow wystartowały) · `pending` (tryb domyślny z zarejestrowanym startem, albo
+       `deploy_start_failed` z wpisem `start_timeout` + `errors` – to nie porażka, R-38) · `not_started` (`editorOnly`, flow zatrzymane,
+       albo połknięty błąd zatrzymania w trybie domyślnym, D-05) · `start_failed` (`deploy_start_failed` bez `start_timeout`, `errors`) ·
+       `stop_failed` (tylko tryb `"started"`) · `unknown` (nieoczekiwany błąd samego kroku wdrożenia po zapisie; kod w `error`). Nieoczekiwany
+       błąd po zapisie niezwiązany ze startem zostawia status zarejestrowanego startu i jest podany osobno w `error: {code}`.
+       Pętle: handler publikujący zmianę do innych instancji MUSI pomijać `source === "storage"`; handler, który sam wdraża, tworzy
+       nieskończoną pętlę wdrożeń (SEC-104)
 ```
 
 **B. Przeładowanie po zmianie w magazynie** (Z-09, `watchFlows`):
@@ -157,7 +193,11 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
        drenaż HTTP (przejście klastra wydłuża się o N × `timeout`; zalecane `deploy.reload.concurrency`)
  ── koniec blokady ──
  6. zdarzenie runtime-deploy; hook postDeploy (source: "storage"); BEZ preDeploy
-    (zmianę zatwierdziła instancja, która ją zapisała – jej preDeploy już się wykonał)
+    (zmianę zatwierdziła instancja, która ją zapisała – jej preDeploy już się wykonał). `postDeploy(storage)` tylko gdy przeładowanie
+    doszło do stanu `reloading` i podmieniło aktywną konfigurację; fakt „zapisano” odczytany pod blokadą po `begin("reload")`
+    (D22/A31): przeładowanie unieważnione przez wdrożenie na tej instancji, pominięte albo runda D-17 bez decyzji nie dają `postDeploy`.
+    `preDeploy` chroni zapisy przez API tej instancji, nie treść magazynu (D20): treść odrzucona przy `reload` może trafić do flow
+    przez Z-09 albo przy restarcie procesu
 ```
 
 **C. Zatrzymanie procesu** (Z-08, D-11): SIGTERM/SIGINT → stan `stopping` (/ready 503, nieodwracalny) →
@@ -192,15 +232,16 @@ w którym pakiet dopisuje swój krok (bez pustych hooków).
 |---|---|---|
 | A1 | `api/flows.js` `setFlows`/`addFlow`/`updateFlow`/`deleteFlow` → `flows/pipeline.js` `deploy({type, source:"api", …})` (dokładnie raz) | E-01 |
 | blokada | `flows/lock.js` `runExclusive` – w `pipeline.deploy`, `api/flows.js` `setState`, `storage/localfilesystem/projects/index.js` `withDeployLock` (`reloadActiveProject`, `setActiveProject`, `setBranch`, `pull`, `revertFile`, `resolveMerge`, `abortMerge`, `commit` kończący scalanie, `initialiseProject`, `updateProject`: zmiana plików i przeładowanie w jednej sekcji); `holdUntil(promise)` – blokada trwa po zakończeniu sekcji do rozstrzygnięcia obietnicy (start flow, R-43) | E-01 (R-11, R-43); Z-09 (B4–B5) |
-| A2 | `pipeline.deploy` → `checkRevision` (409 `version_mismatch`); `reload`: `flows/index.js` `readFlowsFromStorage()` pod blokadą | E-01; Z-04, Z-05 |
+| A2 | `pipeline.deploy` → `checkRevision` (409 `version_mismatch`); `/flow`: `opts.prepare()` (rewizje + `build*FlowConfig`, #10); `reload`: `flows/index.js` `readStoredFlows()` pod blokadą (tylko odczyt, #10 D15) | E-01; Z-04, Z-05; Z-06 |
 | A2a | kotwica w `pipeline.deploy` | Z-12.08 (R-27) |
-| A3 | kotwica w `pipeline.deploy` (`reload` – po odczycie A2) | Z-06 |
+| A3 | `pipeline.deploy` → `flows/deployHooks.js` `runPreDeploy` (`reload` – po odczycie A2); handlery z akcesora `util/lib/hooks.js` `handlers(id)` | Z-06 (#10) |
+| A3a | `pipeline.deploy` → `flows/index.js` `loadStoredCredentials()` (tylko `reload` oraz `load` przy zarejestrowanym `preDeploy`; po hooku, przed A4) | Z-06 (#10, D15) |
 | A4, A8 | kotwice w `pipeline.deploy`; A8 wykonuje się po zakończeniu startu (obietnica startu zarejestrowana przez `setFlows` w `lock.holdUntil`), blokada zwalniana po starcie także przy błędzie (R-43) | E-02, Z-08 |
-| A5–A7 | `flows/index.js` `setFlows(…, deployOpts, loaded)` (zapis → `stop` → `context.clean` → `start` asynchronicznie, zarejestrowany w `lock.holdUntil`); `/flow`: krok `apply` → `addFlow`/`updateFlow`/`removeFlow` = `build*FlowConfig` + `setFlows`; `reload`: `load(true, deployOpts, loaded)` | E-01; P-01 (`deployOpts.waitForStart`, punkt rozszerzenia w `setFlows`), Z-04 (`build*FlowConfig`), Z-15 |
+| A5–A7 | `flows/index.js` `setFlows(…, deployOpts, loaded)` (zapis → `stop` → `context.clean` → `start` asynchronicznie, zarejestrowany w `lock.holdUntil`); `/flow`: krok `apply(deployOpts, prepared)` → `addFlow`/`updateFlow`/`removeFlow(…, {built})` = `setFlows` (konfiguracja zbudowana w `prepare`, A2); `reload`: `load(true, deployOpts, loaded)` | E-01; P-01 (`deployOpts.waitForStart`, punkt rozszerzenia w `setFlows`), Z-04 (`build*FlowConfig`), Z-15 |
 | A7 (wynik) | `flows/index.js` `start()` → `{errors: [{code: "missing_types" \| "missing_modules" \| "flow_start_failed", …}]}` | E-01; P-01 (+ `safe_mode`, `start_timeout`) |
 | A9 | `flows/index.js` `setFlows` – zdarzenie `runtime-deploy` po `start()` | bez zmian |
 | A10 | wynik `pipeline.deploy` (`{rev}` lub `{result}` kroku `apply`) → `api/flows.js` | E-01; P-01 |
-| A11 | kotwica w `pipeline.deploy` (po zwolnieniu blokady) | Z-06 |
+| A11 | `pipeline.deploy` → `flows/deployHooks.js` `notifyPostDeploy` (fakty zebrane pod blokadą: `postFacts`, `classifyStart`; wywołanie po sekcji blokady, `setImmediate`); B6: `pipeline.reloadFromStorage` | Z-06 (#10) |
 | B | `readFlowsFromStorage()` + `pipeline.deploy({type:"reload", source:"storage", loaded})` (bez ponownego odczytu) | Z-09 |
 | A6a, A6b | `flows/index.js` `stop()` – opakowanie przy włączonym `deploy.drainHttpNodeRequests`: `httpDrain.beforeStop()` → `stopNow()` (dotychczasowa treść `stop()`, bez zmian) → `httpDrain.afterStop(scope)` (`runtime/lib/httpDrain.js`). **Semantyka `stopInProgress`:** serializuje zatrzymania tylko przy włączonym ustawieniu; kolejne `stop()` czeka (`.then(f, f)` – odrzucenie pierwszego NIE przechodzi na kolejne) i wykonuje się ponownie (no-op przy zatrzymanych flow); w stanie `stopping` kolejne `stop()` wywołuje `abortWait()`; `stopInProgress` jest czyszczony zawsze (`afterStop` nie rzuca); handler `type-registered` nie startuje flow, gdy `stopInProgress` (log `debug`). Przy wyłączonym ustawieniu `stop()` = `stopNow()`, wołane synchronicznie jak dotąd | #40 (R-49) |
 | `RED.stop` | `runtime/lib/index.js` `stop()`: po `redNodes.stopFlows()` (także po odrzuceniu) `httpDrain.finalize()` | #40 (R-49) |
@@ -216,8 +257,9 @@ w którym pakiet dopisuje swój krok (bez pustych hooków).
 | `version_mismatch` | 409 | istniejący, Z-04 | rewizja w żądaniu ≠ aktualna (całość lub flow) |
 | `version_required` | 409 | Z-05 | `deploy.requireRevision: true` i brak rewizji (nazwa jak w łatce 0006 Zamawiającego – decyzja D-20); także każde wdrożenie API v1 (sama tablica) i `DELETE /flow/:id` bez `?rev=` przy `requireRevision: true` (R-14); typ `reload` zwolniony (R-14) |
 | `invalid_revision` | 400 | Z-04 | rewizja w złym typie (np. liczba, obiekt); **pusty `rev` nie jest tym błędem** – pusty `rev` (`""` lub `null`): przy `deploy.requireRevision: false` – jak w 5.0.7 (409 `version_mismatch`); przy `true` – traktowany jak brak rewizji → 409 `version_required` (decyzja N-01, wariant A) |
-| `deploy_rejected` | 400 | Z-06 | `preDeploy` odrzucił wdrożenie (komunikat z hooka) |
-| `deploy_hook_timeout` | 503 | Z-06 | `preDeploy` przekroczył `deploy.hookTimeout` (R-15; wcześniej proponowane 400) |
+| `deploy_rejected` | 400 | Z-06 (#10) | `preDeploy` odrzucił wdrożenie – **wyłącznie odrzucenie zamierzone** (`false` albo `Error` ze `status: 400`); odpowiedź `{code, message, reason, details?}`: `message` z hooka (oczyszczony, ≤ 1000), `reason` = kod błędu hooka (`[A-Za-z0-9_.:-]{1,64}`, inaczej `"rejected"`), `details` – obiekt lub tablica ≤ 8 KB (R-15, R-50) |
+| `deploy_hook_failed` | 503 | Z-06 (#10) | awaria walidatora (wyjątek, `Promise.reject()`, `done("x")`, mutacja zamrożonego zdarzenia); stały komunikat, przyczyna tylko w logu; nic nie zapisano (fail-closed, R-50) |
+| `deploy_hook_timeout` | 503 | Z-06 (#10) | `preDeploy` przekroczył `deploy.hookTimeout` (R-15; wcześniej proponowane 400) albo poprzednie, spóźnione wywołanie tego samego handlera jeszcze trwa (SEC-103); nic nie zapisano |
 | `deploy_stop_failed` | 500 | P-01 | tryb `started`: błąd zatrzymania węzłów; `rev` (w `/flow` także `revAll` – W-3) |
 | `deploy_start_failed` | 500 | P-01 | tryb `started`: błąd startu – odpowiedź `{ code, message, rev, errors[] }`, `errors[].code` w `snake_case`, m.in. `safe_mode` (R-10, R-33) i `start_timeout` (przekroczony `deploy.startTimeout`, R-38); zakres błędu startu wg §2.3 A krok 10 (R-10); w `/flow` `rev` = rewizja flow, `revAll` = rewizja całości (W-3); pola wpisów `errors[]` (#22, R-48): `start_timeout` – `timeout`, `phase` (`modules`/`flows`), `startedAt`, `elapsed`, `pending[]` (przy wdrożeniu „flows”/„nodes” tylko flow, w których wdrożenie coś uruchamia), `current` (tylko gdy uruchamiane jest flow z `pending`); `flow_start_failed` – `flow` (gdy znany); późny wynik startu po `start_timeout` – zdarzenie `/comms` `deploy-start-result` |
 | `invalid_flow_id` | 400 | Z-04 | `PUT /flow/:id` z niedozwolonym id przy `deploy.putCreatesFlow` |

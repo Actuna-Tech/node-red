@@ -29,6 +29,10 @@
  *   #2: the v2 result of getFlows is only {flows, rev} - no digest of the credentials
  *   #40: setState stop with deploy.drainHttpNodeRequests waits for the accepted requests and answers
  *   the open ones with 503
+ *   Z-06 (#10): a rejected single-flow request does not change the instance state (A24, U1);
+ *   a reload from the api reads storage and loads the credentials as before (D15, A32 - guards);
+ *   the preDeploy hook through the runtime api (the event, 400/503/503, nothing saved, audit with the reason);
+ *   a reload rejected by the hook changes nothing (I12, D15, D26)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -125,7 +129,8 @@ describe("runtime-api/flows", function() {
                     getFlows: function() { return {rev:"currentRev",flows:[]} },
                     setFlows: setFlows,
                     loadFlows: loadFlows,
-                    readFlowsFromStorage: function() { return Promise.resolve({flows:[],rev:"storedRev"}) }
+                    readStoredFlows: function() { return Promise.resolve({flows:[],rev:"storedRev"}) },
+                    loadStoredCredentials: function(config) { return Promise.resolve(config) }
                 }
             })
 
@@ -227,18 +232,20 @@ describe("runtime-api/flows", function() {
         var addFlow;
         beforeEach(function() {
             addFlow = sinon.spy(function(flow) {
-                if (flow === "error") {
-                    var err = new Error("error");
-                    err.code = "error";
-                    var p = Promise.reject(err);
-                    p.catch(()=>{});
-                    return p;
-                }
                 return Promise.resolve("newId");
             });
             flows.init({
                 log: mockLog(),
                 flows: {
+                    // Z-06 (U1): the build runs in step 2 (prepare), so its errors are thrown there
+                    buildAddFlowConfig: function(flow) {
+                        if (flow === "error") {
+                            var err = new Error("error");
+                            err.code = "error";
+                            throw err;
+                        }
+                        return {config: [], id: "newId"};
+                    },
                     addFlow: addFlow
                 }
             });
@@ -297,26 +304,26 @@ describe("runtime-api/flows", function() {
         var updateFlow;
         beforeEach(function() {
             updateFlow = sinon.spy(function(id,flow) {
-                if (id === "unknown") {
-                    var err = new Error();
-                    // TODO: quirk of internal api - uses .code for .status
-                    err.code = 404;
-                    var p = Promise.reject(err);
-                    p.catch(()=>{});
-                    return p;
-                } else if (id === "error") {
-                    var err = new Error();
-                    // TODO: quirk of internal api - uses .code for .status
-                    err.code = "error";
-                    var p = Promise.reject(err);
-                    p.catch(()=>{});
-                    return p;
-                }
                 return Promise.resolve();
             });
             flows.init({
                 log: mockLog(),
                 flows: {
+                    // Z-06 (U1): the build runs in step 2 (prepare), so its errors are thrown there
+                    buildUpdateFlowConfig: function(id) {
+                        if (id === "unknown") {
+                            var err = new Error();
+                            // TODO: quirk of internal api - uses .code for .status
+                            err.code = 404;
+                            throw err;
+                        } else if (id === "error") {
+                            var err = new Error();
+                            // TODO: quirk of internal api - uses .code for .status
+                            err.code = "error";
+                            throw err;
+                        }
+                        return {config: [], label: id, created: false};
+                    },
                     updateFlow: updateFlow
                 }
             });
@@ -355,26 +362,26 @@ describe("runtime-api/flows", function() {
         var removeFlow;
         beforeEach(function() {
             removeFlow = sinon.spy(function(flow) {
-                if (flow === "unknown") {
-                    var err = new Error();
-                    // TODO: quirk of internal api - uses .code for .status
-                    err.code = 404;
-                    var p = Promise.reject(err);
-                    p.catch(()=>{});
-                    return p;
-                } else if (flow === "error") {
-                    var err = new Error();
-                    // TODO: quirk of internal api - uses .code for .status
-                    err.code = "error";
-                    var p = Promise.reject(err);
-                    p.catch(()=>{});
-                    return p;
-                }
                 return Promise.resolve();
             });
             flows.init({
                 log: mockLog(),
                 flows: {
+                    // Z-06 (U1): the build runs in step 2 (prepare), so its errors are thrown there
+                    buildRemoveFlowConfig: function(flow) {
+                        if (flow === "unknown") {
+                            var err = new Error();
+                            // TODO: quirk of internal api - uses .code for .status
+                            err.code = 404;
+                            throw err;
+                        } else if (flow === "error") {
+                            var err = new Error();
+                            // TODO: quirk of internal api - uses .code for .status
+                            err.code = "error";
+                            throw err;
+                        }
+                        return {config: [], flow: {id: flow}};
+                    },
                     removeFlow: removeFlow
                 }
             });
@@ -786,7 +793,11 @@ describe("runtime-api/flows", function() {
                     getFlows: function() { return {rev:"currentRev",flows:[]} },
                     setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
                     loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
-                    readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    readStoredFlows: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    loadStoredCredentials: sinon.spy(function(config) { return Promise.resolve(config) }),
+                    buildAddFlowConfig: function() { return {config: [], id: "newId"} },
+                    buildUpdateFlowConfig: function() { return {config: [], label: "l", created: false} },
+                    buildRemoveFlowConfig: function() { return {config: [], flow: {id: "1"}} },
                     addFlow: sinon.spy(function() { order.push("addFlow"); return Promise.resolve("newId") }),
                     updateFlow: sinon.spy(function() { order.push("updateFlow"); return Promise.resolve() }),
                     removeFlow: sinon.spy(function() { order.push("removeFlow"); return Promise.resolve() }),
@@ -919,7 +930,11 @@ describe("runtime-api/flows", function() {
                     getFlowRevision: function(id) { return "flowRev-" + id },
                     setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
                     loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
-                    readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    readStoredFlows: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    loadStoredCredentials: sinon.spy(function(config) { return Promise.resolve(config) }),
+                    buildAddFlowConfig: function() { return {config: [], id: "newId"} },
+                    buildUpdateFlowConfig: function() { return {config: [], label: "l", created: false} },
+                    buildRemoveFlowConfig: function() { return {config: [], flow: {id: "1"}} },
                     addFlow: sinon.spy(function() { return Promise.resolve("newId") }),
                     updateFlow: sinon.spy(function() { return Promise.resolve() }),
                     removeFlow: sinon.spy(function() { return Promise.resolve() })
@@ -1098,13 +1113,18 @@ describe("runtime-api/flows", function() {
                     getFlows: function() { return {rev:"rev-all",flows:[]} },
                     getFlow: sinon.spy(function(id) { return id === "t1" ? {id:"t1",label:"Flow 1",nodes:[]} : null }),
                     getFlowRevision: sinon.spy(function(id) { return revisions[id] || null }),
-                    addFlow: sinon.spy(function(flow) { revisions.added = "rev-added"; return Promise.resolve("added") }),
-                    updateFlow: sinon.spy(function(id, flow, user, deployOpts, opts) {
+                    buildAddFlowConfig: sinon.spy(function(flow) { return {config: [], id: "added"} }),
+                    buildUpdateFlowConfig: sinon.spy(function(id, flow, opts) {
                         if (!revisions[id] && !(opts && opts.create)) {
                             const err = new Error();
                             err.code = 404;
-                            return Promise.reject(err);
+                            throw err;
                         }
+                        return {config: [], label: id, created: !revisions[id]};
+                    }),
+                    buildRemoveFlowConfig: function() { return {config: [], flow: {id: "1"}} },
+                    addFlow: sinon.spy(function(flow) { revisions.added = "rev-added"; return Promise.resolve("added") }),
+                    updateFlow: sinon.spy(function(id, flow, user, deployOpts, opts) {
                         const created = !revisions[id];
                         revisions[id] = "rev-" + id + "-updated";
                         return Promise.resolve({created: created});
@@ -1179,7 +1199,9 @@ describe("runtime-api/flows", function() {
                 const err = await rejected(flows.updateFlow({id:"new1", flow:{nodes:[]}}));
                 err.should.have.property("code","not_found");
                 err.should.have.property("status",404);
-                should.not.exist(runtime.flows.updateFlow.firstCall.args[4]);
+                // Z-06: the build (step 2) got no `create`; updateFlow is not called
+                runtime.flows.buildUpdateFlowConfig.firstCall.args[2].should.not.have.property("create");
+                runtime.flows.updateFlow.called.should.be.false();
             }
         });
         it("a missing flow with a rev returns 404 before the revision check (as in 5.0.7)", async function() {
@@ -1195,13 +1217,14 @@ describe("runtime-api/flows", function() {
         it("deleteFlow of a missing flow with a rev returns 404 before the revision check", async function() {
             for (const deploySettings of [undefined, {requireRevision:true}]) {
                 initRuntime(deploySettings);
-                runtime.flows.removeFlow = sinon.spy(function(id) {
+                // Z-06: reported by the build of the pipeline step 2
+                runtime.flows.buildRemoveFlowConfig = sinon.spy(function(id) {
                     if (id === "global") {
-                        return Promise.reject(new Error("not allowed to remove global"));
+                        throw new Error("not allowed to remove global");
                     }
                     const err = new Error();
                     err.code = 404;
-                    return Promise.reject(err);
+                    throw err;
                 });
                 let err = await rejected(flows.deleteFlow({id:"new1", rev:"rev-x"}));
                 err.should.have.property("code","not_found");
@@ -1366,6 +1389,670 @@ describe("runtime-api/flows", function() {
         });
     });
 
+    describe("a rejected single-flow request does not change the instance state (Z-06, A24, U1)", function() {
+        const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+        const runtimeFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        let load;
+        let saved;
+        let seen;
+        let off;
+        const config = () => [
+            {id: "t1", type: "tab", label: "Flow 1"},
+            {id: "n1", type: "test", z: "t1", wires: []},
+            {id: "t2", type: "tab", label: "Flow 2"},
+            {id: "n2", type: "test", z: "t2", wires: []},
+            {id: "g1", type: "test-config"}
+        ];
+        async function setup(deploySettings) {
+            saved = [];
+            await runtimeFlows.init({
+                log: mockLog(),
+                settings: {},
+                storage: {
+                    getFlows: async () => ({flows: config(), rev: "A"}),
+                    saveFlows: async (conf) => { saved.push(conf); return "B" }
+                }
+            });
+            await runtimeFlows.load();
+            flows.init({log: mockLog(), settings: deploySettings ? {deploy: deploySettings} : {}, flows: runtimeFlows});
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({errors: []});
+            seen = [];
+            off = instanceState.onChange(info => seen.push(info.state));
+        }
+        beforeEach(function() {
+            load = sinon.stub(credentials, "load").callsFake(async function() {});
+        });
+        afterEach(function() {
+            if (off) {
+                off();
+            }
+            instanceState.reset();
+            load.restore();
+        });
+        // [description, call, expected status, expected code]
+        const cases = [
+            ["addFlow 409 (globalRev)", () => flows.addFlow({flow: {nodes: [], globalConfigs: [], globalRev: "old"}}), 409, "version_mismatch"],
+            ["addFlow duplicate_id (a global node with the id of a node of a flow)", () => flows.addFlow({flow: {nodes: [], globalConfigs: [{id: "n1", type: "test-config"}]}}), 400, "duplicate_id"],
+            ["addFlow duplicate id of a node", () => flows.addFlow({flow: {nodes: [{id: "n1", type: "test"}]}}), 400, undefined],
+            ["updateFlow 409 (rev)", () => flows.updateFlow({id: "t1", flow: {nodes: [], rev: "old"}}), 409, "version_mismatch"],
+            ["updateFlow 404", () => flows.updateFlow({id: "nope", flow: {nodes: []}}), 404, "not_found"],
+            ["updateFlow duplicate_id (a node of another flow)", () => flows.updateFlow({id: "t2", flow: {nodes: [{id: "n1", type: "test"}]}}), 400, "duplicate_id"],
+            ["updateFlow invalid_flow_id (putCreatesFlow, the id of a node)", () => flows.updateFlow({id: "n1", flow: {nodes: []}}), 400, "invalid_flow_id", {putCreatesFlow: true}],
+            ["deleteFlow 409 (rev)", () => flows.deleteFlow({id: "t1", rev: "old"}), 409, "version_mismatch"],
+            ["deleteFlow 404", () => flows.deleteFlow({id: "nope"}), 404, "not_found"],
+            ["deleteFlow global 400", () => flows.deleteFlow({id: "global"}), 400, undefined]
+        ];
+        cases.forEach(function(c) {
+            it(c[0] + ": no instance:state event, state unchanged, nothing saved", async function() {
+                await setup(c[4]);
+                const before = instanceState.get();
+                const err = await c[1]().then(() => { throw new Error("not rejected") }, e => e);
+                err.should.have.property("status", c[2]);
+                if (c[3] !== undefined) {
+                    err.should.have.property("code", c[3]);
+                }
+                seen.should.eql([]);
+                instanceState.get().should.eql(before);
+                instanceState.get().state.should.equal("ready");
+                saved.should.have.length(0);
+                NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock").isLocked().should.be.false();
+            });
+        });
+        it("a rejected request does not supersede a pending reload from storage (D19)", async function() {
+            await setup();
+            instanceState.markReloadPending();
+            await flows.deleteFlow({id: "nope"}).should.be.rejected();
+            instanceState.get().state.should.equal("reloadPending");
+        });
+        it("an accepted request still goes through deploying", async function() {
+            await setup();
+            await flows.deleteFlow({id: "t2"});
+            seen[0].should.equal("deploying");
+            saved.should.have.length(1);
+        });
+    });
+
+    describe("reload from the api: the read of storage and of the credentials (Z-06, D15, A32 - guards: pass before and after the change)", function() {
+        const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+        const runtimeFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const events = NR_TEST_UTILS.require("@node-red/util/lib/events");
+        let load;
+        let record;
+        let listener;
+        let log;
+        let storage;
+        const stored = () => ({flows: [{id: "t1", type: "tab", label: "Stored"}], rev: "S", credentials: {n1: {a: 1}}});
+        async function setup(opts) {
+            opts = opts || {};
+            record = [];
+            log = mockLog();
+            storage = {
+                getFlows: async () => {
+                    record.push("getFlows");
+                    if (opts.storageError) {
+                        throw opts.storageError;
+                    }
+                    return stored();
+                },
+                saveFlows: async () => { record.push("saveFlows"); return "X" }
+            };
+            if (opts.projects) {
+                storage.projects = {};
+            }
+            // editorOnly: the flows are loaded and published but never stopped or started
+            await runtimeFlows.init({log: log, settings: {editorOnly: true}, storage: storage});
+            flows.init({log: log, settings: {editorOnly: true}, flows: runtimeFlows});
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({errors: []});
+            listener = function(evt) {
+                if (evt.id === "runtime-state") {
+                    record.push("runtime-state:" + (evt.payload ? (evt.payload.error || evt.payload.type || evt.payload.state) + "/" + (evt.payload.text || "") : "retain") + (evt.retain ? ":retain" : ""));
+                }
+            };
+            events.on("runtime-event", listener);
+        }
+        beforeEach(function() {
+            load = sinon.stub(credentials, "load").callsFake(async function(creds) {
+                record.push("credentials.load:" + JSON.stringify(creds));
+                if (load.failWith) {
+                    throw load.failWith;
+                }
+            });
+        });
+        afterEach(function() {
+            events.removeListener("runtime-event", listener);
+            instanceState.reset();
+            load.restore();
+        });
+        it("success: storage is read, then the credentials are loaded, then the runtime state is published; the configuration is the stored one", async function() {
+            await setup();
+            const result = await flows.setFlows({deploymentType: "reload"});
+            result.should.have.property("rev", "S");
+            record.slice(0, 3).should.eql(["getFlows", 'credentials.load:{"n1":{"a":1}}', "runtime-state:retain:retain"]);
+            runtimeFlows.getFlows().rev.should.equal("S");
+            record.should.not.containEql("saveFlows");
+        });
+        it('deployment type "load" without a hook (the header Node-RED-Deployment-Type: load): the body is ignored, storage is read, then the credentials, then the runtime state; the stored content is active (off_identical guard of #10 R-C1)', async function() {
+            await setup();
+            for (const body of [undefined, {}, {flows: []}, {flows: [{id: "x", type: "tab"}]}]) {
+                record.length = 0;
+                const result = await flows.setFlows({deploymentType: "load", flows: body});
+                result.should.have.property("rev", "S");
+                record.slice(0, 3).should.eql(["getFlows", 'credentials.load:{"n1":{"a":1}}', "runtime-state:retain:retain"]);
+                runtimeFlows.getFlows().flows.should.eql(stored().flows);
+                record.should.not.containEql("saveFlows");
+            }
+        });
+        it("a storage error: the active configuration is dropped, the runtime state warns, the error is passed on, nothing else changes", async function() {
+            await setup({storageError: Object.assign(new Error("disk"), {code: "storage_error"})});
+            // an active configuration exists before the failing reload
+            storage.getFlows = async () => stored();
+            await runtimeFlows.load();
+            runtimeFlows.getFlows().rev.should.equal("S");
+            storage.getFlows = async () => { record.push("getFlows"); throw Object.assign(new Error("disk"), {code: "storage_error"}) };
+            record.length = 0;
+            const err = await flows.setFlows({deploymentType: "reload"}).then(() => { throw new Error("not rejected") }, e => e);
+            err.should.have.property("code", "storage_error");
+            should.not.exist(runtimeFlows.getFlows());
+            record.should.eql(["getFlows", "runtime-state:storage_error/notification.warnings.storage_error:retain"]);
+            log.warn.called.should.be.true();
+            instanceState.get().state.should.equal("ready");
+        });
+        it("credentials_load_failed without projects: the credentials are reset with a warning, the reload goes on", async function() {
+            await setup();
+            load.failWith = Object.assign(new Error("Failed to decrypt credentials"), {code: "credentials_load_failed"});
+            const result = await flows.setFlows({deploymentType: "reload"});
+            result.should.have.property("rev", "S");
+            record.should.containEql("runtime-state:credentials_load_failed/notification.warnings.credentials_load_failed_reset:retain");
+            runtimeFlows.getFlows().rev.should.equal("S");
+        });
+        it("credentials_load_failed with projects: the error is passed on before the state deploying, the active configuration is dropped", async function() {
+            await setup({projects: true});
+            storage.getFlows = async () => stored();
+            await runtimeFlows.load();
+            const seen = [];
+            const off = instanceState.onChange(info => seen.push(info.state));
+            load.failWith = Object.assign(new Error("Failed to decrypt credentials"), {code: "credentials_load_failed"});
+            const err = await flows.setFlows({deploymentType: "reload"}).then(() => { throw new Error("not rejected") }, e => e);
+            off();
+            err.should.have.property("code", "credentials_load_failed");
+            seen.should.eql([]);
+            should.not.exist(runtimeFlows.getFlows());
+            record.should.containEql("runtime-state:credentials_load_failed/notification.warnings.credentials_load_failed:retain");
+        });
+    });
+
+    describe("deploy hooks (Z-06): preDeploy and postDeploy through the runtime api", function() {
+        const { hooks, log: utilLog } = NR_TEST_UTILS.require("@node-red/util");
+        let runtime;
+        let logStubs;
+        let events;
+        function setup(deploySettings) {
+            runtime = {
+                log: mockLog(),
+                settings: { deploy: Object.assign({ hookTimeout: 100 }, deploySettings) },
+                flows: {
+                    getFlows: function() { return {rev: "rev-all", flows: []} },
+                    getFlowRevision: function(id) { return id === "t1" || id === "global" ? "rev-" + id : null },
+                    setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
+                    loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
+                    readStoredFlows: sinon.spy(function() { return Promise.resolve({flows: [{id: "stored", type: "tab", credentials: {a: "secret"}}], rev: "storedRev", credentials: {a: {p: "secret"}}}) }),
+                    loadStoredCredentials: sinon.spy(function(config) { return Promise.resolve(config) }),
+                    buildAddFlowConfig: sinon.spy(function(flow) { flow.id = "new1"; return {config: [{id: "new1", type: "tab"}], id: "new1"} }),
+                    buildUpdateFlowConfig: sinon.spy(function(id, flow, opts) {
+                        if (id !== "t1" && id !== "global" && !(opts && opts.create)) {
+                            const err = new Error();
+                            err.code = 404;
+                            throw err;
+                        }
+                        return {config: [{id: id, type: "tab", credentials: {a: "secret"}, env: [{name: "K", type: "cred", value: "secret"}]}], label: id, created: id !== "t1" && id !== "global"};
+                    }),
+                    buildRemoveFlowConfig: sinon.spy(function(id) { return {config: [], flow: {id: id}} }),
+                    addFlow: sinon.spy(function() { return Promise.resolve("new1") }),
+                    updateFlow: sinon.spy(function() { return Promise.resolve({created: false}) }),
+                    removeFlow: sinon.spy(function() { return Promise.resolve() })
+                }
+            };
+            flows.init(runtime);
+            events = [];
+            hooks.clear();
+            hooks.add("preDeploy.test", function(event) { events.push(event); return runtime.hookBehaviour ? runtime.hookBehaviour(event) : undefined });
+        }
+        const saved = () => ["setFlows", "loadFlows", "addFlow", "updateFlow", "removeFlow"].some(fn => runtime.flows[fn].called);
+        beforeEach(function() {
+            logStubs = [
+                sinon.stub(utilLog, "_").callsFake(k => "[" + k + "]"),
+                sinon.stub(utilLog, "warn"),
+                sinon.stub(utilLog, "error"),
+                sinon.stub(utilLog, "debug")
+            ];
+        });
+        afterEach(function() {
+            logStubs.forEach(s => s.restore());
+            hooks.clear();
+        });
+        async function rejected(promise) {
+            try {
+                await promise;
+            } catch (err) {
+                return err;
+            }
+            throw new Error("not rejected");
+        }
+        const calls = {
+            "setFlows full": () => flows.setFlows({flows: {flows: [{id: "a", type: "tab"}], credentials: {a: {p: "secret"}}}, deploymentType: "full", user: {username: "u", permissions: "*"}, req: {}}),
+            "setFlows nodes": () => flows.setFlows({flows: {flows: [{id: "a", type: "tab"}]}, deploymentType: "nodes", req: {}}),
+            "setFlows flows": () => flows.setFlows({flows: {flows: [{id: "a", type: "tab"}]}, deploymentType: "flows", req: {}}),
+            "setFlows reload": () => flows.setFlows({deploymentType: "reload", req: {}}),
+            "addFlow": () => flows.addFlow({flow: {label: "x", nodes: []}, req: {}}),
+            "updateFlow": () => flows.updateFlow({id: "t1", flow: {nodes: []}, req: {}}),
+            "updateFlow global": () => flows.updateFlow({id: "global", flow: {configs: []}, req: {}}),
+            "updateFlow create": () => flows.updateFlow({id: "new9", flow: {nodes: []}, req: {}}),
+            "deleteFlow": () => flows.deleteFlow({id: "t1", req: {}})
+        };
+
+        it("the event of every operation: type, operation, flowId, created, flows, activeRev (and rev for reload)", async function() {
+            setup({putCreatesFlow: true});
+            for (const name of Object.keys(calls)) {
+                await calls[name]();
+            }
+            events.map(e => e.operation).should.eql(["setFlows", "setFlows", "setFlows", "setFlows", "addFlow", "updateFlow", "updateFlow", "updateFlow", "deleteFlow"]);
+            events.map(e => e.type).should.eql(["full", "nodes", "flows", "reload", "flows", "flows", "flows", "flows", "flows"]);
+            events.forEach(e => { e.source.should.equal("api"); e.activeRev.should.equal("rev-all") });
+            events[0].flows.should.eql([{id: "a", type: "tab"}]);
+            events[0].user.should.eql({username: "u", permissions: "*"});
+            events[3].flows.should.eql([{id: "stored", type: "tab"}]);
+            events[3].rev.should.equal("storedRev");
+            events[4].flowId.should.equal("new1");
+            events[5].flowId.should.equal("t1");
+            events[5].created.should.equal(false);
+            events[6].flowId.should.equal("global");
+            events[7].flowId.should.equal("new9");
+            events[7].created.should.equal(true);
+            events[8].flowId.should.equal("t1");
+            events[8].should.not.have.property("created");
+            // SEC-101 everywhere: no credentials, no env cred value
+            JSON.stringify(events.map(e => e.flows)).should.not.containEql("secret");
+            // created only with putCreatesFlow
+            setup({});
+            await calls["updateFlow"]();
+            events[0].should.not.have.property("created");
+        });
+        Object.keys(calls).forEach(function(name) {
+            it(name + ": a rejection answers 400 deploy_rejected with reason and details, nothing is saved, audited with the reason, no warning with a stack", async function() {
+                setup({putCreatesFlow: true});
+                runtime.hookBehaviour = () => { throw Object.assign(new Error("forbidden node: x"), {status: 400, code: "forbidden_node", details: {nodes: ["n1"]}, remote: "r", rev: "R", stack: "S"}) };
+                const err = await rejected(calls[name]());
+                err.should.have.property("code", "deploy_rejected");
+                err.should.have.property("status", 400);
+                err.should.have.property("message", "forbidden node: x");
+                err.should.have.property("reason", "forbidden_node");
+                err.details.should.eql({nodes: ["n1"]});
+                err.should.not.have.property("remote");
+                err.should.not.have.property("rev");
+                saved().should.be.false();
+                const audit = runtime.log.audit.getCalls().map(c => c.args[0]).filter(a => a.error === "deploy_rejected");
+                audit.should.have.length(1);
+                audit[0].should.have.property("reason", "forbidden_node");
+                runtime.log.warn.called.should.be.false();
+            });
+            it(name + ": a failure of the validator answers 503 deploy_hook_failed and a timeout 503 deploy_hook_timeout, nothing is saved", async function() {
+                setup({putCreatesFlow: true});
+                runtime.hookBehaviour = () => { throw new TypeError("secret detail") };
+                let err = await rejected(calls[name]());
+                err.should.have.property("code", "deploy_hook_failed");
+                err.should.have.property("status", 503);
+                err.message.should.not.containEql("secret detail");
+                saved().should.be.false();
+                hooks.clear();
+                setup({putCreatesFlow: true});
+                runtime.hookBehaviour = () => new Promise(() => {});
+                err = await rejected(calls[name]());
+                err.should.have.property("code", "deploy_hook_timeout");
+                err.should.have.property("status", 503);
+                saved().should.be.false();
+                const audit = runtime.log.audit.getCalls().map(c => c.args[0]).filter(a => a.error === "deploy_hook_timeout");
+                audit.should.have.length(1);
+                audit[0].should.not.have.property("reason");
+                runtime.log.warn.called.should.be.false();
+            });
+        });
+        it("postDeploy: called once for every operation with the operation, the flow and start.status (stateful active configuration)", async function() {
+            setup({putCreatesFlow: true});
+            // the active configuration is replaced by every deployment, as flows/index.js does
+            let active = {rev: "A", flows: []};
+            let n = 0;
+            runtime.flows.getFlows = () => active;
+            ["setFlows", "loadFlows", "addFlow", "updateFlow", "removeFlow"].forEach(function(fn) {
+                const original = runtime.flows[fn];
+                runtime.flows[fn] = sinon.spy(function() { active = {rev: "R" + (++n), flows: []}; return original.apply(this, arguments) });
+            });
+            const posts = [];
+            hooks.add("postDeploy.test", function(event) { posts.push(event) });
+            for (const name of Object.keys(calls)) {
+                await calls[name]();
+            }
+            await new Promise(r => setImmediate(r));
+            await new Promise(r => setImmediate(r));
+            posts.map(p => p.operation).should.eql(["setFlows", "setFlows", "setFlows", "setFlows", "addFlow", "updateFlow", "updateFlow", "updateFlow", "deleteFlow"]);
+            posts.map(p => p.rev).should.eql(["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"]);
+            posts.map(p => p.flowId).should.eql([null, null, null, null, "new1", "t1", "global", "new9", "t1"]);
+            posts.forEach(p => { p.source.should.equal("api"); p.start.should.eql({status: "not_started"}) });
+            posts[3].type.should.equal("reload");
+            posts[3].reloadType.should.equal("full");
+        });
+        it("postDeploy: with deploy.response started the status is started only when the start is registered; an error of the start is start_failed", async function() {
+            setup({response: "started"});
+            let active = {rev: "A", flows: []};
+            runtime.flows.getFlows = () => active;
+            runtime.flows.setFlows = sinon.spy(function() {
+                active = {rev: "B", flows: []};
+                return Promise.reject(Object.assign(new Error("Deployment saved, but the flows did not start"), {code: "deploy_start_failed", status: 500, rev: "B", errors: [{code: "missing_types", message: "m"}]}));
+            });
+            const posts = [];
+            hooks.add("postDeploy.test", function(event) { posts.push(event) });
+            const err = await rejected(calls["setFlows full"]());
+            err.should.have.property("code", "deploy_start_failed");
+            err.should.have.property("status", 500);
+            await new Promise(r => setImmediate(r));
+            posts.should.have.length(1);
+            posts[0].start.should.eql({status: "start_failed", errors: [{code: "missing_types", message: "m"}]});
+        });
+        it("I8: POST /flows/state (start and stop) calls neither preDeploy nor postDeploy", async function() {
+            setup();
+            runtime.settings.runtimeState = {enabled: true};
+            runtime.settings.set = function() {};
+            runtime.flows.startFlows = sinon.spy(function() { return Promise.resolve({errors: []}) });
+            runtime.flows.stopFlows = sinon.spy(function() { return Promise.resolve() });
+            runtime.flows.state = function() { return "start" };
+            const post = sinon.spy();
+            hooks.add("postDeploy.spy", post);
+            runtime.hookBehaviour = () => false;
+            await flows.setState({state: "start"});
+            await flows.setState({state: "stop"});
+            await new Promise(r => setImmediate(r));
+            await new Promise(r => setImmediate(r));
+            events.should.eql([]);
+            post.called.should.be.false();
+            runtime.flows.startFlows.calledOnce.should.be.true();
+            runtime.flows.stopFlows.calledOnce.should.be.true();
+        });
+        it("I8: the start of the process (flows.load) and a reload from storage (Z-09) call neither hook", async function() {
+            const runtimeFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+            const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+            const load = sinon.stub(credentials, "load").callsFake(async function() {});
+            try {
+                const pre = sinon.spy();
+                const post = sinon.spy();
+                hooks.clear();
+                hooks.add("preDeploy.spy", pre);
+                hooks.add("postDeploy.spy", post);
+                await runtimeFlows.init({
+                    log: mockLog(),
+                    settings: {editorOnly: true},
+                    storage: {getFlows: async () => ({flows: [{id: "t1", type: "tab"}], rev: "A", credentials: {}}), saveFlows: async () => "B"}
+                });
+                await runtimeFlows.load();
+                await runtimeFlows.reloadFromStorage({flows: [{id: "t1", type: "tab"}], rev: "C", credentials: {}}, {type: "full"});
+                await new Promise(r => setImmediate(r));
+                pre.called.should.be.false();
+                post.called.should.be.false();
+            } finally {
+                load.restore();
+            }
+        });
+        it("the deployed configuration of /flows is the client's (I4)", async function() {
+            setup();
+            const body = {flows: [{id: "a", type: "tab", credentials: {x: "secret"}}], credentials: {a: {x: "secret"}}};
+            await flows.setFlows({flows: body, deploymentType: "full", req: {}});
+            runtime.flows.setFlows.firstCall.args[0].should.equal(body.flows);
+            runtime.flows.setFlows.firstCall.args[1].should.equal(body.credentials);
+        });
+        it("a handler registered with RED.hooks.add as a promise hook that rejects with an Error status 400 rejects the same way", async function() {
+            setup();
+            runtime.hookBehaviour = () => Promise.reject(Object.assign(new Error("no"), {status: 400}));
+            const err = await rejected(calls["setFlows full"]());
+            err.should.have.property("code", "deploy_rejected");
+            err.should.have.property("reason", "rejected");
+        });
+        it("an invalid deploy.hookTimeout is warned about at init and the default is used", function() {
+            ["x", 0, -5, Infinity, 2147483648].forEach(function(value) {
+                const log = mockLog();
+                flows.init({log: log, settings: {deploy: {hookTimeout: value}}, flows: {}});
+                log.warn.calledOnce.should.be.true();
+            });
+            const log = mockLog();
+            flows.init({log: log, settings: {deploy: {hookTimeout: 300}}, flows: {}});
+            log.warn.called.should.be.false();
+            flows.init({log: log, settings: {}, flows: {}});
+            log.warn.called.should.be.false();
+            NR_TEST_UTILS.require("@node-red/runtime/lib/flows/deployHooks").getHookTimeout().should.equal(30000);
+        });
+    });
+
+    describe('deployment type "load" with a preDeploy hook: validated on the content of storage (#10 R-C1)', function() {
+        const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+        const runtimeFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const { hooks, log: utilLog } = NR_TEST_UTILS.require("@node-red/util");
+        let load;
+        let logStubs;
+        let stored;
+        let seenByHook;
+        const forbiddenContent = () => ({flows: [{id: "t2", type: "tab", label: "Stored"}, {id: "bad", type: "inject", z: "t2"}], rev: "S", credentials: {fresh: {y: 2}}});
+        async function setup() {
+            const log = mockLog();
+            stored = {flows: [{id: "t1", type: "tab", label: "Active"}], rev: "A", credentials: {}};
+            await runtimeFlows.init({
+                log: log,
+                settings: {editorOnly: true, deploy: {hookTimeout: 100}},
+                storage: {getFlows: async () => stored, saveFlows: async () => "X"}
+            });
+            await runtimeFlows.load();
+            stored = forbiddenContent();
+            flows.init({log: log, settings: {editorOnly: true, deploy: {hookTimeout: 100}}, flows: runtimeFlows});
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({errors: []});
+            seenByHook = [];
+            load.resetHistory();
+            hooks.clear();
+            hooks.add("preDeploy.test", function(event) {
+                seenByHook.push(event);
+                return event.flows.some(n => n.type === "inject") ? false : undefined;
+            });
+        }
+        beforeEach(function() {
+            load = sinon.stub(credentials, "load").callsFake(async function() {});
+            logStubs = [sinon.stub(utilLog, "warn"), sinon.stub(utilLog, "error"), sinon.stub(utilLog, "debug")];
+        });
+        afterEach(function() {
+            hooks.clear();
+            logStubs.forEach(s => s.restore());
+            instanceState.reset();
+            load.restore();
+        });
+        [["{}", {}], ["[]", {flows: []}], ["no body", undefined]].forEach(function(c) {
+            it("a body of " + c[0] + " does not hide the stored content: the hook sees it and rejects, the active configuration stays", async function() {
+                await setup();
+                const err = await flows.setFlows({deploymentType: "load", flows: c[1], req: {}}).then(() => null, e => e);
+                err.should.have.property("code", "deploy_rejected");
+                err.should.have.property("status", 400);
+                seenByHook.should.have.length(1);
+                seenByHook[0].type.should.equal("load");
+                seenByHook[0].rev.should.equal("S");
+                seenByHook[0].flows.map(n => n.id).should.eql(["t2", "bad"]);
+                runtimeFlows.getFlows().rev.should.equal("A");
+                load.called.should.be.false();
+            });
+        });
+        it("the same content is rejected for reload too (parity with the repro of the review)", async function() {
+            await setup();
+            const err = await flows.setFlows({deploymentType: "reload", req: {}}).then(() => null, e => e);
+            err.should.have.property("code", "deploy_rejected");
+            runtimeFlows.getFlows().rev.should.equal("A");
+        });
+        it("accepted content: the content that the hook saw is the one that becomes active; the credentials are loaded after the hook", async function() {
+            await setup();
+            stored = {flows: [{id: "t3", type: "tab", label: "Fine"}], rev: "S2", credentials: {fresh: {y: 2}}};
+            const result = await flows.setFlows({deploymentType: "load", flows: {}, req: {}});
+            result.should.have.property("rev", "S2");
+            seenByHook.should.have.length(1);
+            seenByHook[0].flows.should.eql([{id: "t3", type: "tab", label: "Fine"}]);
+            runtimeFlows.getFlows().should.eql({flows: [{id: "t3", type: "tab", label: "Fine"}], rev: "S2"});
+            load.calledOnce.should.be.true();
+            load.firstCall.args[0].should.eql({fresh: {y: 2}});
+        });
+        it("storage that changes while the hook runs is not read again: what the hook checked is deployed", async function() {
+            await setup();
+            stored = {flows: [{id: "t3", type: "tab", label: "Checked"}], rev: "S3", credentials: {}};
+            hooks.clear();
+            hooks.add("preDeploy.test", async function(event) {
+                seenByHook.push(event);
+                stored = forbiddenContent();
+                await new Promise(r => setTimeout(r, 10));
+            });
+            const result = await flows.setFlows({deploymentType: "load", flows: {}, req: {}});
+            result.should.have.property("rev", "S3");
+            runtimeFlows.getFlows().flows.should.eql([{id: "t3", type: "tab", label: "Checked"}]);
+        });
+        it("another type with a body (full, nodes, flows, an unknown value) is validated on the body that is deployed", async function() {
+            await setup();
+            const saved = [];
+            const storage = {getFlows: async () => stored, saveFlows: async (conf) => { saved.push(conf.flows); return "X" }};
+            await runtimeFlows.init({log: mockLog(), settings: {editorOnly: true, deploy: {hookTimeout: 100}}, storage: storage});
+            flows.init({log: mockLog(), settings: {editorOnly: true, deploy: {hookTimeout: 100}}, flows: runtimeFlows});
+            for (const type of ["full", "nodes", "flows", "foo"]) {
+                seenByHook.length = 0;
+                const body = [{id: "tb", type: "tab", label: type}];
+                await flows.setFlows({deploymentType: type, flows: {flows: body}, req: {}});
+                seenByHook.should.have.length(1);
+                seenByHook[0].flows.should.eql(body);
+                saved[saved.length - 1].should.eql(body);
+            }
+        });
+    });
+
+    describe("a reload rejected by the preDeploy hook changes nothing (Z-06, I12, D15, D26)", function() {
+        const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+        const runtimeFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const events = NR_TEST_UTILS.require("@node-red/util/lib/events");
+        const { hooks, log: utilLog } = NR_TEST_UTILS.require("@node-red/util");
+        let runtimeEvents;
+        let listener;
+        let stored;
+        let logStubs;
+        let accept;
+        async function setup(options) {
+            options = options || {};
+            const log = mockLog();
+            credentials.init({ log: log, settings: { get: () => false } });
+            await credentials.load({ old: { x: 1 } });
+            stored = { flows: [{ id: "t2", type: "tab", label: "Stored" }], rev: "S", credentials: { fresh: { y: 2 } } };
+            await runtimeFlows.init({
+                log: log,
+                settings: { editorOnly: true, deploy: { hookTimeout: 100 } },
+                storage: Object.assign({
+                    getFlows: async () => stored,
+                    saveFlows: async () => "X"
+                }, options.projects ? { projects: {} } : {})
+            });
+            // the running configuration, with its credentials loaded as at the start of the process
+            const initial = stored;
+            stored = { flows: [{ id: "t1", type: "tab", label: "Active" }], rev: "A", credentials: { old: { x: 1 } } };
+            await runtimeFlows.load();
+            stored = initial;
+            flows.init({ log: log, settings: { editorOnly: true, deploy: { hookTimeout: 100 } }, flows: runtimeFlows });
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({ errors: [] });
+            runtimeEvents = [];
+            listener = function(evt) { if (evt.id === "runtime-state") { runtimeEvents.push(evt) } };
+            events.on("runtime-event", listener);
+            runtimeEvents.length = 0;
+        }
+        beforeEach(function() {
+            accept = false;
+            logStubs = [sinon.stub(utilLog, "warn"), sinon.stub(utilLog, "error"), sinon.stub(utilLog, "debug")];
+            hooks.add("preDeploy.test", function(event) { return accept ? undefined : false });
+        });
+        afterEach(function() {
+            events.removeListener("runtime-event", listener);
+            hooks.clear();
+            logStubs.forEach(s => s.restore());
+            instanceState.reset();
+        });
+        it("the credentials of the instance, the runtime state, the active configuration and the instance state stay as they were", async function() {
+            await setup();
+            const loadSpy = sinon.spy(credentials, "load");
+            try {
+                const seen = [];
+                const off = instanceState.onChange(info => seen.push(info.state));
+                const before = await credentials.export();
+                const err = await flows.setFlows({ deploymentType: "reload", req: {} }).then(() => null, e => e);
+                off();
+                err.should.have.property("code", "deploy_rejected");
+                loadSpy.called.should.be.false();
+                (await credentials.export()).should.eql(before);
+                (await credentials.export()).should.eql({ old: { x: 1 } });
+                runtimeEvents.should.eql([]);
+                seen.should.eql([]);
+                runtimeFlows.getFlows().rev.should.equal("A");
+            } finally {
+                loadSpy.restore();
+            }
+        });
+        it("an accepted reload loads the credentials and publishes the runtime state (after the hook)", async function() {
+            await setup();
+            accept = true;
+            const result = await flows.setFlows({ deploymentType: "reload", req: {} });
+            result.should.have.property("rev", "S");
+            (await credentials.export()).should.eql({ fresh: { y: 2 } });
+            runtimeEvents.some(e => e.retain === true && e.payload === undefined).should.be.true();
+            runtimeFlows.getFlows().rev.should.equal("S");
+        });
+        it("D26: with projects a credentials_load_failed comes after the hook; a rejection by the hook hides it", async function() {
+            await setup({ projects: true });
+            const load = sinon.stub(credentials, "load").callsFake(async function() {
+                throw Object.assign(new Error("Failed to decrypt credentials"), { code: "credentials_load_failed" });
+            });
+            try {
+                const err = await flows.setFlows({ deploymentType: "reload", req: {} }).then(() => null, e => e);
+                err.should.have.property("code", "deploy_rejected");
+                load.called.should.be.false();
+                runtimeEvents.should.eql([]);
+                runtimeFlows.getFlows().rev.should.equal("A");
+                // accepted: the error of the credentials comes (before deploying), as before
+                accept = true;
+                const second = await flows.setFlows({ deploymentType: "reload", req: {} }).then(() => null, e => e);
+                second.should.have.property("code", "credentials_load_failed");
+                load.calledOnce.should.be.true();
+            } finally {
+                load.restore();
+            }
+        });
+        it("a failed read of storage comes before the hook: the hook is not called", async function() {
+            await setup();
+            let called = false;
+            hooks.clear();
+            hooks.add("preDeploy.test", function() { called = true });
+            const getFlows = sinon.stub(runtimeFlows, "readStoredFlows").callsFake(async function() { throw Object.assign(new Error("disk"), { code: "storage_error" }) });
+            try {
+                const err = await flows.setFlows({ deploymentType: "reload", req: {} }).then(() => null, e => e);
+                err.should.have.property("code", "storage_error");
+                called.should.be.false();
+            } finally {
+                getFlows.restore();
+            }
+        });
+    });
+
     describe("requireRevision (Z-05)", function() {
         let runtime;
         let revisions;
@@ -1379,14 +2066,20 @@ describe("runtime-api/flows", function() {
                     getFlowRevision: function(id) { return revisions[id] || null },
                     setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
                     loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
-                    readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
-                    addFlow: sinon.spy(function() { return Promise.resolve("added") }),
-                    updateFlow: sinon.spy(function(id, flow, user, deployOpts, opts) {
+                    readStoredFlows: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    loadStoredCredentials: sinon.spy(function(config) { return Promise.resolve(config) }),
+                    buildAddFlowConfig: function() { return {config: [], id: "added"} },
+                    buildUpdateFlowConfig: sinon.spy(function(id, flow, opts) {
                         if (!revisions[id] && !(opts && opts.create)) {
                             const err = new Error();
                             err.code = 404;
-                            return Promise.reject(err);
+                            throw err;
                         }
+                        return {config: [], label: id, created: !revisions[id]};
+                    }),
+                    buildRemoveFlowConfig: function() { return {config: [], flow: {id: "1"}} },
+                    addFlow: sinon.spy(function() { return Promise.resolve("added") }),
+                    updateFlow: sinon.spy(function(id, flow, user, deployOpts, opts) {
                         return Promise.resolve({created: !revisions[id]});
                     }),
                     removeFlow: sinon.spy(function() { return Promise.resolve() })

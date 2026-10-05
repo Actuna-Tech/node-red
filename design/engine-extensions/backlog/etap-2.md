@@ -563,7 +563,7 @@ Funkcja: Wymóg rewizji przy wdrożeniu
 
 ### Z-06 – Hooki wdrożenia `preDeploy` / `postDeploy` w `RED.hooks`
 
-> **Odłożone (2026-10-03, decyzja budżetowa).** Poza F3; kotwice kroków 3 i 11 w `flows/pipeline.js` (E-01) pozostają bez zmian.
+> **Zrealizowane (zgłoszenie #10, 2026-10-05) – różnice względem tej karty: R-50** (kody 400 `deploy_rejected` z `reason`, 503 `deploy_hook_failed`, 503 `deploy_hook_timeout`; rejestracja tylko przez `RED.hooks.add`, bez ustawienia `hooks`; `postDeploy` także dla przeładowania z magazynu; krok 3a; `/flow` przygotowuje konfigurację w kroku 2). Poniżej treść z czasu odłożenia (2026-10-03, decyzja budżetowa).
 
 | Pole | Wartość |
 |---|---|

@@ -105,7 +105,7 @@ Stan gałęzi `claude/loving-fermat-ftfo9h` przed scaleniem do `main` i startem 
   (`telemetry.locked`, także w edytorze).
 - Priorytet 2 – API: E-01 (wspólna blokada wdrożeń, projekty), P-01 (`deploy.response`, `deploy.startTimeout`,
   R-45), P-02 (`editorTheme.deploy.staleFlows`), Z-04 (API pojedynczego flow, rewizje v2, R-46), Z-05
-  (`deploy.requireRevision`). Z-06 odłożone.
+  (`deploy.requireRevision`). Z-06 odłożone w F3; **zrealizowane w zgłoszeniu #10 (2026-10-05, R-50)**.
 - Proces: nagłówki D-19 + `MODIFICATIONS.md`, rejestr decyzji R-01…R-46.
 
 **Weryfikacja (HEAD `0dc5cf5`):** build i lint czyste, `verify-deps` OK; testy jednostkowe 1790 ✔ / 30 pominiętych /
@@ -123,7 +123,7 @@ Stan: z 250 jednostek pozostało 90 (z F3 w toku). Szacunki względne (kalibracj
 zapas 5% całego budżetu ≈ 12,5. F3 ≈ 33 (bez Z-06) → **na F4/F5 ≈ 44**. Pełny pozostały zakres (~190) się nie mieści.
 
 **Decyzje (Zamawiający, 2026-10-03):**
-- Z-06 (hooki `preDeploy`/`postDeploy`) – **odłożone** poza F3.
+- Z-06 (hooki `preDeploy`/`postDeploy`) – **odłożone** poza F3; zrealizowane później w zgłoszeniu #10 (R-50).
 - `main` = zakończony etap F3 (kamień milowy). **F4/F5 prowadzone w osobnej gałęzi** (`feature/p3-database`, od `main`
   po kamieniu milowym F3); scalenie do `main` dopiero po akceptacji.
 - Zakres priorytetu 3 w budżecie (zaakceptowany): **A** (E-02, Z-08, Z-09 z `watchFlows` dla magazynu plikowego na
