@@ -13,7 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
-
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #61: test of an onSend hook handler that rejects without a value
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require('sinon');
@@ -1233,6 +1237,60 @@ describe('Flow', function() {
             it("preDeliver",   function(done) { testHook("preDeliver", done) })
             // postDeliver happens after delivery is scheduled so cannot stop it
             // it("postDeliver", function(done) { testHook("postDeliver", done) })
+        })
+    })
+
+    describe("a hook handler that rejects without a value (#61)", function() {
+        var flow;
+        var n1,n2;
+        var messageReceived = false;
+        var errorReceived = null;
+        var onSendCalls = 0;
+        before(async function() {
+            // rejects on the first call only: with the defect the second call shows up in the count
+            // instead of an endless loop
+            hooks.add("onSend", function(sendEvents) {
+                onSendCalls++;
+                return onSendCalls === 1 ? Promise.reject(undefined) : Promise.resolve();
+            })
+            var config = flowUtils.parseConfig([
+                {id:"t1",type:"tab"},
+                {id:"1",x:10,y:10,z:"t1",type:"test",foo:"a",wires:["2"]},
+                {id:"2",x:10,y:10,z:"t1",type:"test",foo:"a",wires:["3"]}
+            ]);
+            flow = Flow.create({},config,config.flows["t1"]);
+            await flow.start();
+            n1 = flow.getNode('1');
+            n2 = flow.getNode('2');
+            n2.receive = function(msg) {
+                messageReceived = true;
+            }
+            n1.error = function(err) {
+                errorReceived = err;
+            }
+        })
+        after(async function() {
+            hooks.clear();
+            await flow.stop()
+        })
+        it("AC-11: the sending node gets the error and the message is not delivered", function(done) {
+            flow.send([{
+                msg: {payload: "x"},
+                source: { id:"1", node: n1 },
+                destination: { id:"2", node: undefined },
+                cloneMessage: true
+            }])
+            setTimeout(function() {
+                try {
+                    should.exist(errorReceived);
+                    errorReceived.toString().should.containEql("Hook handler rejected without an error: undefined");
+                    messageReceived.should.be.false();
+                    onSendCalls.should.equal(1);
+                    done();
+                } catch(err) {
+                    done(err);
+                }
+            },10)
         })
     })
 

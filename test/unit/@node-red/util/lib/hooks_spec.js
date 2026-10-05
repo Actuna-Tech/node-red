@@ -636,4 +636,356 @@ describe("util/hooks", function() {
             }).catch(done);
         });
     });
+
+    describe("a handler that rejects without a value (#61)", function() {
+        // Every rejecting handler below rejects on its FIRST call only and resolves afterwards.
+        // With the defect present the handler is called a second time, so the assertions fail
+        // instead of the run hanging on an endless microtask loop.
+        const falsyReasons = [
+            ["undefined", undefined, "undefined"],
+            ["null", null, "null"],
+            ["false", false, "false"],
+            ["0", 0, "0"],
+            ["-0", -0, "0"],
+            ["0n", BigInt(0), "0"],
+            ["NaN", NaN, "NaN"],
+            ['""', "", '""']
+        ];
+        const prefix = "Hook handler rejected without an error: ";
+
+        // a one-argument handler that rejects on the first call only
+        function rejectOnce(reason, calls) {
+            return function(payload) {
+                calls.push("A");
+                return calls.length === 1 ? Promise.reject(reason) : Promise.resolve();
+            };
+        }
+        function recordB(calls) {
+            return function(payload) { calls.push("B") };
+        }
+        function outcome(promise) {
+            return promise.then(value => ({ resolved: true, value }), err => ({ resolved: false, err }));
+        }
+        function viaCallback(hookId, payload) {
+            return new Promise(resolve => {
+                const seen = [];
+                hooks.trigger(hookId, payload, function() {
+                    seen.push(Array.prototype.slice.call(arguments));
+                    // let a second (wrong) call of done arrive before the result is read
+                    setImmediate(() => resolve(seen));
+                });
+            });
+        }
+        function assertFalsyError(result, repr) {
+            should(result.resolved).be.false("trigger resolved instead of rejecting");
+            result.err.should.be.an.instanceOf(Error);
+            result.err.message.should.equal(prefix + repr);
+            result.err.should.have.property("hook", "onSend");
+        }
+
+        describe("AC-1: the promise form", function() {
+            falsyReasons.forEach(function([name, reason, repr]) {
+                it("AC-1: a handler that rejects with " + name + " ends the chain with an error and is called once", async function() {
+                    const calls = [];
+                    hooks.add("onSend.A", rejectOnce(reason, calls));
+                    hooks.add("onSend.B", recordB(calls));
+                    const result = await outcome(hooks.trigger("onSend", {}));
+                    calls.should.eql(["A"]);
+                    assertFalsyError(result, repr);
+                });
+            });
+            it("AC-1: an async handler that throws undefined ends the chain with an error and is called once", async function() {
+                const calls = [];
+                // one declared parameter: a handler of arity 0 would be taken for a callback handler
+                hooks.add("onSend.A", async function(payload) {
+                    calls.push("A");
+                    if (calls.length === 1) { throw undefined }
+                });
+                hooks.add("onSend.B", recordB(calls));
+                const result = await outcome(hooks.trigger("onSend", {}));
+                calls.should.eql(["A"]);
+                assertFalsyError(result, "undefined");
+            });
+            it("AC-1: a handler that rejects without an argument (Promise.reject()) ends the chain with an error", async function() {
+                const calls = [];
+                hooks.add("onSend.A", function(payload) {
+                    calls.push("A");
+                    return calls.length === 1 ? Promise.reject() : Promise.resolve();
+                });
+                hooks.add("onSend.B", recordB(calls));
+                const result = await outcome(hooks.trigger("onSend", {}));
+                calls.should.eql(["A"]);
+                assertFalsyError(result, "undefined");
+            });
+            it("AC-1: a falsy rejection of the second handler ends the chain, the first handler runs once", async function() {
+                const calls = [];
+                hooks.add("onSend.first", function(payload) { calls.push("first"); return Promise.resolve() });
+                hooks.add("onSend.A", rejectOnce(null, calls));
+                hooks.add("onSend.B", recordB(calls));
+                const result = await outcome(hooks.trigger("onSend", {}));
+                calls.should.eql(["first", "A"]);
+                assertFalsyError(result, "null");
+            });
+        });
+
+        describe("AC-2: the callback form", function() {
+            falsyReasons.forEach(function([name, reason, repr]) {
+                it("AC-2: done is called once with an error when a handler rejects with " + name, async function() {
+                    const calls = [];
+                    hooks.add("onSend.A", rejectOnce(reason, calls));
+                    hooks.add("onSend.B", recordB(calls));
+                    const seen = await viaCallback("onSend", {});
+                    seen.should.have.length(1);
+                    seen[0].should.have.length(1);
+                    should(seen[0][0]).be.an.instanceOf(Error);
+                    seen[0][0].message.should.equal(prefix + repr);
+                    calls.should.eql(["A"]);
+                });
+            });
+        });
+
+        describe("AC-3: truthy rejections are unchanged (regression)", function() {
+            it("AC-3: an Error is the same object with hook set in the promise form, B is not called", async function() {
+                const calls = [];
+                const boom = new Error("boom");
+                hooks.add("onSend.A", function(payload) { calls.push("A"); return Promise.reject(boom) });
+                hooks.add("onSend.B", recordB(calls));
+                const result = await outcome(hooks.trigger("onSend", {}));
+                should(result.resolved).be.false();
+                result.err.should.equal(boom);
+                result.err.should.have.property("hook", "onSend");
+                calls.should.eql(["A"]);
+            });
+            it("AC-3: an Error is the same reference in the callback form, B is not called", async function() {
+                const calls = [];
+                const boom = new Error("boom");
+                hooks.add("onSend.A", function(payload) { calls.push("A"); return Promise.reject(boom) });
+                hooks.add("onSend.B", recordB(calls));
+                const seen = await viaCallback("onSend", {});
+                seen.should.have.length(1);
+                seen[0][0].should.equal(boom);
+                calls.should.eql(["A"]);
+            });
+            it("AC-3: a string becomes an Error with that message and hook set in the promise form", async function() {
+                const calls = [];
+                hooks.add("onSend.A", function(payload) { calls.push("A"); return Promise.reject("boom") });
+                hooks.add("onSend.B", recordB(calls));
+                const result = await outcome(hooks.trigger("onSend", {}));
+                should(result.resolved).be.false();
+                result.err.should.be.an.instanceOf(Error);
+                result.err.message.should.equal("boom");
+                result.err.should.have.property("hook", "onSend");
+                calls.should.eql(["A"]);
+            });
+            it("AC-3: a string reaches done unchanged in the callback form", async function() {
+                const calls = [];
+                hooks.add("onSend.A", function(payload) { calls.push("A"); return Promise.reject("boom") });
+                hooks.add("onSend.B", recordB(calls));
+                const seen = await viaCallback("onSend", {});
+                seen.should.have.length(1);
+                seen[0][0].should.equal("boom");
+                calls.should.eql(["A"]);
+            });
+            it("AC-3: an object reaches done as the same reference in the callback form", async function() {
+                const calls = [];
+                const reason = { code: "x" };
+                hooks.add("onSend.A", function(payload) { calls.push("A"); return Promise.reject(reason) });
+                hooks.add("onSend.B", recordB(calls));
+                const seen = await viaCallback("onSend", {});
+                seen.should.have.length(1);
+                seen[0][0].should.equal(reason);
+                calls.should.eql(["A"]);
+            });
+            it("AC-3: a truthy non-Error object is wrapped in an Error with hook set in the promise form", async function() {
+                const calls = [];
+                hooks.add("onSend.A", function(payload) { calls.push("A"); return Promise.reject({ code: "x" }) });
+                hooks.add("onSend.B", recordB(calls));
+                const result = await outcome(hooks.trigger("onSend", {}));
+                should(result.resolved).be.false();
+                result.err.should.be.an.instanceOf(Error);
+                result.err.message.should.equal("[object Object]");
+                result.err.should.have.property("hook", "onSend");
+                calls.should.eql(["A"]);
+            });
+        });
+
+        describe("AC-4: a custom thenable", function() {
+            function thenableOnce(calls) {
+                return function(payload) {
+                    calls.push("A");
+                    const first = calls.length === 1;
+                    return { then: function(resolve, reject) { first ? reject(undefined) : resolve() } };
+                };
+            }
+            it("AC-4: a thenable that rejects with undefined ends the chain with an error in the promise form", async function() {
+                const calls = [];
+                hooks.add("onSend.A", thenableOnce(calls));
+                hooks.add("onSend.B", recordB(calls));
+                const result = await outcome(hooks.trigger("onSend", {}));
+                calls.should.eql(["A"]);
+                assertFalsyError(result, "undefined");
+            });
+            it("AC-4: a thenable that rejects with undefined ends the chain with an error in the callback form", async function() {
+                const calls = [];
+                hooks.add("onSend.A", thenableOnce(calls));
+                hooks.add("onSend.B", recordB(calls));
+                const seen = await viaCallback("onSend", {});
+                seen.should.have.length(1);
+                should(seen[0][0]).be.an.instanceOf(Error);
+                seen[0][0].message.should.equal(prefix + "undefined");
+                calls.should.eql(["A"]);
+            });
+        });
+
+        describe("AC-5: a handler removed while its promise is pending", function() {
+            it("AC-5: a falsy rejection after the removal ends the chain with an error, B is not called", async function() {
+                const calls = [];
+                let rejectA;
+                hooks.add("onSend.A", function(payload) {
+                    calls.push("A");
+                    return new Promise((resolve, reject) => { rejectA = reject });
+                });
+                hooks.add("onSend.B", recordB(calls));
+                const pending = outcome(hooks.trigger("onSend", {}));
+                calls.should.eql(["A"]);
+                hooks.remove("onSend.A");
+                rejectA(undefined);
+                const result = await pending;
+                calls.should.eql(["A"]);
+                assertFalsyError(result, "undefined");
+            });
+            it("AC-5: the same in the callback form", async function() {
+                const calls = [];
+                let rejectA;
+                hooks.add("onSend.A", function(payload) {
+                    calls.push("A");
+                    return new Promise((resolve, reject) => { rejectA = reject });
+                });
+                hooks.add("onSend.B", recordB(calls));
+                const pending = viaCallback("onSend", {});
+                hooks.remove("onSend.A");
+                rejectA(undefined);
+                const seen = await pending;
+                seen.should.have.length(1);
+                should(seen[0][0]).be.an.instanceOf(Error);
+                seen[0][0].message.should.equal(prefix + "undefined");
+                calls.should.eql(["A"]);
+            });
+        });
+
+        describe("AC-6: paths other than a falsy rejection are unchanged (regression)", function() {
+            const cases = [
+                {
+                    name: "a two-argument handler calling done(undefined) moves on to the next handler",
+                    handler: function(payload, done) { done(undefined) },
+                    order: ["B"], resolved: true, value: undefined
+                },
+                {
+                    name: "a two-argument handler calling done(false) resolves false and halts",
+                    handler: function(payload, done) { done(false) },
+                    order: [], resolved: true, value: false
+                },
+                {
+                    name: "a two-argument handler calling done(null) rejects with Error(\"null\")",
+                    handler: function(payload, done) { done(null) },
+                    order: [], resolved: false, message: "null"
+                },
+                {
+                    name: "a two-argument handler calling done(Error) rejects with that Error",
+                    handler: function(payload, done) { done(new Error("x")) },
+                    order: [], resolved: false, message: "x"
+                },
+                {
+                    name: "a one-argument handler returning false resolves false and halts",
+                    handler: function(payload) { return false },
+                    order: [], resolved: true, value: false
+                },
+                {
+                    name: "a one-argument handler throwing an Error synchronously rejects with that Error",
+                    handler: function(payload) { throw new Error("x") },
+                    order: [], resolved: false, message: "x"
+                }
+            ];
+            cases.forEach(function(c) {
+                it("AC-6: " + c.name + " (promise form)", async function() {
+                    const calls = [];
+                    hooks.add("onSend.A", c.handler);
+                    hooks.add("onSend.B", recordB(calls));
+                    const result = await outcome(hooks.trigger("onSend", {}));
+                    result.resolved.should.equal(c.resolved);
+                    if (c.resolved) {
+                        should(result.value).equal(c.value);
+                    } else {
+                        result.err.should.be.an.instanceOf(Error);
+                        result.err.message.should.equal(c.message);
+                        result.err.should.have.property("hook", "onSend");
+                    }
+                    calls.should.eql(c.order);
+                });
+                it("AC-6: " + c.name + " (callback form)", async function() {
+                    const calls = [];
+                    hooks.add("onSend.A", c.handler);
+                    hooks.add("onSend.B", recordB(calls));
+                    const seen = await viaCallback("onSend", {});
+                    seen.should.have.length(1);
+                    if (c.resolved) {
+                        should(seen[0][0]).equal(c.value);
+                    } else if (c.message === "null") {
+                        should(seen[0][0]).equal(null);
+                    } else {
+                        seen[0][0].should.be.an.instanceOf(Error);
+                        seen[0][0].message.should.equal(c.message);
+                    }
+                    calls.should.eql(c.order);
+                });
+            });
+        });
+
+        describe("AC-7: no handler and resolving handlers are unchanged (regression)", function() {
+            it("AC-7: with no handler the promise form resolves with undefined", async function() {
+                const result = await outcome(hooks.trigger("onSend", {}));
+                result.resolved.should.be.true();
+                should(result.value).equal(undefined);
+            });
+            it("AC-7: with no handler the callback form calls done once without arguments", async function() {
+                const seen = await viaCallback("onSend", {});
+                seen.should.have.length(1);
+                seen[0].should.have.length(0);
+            });
+            it("AC-7: handlers that resolve run in order and the promise form resolves with undefined", async function() {
+                const calls = [];
+                hooks.add("onSend.A", function(payload) { calls.push("A") });
+                hooks.add("onSend.B", function(payload) { calls.push("B"); return Promise.resolve() });
+                hooks.add("onSend.C", function(payload, done) { calls.push("C"); done() });
+                const result = await outcome(hooks.trigger("onSend", {}));
+                result.resolved.should.be.true();
+                should(result.value).equal(undefined);
+                calls.should.eql(["A", "B", "C"]);
+            });
+            it("AC-7: handlers that resolve run in order and the callback form calls done once with undefined", async function() {
+                const calls = [];
+                hooks.add("onSend.A", function(payload) { calls.push("A") });
+                hooks.add("onSend.B", function(payload) { calls.push("B"); return Promise.resolve() });
+                hooks.add("onSend.C", function(payload, done) { calls.push("C"); done() });
+                const seen = await viaCallback("onSend", {});
+                seen.should.have.length(1);
+                should(seen[0][0]).equal(undefined);
+                calls.should.eql(["A", "B", "C"]);
+            });
+        });
+
+        describe("AC-10: the event loop is not starved", function() {
+            it("AC-10: a timer scheduled before trigger runs after a handler rejected with null, the handler is called once", async function() {
+                const calls = [];
+                let timerRan = false;
+                const timer = new Promise(resolve => setTimeout(() => { timerRan = true; resolve() }, 10));
+                hooks.add("onSend.A", rejectOnce(null, calls));
+                const result = await outcome(hooks.trigger("onSend", {}));
+                await timer;
+                timerRan.should.be.true();
+                calls.should.eql(["A"]);
+                assertFalsyError(result, "null");
+            });
+        });
+    });
 });
