@@ -174,7 +174,7 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   (`env` typu `str`, adresy z `user:pass@`, kod `function`) – nie wysyłać całych `flows` do usług zewnętrznych, tylko potrzebne pola.
   Handlery wykonują się po kolei, pod blokadą wdrożeń, najwyżej raz na wdrożenie.
 - **Sposób odrzucenia i kody odpowiedzi:**
-  - akceptacja: zwrot wartości innej niż `false` (także w obietnicy) albo `done()`;
+  - akceptacja: zwrot wartości innej niż `false` (także w obietnicy) albo `done()`; **zwrócony (nie rzucony) `Error` też jest akceptacją** – odrzucić można tylko przez `throw`, odrzuconą obietnicę, `done(err)` albo `false`;
   - **400 `deploy_rejected`** `{code, message, reason, details?}` – `false` / `done(false)` albo `Error` ze `status: 400` (rzucony, odrzucona
     obietnica lub `done(err)`): `message` = komunikat błędu, `reason` = jego `code` (litery, cyfry, `_ . : -`, do 64 znaków; inaczej `"rejected"`),
     `details` = jego `details` (zwykły obiekt albo tablica, do 8 KB); **to jedyne odrzucenie zamierzone** – klient nie ponawia bez zmiany treści;
@@ -200,7 +200,9 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   `event`: `{rev, type, source: "api"|"internal"|"storage", operation, flowId, user, reloadType?, start: {status, errors?}, error?, deadline, signal}`;
   `start.status`: `started` · `pending` (także `start_timeout` z `errors`) · `not_started` · `start_failed` · `stop_failed` · `unknown`. W chwili
   wywołania stan instancji to zwykle jeszcze `deploying` – wynik startu podają `instance:state` i `deploy-start-result`. Handler publikujący
-  zmianę innym instancjom **musi pomijać `source === "storage"`**.
+  zmianę innym instancjom **musi pomijać `source === "storage"`**. Na handler `postDeploy` przypada **najwyżej 10 niezakończonych wywołań**: kolejne
+  są pomijane z ostrzeżeniem w logu (`deploy.post-hook-skipped`), dopóki któreś się nie skończy – handler w postaci `(event, done)` **musi wywołać `done`**
+  (bez `done` i bez zwróconej obietnicy wywołanie nigdy się nie kończy, a po 10 wdrożeniach handler przestaje być wołany do restartu).
 - Hooki **nie** są wywoływane przy starcie procesu (wczytanie flow z magazynu), `POST /flows/state` ani przy operacjach Projektów (R-15);
   `preDeploy` nie jest wywoływany także przy przeładowaniu z magazynu (Z-09), `postDeploy` – tak (`source: "storage"`, gdy zapisano).
 - Uprawnienia do typów węzłów (Z-12.08): wdrożenie z dodanym/zmienionym węzłem typu niedozwolonego dla użytkownika

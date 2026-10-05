@@ -495,7 +495,9 @@ Features
    storage. `postDeploy` is called asynchronously after the result, once for every configuration that was saved or
    reloaded (also when the deployment then failed, also for a reload from storage with `source: "storage"`), never for
    one that was not saved, with `start.status` `started | pending | not_started | start_failed | stop_failed | unknown`;
-   it never delays a deployment, an error is only logged. The accessor
+   it never delays a deployment, an error is only logged; at most 10 calls of a handler can be unfinished (the next ones are
+   skipped with a warning), so a handler of the form `(event, done)` must call `done`; a returned (not thrown) Error is an
+   acceptance in `preDeploy`. The accessor
    `hooks.handlers(id)` (non-enumerable, for the runtime) is new; `trigger` and `invokeStack` are unchanged. The hook is not
    a security boundary (a reload from storage, a project switch, the start and code in the process bypass it)
  - New setting `deploy.hookTimeout` (ms, default 30000; a number > 0 and <= 2147483647, otherwise a warning and the
