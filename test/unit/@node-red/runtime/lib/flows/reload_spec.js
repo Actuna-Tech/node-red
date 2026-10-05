@@ -2604,6 +2604,44 @@ describe("flows/reload (Z-09)", function() {
             });
         });
 
+        describe("a falsy value thrown by storage.getFlows (#51)", function() {
+            // A storage plugin may reject with a value that is not an Error. The code of the failure is
+            // decided by where it came from, not by what was thrown: a read of storage is storage_error
+            // in step 2 and in the reread under the lock alike.
+            function expectKeptReady() {
+                state.get().state.should.equal("ready");
+                state.get().reload.should.containEql({ error: { code: "storage_error" }, keepReady: true });
+                readiness().should.eql(READY_WARN);
+            }
+            [["undefined", undefined], ["null", null]].forEach(function(row) {
+                it("step 2 throws " + row[0] + " - storage_error, kept ready", async function() {
+                    env = createEnv({ reload: retry("keepReady", { attempts: 1, min: 5000, max: 5000 }) });
+                    env.storage.getFlows = async function() { throw row[1] };
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => state.get().reload !== undefined || state.get().state === "failed", 2000, "no condition");
+                    expectKeptReady();
+                });
+                it("the reread under the lock throws " + row[0] + " - storage_error, kept ready (as in step 2)", async function() {
+                    env = createEnv({ reload: retry("keepReady", { attempts: 1, min: 5000, max: 5000 }) });
+                    const original = env.storage.getFlows;
+                    env.storage.getFlows = async function(readOpts) {
+                        if (lock.isLocked()) {
+                            throw row[1];
+                        }
+                        return original(readOpts);
+                    };
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => state.get().reload !== undefined || state.get().state === "failed", 2000, "no condition");
+                    await delay(20);
+                    expectKeptReady();
+                });
+            });
+        });
+
         describe("maxStaleTime", function() {
             it("passes: /ready 503, one error log, the event with stale, no more attempts to log it", async function() {
                 fake(retry("keepReady", { attempts: 1, max: 100000, maxStaleTime: 5000 }));
