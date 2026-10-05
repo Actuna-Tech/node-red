@@ -38,9 +38,9 @@
  *   changedFlows (documented); an unusual object of the storage in digest() (SEC-004):
  *   credentials_digest_failed without the message of the cause in the log, the R2 rule
  *   #56 (REV-N01): the tests with the real credentials module drop its state after each test
+ *   (init() resets a migration that was started and not finished by a failed test)
  *   #51: tests of the error code of a failed comparison of the credentials in the reread
  *   under the lock (reload_failed, as in step 2; a read error of storage stays storage_error)
- *   (init() resets a migration that was started and not finished by a failed test)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
