@@ -19,6 +19,8 @@
  *   during a pending migration from the default key to a user key
  *   #43 (SEC-004): digest() of an unusual object (a getter, a Proxy that throws) -
  *   a fixed error credentials_digest_failed without the message of the cause
+ *   Test isolation: the tests of load() with a pending migration finish it (export) after
+ *   each test, so the module flag removeDefaultKey does not leak to other specs of the process
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -726,6 +728,14 @@ describe('red/runtime/nodes/credentials', function() {
                 settingsValues = { _credentialSecret: DEFAULT_KEY, credentialSecret: NEW_USER_KEY };
                 credentials.init(runtime);
                 PLAIN_DIGEST = credentials.digest({"node":{"user1":"abc","password1":"123"}});
+            });
+            afterEach(function() {
+                // A load() with a pending migration sets the module flag removeDefaultKey, which
+                // init() does not reset and only export() clears. Finish the migration here (the
+                // settings stub of this block is still the one of the module), so that the flag
+                // does not leak to the tests that run later in the same process (they would get
+                // "settings.not-available" from the export of a redeploy).
+                return credentials.export();
             });
 
             it("during the migration the credentials still encrypted with the old key have a digest, nothing is changed", function() {

@@ -1,5 +1,10 @@
 #### Unreleased: Instances and reload
 
+ - Tests only (no change under `packages/`): `credentials_spec.js` (block "key selection of load() (a pending
+   migration)") finishes the migration after each test (`export()`). The tests left the module flag
+   `removeDefaultKey` set, `credentials.init()` does not reset it, and in `npm run mocha` (one process) the
+   next redeploy in a node test failed with `settings.not-available` (4 tests: `60-link`, `21-httpin` x2,
+   `70-CSV`). Fixes the test regression that came with Merge #38
  - Documentation only (#43, R4): the `type` field of the `preReload` payload is the **configured** type
    (`deploy.reload.type`), not the actual one, and the contract does not change. The scope of a reload is
    decided by `changedFlows` (`null` = all flows): with `type: "diff"` the reload is a full one when the
