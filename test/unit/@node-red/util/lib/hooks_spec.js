@@ -654,10 +654,13 @@ describe("util/hooks", function() {
         const prefix = "Hook handler rejected without an error: ";
 
         // a one-argument handler that rejects on the first call only
+        // (it counts its own calls: `calls` is shared with other handlers)
         function rejectOnce(reason, calls) {
+            let own = 0;
             return function(payload) {
                 calls.push("A");
-                return calls.length === 1 ? Promise.reject(reason) : Promise.resolve();
+                own++;
+                return own === 1 ? Promise.reject(reason) : Promise.resolve();
             };
         }
         function recordB(calls) {
@@ -696,10 +699,12 @@ describe("util/hooks", function() {
             });
             it("AC-1: an async handler that throws undefined ends the chain with an error and is called once", async function() {
                 const calls = [];
+                let own = 0;
                 // one declared parameter: a handler of arity 0 would be taken for a callback handler
                 hooks.add("onSend.A", async function(payload) {
                     calls.push("A");
-                    if (calls.length === 1) { throw undefined }
+                    own++;
+                    if (own === 1) { throw undefined }
                 });
                 hooks.add("onSend.B", recordB(calls));
                 const result = await outcome(hooks.trigger("onSend", {}));
@@ -708,9 +713,11 @@ describe("util/hooks", function() {
             });
             it("AC-1: a handler that rejects without an argument (Promise.reject()) ends the chain with an error", async function() {
                 const calls = [];
+                let own = 0;
                 hooks.add("onSend.A", function(payload) {
                     calls.push("A");
-                    return calls.length === 1 ? Promise.reject() : Promise.resolve();
+                    own++;
+                    return own === 1 ? Promise.reject() : Promise.resolve();
                 });
                 hooks.add("onSend.B", recordB(calls));
                 const result = await outcome(hooks.trigger("onSend", {}));
@@ -811,9 +818,11 @@ describe("util/hooks", function() {
 
         describe("AC-4: a custom thenable", function() {
             function thenableOnce(calls) {
+                let own = 0;
                 return function(payload) {
                     calls.push("A");
-                    const first = calls.length === 1;
+                    own++;
+                    const first = own === 1;
                     return { then: function(resolve, reject) { first ? reject(undefined) : resolve() } };
                 };
             }
