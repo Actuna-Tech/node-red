@@ -39,6 +39,8 @@
  *   credentials_digest_failed without the message of the cause in the log, the R2 rule
  *   #56 (REV-N01): the tests with the real credentials module drop its state after each test
  *   (init() resets a migration that was started and not finished by a failed test)
+ *   #51: tests of the error code of a failed comparison of the credentials in the reread
+ *   under the lock (reload_failed, as in step 2; a read error of storage stays storage_error)
  *   #61: test of a preReload handler that rejects without a value
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
@@ -662,6 +664,33 @@ describe("flows/reload (Z-09)", function() {
                         await waitFor(() => state.get().state === "failed", 2000, "not failed");
                         state.get().reload.should.containEql({ error: { code: "reload_failed" } });
                         JSON.stringify(env.logs).should.not.containEql(SECRET);
+                    });
+                    // #51 AC-2: the same error of the real digest() in the reread under the lock
+                    // (the object of the storage turns bad after step 2) is not a read error of storage
+                    [
+                        ["a getter that throws", () => throwing()],
+                        ["a Proxy with ownKeys that throws", () => ({ n1: new Proxy({}, { ownKeys() { throw new Error("boom " + SECRET) } }) })]
+                    ].forEach(function(variant) {
+                        it("AC-2 (#51): " + variant[0] + " in the reread under the lock - failed, reload_failed, keepReady false, /ready 503, no secret", async function() {
+                            env = createEnv({ reload: { retry: retry } });
+                            initCredentials(settingsValues);
+                            digestOfActive = credentialsModule.digest({ n1: { user: "abc" } });
+                            useRealDigest(env);
+                            useObjectStorage(env);
+                            // step 2 sees plain credentials; the object turns bad before the reread
+                            hooks.add("preReload", p => { env.stored.credentials = variant[1]() });
+                            await env.start();
+                            env.change("B", { credentials: { n1: { user: "xyz" } } });
+                            env.notify();
+                            await waitFor(() => state.get().state === "failed" || state.get().reload !== undefined, 2000, "no condition");
+                            await delay(20);
+                            state.get().state.should.equal("failed");
+                            state.get().reload.should.containEql({ error: { code: "reload_failed" }, keepReady: false });
+                            health.readiness({ ready: state.isReady(), reload: state.get().reload }, Date.now()).status.should.equal(503);
+                            env.applied.should.have.length(0);
+                            JSON.stringify(env.logs).should.not.containEql(SECRET);
+                            JSON.stringify(state.get()).should.not.containEql(SECRET);
+                        });
                     });
                     it("the same revision, the running credentials have no digest (R2 of #2): not an error, nothing happens", async function() {
                         env = createEnv({ reload: { retry: retry } });
@@ -2370,6 +2399,261 @@ describe("flows/reload (Z-09)", function() {
                 state.get().reload.should.containEql({ error: { code: "credentials_load_failed" }, keepReady: false });
                 readiness().should.eql(READY_503);
                 notifications().should.have.length(0);
+            });
+        });
+
+        describe("the error of the comparison of the credentials in the reread under the lock (#51)", function() {
+            const DIGEST = () => Object.assign(new Error("Failed to compute the credentials digest"), { code: "credentials_digest_failed" });
+            let thrownUnderLock;
+
+            // flows.credentialsChanged throws `error` only while the deploy lock is held: the
+            // reread runs under the lock, step 2 does not. (env.credentialsError would hit step 2 of
+            // every later cycle too, and step 2 already gives reload_failed.)
+            function failCompareUnderLock(error) {
+                const original = env.flows.credentialsChanged;
+                env.flows.credentialsChanged = function(loaded) {
+                    if (lock.isLocked()) {
+                        thrownUnderLock++;
+                        throw error;
+                    }
+                    return original.apply(this, arguments);
+                };
+            }
+            // The second read of a cycle (under the lock) fails with `error`
+            function failRereads(error) {
+                const original = env.storage.getFlows;
+                env.storage.getFlows = async function(readOpts) {
+                    if (lock.isLocked()) {
+                        env.getFlowsCalls++;
+                        throw error;
+                    }
+                    return original(readOpts);
+                };
+            }
+            function attemptsLogged() {
+                return logged("warn", "reload.read-failed").map(m => JSON.parse(m.slice("reload.read-failed ".length)).attempt);
+            }
+            // Waits until the failure of the reread was handled, whatever the outcome
+            async function afterReread() {
+                await waitFor(() => state.get().state === "failed" || thrownUnderLock >= 2, 2000, "the reread never failed");
+                await delay(20);
+            }
+            function stateSequenceUntilFailed() {
+                const seq = stateEvents.map(e => e.state);
+                return seq.slice(0, seq.indexOf("failed") + 1);
+            }
+
+            beforeEach(function() {
+                thrownUnderLock = 0;
+            });
+
+            it("AC-1 (#51): keepReady - credentials_digest_failed in the reread: failed, reload_failed, /ready 503, no keep-ready", async function() {
+                env = createEnv({ reload: retry("keepReady", { attempts: 1 }) });
+                await env.start();
+                env.change("B");
+                failCompareUnderLock(DIGEST());
+                env.notify();
+                await afterReread();
+                thrownUnderLock.should.be.aboveOrEqual(1);
+                state.get().state.should.equal("failed");
+                readiness().should.eql(READY_503);
+                state.get().reload.should.containEql({ error: { code: "reload_failed" }, keepReady: false, rev: "B" });
+                const last = stateEvents[stateEvents.length - 1];
+                last.state.should.equal("failed");
+                last.reload.error.code.should.equal("reload_failed");
+                stateEvents.filter(e => e.reload && e.reload.keepReady === true).should.have.length(0);
+                logged("error", "reload.retries-exhausted").should.have.length(1);
+                logged("error", "reload.keep-ready").should.have.length(0);
+                notifications().filter(e => e.payload !== undefined).should.have.length(0);
+                env.applied.should.have.length(0);
+                env.active.rev.should.equal("A");
+            });
+
+            it("AC-3 (#51): fail - credentials_digest_failed in the reread: unchanged (failed, 503, no condition, the same states as for a plain read error)", async function() {
+                async function run(inject) {
+                    env = createEnv({ reload: retry("fail", { attempts: 1 }) });
+                    await env.start();
+                    env.change("B");
+                    inject();
+                    stateEvents.length = 0;
+                    env.notify();
+                    await afterReread();
+                    state.get().state.should.equal("failed");
+                    readiness().should.eql(READY_503);
+                    state.get().should.not.have.property("reload");
+                    logged("error", "reload.retries-exhausted").should.have.length(1);
+                    return stateSequenceUntilFailed();
+                }
+                const withDigest = await run(() => failCompareUnderLock(DIGEST()));
+                thrownUnderLock.should.be.aboveOrEqual(1);
+                await env.reloader.stop();
+                state.reset();
+                state.markStarting();
+                state.report({ errors: [] });
+                const withReadError = await run(() => failRereads(new Error("x")));
+                withReadError[withReadError.length - 1].should.equal("failed");
+                withDigest.should.eql(withReadError);
+            });
+
+            [
+                ["keepReady", { error: { code: "reload_failed" }, keepReady: false }, READY_503],
+                ["fail", null, READY_503]
+            ].forEach(function(row) {
+                it("AC-4 (#51): " + row[0] + " - credentials_digest_failed in step 2 (regression): the same result as in the reread", async function() {
+                    env = createEnv({ reload: retry(row[0], { attempts: 1 }) });
+                    env.credentialsError = DIGEST();
+                    const hook = sinon.spy();
+                    hooks.add("preReload", hook);
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                    readiness().should.eql(row[2]);
+                    if (row[1]) {
+                        state.get().reload.should.containEql(row[1]);
+                    } else {
+                        state.get().should.not.have.property("reload");
+                    }
+                    logged("error", "reload.retries-exhausted").should.have.length(1);
+                    hook.called.should.be.false();
+                    env.applied.should.have.length(0);
+                });
+            });
+
+            it("AC-5 (#51): a kept-ready instance, the storage is readable again, credentials_digest_failed in the reread: failed, reload_failed, not-kept-ready", async function() {
+                env = createEnv({ reload: retry("keepReady") });
+                await exhaust();
+                state.get().state.should.equal("ready");
+                state.get().reload.keepReady.should.be.true();
+                readiness().should.eql(READY_WARN);
+                failCompareUnderLock(DIGEST());
+                env.failAlways = false;
+                await afterReread();
+                thrownUnderLock.should.be.aboveOrEqual(1);
+                state.get().state.should.equal("failed");
+                state.get().reload.should.containEql({ error: { code: "reload_failed" }, keepReady: false });
+                readiness().should.eql(READY_503);
+                logged("error", "reload.not-kept-ready").should.have.length(1);
+                (notifications().pop().payload === undefined).should.be.true();
+            });
+
+            it("AC-6 (#51): fail - after the retries were exhausted and a local deployment, credentials_digest_failed in the reread starts a new series and fails again", async function() {
+                fake(retry("fail", { min: 1000, max: 1000, attempts: 2 }));
+                env.failAlways = true;
+                await env.start();
+                env.change("B");
+                env.notify();
+                await clock.tickAsync(3000);
+                state.get().state.should.equal("failed");
+                logged("error", "reload.retries-exhausted").should.have.length(1);
+                await pipeline.deploy({ type: "full", source: "api", flows: { flows: flowsOf("D") } });
+                await clock.tickAsync(0);
+                state.get().state.should.equal("ready");
+                env.failAlways = false;
+                env.change("E");
+                failCompareUnderLock(DIGEST());
+                env.notify();
+                await clock.tickAsync(5000);
+                thrownUnderLock.should.be.aboveOrEqual(1);
+                state.get().state.should.equal("failed");
+                logged("error", "reload.retries-exhausted").should.have.length(2);
+                attemptsLogged().should.eql([1, 2, 1, 2]);
+            });
+
+            describe("AC-7 (#51): a read error of storage stays storage_error (regression)", function() {
+                const FROM_STORAGE = () => Object.assign(new Error("x"), { code: "credentials_digest_failed" });
+                function expectKeptReady() {
+                    state.get().state.should.equal("ready");
+                    state.get().reload.should.containEql({ error: { code: "storage_error" }, keepReady: true });
+                    readiness().should.eql(READY_WARN);
+                }
+                it("AC-7a: the reread under the lock fails with a plain error", async function() {
+                    env = createEnv({ reload: retry("keepReady") });
+                    failRereads(new Error("storage unavailable under the lock"));
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => state.get().reload !== undefined, 2000, "no condition");
+                    expectKeptReady();
+                });
+                it("AC-7b: storage.getFlows of the reread throws an error with the code credentials_digest_failed", async function() {
+                    env = createEnv({ reload: retry("keepReady") });
+                    failRereads(FROM_STORAGE());
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => state.get().reload !== undefined, 2000, "no condition");
+                    expectKeptReady();
+                });
+                it("AC-7b: storage.getFlows of step 2 throws an error with the code credentials_digest_failed", async function() {
+                    env = createEnv({ reload: retry("keepReady") });
+                    env.failError = FROM_STORAGE();
+                    await exhaust();
+                    expectKeptReady();
+                });
+            });
+
+            describe("AC-8 (#51): the origin decides, not the code", function() {
+                it("AC-8: keepReady - an error without a code from the comparison in the reread: failed, reload_failed", async function() {
+                    env = createEnv({ reload: retry("keepReady", { attempts: 1 }) });
+                    await env.start();
+                    env.change("B");
+                    failCompareUnderLock(new TypeError("raw"));
+                    env.notify();
+                    await afterReread();
+                    thrownUnderLock.should.be.aboveOrEqual(1);
+                    state.get().state.should.equal("failed");
+                    state.get().reload.should.containEql({ error: { code: "reload_failed" }, keepReady: false });
+                    readiness().should.eql(READY_503);
+                });
+                it("AC-8: the same error without a code in step 2 gives the same (parity)", async function() {
+                    env = createEnv({ reload: retry("keepReady", { attempts: 1 }) });
+                    env.credentialsError = new TypeError("raw");
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => state.get().state === "failed", 2000, "not failed");
+                    state.get().reload.should.containEql({ error: { code: "reload_failed" }, keepReady: false });
+                    readiness().should.eql(READY_503);
+                });
+            });
+        });
+
+        describe("a falsy value thrown by storage.getFlows (#51)", function() {
+            // A storage plugin may reject with a value that is not an Error. The code of the failure is
+            // decided by where it came from, not by what was thrown: a read of storage is storage_error
+            // in step 2 and in the reread under the lock alike.
+            function expectKeptReady() {
+                state.get().state.should.equal("ready");
+                state.get().reload.should.containEql({ error: { code: "storage_error" }, keepReady: true });
+                readiness().should.eql(READY_WARN);
+            }
+            [["undefined", undefined], ["null", null]].forEach(function(row) {
+                it("step 2 throws " + row[0] + " - storage_error, kept ready", async function() {
+                    env = createEnv({ reload: retry("keepReady", { attempts: 1, min: 5000, max: 5000 }) });
+                    env.storage.getFlows = async function() { throw row[1] };
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => state.get().reload !== undefined || state.get().state === "failed", 2000, "no condition");
+                    expectKeptReady();
+                });
+                it("the reread under the lock throws " + row[0] + " - storage_error, kept ready (as in step 2)", async function() {
+                    env = createEnv({ reload: retry("keepReady", { attempts: 1, min: 5000, max: 5000 }) });
+                    const original = env.storage.getFlows;
+                    env.storage.getFlows = async function(readOpts) {
+                        if (lock.isLocked()) {
+                            throw row[1];
+                        }
+                        return original(readOpts);
+                    };
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => state.get().reload !== undefined || state.get().state === "failed", 2000, "no condition");
+                    await delay(20);
+                    expectKeptReady();
+                });
             });
         });
 

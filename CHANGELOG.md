@@ -1,5 +1,12 @@
 #### Unreleased: Instances and reload
 
+ - Fix (#51): an error of the comparison of the credentials in the reread under the deploy lock (for example
+   `credentials_digest_failed`: a getter or a Proxy of a storage plugin object that throws) has the code `reload_failed`,
+   as in step 2 of the cycle, instead of `storage_error`. With `deploy.reload.retry.onExhausted: "keepReady"` the instance
+   no longer stays ready (`/ready` 200 `warn`) - after the retries it is `failed` (`/ready` 503), because `"keepReady"`
+   covers only a read error of storage (R-47). With `"fail"` the same path after a recovery by a local deployment
+   starts a new series (#17). A real read error of storage (`storage.getFlows`) keeps the code `storage_error`,
+   `credentials_load_failed` keeps its code. Only with `deploy.reload.watch: true`. Tests: `reload_spec.js`
  - Fix (#56): `credentials.init()` resets the module flag `removeDefaultKey`. A migration of the credentials to a
    user key that `load()` had started and `export()` had not finished (generated key `_credentialSecret` and
    `credentialSecret` both set) was carried over to the next `init()` in the same process, and the first `export()`
@@ -297,8 +304,7 @@ Security
    `credentials_digest_failed` and a fixed message, so the reload log (`reload.read-failed`) cannot quote
    a secret from the message of the cause. The rule of #2 does not change: a failed digest of the running
    configuration is "no change" only for the same revision with an unknown digest, otherwise the error goes on
-   (as `reload_failed` in the comparison of the cycle, as `storage_error` in the reread under the deploy
-   lock - with `keepReady` the instance then stays ready). A key that does not decrypt still gives `credentials_load_failed`
+   (as `reload_failed` in the comparison of the cycle and in the reread under the deploy lock, #51). A key that does not decrypt still gives `credentials_load_failed`
  - Prevent crash on websocket auth packet when admin auth is disabled
  - Render the username as text in the editor user menu and login notification
  - Do not return `credentialSecret` and the remote URLs with their credentials in `GET /settings`
