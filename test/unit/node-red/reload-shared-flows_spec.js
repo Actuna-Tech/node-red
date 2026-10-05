@@ -407,7 +407,7 @@ module.exports = Object.assign(${JSON.stringify(settings)}, {
         const child = spawn(process.execPath, [RED_JS, "-u", userDir, "-p", String(port)], { stdio: "ignore" });
         children.push(child);
         const inst = { child, base: "http://127.0.0.1:" + port, flowFile, exited: new Promise(resolve => child.on("exit", (code, signal) => resolve({ code, signal, at: Date.now() }))) };
-        await waitFor(async () => (await get(inst.base + "/flows", 2000)).status === 200, 30000, "Node-RED did not start");
+        await waitFor(async () => (await get(inst.base + "/flows", 2000)).status === 200 && (await get(inst.base + "/ping", 2000)).status === 200, 30000, "Node-RED did not start");
         return inst;
     }
 
@@ -417,8 +417,12 @@ module.exports = Object.assign(${JSON.stringify(settings)}, {
         fs.renameSync(inst.flowFile + ".tmp", inst.flowFile);
     }
 
+    // /ping answers at once: the flows are running when it does (the Admin API answers earlier)
     function turnFlows(ms) {
-        return [{ id: "tA", type: "tab", label: "A" }].concat(routeNodes("tA", "/turn", { type: "hold-turn", delay: ms }));
+        return [{ id: "tA", type: "tab", label: "A" }].concat(routeNodes("tA", "/turn", { type: "hold-turn", delay: ms }), [
+            { id: "ping-in", type: "http in", z: "tA", url: "/ping", method: "get", wires: [["ping-out"]] },
+            { id: "ping-out", type: "http response", z: "tA", statusCode: "", wires: [] }
+        ]);
     }
 
     it("full reload, the setting off: the request in progress gets no answer, as before", async function() {
