@@ -442,6 +442,20 @@ Fixes
    (Node 24) and runs every Node version to its own result (`fail-fast: false`); the suite was checked on
    Ubuntu 26.04, which `ubuntu-latest` becomes from 2026-10-19. The release workflow of upstream runs only in
    `node-red/node-red` (#57)
+ - Fix (#61): a hook handler that rejects without a value ends the chain with an error. A handler with one
+   argument whose promise rejected with a falsy value (`Promise.reject()`, `throw undefined` in an `async`
+   function, `null`, `false`, `0`, `-0`, `0n`, `NaN` or `""`) was called again without end in a loop of
+   microtasks, so timers, I/O and HTTP stopped and the process hung (an upstream defect of 5.0.7). Now
+   `RED.hooks.trigger` rejects (promise form) or calls `done` (callback form) once with an `Error` with the message
+   `Hook handler rejected without an error: <value>` (for an empty string the value is `""`, quotes included), the
+   handler is called once and the next handlers are not called; the caller follows its existing error path
+   (`preShutdown` and `preReload` log the error and go on; `onSend`, `preRoute`, `preDeliver` and `onReceive` report
+   it with `node.error` and the message is not delivered; `postDeliver`, `postReceive` and `onComplete` only report
+   it with `node.error`, as the message was already delivered; `preInstall`, `postInstall` and `preUninstall` fail
+   the install or uninstall; `postUninstall` only logs a warning, as the module was already removed). A rejection
+   with a truthy value, a handler with two arguments and a synchronous `return` or `throw` behave as before. A
+   handler that was removed while its promise was pending and then rejects without a value now ends the chain too
+   (it used to move to the next handler)
 
 Features
 
