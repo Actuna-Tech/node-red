@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-10: tests of the singleInstance option (coordination of instances)
+ *   #41: requests through nr-test-utils/supertest on 127.0.0.1 instead of helper.request()
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -24,6 +25,13 @@ var injectNode = require("nr-test-utils").require("@node-red/nodes/core/common/2
 var Context = require("nr-test-utils").require("@node-red/runtime/lib/nodes/context");
 var helper = require("node-red-node-test-helper");
 var sinon = require("sinon");
+var supertest = require("nr-test-utils/supertest");
+
+// helper.request() of node-red-node-test-helper uses supertest listening on all
+// interfaces; this one listens on 127.0.0.1 only (#19, #41)
+function request() {
+    return supertest(helper._httpAdmin);
+}
 
 describe('inject node', function() {
 
@@ -895,7 +903,7 @@ describe('inject node', function() {
                                  });
                              });
                              try {
-                                 helper.request()
+                                 request()
                                  .post('/inject/n1')
                                  .expect(200).end(function(err) {
                                      if (err) {
@@ -930,7 +938,7 @@ describe('inject node', function() {
                     });
                 });
                 try {
-                    helper.request()
+                    request()
                     .post('/inject/n1')
                     .send({ __user_inject_props__: [
                         {p:"topic", v:"t_override", vt:"str"}, //change value to t_override
@@ -955,7 +963,7 @@ describe('inject node', function() {
         });
 
         it('should fail for invalid node', function(done) {
-            helper.request().post('/inject/invalid').expect(404).end(done);
+            request().post('/inject/invalid').expect(404).end(done);
         });
     });
 
@@ -1126,7 +1134,7 @@ describe('inject node', function() {
                         done(err);
                     }
                 });
-                helper.request().post('/inject/n1').expect(200).end(function(err) {
+                request().post('/inject/n1').expect(200).end(function(err) {
                     if (err) { done(err) }
                 });
             });

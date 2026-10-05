@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-02: debug view routes are marked as public
+ *   #41: requests through nr-test-utils/supertest on 127.0.0.1 instead of helper.request()
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -23,6 +24,13 @@ var should = require("should");
 var debugNode = require("nr-test-utils").require("@node-red/nodes/core/common/21-debug.js");
 var helper = require("node-red-node-test-helper");
 var WebSocket = require('ws');
+var supertest = require("nr-test-utils/supertest");
+
+// helper.request() of node-red-node-test-helper uses supertest listening on all
+// interfaces; this one listens on 127.0.0.1 only (#19, #41)
+function request() {
+    return supertest(helper._httpAdmin);
+}
 
 describe('debug node', function() {
 
@@ -597,7 +605,7 @@ describe('debug node', function() {
             var n1 = helper.getNode("n1");
             websocket_test(function() {
                 n1.emit("input", {payload:"message 1"});
-                helper.request()
+                request()
                     .post('/debug/n1/enable')
                     .expect(200).end(function(err) {
                         if (err) { return done(err); }
@@ -616,7 +624,7 @@ describe('debug node', function() {
         helper.load(debugNode, flow, function() {
             var n1 = helper.getNode("n1");
             websocket_test(function(close) {
-                helper.request()
+                request()
                     .post('/debug/n1/disable')
                     .expect(201).end(function(err) {
                         if (err) {
@@ -639,14 +647,14 @@ describe('debug node', function() {
         it('should return 404 on invalid state', function(done) {
             var flow = [{id:"n1", type:"debug", active: true }];
             helper.load(debugNode, flow, function() {
-                helper.request()
+                request()
                     .post('/debug/n1/foobar')
                     .expect(404).end(done);
             });
         });
 
         it('should return 404 on invalid node', function(done) {
-            helper.request()
+            request()
                 .post('/debug/n99/enable')
                 .expect(404).end(done);
         });
@@ -654,7 +662,7 @@ describe('debug node', function() {
         it('should return 400 for invalid bulk disable', function(done) {
             var flow = [{id:"n1", type:"debug", active: true }];
             helper.load(debugNode, flow, function() {
-                helper.request()
+                request()
                     .post('/debug/disable')
                     .send({})
                     .set('Content-type', 'application/json')
@@ -666,7 +674,7 @@ describe('debug node', function() {
         it('should return success for bulk disable', function(done) {
             var flow = [{id:"n1", type:"debug", active: true }];
             helper.load(debugNode, flow, function() {
-                helper.request()
+                request()
                     .post('/debug/disable')
                     .send({nodes:['n1']})
                     .set('Content-type', 'application/json')
@@ -680,7 +688,7 @@ describe('debug node', function() {
         it('should return the view.html', function(done) {
             var flow = [{id:"n1", type:"debug"}];
             helper.load(debugNode, flow, function() {
-                helper.request()
+                request()
                     .get('/debug/view/view.html')
                     .expect(200)
                     .end(done);

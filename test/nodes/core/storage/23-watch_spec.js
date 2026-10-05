@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #19: ignores the macOS event of the preparation of the test and cancels the pending change of an ended test (flaky tests)
+ *   #41: the macOS event of the preparation documented with its cause (node-watch, FSEvents replay)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -86,11 +87,15 @@ describe('watch Node', function() {
 
                     var file = msg.file;
                     if (platform === "darwin" && msg.event === "remove" && msg.filename === path.join(msg.topic, path.basename(msg.topic))) {
-                        // On macOS the file system events of the preparation of the test (the
-                        // directories created just before the watch starts) can be delivered
-                        // after the watch has started, as a "remove" of the watched directory
-                        // itself under its own name inside it (<dir>/<dir>). It is no change
-                        // of any watched file.
+                        // On macOS (FSEvents) the events of the preparation of the test (the
+                        // directory and the files created just before the watch starts) are
+                        // replayed after the watch has started; for the watched directory
+                        // node-watch reports it as a "remove" of "<dir>/<dir>", a path that
+                        // never existed. Checked (#41) with node-watch alone, without Node-RED:
+                        // it happens when the watch starts right after the directory is
+                        // created and does not happen when it starts 500 ms later. It is
+                        // behaviour of node-watch, not a change of any watched file, so the
+                        // test ignores exactly this one event.
                         return;
                     }
                     if (file in processed) {

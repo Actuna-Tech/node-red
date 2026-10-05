@@ -356,6 +356,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 | Element | Zasada |
 |---|---|
 | Testy jednostkowe | `npm test` / `npx mocha test/unit/_spec.js "test/unit/**/*_spec.js"`; 5 testów `projects/ssh` wymaga `ssh-keygen` |
+| Testy sieciowe | bez stałych portów (#41): serwer testowy słucha na porcie 0 (port przydziela system, `server.address().port`), a węzeł, który potrzebuje portu w konfiguracji, dostaje wolny port znaleziony tuż przed startem – dwa przebiegi `npm run mocha:nodes` na jednej maszynie nie zderzają się; żądania do aplikacji przez `nr-test-utils/supertest` (127.0.0.1), nie `helper.request()`; helper zgłasza błąd dla TLS, adresu tekstowego i http2. Zmiany tylko w testach, bez zmiany produktu |
 | Testy E2E | `npm run test:e2e` – Playwright **nie** jest w repozytorium (D-03): `npm i --no-save playwright`; bez niego testy są pomijane |
 | Nagłówki modyfikacji | każdy zmieniony plik: blok „Modified by Actuna Sp. z o.o.” (D-19); JSON i szablon `settings.js` – w MODIFICATIONS.md |
 | Commity | autorem jest operator AI (obecnie Wojciech Repiński), `Signed-off-by` (DCO), bez `Co-Authored-By` dla AI |

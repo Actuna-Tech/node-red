@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #19: the test server hook calls done exactly once, retries on a taken port and answers with one ACK per connection, whatever the split of the chunks (flaky tests)
+ *   #41: the test server listens on a port assigned by the system (port 0), no fixed port
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -29,13 +30,13 @@ var RED = require("nr-test-utils").require("node-red/lib/red.js");
 
 describe('TCP Request Node', function() {
     var server = undefined;
-    var port = 9000;
+    // the port assigned by the system once the server listens (#41)
+    var port = undefined;
 
-    // Starts the test server on the next free port and calls done exactly once:
-    // without an error when it listens, with the error when listening fails for
-    // a reason other than the port being taken (a taken port is skipped).
+    // Starts the test server on a port assigned by the system (port 0, so two runs of
+    // the tests on one machine never meet on a port) and calls done exactly once:
+    // without an error when it listens, with the error when listening fails.
     function startServer(done) {
-        port += 1;
         const candidate = stoppable(net.createServer(function(c) {
             // "ACK:" starts the answer of a connection once. The messages of a test arrive
             // in one or more chunks, depending on the timing of the sockets; a prefix on
@@ -53,16 +54,11 @@ describe('TCP Request Node', function() {
                 c.destroy();
             });
         }));
-        candidate.once('error', function(err) {
-            if (err.code === 'EADDRINUSE') {
-                startServer(done);
-            } else {
-                done(err);
-            }
-        });
-        candidate.listen(port, "127.0.0.1", function() {
+        candidate.once('error', done);
+        candidate.listen(0, "127.0.0.1", function() {
             candidate.removeAllListeners('error');
             server = candidate;
+            port = candidate.address().port;
             done();
         });
     }
