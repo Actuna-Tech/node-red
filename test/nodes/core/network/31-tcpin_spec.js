@@ -347,8 +347,12 @@ describe('TCP in Node', function() {
         });
 
         // The test servers listen on a port of nr-test-utils/free-port, not on port 0: on macOS listen(0) on all
-        // interfaces can get a port that a foreign listener holds on 127.0.0.1, which the client would reach instead
-        function listen(srv, host) {
+        // interfaces can get a port that a foreign listener holds on 127.0.0.1, which the client would reach instead.
+        // Another program can take the port between the search and the listen (EADDRINUSE): the server then
+        // listens on another free port, for SERVER_PORTS ports in all.
+        const SERVER_PORTS = 10;
+        function listen(srv, host, attempt) {
+            attempt = attempt || 1;
             return getFreePort().then(function(freePort) {
                 return new Promise(function(resolve, reject) {
                     srv.once("error", reject);
@@ -359,6 +363,11 @@ describe('TCP in Node', function() {
                         resolve(srv.address().port);
                     }]));
                 });
+            }).catch(function(err) {
+                if (err.code === "EADDRINUSE" && attempt < SERVER_PORTS) {
+                    return listen(srv, host, attempt + 1);
+                }
+                throw err;
             });
         }
 
