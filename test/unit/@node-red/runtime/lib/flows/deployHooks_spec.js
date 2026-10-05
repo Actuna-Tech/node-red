@@ -139,6 +139,27 @@ describe("flows/deployHooks", function() {
             JSON.stringify(copy).should.not.containEql("secret");
             copy[0].should.eql({ id: "n1", type: "test", env: [{ name: "K", type: "cred" }], nested: {} });
         });
+        it("S-C2: the toJSON of a single env entry cannot bring a value back (the raw entry looks harmless / is a cred entry with its own toJSON)", function() {
+            const flows = [
+                { id: "t1", type: "tab", env: [
+                    // the raw entry looks harmless, its toJSON returns a cred entry with a value
+                    { name: "A", type: "str", toJSON: function() { return { name: "A", type: "cred", value: "SECRET-A" } } },
+                    // the raw entry is a cred entry and carries its own toJSON (a copy of it keeps the function)
+                    { name: "B", type: "cred", value: "SECRET-B", toJSON: function() { return { name: "B", type: "cred", value: "SECRET-B" } } },
+                    // the toJSON of the whole env array
+                    { name: "C", type: "str", value: "plain" }
+                ] },
+                { id: "n1", type: "subflow:s1", z: "t1", env: { toJSON: function() { return [{ name: "D", type: "cred", value: "SECRET-D" }] } },
+                  toJSON: function() { return { id: "n1", type: "subflow:s1", z: "t1", env: [{ name: "D", type: "cred", value: "SECRET-D" }], credentials: { x: "SECRET-E" } } } }
+            ];
+            const copy = deployHooks.copyForHook(flows);
+            JSON.stringify(copy).should.not.containEql("SECRET");
+            copy[0].env[0].should.not.have.property("value");
+            copy[0].env[1].should.not.have.property("value");
+            copy[0].env[2].should.eql({ name: "C", type: "str", value: "plain" });
+            copy[1].env.should.eql([{ name: "D", type: "cred" }]);
+            copy[1].should.not.have.property("credentials");
+        });
         it("throws for a configuration that cannot be serialised", function() {
             const cyclic = { id: "n" };
             cyclic.self = cyclic;
