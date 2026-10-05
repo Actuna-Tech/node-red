@@ -228,6 +228,12 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             res = await request("POST", url + "/flows", undefined, Object.assign({ "Node-RED-Deployment-Type": "reload" }, V2));
             res.status.should.equal(200);
             Object.keys(res.json).should.eql(["rev"]);
+            // the type "load" (the body is ignored, the file is deployed): v1 204, v2 200 {rev}
+            res = await request("POST", url + "/flows", [], { "Node-RED-Deployment-Type": "load" });
+            res.status.should.equal(204);
+            res = await request("POST", url + "/flows", {}, Object.assign({ "Node-RED-Deployment-Type": "load" }, V2));
+            res.status.should.equal(200);
+            Object.keys(res.json).should.eql(["rev"]);
             // the original flow still answers
             await server.expectRoute("hello", "v1");
         });
@@ -363,6 +369,30 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             server.control({ pre: "accept" });
             fs.writeFileSync(server.flowFile, JSON.stringify(helloFlow("t1", "hello", "v1")));
             (await request("POST", server.url + "/flows", undefined, Object.assign({ "Node-RED-Deployment-Type": "reload" }, V2))).status.should.equal(200);
+        });
+
+        it('the deployment type "load" (it ignores the body and deploys the file) is validated on the file, like a reload (#10 R-C1)', async function() {
+            server.control({ pre: "forbidden" });
+            const forbidden = helloFlow("t1", "hello", "from the file").concat([injectNode("bad5", "t1")]);
+            fs.writeFileSync(server.flowFile, JSON.stringify(forbidden));
+            const before = server.file();
+            const calls = server.log("pre.log").length;
+            const load = { "Node-RED-Deployment-Type": "load" };
+            for (const attempt of [
+                () => request("POST", server.url + "/flows", {}, Object.assign({}, load, V2)),
+                () => request("POST", server.url + "/flows", { flows: [] }, Object.assign({}, load, V2)),
+                () => request("POST", server.url + "/flows", [], load)
+            ]) {
+                assertRejected(await attempt());
+            }
+            assertNothingChanged(before);
+            await server.expectRoute("hello", "v1");
+            server.log("pre.log").slice(calls).forEach(l => l.should.containEql({ type: "load", mode: "forbidden" }));
+            server.log("pre.log").length.should.equal(calls + 3);
+            // accepted: the file is deployed
+            server.control({ pre: "accept" });
+            fs.writeFileSync(server.flowFile, JSON.stringify(helloFlow("t1", "hello", "v1")));
+            (await request("POST", server.url + "/flows", {}, Object.assign({}, load, V2))).status.should.equal(200);
         });
     });
 

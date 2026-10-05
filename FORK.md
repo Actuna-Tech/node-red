@@ -135,7 +135,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `hooks` w `settings.js` (#7) bez zmian: `preDeploy`/`postDeploy` w nim kończą start błędem `invalid_hook_setting`. Bez zarejestrowanego handlera
   potok nie kopiuje konfiguracji, nie ustawia timera i zachowuje się jak dotąd (poza poprawką kolejności w §6).
 - **`preDeploy`** działa pod blokadą wdrożeń, **przed** jakąkolwiek zmianą (zapis, zatrzymanie, stan, poświadczenia), i widzi zamrożoną kopię **wynikowej**
-  konfiguracji (`POST /flows` – treść żądania; `/flow` – cała konfiguracja po zmianie; `reload` – treść z magazynu) bez `credentials` i bez `value` wpisów `env` typu `cred`
+  konfiguracji (`POST /flows` – treść żądania; `/flow` – cała konfiguracja po zmianie; `reload` i typ `load` – treść z magazynu, `event.type` to `"reload"` albo `"load"`) bez `credentials` i bez `value` wpisów `env` typu `cred`
   (pozostałe pola mogą zawierać sekrety – nie wysyłać całych `flows` do usług zewnętrznych). Wyniki: akceptacja (wartość ≠ `false`, `done()`); **400 `deploy_rejected`**
   `{message, reason, details?}` – `false` albo `Error` ze `status: 400` (`reason` = jego `code`); **503 `deploy_hook_failed`** – każda awaria walidatora (stały komunikat,
   przyczyna tylko w logu; fail-closed); **503 `deploy_hook_timeout`** – brak wyniku w `deploy.hookTimeout` albo poprzednie wywołanie tego samego handlera jeszcze trwa. Przy odrzuceniu,

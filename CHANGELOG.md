@@ -483,7 +483,8 @@ Features
    setting of `settings.js` (#7) is unchanged and still rejects them (`invalid_hook_setting`). Without a registered handler
    nothing is copied or timed and the pipeline behaves as before. `preDeploy` runs under the deploy lock before anything
    is saved, stopped or changed, with a frozen copy of the resulting configuration (`POST /flows` of every type and
-   "Restart flows", `POST /flow`, `PUT` and `DELETE /flow/:id`, `RED.runtime.flows.*`; the copy has no `credentials` and no
+   "Restart flows", `POST /flow`, `PUT` and `DELETE /flow/:id`, `RED.runtime.flows.*`; the deployment type "load" - which ignores the body and
+   deploys the content of storage - is validated on that content like "reload", `event.type` is then "load"; the copy has no `credentials` and no
    `value` of `env` entries of type "cred"). An accepted deployment goes on; `false` or an `Error` with `status: 400` answers
    **400 `deploy_rejected`** `{code, message, reason, details?}` (`reason` is the `code` of the error, `details` a plain
    object or array up to 8 KB); any other result of the validator (an exception, `Promise.reject()`, `done("x")`) answers

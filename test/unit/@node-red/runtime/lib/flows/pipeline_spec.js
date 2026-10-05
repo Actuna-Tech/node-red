@@ -820,6 +820,99 @@ describe("flows/pipeline", function() {
             });
         });
 
+        describe('deployment type "load" (the header Node-RED-Deployment-Type: ignores the body, deploys the content of storage)', function() {
+            const stored = () => ({ flows: [{ id: "t1", type: "tab" }, { id: "bad", type: "inject", z: "t1" }], rev: "storedRev", credentials: { c: 1 } });
+            beforeEach(function() {
+                flows.readStoredFlows = sinon.spy(async function() { calls.push({ fn: "readStoredFlows", state: instanceState.get().state }); return stored() });
+                flows.loadStoredCredentials = sinon.spy(async function(config) { calls.push({ fn: "loadStoredCredentials", state: instanceState.get().state }); return Object.assign({ loaded: true }, config) });
+                flows.setFlows = sinon.spy(async function() { calls.push({ fn: "setFlows", state: instanceState.get().state }); return "newRev" });
+            });
+            const rejectForbidden = (event) => event.flows.some(n => n.type === "inject") ? false : undefined;
+
+            [["{}", {}], ["[]", { flows: [] }], ["no body", undefined], ["a body that is not an array", { flows: "x" }]].forEach(function(c) {
+                it("with a handler: a body of " + c[0] + " does not hide the content of storage - the hook sees it and rejects; nothing is activated", async function() {
+                    const events = [];
+                    hooks.add("preDeploy.a", function(event) { events.push(event); return rejectForbidden(event) });
+                    const err = await pipeline.deploy({ type: "load", source: "api", req: {}, operation: "setFlows", flows: c[1] }).then(() => null, e => e);
+                    err.should.have.property("code", "deploy_rejected");
+                    err.should.have.property("status", 400);
+                    events.should.have.length(1);
+                    events[0].type.should.equal("load");
+                    events[0].rev.should.equal("storedRev");
+                    events[0].flows.map(n => n.id).should.eql(["t1", "bad"]);
+                    flows.setFlows.called.should.be.false();
+                    flows.loadFlows.called.should.be.false();
+                    flows.loadStoredCredentials.called.should.be.false();
+                    seen.should.eql([]);
+                    lock.isLocked().should.be.false();
+                });
+            });
+            it("with a handler that accepts: read (2) -> hook (3) -> credentials (3a) -> deploying (4) -> setFlows with the same object (I10)", async function() {
+                let saw;
+                hooks.add("preDeploy.a", async function(event) {
+                    saw = event;
+                    calls.push({ fn: "hook", state: instanceState.get().state });
+                    // storage changes while the hook runs: it is not read again
+                    flows.readStoredFlows = sinon.spy(async () => ({ flows: [{ id: "other", type: "tab" }], rev: "otherRev" }));
+                });
+                const result = await pipeline.deploy({ type: "load", source: "api", req: {}, operation: "setFlows", flows: { flows: [] } });
+                result.should.eql({ rev: "newRev" });
+                calls.map(c => c.fn + ":" + c.state).should.eql(["readStoredFlows:ready", "hook:ready", "loadStoredCredentials:ready", "setFlows:deploying"]);
+                saw.flows.map(n => n.id).should.eql(["t1", "bad"]);
+                const args = flows.setFlows.firstCall.args;
+                args.should.have.length(8);
+                args[2].should.equal("load");
+                // the object that was deployed is the one that loadStoredCredentials returned for what the hook saw
+                args[7].should.have.property("loaded", true);
+                args[7].should.have.property("rev", "storedRev");
+                args[7].flows.map(n => n.id).should.eql(["t1", "bad"]);
+                flows.loadStoredCredentials.firstCall.args[0].should.have.property("rev", "storedRev");
+            });
+            it("the revision check (409) comes before the read and the hook", async function() {
+                const hook = sinon.spy();
+                hooks.add("preDeploy.a", hook);
+                await pipeline.deploy({ type: "load", flows: { flows: [], rev: "other" } }).should.be.rejectedWith({ code: "version_mismatch" });
+                flows.readStoredFlows.called.should.be.false();
+                hook.called.should.be.false();
+            });
+            it("a failed read of storage ends the deployment before the hook", async function() {
+                const hook = sinon.spy();
+                hooks.add("preDeploy.a", hook);
+                flows.readStoredFlows = sinon.spy(async () => { throw new Error("read failed") });
+                await pipeline.deploy({ type: "load", flows: { flows: [] } }).should.be.rejectedWith("read failed");
+                hook.called.should.be.false();
+                flows.setFlows.called.should.be.false();
+                seen.should.eql([]);
+            });
+            it("a stored content whose flows are not an array is not given to the hook (as for reload)", async function() {
+                const hook = sinon.spy();
+                hooks.add("preDeploy.a", hook);
+                flows.readStoredFlows = sinon.spy(async () => ({ flows: "x", rev: "r" }));
+                await pipeline.deploy({ type: "load", flows: {} });
+                hook.called.should.be.false();
+                flows.setFlows.calledOnce.should.be.true();
+            });
+            it("off_identical - without a preDeploy handler the old path: no read in the pipeline, setFlows with the 7 arguments", async function() {
+                hooks.add("preReload.a", () => false);
+                hooks.add("postDeploy.a", () => {});
+                await pipeline.deploy({ type: "load", source: "api", flows: { flows: [] }, user: "u" });
+                flows.readStoredFlows.called.should.be.false();
+                flows.loadStoredCredentials.called.should.be.false();
+                flows.setFlows.firstCall.args.should.eql([[], undefined, "load", null, null, "u", undefined]);
+                calls.map(c => c.fn + ":" + c.state).should.eql(["setFlows:deploying"]);
+            });
+            it("a postDeploy handler alone does not change the path of load", async function() {
+                const post = [];
+                hooks.add("postDeploy.a", e => { post.push(e) });
+                flows.getFlows = sinon.spy(() => ({ rev: "R" + flows.getFlows.callCount }));
+                await pipeline.deploy({ type: "load", source: "api", req: {}, operation: "setFlows", flows: {} });
+                flows.readStoredFlows.called.should.be.false();
+                await new Promise(r => setImmediate(r));
+                post.should.have.length(1);
+                post[0].type.should.equal("load");
+            });
+        });
+
         describe("scope (I8)", function() {
             it("a reload from storage (source storage) does not run preDeploy", async function() {
                 const hook = sinon.spy();

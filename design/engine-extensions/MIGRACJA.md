@@ -187,7 +187,7 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   (konsekwencja fail-closed). Log `warn` podaje wiek spóźnionego wywołania w ms. **Procedura awaryjna:** wyłączyć wtyczkę z walidatorem i zrestartować
   instancję (np. zmienna środowiskowa czytana przez wtyczkę); nie ma ustawienia omijającego walidację. `POST /flows/state` i Projekty działają
   bez hooków, ale pozwalają tylko zatrzymać albo wznowić obecne flow, nie wdrożyć poprawki.
-- **„Restart flows” jest walidowany** (typ `reload`, `event.type === "reload"`, treść z magazynu). **D20:** `preDeploy` chroni zapisy przez API i runtime
+- **„Restart flows” jest walidowany** (typ `reload`, `event.type === "reload"`, treść z magazynu); tak samo typ wdrożenia `load` (nagłówek `Node-RED-Deployment-Type: load` ignoruje treść żądania i wdraża zawartość magazynu): przy zarejestrowanym `preDeploy` handler dostaje zawartość magazynu z `event.type === "load"` i `event.rev`, a wdrażany jest ten sam obiekt. **D20:** `preDeploy` chroni zapisy przez API i runtime
   tej instancji, **nie treść magazynu** – treść odrzucona przy `reload` może trafić do flow przez przeładowanie z magazynu (Z-09, bez `preDeploy`)
   albo przy restarcie procesu; zalecenie dla konsumentów: walidować zapisy (`type !== "reload"`). **D26:** przy `reload` z Projektami błąd
   `credentials_load_failed` pojawia się **po** hooku (poświadczenia ładuje krok 3a); odrzucenie przez hook go przesłania – klient dostaje `deploy_rejected`.

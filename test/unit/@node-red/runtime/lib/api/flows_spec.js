@@ -1537,6 +1537,17 @@ describe("runtime-api/flows", function() {
             runtimeFlows.getFlows().rev.should.equal("S");
             record.should.not.containEql("saveFlows");
         });
+        it('deployment type "load" without a hook (the header Node-RED-Deployment-Type: load): the body is ignored, storage is read, then the credentials, then the runtime state; the stored content is active (off_identical guard of #10 R-C1)', async function() {
+            await setup();
+            for (const body of [undefined, {}, {flows: []}, {flows: [{id: "x", type: "tab"}]}]) {
+                record.length = 0;
+                const result = await flows.setFlows({deploymentType: "load", flows: body});
+                result.should.have.property("rev", "S");
+                record.slice(0, 3).should.eql(["getFlows", 'credentials.load:{"n1":{"a":1}}', "runtime-state:retain:retain"]);
+                runtimeFlows.getFlows().flows.should.eql(stored().flows);
+                record.should.not.containEql("saveFlows");
+            }
+        });
         it("a storage error: the active configuration is dropped, the runtime state warns, the error is passed on, nothing else changes", async function() {
             await setup({storageError: Object.assign(new Error("disk"), {code: "storage_error"})});
             // an active configuration exists before the failing reload
@@ -1821,6 +1832,109 @@ describe("runtime-api/flows", function() {
             flows.init({log: log, settings: {}, flows: {}});
             log.warn.called.should.be.false();
             NR_TEST_UTILS.require("@node-red/runtime/lib/flows/deployHooks").getHookTimeout().should.equal(30000);
+        });
+    });
+
+    describe('deployment type "load" with a preDeploy hook: validated on the content of storage (#10 R-C1)', function() {
+        const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+        const runtimeFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const { hooks, log: utilLog } = NR_TEST_UTILS.require("@node-red/util");
+        let load;
+        let logStubs;
+        let stored;
+        let seenByHook;
+        const forbiddenContent = () => ({flows: [{id: "t2", type: "tab", label: "Stored"}, {id: "bad", type: "inject", z: "t2"}], rev: "S", credentials: {fresh: {y: 2}}});
+        async function setup() {
+            const log = mockLog();
+            stored = {flows: [{id: "t1", type: "tab", label: "Active"}], rev: "A", credentials: {}};
+            await runtimeFlows.init({
+                log: log,
+                settings: {editorOnly: true, deploy: {hookTimeout: 100}},
+                storage: {getFlows: async () => stored, saveFlows: async () => "X"}
+            });
+            await runtimeFlows.load();
+            stored = forbiddenContent();
+            flows.init({log: log, settings: {editorOnly: true, deploy: {hookTimeout: 100}}, flows: runtimeFlows});
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({errors: []});
+            seenByHook = [];
+            load.resetHistory();
+            hooks.clear();
+            hooks.add("preDeploy.test", function(event) {
+                seenByHook.push(event);
+                return event.flows.some(n => n.type === "inject") ? false : undefined;
+            });
+        }
+        beforeEach(function() {
+            load = sinon.stub(credentials, "load").callsFake(async function() {});
+            logStubs = [sinon.stub(utilLog, "warn"), sinon.stub(utilLog, "error"), sinon.stub(utilLog, "debug")];
+        });
+        afterEach(function() {
+            hooks.clear();
+            logStubs.forEach(s => s.restore());
+            instanceState.reset();
+            load.restore();
+        });
+        [["{}", {}], ["[]", {flows: []}], ["no body", undefined]].forEach(function(c) {
+            it("a body of " + c[0] + " does not hide the stored content: the hook sees it and rejects, the active configuration stays", async function() {
+                await setup();
+                const err = await flows.setFlows({deploymentType: "load", flows: c[1], req: {}}).then(() => null, e => e);
+                err.should.have.property("code", "deploy_rejected");
+                err.should.have.property("status", 400);
+                seenByHook.should.have.length(1);
+                seenByHook[0].type.should.equal("load");
+                seenByHook[0].rev.should.equal("S");
+                seenByHook[0].flows.map(n => n.id).should.eql(["t2", "bad"]);
+                runtimeFlows.getFlows().rev.should.equal("A");
+                load.called.should.be.false();
+            });
+        });
+        it("the same content is rejected for reload too (parity with the repro of the review)", async function() {
+            await setup();
+            const err = await flows.setFlows({deploymentType: "reload", req: {}}).then(() => null, e => e);
+            err.should.have.property("code", "deploy_rejected");
+            runtimeFlows.getFlows().rev.should.equal("A");
+        });
+        it("accepted content: the content that the hook saw is the one that becomes active; the credentials are loaded after the hook", async function() {
+            await setup();
+            stored = {flows: [{id: "t3", type: "tab", label: "Fine"}], rev: "S2", credentials: {fresh: {y: 2}}};
+            const result = await flows.setFlows({deploymentType: "load", flows: {}, req: {}});
+            result.should.have.property("rev", "S2");
+            seenByHook.should.have.length(1);
+            seenByHook[0].flows.should.eql([{id: "t3", type: "tab", label: "Fine"}]);
+            runtimeFlows.getFlows().should.eql({flows: [{id: "t3", type: "tab", label: "Fine"}], rev: "S2"});
+            load.calledOnce.should.be.true();
+            load.firstCall.args[0].should.eql({fresh: {y: 2}});
+        });
+        it("storage that changes while the hook runs is not read again: what the hook checked is deployed", async function() {
+            await setup();
+            stored = {flows: [{id: "t3", type: "tab", label: "Checked"}], rev: "S3", credentials: {}};
+            hooks.clear();
+            hooks.add("preDeploy.test", async function(event) {
+                seenByHook.push(event);
+                stored = forbiddenContent();
+                await new Promise(r => setTimeout(r, 10));
+            });
+            const result = await flows.setFlows({deploymentType: "load", flows: {}, req: {}});
+            result.should.have.property("rev", "S3");
+            runtimeFlows.getFlows().flows.should.eql([{id: "t3", type: "tab", label: "Checked"}]);
+        });
+        it("another type with a body (full, nodes, flows, an unknown value) is validated on the body that is deployed", async function() {
+            await setup();
+            const saved = [];
+            const storage = {getFlows: async () => stored, saveFlows: async (conf) => { saved.push(conf.flows); return "X" }};
+            await runtimeFlows.init({log: mockLog(), settings: {editorOnly: true, deploy: {hookTimeout: 100}}, storage: storage});
+            flows.init({log: mockLog(), settings: {editorOnly: true, deploy: {hookTimeout: 100}}, flows: runtimeFlows});
+            for (const type of ["full", "nodes", "flows", "foo"]) {
+                seenByHook.length = 0;
+                const body = [{id: "tb", type: "tab", label: type}];
+                await flows.setFlows({deploymentType: type, flows: {flows: body}, req: {}});
+                seenByHook.should.have.length(1);
+                seenByHook[0].flows.should.eql(body);
+                saved[saved.length - 1].should.eql(body);
+            }
         });
     });
 
