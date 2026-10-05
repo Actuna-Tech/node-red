@@ -1,5 +1,12 @@
 #### Unreleased: Instances and reload
 
+ - Fix (#51): an error of the comparison of the credentials in the reread under the deploy lock (for example
+   `credentials_digest_failed`: a getter or a Proxy of a storage plugin object that throws) has the code `reload_failed`,
+   as in step 2 of the cycle, instead of `storage_error`. With `deploy.reload.retry.onExhausted: "keepReady"` the instance
+   no longer stays ready (`/ready` 200 `warn`) - after the retries it is `failed` (`/ready` 503), because `"keepReady"`
+   covers only a read error of storage (R-47). With `"fail"` the same path after a recovery by a local deployment
+   starts a new series (#17). A real read error of storage (`storage.getFlows`) keeps the code `storage_error`,
+   `credentials_load_failed` keeps its code. Only with `deploy.reload.watch: true`. Tests: `reload_spec.js`
  - Fix (#56): `credentials.init()` resets the module flag `removeDefaultKey`. A migration of the credentials to a
    user key that `load()` had started and `export()` had not finished (generated key `_credentialSecret` and
    `credentialSecret` both set) was carried over to the next `init()` in the same process, and the first `export()`
@@ -297,8 +304,7 @@ Security
    `credentials_digest_failed` and a fixed message, so the reload log (`reload.read-failed`) cannot quote
    a secret from the message of the cause. The rule of #2 does not change: a failed digest of the running
    configuration is "no change" only for the same revision with an unknown digest, otherwise the error goes on
-   (as `reload_failed` in the comparison of the cycle, as `storage_error` in the reread under the deploy
-   lock - with `keepReady` the instance then stays ready). A key that does not decrypt still gives `credentials_load_failed`
+   (as `reload_failed` in the comparison of the cycle and in the reread under the deploy lock, #51). A key that does not decrypt still gives `credentials_load_failed`
  - Prevent crash on websocket auth packet when admin auth is disabled
  - Render the username as text in the editor user menu and login notification
  - Do not return `credentialSecret` and the remote URLs with their credentials in `GET /settings`
@@ -456,6 +462,20 @@ Fixes
    (Node 24) and runs every Node version to its own result (`fail-fast: false`); the suite was checked on
    Ubuntu 26.04, which `ubuntu-latest` becomes from 2026-10-19. The release workflow of upstream runs only in
    `node-red/node-red` (#57)
+ - Fix (#61): a hook handler that rejects without a value ends the chain with an error. A handler with one
+   argument whose promise rejected with a falsy value (`Promise.reject()`, `throw undefined` in an `async`
+   function, `null`, `false`, `0`, `-0`, `0n`, `NaN` or `""`) was called again without end in a loop of
+   microtasks, so timers, I/O and HTTP stopped and the process hung (an upstream defect of 5.0.7). Now
+   `RED.hooks.trigger` rejects (promise form) or calls `done` (callback form) once with an `Error` with the message
+   `Hook handler rejected without an error: <value>` (for an empty string the value is `""`, quotes included), the
+   handler is called once and the next handlers are not called; the caller follows its existing error path
+   (`preShutdown` and `preReload` log the error and go on; `onSend`, `preRoute`, `preDeliver` and `onReceive` report
+   it with `node.error` and the message is not delivered; `postDeliver`, `postReceive` and `onComplete` only report
+   it with `node.error`, as the message was already delivered; `preInstall`, `postInstall` and `preUninstall` fail
+   the install or uninstall; `postUninstall` only logs a warning, as the module was already removed). A rejection
+   with a truthy value, a handler with two arguments and a synchronous `return` or `throw` behave as before. A
+   handler that was removed while its promise was pending and then rejects without a value now ends the chain too
+   (it used to move to the next handler)
 
 Features
 
