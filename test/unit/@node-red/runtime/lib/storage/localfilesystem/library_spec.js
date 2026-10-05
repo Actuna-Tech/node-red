@@ -304,7 +304,12 @@ describe('storage/localfilesystem/library', function() {
                 settled = true;
                 return result;
             });
-            while (!stub.called) {
+            // the save calls the write within a few turns; a bound keeps a save that never writes from
+            // spinning on after the test
+            for (let n = 0; !stub.called; n++) {
+                if (n >= 1000) {
+                    throw new Error("the save did not call the write within 1000 turns of the event loop");
+                }
                 await turns(1);
             }
             stub.firstCall.args.should.eql([path.join(libDir, 'functions', 'B', 'D', 'file3.js'), '// mno: pqr\nbody']);

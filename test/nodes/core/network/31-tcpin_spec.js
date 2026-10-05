@@ -388,7 +388,12 @@ describe('TCP in Node', function() {
             // errors for a test that has finished are of no interest to it (the callback only records them)
             const late = [];
             send(["foo"], function(err) { late.push(err) });
-            while (sockets.length === 0) {
+            // a connection on the loopback takes some tens of turns; a bound keeps a missing connection from
+            // spinning on after the test
+            for (let n = 0; sockets.length === 0; n++) {
+                if (n >= 20000) {
+                    throw new Error("the quiet server got no connection within 20000 turns of the event loop");
+                }
                 await turns(1);
             }
             const closed = new Promise(function(resolve) { sockets[0].once("close", resolve) });
