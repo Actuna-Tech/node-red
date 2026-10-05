@@ -19,6 +19,7 @@
  *   Z-05: contract tests of version_required for v1 and v2 deployments
  *   Z-15: contract test of POST /flows/state 409 editor_only
  *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
+ *   Z-06 (#10): contract tests of the preDeploy hook errors of POST /flows (400 deploy_rejected, 503, 503)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -352,6 +353,33 @@ describe("api/admin/flows", function() {
             message: "Deployment saved, but the flows did not start",
             rev: "newRev",
             errors: [{code:"missing_types", message:"Missing node types", types:["missing"]}]
+        });
+    });
+
+    describe("preDeploy hook errors (Z-06)", function() {
+        function failWith(code, status, extra) {
+            flows.init({
+                flows:{
+                    setFlows: function() {
+                        const err = Object.assign(new Error("message of " + code), {code: code, status: status}, extra);
+                        return Promise.reject(err);
+                    }
+                }
+            });
+        }
+        ["v1", "v2"].forEach(function(version) {
+            it("deploy_rejected: 400 with code, message, reason and details - " + version, async function() {
+                failWith("deploy_rejected", 400, {reason: "forbidden_node", details: {nodes: ["n1"]}, rev: "internal"});
+                const res = await request(app).post('/flows').set('Accept', 'application/json').set('Node-RED-API-Version', version).send({flows: []}).expect(400);
+                res.body.should.eql({code: "deploy_rejected", message: "message of deploy_rejected", reason: "forbidden_node", details: {nodes: ["n1"]}});
+            });
+            it("deploy_hook_failed and deploy_hook_timeout: 503 with code and message only - " + version, async function() {
+                for (const code of ["deploy_hook_failed", "deploy_hook_timeout"]) {
+                    failWith(code, 503, {reason: "internal", details: {secret: 1}});
+                    const res = await request(app).post('/flows').set('Accept', 'application/json').set('Node-RED-API-Version', version).send({flows: []}).expect(503);
+                    res.body.should.eql({code: code, message: "message of " + code});
+                }
+            });
         });
     });
 

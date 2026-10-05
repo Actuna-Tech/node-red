@@ -20,6 +20,7 @@
  *   P-01: rev, revAll and errors are passed only for deploy_start_failed/deploy_stop_failed
  *   #22: the additive fields of a start_timeout and of a flow_start_failed entry reach the response
  *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
+ *   Z-06 (#10): reason and details of deploy_rejected only; the codes of the preDeploy hook (400/503/503)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -159,6 +160,49 @@ describe("api/util", function() {
                 err.errors = [{code:"x"}];
                 apiUtil.rejectHandler(req,res,err);
             });
+            app.get("/rejected", function(req,res) {
+                var err = new Error("forbidden node: x");
+                err.code = "deploy_rejected";
+                err.status = 400;
+                err.reason = "forbidden_node";
+                err.details = {nodes: ["n1"]};
+                // the runtime builds this error from a whitelist, so no `remote` (copied by rejectHandler for every error)
+                err.rev = "internal";
+                err.revAll = "internal-all";
+                err.errors = [{code: "x"}];
+                apiUtil.rejectHandler(req,res,err);
+            });
+            app.get("/rejectedMinimal", function(req,res) {
+                var err = new Error("Deployment rejected by validation");
+                err.code = "deploy_rejected";
+                err.status = 400;
+                err.reason = "rejected";
+                apiUtil.rejectHandler(req,res,err);
+            });
+            app.get("/hookFailed", function(req,res) {
+                var err = new Error("Deployment validation is unavailable - nothing was saved");
+                err.code = "deploy_hook_failed";
+                err.status = 503;
+                err.reason = "internal";
+                err.details = {secret: 1};
+                apiUtil.rejectHandler(req,res,err);
+            });
+            app.get("/hookTimeout", function(req,res) {
+                var err = new Error("Deployment validation did not finish in time - nothing was saved");
+                err.code = "deploy_hook_timeout";
+                err.status = 503;
+                err.reason = "internal";
+                err.details = {secret: 1};
+                apiUtil.rejectHandler(req,res,err);
+            });
+            app.get("/otherWithReason", function(req,res) {
+                var err = new Error("conflict");
+                err.code = "version_mismatch";
+                err.status = 409;
+                err.reason = "internal";
+                err.details = {secret: 1};
+                apiUtil.rejectHandler(req,res,err);
+            });
             app.get("/plain", function(req,res) {
                 var err = new Error("not found");
                 err.code = "not_found";
@@ -193,6 +237,24 @@ describe("api/util", function() {
         });
         it("rejectHandler passes rev, revAll and errors only for deploy_start_failed/deploy_stop_failed", async function() {
             const res = await request(app).get("/otherWithFields").expect(409);
+            res.body.should.eql({code:"version_mismatch", message:"conflict"});
+        });
+        it("rejectHandler passes reason and details of deploy_rejected - and no other field (Z-06)", async function() {
+            const res = await request(app).get("/rejected").expect(400);
+            res.body.should.eql({code:"deploy_rejected", message:"forbidden node: x", reason:"forbidden_node", details:{nodes:["n1"]}});
+        });
+        it("rejectHandler: deploy_rejected without details has only code, message and reason (Z-06)", async function() {
+            const res = await request(app).get("/rejectedMinimal").expect(400);
+            res.body.should.eql({code:"deploy_rejected", message:"Deployment rejected by validation", reason:"rejected"});
+        });
+        it("rejectHandler: deploy_hook_failed and deploy_hook_timeout are 503 with code and message only (Z-06)", async function() {
+            let res = await request(app).get("/hookFailed").expect(503);
+            res.body.should.eql({code:"deploy_hook_failed", message:"Deployment validation is unavailable - nothing was saved"});
+            res = await request(app).get("/hookTimeout").expect(503);
+            res.body.should.eql({code:"deploy_hook_timeout", message:"Deployment validation did not finish in time - nothing was saved"});
+        });
+        it("rejectHandler does not pass reason and details of another code (Z-06)", async function() {
+            const res = await request(app).get("/otherWithReason").expect(409);
             res.body.should.eql({code:"version_mismatch", message:"conflict"});
         });
         it("rejectHandler response unchanged without rev and errors", async function() {

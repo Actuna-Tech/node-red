@@ -30,7 +30,9 @@
  *   #40: setState stop with deploy.drainHttpNodeRequests waits for the accepted requests and answers
  *   the open ones with 503
  *   Z-06 (#10): a rejected single-flow request does not change the instance state (A24, U1);
- *   a reload from the api reads storage and loads the credentials as before (D15, A32 - guards)
+ *   a reload from the api reads storage and loads the credentials as before (D15, A32 - guards);
+ *   the preDeploy hook through the runtime api (the event, 400/503/503, nothing saved, audit with the reason);
+ *   a reload rejected by the hook changes nothing (I12, D15, D26)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1571,6 +1573,285 @@ describe("runtime-api/flows", function() {
             seen.should.eql([]);
             should.not.exist(runtimeFlows.getFlows());
             record.should.containEql("runtime-state:credentials_load_failed/notification.warnings.credentials_load_failed:retain");
+        });
+    });
+
+    describe("deploy hooks (Z-06): preDeploy through the runtime api", function() {
+        const { hooks, log: utilLog } = NR_TEST_UTILS.require("@node-red/util");
+        let runtime;
+        let logStubs;
+        let events;
+        function setup(deploySettings) {
+            runtime = {
+                log: mockLog(),
+                settings: { deploy: Object.assign({ hookTimeout: 100 }, deploySettings) },
+                flows: {
+                    getFlows: function() { return {rev: "rev-all", flows: []} },
+                    getFlowRevision: function(id) { return id === "t1" || id === "global" ? "rev-" + id : null },
+                    setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
+                    loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
+                    readStoredFlows: sinon.spy(function() { return Promise.resolve({flows: [{id: "stored", type: "tab", credentials: {a: "secret"}}], rev: "storedRev", credentials: {a: {p: "secret"}}}) }),
+                    loadStoredCredentials: sinon.spy(function(config) { return Promise.resolve(config) }),
+                    buildAddFlowConfig: sinon.spy(function(flow) { flow.id = "new1"; return {config: [{id: "new1", type: "tab"}], id: "new1"} }),
+                    buildUpdateFlowConfig: sinon.spy(function(id, flow, opts) {
+                        if (id !== "t1" && id !== "global" && !(opts && opts.create)) {
+                            const err = new Error();
+                            err.code = 404;
+                            throw err;
+                        }
+                        return {config: [{id: id, type: "tab", credentials: {a: "secret"}, env: [{name: "K", type: "cred", value: "secret"}]}], label: id, created: id !== "t1" && id !== "global"};
+                    }),
+                    buildRemoveFlowConfig: sinon.spy(function(id) { return {config: [], flow: {id: id}} }),
+                    addFlow: sinon.spy(function() { return Promise.resolve("new1") }),
+                    updateFlow: sinon.spy(function() { return Promise.resolve({created: false}) }),
+                    removeFlow: sinon.spy(function() { return Promise.resolve() })
+                }
+            };
+            flows.init(runtime);
+            events = [];
+            hooks.clear();
+            hooks.add("preDeploy.test", function(event) { events.push(event); return runtime.hookBehaviour ? runtime.hookBehaviour(event) : undefined });
+        }
+        const saved = () => ["setFlows", "loadFlows", "addFlow", "updateFlow", "removeFlow"].some(fn => runtime.flows[fn].called);
+        beforeEach(function() {
+            logStubs = [
+                sinon.stub(utilLog, "_").callsFake(k => "[" + k + "]"),
+                sinon.stub(utilLog, "warn"),
+                sinon.stub(utilLog, "error"),
+                sinon.stub(utilLog, "debug")
+            ];
+        });
+        afterEach(function() {
+            logStubs.forEach(s => s.restore());
+            hooks.clear();
+        });
+        async function rejected(promise) {
+            try {
+                await promise;
+            } catch (err) {
+                return err;
+            }
+            throw new Error("not rejected");
+        }
+        const calls = {
+            "setFlows full": () => flows.setFlows({flows: {flows: [{id: "a", type: "tab"}], credentials: {a: {p: "secret"}}}, deploymentType: "full", user: {username: "u", permissions: "*"}, req: {}}),
+            "setFlows nodes": () => flows.setFlows({flows: {flows: [{id: "a", type: "tab"}]}, deploymentType: "nodes", req: {}}),
+            "setFlows flows": () => flows.setFlows({flows: {flows: [{id: "a", type: "tab"}]}, deploymentType: "flows", req: {}}),
+            "setFlows reload": () => flows.setFlows({deploymentType: "reload", req: {}}),
+            "addFlow": () => flows.addFlow({flow: {label: "x", nodes: []}, req: {}}),
+            "updateFlow": () => flows.updateFlow({id: "t1", flow: {nodes: []}, req: {}}),
+            "updateFlow global": () => flows.updateFlow({id: "global", flow: {configs: []}, req: {}}),
+            "updateFlow create": () => flows.updateFlow({id: "new9", flow: {nodes: []}, req: {}}),
+            "deleteFlow": () => flows.deleteFlow({id: "t1", req: {}})
+        };
+
+        it("the event of every operation: type, operation, flowId, created, flows, activeRev (and rev for reload)", async function() {
+            setup({putCreatesFlow: true});
+            for (const name of Object.keys(calls)) {
+                await calls[name]();
+            }
+            events.map(e => e.operation).should.eql(["setFlows", "setFlows", "setFlows", "setFlows", "addFlow", "updateFlow", "updateFlow", "updateFlow", "deleteFlow"]);
+            events.map(e => e.type).should.eql(["full", "nodes", "flows", "reload", "flows", "flows", "flows", "flows", "flows"]);
+            events.forEach(e => { e.source.should.equal("api"); e.activeRev.should.equal("rev-all") });
+            events[0].flows.should.eql([{id: "a", type: "tab"}]);
+            events[0].user.should.eql({username: "u", permissions: "*"});
+            events[3].flows.should.eql([{id: "stored", type: "tab"}]);
+            events[3].rev.should.equal("storedRev");
+            events[4].flowId.should.equal("new1");
+            events[5].flowId.should.equal("t1");
+            events[5].created.should.equal(false);
+            events[6].flowId.should.equal("global");
+            events[7].flowId.should.equal("new9");
+            events[7].created.should.equal(true);
+            events[8].flowId.should.equal("t1");
+            events[8].should.not.have.property("created");
+            // SEC-101 everywhere: no credentials, no env cred value
+            JSON.stringify(events.map(e => e.flows)).should.not.containEql("secret");
+            // created only with putCreatesFlow
+            setup({});
+            await calls["updateFlow"]();
+            events[0].should.not.have.property("created");
+        });
+        Object.keys(calls).forEach(function(name) {
+            it(name + ": a rejection answers 400 deploy_rejected with reason and details, nothing is saved, audited with the reason, no warning with a stack", async function() {
+                setup({putCreatesFlow: true});
+                runtime.hookBehaviour = () => { throw Object.assign(new Error("forbidden node: x"), {status: 400, code: "forbidden_node", details: {nodes: ["n1"]}, remote: "r", rev: "R", stack: "S"}) };
+                const err = await rejected(calls[name]());
+                err.should.have.property("code", "deploy_rejected");
+                err.should.have.property("status", 400);
+                err.should.have.property("message", "forbidden node: x");
+                err.should.have.property("reason", "forbidden_node");
+                err.details.should.eql({nodes: ["n1"]});
+                err.should.not.have.property("remote");
+                err.should.not.have.property("rev");
+                saved().should.be.false();
+                const audit = runtime.log.audit.getCalls().map(c => c.args[0]).filter(a => a.error === "deploy_rejected");
+                audit.should.have.length(1);
+                audit[0].should.have.property("reason", "forbidden_node");
+                runtime.log.warn.called.should.be.false();
+            });
+            it(name + ": a failure of the validator answers 503 deploy_hook_failed and a timeout 503 deploy_hook_timeout, nothing is saved", async function() {
+                setup({putCreatesFlow: true});
+                runtime.hookBehaviour = () => { throw new TypeError("secret detail") };
+                let err = await rejected(calls[name]());
+                err.should.have.property("code", "deploy_hook_failed");
+                err.should.have.property("status", 503);
+                err.message.should.not.containEql("secret detail");
+                saved().should.be.false();
+                hooks.clear();
+                setup({putCreatesFlow: true});
+                runtime.hookBehaviour = () => new Promise(() => {});
+                err = await rejected(calls[name]());
+                err.should.have.property("code", "deploy_hook_timeout");
+                err.should.have.property("status", 503);
+                saved().should.be.false();
+                const audit = runtime.log.audit.getCalls().map(c => c.args[0]).filter(a => a.error === "deploy_hook_timeout");
+                audit.should.have.length(1);
+                audit[0].should.not.have.property("reason");
+                runtime.log.warn.called.should.be.false();
+            });
+        });
+        it("the deployed configuration of /flows is the client's (I4)", async function() {
+            setup();
+            const body = {flows: [{id: "a", type: "tab", credentials: {x: "secret"}}], credentials: {a: {x: "secret"}}};
+            await flows.setFlows({flows: body, deploymentType: "full", req: {}});
+            runtime.flows.setFlows.firstCall.args[0].should.equal(body.flows);
+            runtime.flows.setFlows.firstCall.args[1].should.equal(body.credentials);
+        });
+        it("a handler registered with RED.hooks.add as a promise hook that rejects with an Error status 400 rejects the same way", async function() {
+            setup();
+            runtime.hookBehaviour = () => Promise.reject(Object.assign(new Error("no"), {status: 400}));
+            const err = await rejected(calls["setFlows full"]());
+            err.should.have.property("code", "deploy_rejected");
+            err.should.have.property("reason", "rejected");
+        });
+        it("an invalid deploy.hookTimeout is warned about at init and the default is used", function() {
+            ["x", 0, -5, Infinity, 2147483648].forEach(function(value) {
+                const log = mockLog();
+                flows.init({log: log, settings: {deploy: {hookTimeout: value}}, flows: {}});
+                log.warn.calledOnce.should.be.true();
+            });
+            const log = mockLog();
+            flows.init({log: log, settings: {deploy: {hookTimeout: 300}}, flows: {}});
+            log.warn.called.should.be.false();
+            flows.init({log: log, settings: {}, flows: {}});
+            log.warn.called.should.be.false();
+            NR_TEST_UTILS.require("@node-red/runtime/lib/flows/deployHooks").getHookTimeout().should.equal(30000);
+        });
+    });
+
+    describe("a reload rejected by the preDeploy hook changes nothing (Z-06, I12, D15, D26)", function() {
+        const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+        const runtimeFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const events = NR_TEST_UTILS.require("@node-red/util/lib/events");
+        const { hooks, log: utilLog } = NR_TEST_UTILS.require("@node-red/util");
+        let runtimeEvents;
+        let listener;
+        let stored;
+        let logStubs;
+        let accept;
+        async function setup(options) {
+            options = options || {};
+            const log = mockLog();
+            credentials.init({ log: log, settings: { get: () => false } });
+            await credentials.load({ old: { x: 1 } });
+            stored = { flows: [{ id: "t2", type: "tab", label: "Stored" }], rev: "S", credentials: { fresh: { y: 2 } } };
+            await runtimeFlows.init({
+                log: log,
+                settings: { editorOnly: true, deploy: { hookTimeout: 100 } },
+                storage: Object.assign({
+                    getFlows: async () => stored,
+                    saveFlows: async () => "X"
+                }, options.projects ? { projects: {} } : {})
+            });
+            // the running configuration, with its credentials loaded as at the start of the process
+            const initial = stored;
+            stored = { flows: [{ id: "t1", type: "tab", label: "Active" }], rev: "A", credentials: { old: { x: 1 } } };
+            await runtimeFlows.load();
+            stored = initial;
+            flows.init({ log: log, settings: { editorOnly: true, deploy: { hookTimeout: 100 } }, flows: runtimeFlows });
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({ errors: [] });
+            runtimeEvents = [];
+            listener = function(evt) { if (evt.id === "runtime-state") { runtimeEvents.push(evt) } };
+            events.on("runtime-event", listener);
+            runtimeEvents.length = 0;
+        }
+        beforeEach(function() {
+            accept = false;
+            logStubs = [sinon.stub(utilLog, "warn"), sinon.stub(utilLog, "error"), sinon.stub(utilLog, "debug")];
+            hooks.add("preDeploy.test", function(event) { return accept ? undefined : false });
+        });
+        afterEach(function() {
+            events.removeListener("runtime-event", listener);
+            hooks.clear();
+            logStubs.forEach(s => s.restore());
+            instanceState.reset();
+        });
+        it("the credentials of the instance, the runtime state, the active configuration and the instance state stay as they were", async function() {
+            await setup();
+            const loadSpy = sinon.spy(credentials, "load");
+            try {
+                const seen = [];
+                const off = instanceState.onChange(info => seen.push(info.state));
+                const before = await credentials.export();
+                const err = await flows.setFlows({ deploymentType: "reload", req: {} }).then(() => null, e => e);
+                off();
+                err.should.have.property("code", "deploy_rejected");
+                loadSpy.called.should.be.false();
+                (await credentials.export()).should.eql(before);
+                (await credentials.export()).should.eql({ old: { x: 1 } });
+                runtimeEvents.should.eql([]);
+                seen.should.eql([]);
+                runtimeFlows.getFlows().rev.should.equal("A");
+            } finally {
+                loadSpy.restore();
+            }
+        });
+        it("an accepted reload loads the credentials and publishes the runtime state (after the hook)", async function() {
+            await setup();
+            accept = true;
+            const result = await flows.setFlows({ deploymentType: "reload", req: {} });
+            result.should.have.property("rev", "S");
+            (await credentials.export()).should.eql({ fresh: { y: 2 } });
+            runtimeEvents.some(e => e.retain === true && e.payload === undefined).should.be.true();
+            runtimeFlows.getFlows().rev.should.equal("S");
+        });
+        it("D26: with projects a credentials_load_failed comes after the hook; a rejection by the hook hides it", async function() {
+            await setup({ projects: true });
+            const load = sinon.stub(credentials, "load").callsFake(async function() {
+                throw Object.assign(new Error("Failed to decrypt credentials"), { code: "credentials_load_failed" });
+            });
+            try {
+                const err = await flows.setFlows({ deploymentType: "reload", req: {} }).then(() => null, e => e);
+                err.should.have.property("code", "deploy_rejected");
+                load.called.should.be.false();
+                runtimeEvents.should.eql([]);
+                runtimeFlows.getFlows().rev.should.equal("A");
+                // accepted: the error of the credentials comes (before deploying), as before
+                accept = true;
+                const second = await flows.setFlows({ deploymentType: "reload", req: {} }).then(() => null, e => e);
+                second.should.have.property("code", "credentials_load_failed");
+                load.calledOnce.should.be.true();
+            } finally {
+                load.restore();
+            }
+        });
+        it("a failed read of storage comes before the hook: the hook is not called", async function() {
+            await setup();
+            let called = false;
+            hooks.clear();
+            hooks.add("preDeploy.test", function() { called = true });
+            const getFlows = sinon.stub(runtimeFlows, "readStoredFlows").callsFake(async function() { throw Object.assign(new Error("disk"), { code: "storage_error" }) });
+            try {
+                const err = await flows.setFlows({ deploymentType: "reload", req: {} }).then(() => null, e => e);
+                err.should.have.property("code", "storage_error");
+                called.should.be.false();
+            } finally {
+                getFlows.restore();
+            }
         });
     });
 

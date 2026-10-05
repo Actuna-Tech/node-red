@@ -19,7 +19,9 @@
  *   E-01: the lock is held until the start completes (R-43); a failed storage read releases it
  *   E-02: the instance state in steps 4 and 8
  *   Z-09: reload from storage (source "storage" with reread)
- *   Z-06 (#10): prepare/apply of the single-flow api (U1); reload: read in step 2, credentials in step 3a (D15)
+ *   Z-06 (#10): prepare/apply of the single-flow api (U1); reload: read in step 2, credentials in step 3a (D15);
+ *   the preDeploy hook (step 3): the order, a rejection/failure/timeout without effects, no credentials in the
+ *   event, I10, I13, I14, SEC-104(a); without a handler nothing is done (I1)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -472,6 +474,361 @@ describe("flows/pipeline", function() {
             await pipeline.deploy({ type: "reload", source: "storage", reread: async () => ({ apply: { rev: "B" } }) }).should.be.rejectedWith("credentials");
             instanceState.get().state.should.equal("ready");
             lock.isLocked().should.be.false();
+        });
+    });
+    describe("preDeploy hook (Z-06, step 3)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const { hooks, log } = NR_TEST_UTILS.require("@node-red/util");
+        let logStubs;
+        let logged;
+        let seen;
+        let offState;
+        function intended(properties) {
+            return Object.assign(new Error("not allowed"), { status: 400, code: "forbidden_node" }, properties);
+        }
+        beforeEach(function() {
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({ errors: [] });
+            logged = { warn: [], error: [] };
+            logStubs = [
+                sinon.stub(log, "_").callsFake(k => "[" + k + "]"),
+                sinon.stub(log, "warn").callsFake(m => logged.warn.push(m)),
+                sinon.stub(log, "error").callsFake(m => logged.error.push(m)),
+                sinon.stub(log, "debug")
+            ];
+            seen = [];
+            offState = instanceState.onChange(info => seen.push(info.state));
+            pipeline.init({ flows: flows, settings: { deploy: { hookTimeout: 100 } } });
+        });
+        afterEach(function() {
+            offState();
+            logStubs.forEach(s => s.restore());
+            hooks.clear();
+            instanceState.reset();
+        });
+        const noEffects = () => {
+            flows.setFlows.called.should.be.false();
+            flows.loadFlows.called.should.be.false();
+            flows.loadStoredCredentials.called.should.be.false();
+            seen.should.eql([]);
+            lock.isLocked().should.be.false();
+        };
+
+        describe("without a handler (I1, off_identical)", function() {
+            it("no copy, no timer, no accessor call, no extra read of the active configuration", async function() {
+                const handlers = sinon.spy(hooks, "handlers");
+                const has = sinon.spy(hooks, "has");
+                const clock = sinon.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+                try {
+                    await pipeline.deploy({ type: "full", source: "api", flows: { flows: [1, 2] } });
+                    await pipeline.deploy({ type: "reload", source: "api" });
+                    await pipeline.deploy({ type: "flows", prepare: async () => ({ config: [] }), apply: async () => "x", operation: "addFlow" });
+                    handlers.called.should.be.false();
+                    flows.getFlows.called.should.be.false();
+                    clock.countTimers().should.equal(0);
+                    has.calledWith("preDeploy").should.be.true();
+                } finally {
+                    clock.restore();
+                    handlers.restore();
+                    has.restore();
+                }
+            });
+            it("a hook other than preDeploy does not change anything", async function() {
+                hooks.add("preReload.a", () => false);
+                hooks.add("postDeploy.a", () => false);
+                (await pipeline.deploy({ type: "full", flows: { flows: [1] } })).should.eql({ rev: "newRev" });
+            });
+        });
+
+        describe("order and place (I2)", function() {
+            it("runs once per deployment, under the lock, after the revision check, before the state deploying (full)", async function() {
+                const order = [];
+                hooks.add("preDeploy.a", function(event) {
+                    order.push({ fn: "hook", locked: lock.isLocked(), state: instanceState.get().state });
+                });
+                flows.setFlows = sinon.spy(async function() { order.push({ fn: "setFlows", state: instanceState.get().state }); return "newRev" });
+                await pipeline.deploy({ type: "full", source: "api", flows: { flows: [1] } });
+                order.should.eql([{ fn: "hook", locked: true, state: "ready" }, { fn: "setFlows", state: "deploying" }]);
+            });
+            it("a revision error (409) comes before the hook: the hook is not called", async function() {
+                const hook = sinon.spy();
+                hooks.add("preDeploy.a", hook);
+                await pipeline.deploy({ type: "full", flows: { flows: [1], rev: "other" } }).should.be.rejected();
+                hook.called.should.be.false();
+                noEffects();
+            });
+            it("single-flow api: an error of prepare (404, 409 ...) comes before the hook", async function() {
+                const hook = sinon.spy();
+                hooks.add("preDeploy.a", hook);
+                await pipeline.deploy({ type: "flows", prepare: () => { throw Object.assign(new Error(), { code: 404 }) }, apply: async () => "x" }).should.be.rejected();
+                hook.called.should.be.false();
+                seen.should.eql([]);
+            });
+            it("reload: read (2) -> hook (3) -> credentials (3a) -> state deploying (4) -> load", async function() {
+                const order = [];
+                flows.readStoredFlows = sinon.spy(async () => { order.push("read:" + instanceState.get().state); return loadedConfig });
+                flows.loadStoredCredentials = sinon.spy(async (c) => { order.push("credentials:" + instanceState.get().state); return c });
+                flows.loadFlows = sinon.spy(async () => { order.push("load:" + instanceState.get().state); return "loadRev" });
+                hooks.add("preDeploy.a", function() { order.push("hook:" + instanceState.get().state) });
+                await pipeline.deploy({ type: "reload", source: "api" });
+                order.should.eql(["read:ready", "hook:ready", "credentials:ready", "load:deploying"]);
+            });
+            it("the hook gets the candidate configuration: /flows the body, /flow prepared.config, reload the stored flows", async function() {
+                const events = [];
+                hooks.add("preDeploy.a", function(event) { events.push(event) });
+                await pipeline.deploy({ type: "nodes", source: "api", req: {}, operation: "setFlows", flows: { flows: [{ id: "a", type: "x" }], credentials: { a: { p: "s" } } }, user: { username: "u", permissions: "*" } });
+                await pipeline.deploy({
+                    type: "flows", req: {}, operation: "updateFlow", user: null,
+                    describe: (p) => ({ flowId: "t9", created: p.created }),
+                    prepare: async () => ({ config: [{ id: "t9", type: "tab" }], created: true }), apply: async () => "x"
+                });
+                await pipeline.deploy({ type: "reload", source: "api" });
+                events.map(e => e.type).should.eql(["nodes", "flows", "reload"]);
+                events[0].flows.should.eql([{ id: "a", type: "x" }]);
+                events[0].should.not.have.property("credentials");
+                events[0].operation.should.equal("setFlows");
+                events[0].source.should.equal("api");
+                events[0].activeRev.should.equal("currentRev");
+                events[0].user.should.eql({ username: "u", permissions: "*" });
+                events[1].flows.should.eql([{ id: "t9", type: "tab" }]);
+                events[1].operation.should.equal("updateFlow");
+                events[1].flowId.should.equal("t9");
+                events[1].created.should.equal(true);
+                should.equal(events[1].user, null);
+                events[2].flows.should.eql(loadedConfig.flows);
+                events[2].rev.should.equal("storedRev");
+                events[2].activeRev.should.equal("currentRev");
+            });
+            it("source is internal without a request", async function() {
+                let event;
+                hooks.add("preDeploy.a", function(e) { event = e });
+                await pipeline.deploy({ type: "full", source: "api", operation: "setFlows", flows: { flows: [1] } });
+                event.source.should.equal("internal");
+            });
+            it("a body whose flows are not an array: the hook is skipped, the deployment goes on as in 5.0.7", async function() {
+                const hook = sinon.spy();
+                hooks.add("preDeploy.a", hook);
+                await pipeline.deploy({ type: "full", flows: { flows: "not an array" } });
+                await pipeline.deploy({ type: "full", flows: {} });
+                hook.called.should.be.false();
+                flows.setFlows.calledTwice.should.be.true();
+            });
+        });
+
+        describe("a rejection, a failure and a timeout (I3)", function() {
+            const kinds = [
+                ["a rejection by false", () => false, "deploy_rejected", 400],
+                ["a rejection by an Error with status 400", () => { throw intended() }, "deploy_rejected", 400],
+                ["a failure", () => { throw new TypeError("x") }, "deploy_hook_failed", 503],
+                ["a timeout", () => new Promise(() => {}), "deploy_hook_timeout", 503]
+            ];
+            const operations = [
+                ["/flows full", () => ({ type: "full", source: "api", flows: { flows: [1] } })],
+                ["/flows flows", () => ({ type: "flows", source: "api", flows: { flows: [1] } })],
+                ["/flows reload", () => ({ type: "reload", source: "api" })],
+                ["/flow", () => ({ type: "flows", source: "api", prepare: async () => ({ config: [1] }), apply: async () => "x" })]
+            ];
+            kinds.forEach(function(kind) {
+                operations.forEach(function(operation) {
+                    it(kind[0] + " (" + operation[0] + "): no save, no stop, no state, no credentials, no postDeploy; the lock is released", async function() {
+                        const post = sinon.spy();
+                        hooks.add("postDeploy.a", post);
+                        hooks.add("preDeploy.a", kind[1]);
+                        const err = await pipeline.deploy(operation[1]()).then(() => null, e => e);
+                        should.exist(err);
+                        err.should.have.property("code", kind[2]);
+                        err.should.have.property("status", kind[3]);
+                        noEffects();
+                        await new Promise(r => setImmediate(r));
+                        post.called.should.be.false();
+                    });
+                });
+            });
+            it("the next deployment after a rejection goes through", async function() {
+                let accept = false;
+                hooks.add("preDeploy.a", () => accept ? undefined : false);
+                await pipeline.deploy({ type: "full", flows: { flows: [1] } }).should.be.rejected();
+                accept = true;
+                (await pipeline.deploy({ type: "full", flows: { flows: [1] } })).should.eql({ rev: "newRev" });
+                seen[0].should.equal("deploying");
+            });
+            it("a rejection does not cancel a pending reload from storage (reloadPending) and does not clear the condition reload (R-47)", async function() {
+                instanceState.markReloadPending();
+                instanceState.markDraining();
+                seen.length = 0;
+                hooks.add("preDeploy.a", () => false);
+                await pipeline.deploy({ type: "full", flows: { flows: [1] } }).should.be.rejected();
+                instanceState.get().state.should.equal("reloadPending");
+                seen.should.eql([]);
+            });
+            it("the lock is held by the hook for at most hookTimeout (I9)", async function() {
+                hooks.add("preDeploy.a", () => new Promise(() => {}));
+                const started = Date.now();
+                const first = pipeline.deploy({ type: "full", flows: { flows: [1] } }).then(() => null, e => e);
+                await new Promise(r => setTimeout(r, 30));
+                lock.isLocked().should.be.true();
+                const second = pipeline.deploy({ type: "full", flows: { flows: [2] } }).then(() => null, e => e);
+                (await first).should.have.property("code", "deploy_hook_timeout");
+                (Date.now() - started).should.be.below(400);
+                // SEC-103: the second does not run the handler again
+                (await second).should.have.property("code", "deploy_hook_timeout");
+                lock.isLocked().should.be.false();
+                flows.setFlows.called.should.be.false();
+            });
+        });
+
+        describe("what the hook cannot do (I4, I5)", function() {
+            it("I4: a mutation of the event gives 503 and the deployed configuration is the client's, credentials included", async function() {
+                const body = { flows: [{ id: "t1", type: "tab", credentials: { a: "secret" } }], credentials: { t1: { a: "secret" } } };
+                hooks.add("preDeploy.a", function(event) { "use strict"; event.flows[0].label = "changed" });
+                const err = await pipeline.deploy({ type: "full", flows: body }).then(() => null, e => e);
+                err.should.have.property("code", "deploy_hook_failed");
+                flows.setFlows.called.should.be.false();
+                // a sloppy handler: nothing changes
+                hooks.clear();
+                hooks.add("preDeploy.b", function(event) { event.flows[0].label = "changed" });
+                await pipeline.deploy({ type: "full", flows: body });
+                flows.setFlows.firstCall.args[0].should.equal(body.flows);
+                body.flows[0].should.eql({ id: "t1", type: "tab", credentials: { a: "secret" } });
+                flows.setFlows.firstCall.args[1].should.equal(body.credentials);
+            });
+            it("I5: no credentials and no env cred value in the event of /flows, /flow and reload", async function() {
+                const secretConfig = () => [
+                    { id: "t1", type: "tab", credentials: { c: "secret" }, env: [{ name: "K", type: "cred", value: "secret" }] },
+                    { id: "n1", type: "subflow:s1", z: "t1", credentials: { c: "secret" }, env: [{ name: "K", type: "cred", value: "secret" }] }
+                ];
+                const events = [];
+                hooks.add("preDeploy.a", function(event) { events.push(JSON.stringify(event.flows)) });
+                await pipeline.deploy({ type: "full", flows: { flows: secretConfig(), credentials: { t1: { c: "secret" } } } });
+                await pipeline.deploy({ type: "flows", prepare: async () => ({ config: secretConfig() }), apply: async () => "x" });
+                flows.readStoredFlows = sinon.spy(async () => ({ flows: secretConfig(), rev: "R", credentials: { t1: { c: "secret" } } }));
+                await pipeline.deploy({ type: "reload" });
+                events.should.have.length(3);
+                events.forEach(e => e.should.not.containEql("secret"));
+            });
+        });
+
+        describe("reload: what was checked is what runs (I10)", function() {
+            it("the same object that the hook saw is deployed; storage is not read again", async function() {
+                const stored = { flows: [{ id: "t1", type: "tab" }], rev: "A" };
+                flows.readStoredFlows = sinon.spy(async () => stored);
+                hooks.add("preDeploy.a", async function(event) {
+                    // the file changes while the hook runs
+                    flows.readStoredFlows = sinon.spy(async () => ({ flows: [{ id: "forbidden", type: "tab" }], rev: "B" }));
+                    await new Promise(r => setTimeout(r, 10));
+                });
+                await pipeline.deploy({ type: "reload", source: "api" });
+                flows.loadFlows.calledOnce.should.be.true();
+                flows.loadFlows.firstCall.args[2].should.equal(stored);
+                flows.loadStoredCredentials.firstCall.args[0].should.equal(stored);
+            });
+        });
+
+        describe("startTimeoutReleasesLock and supersede (I13)", function() {
+            it("the preDeploy of a second deployment runs while the first still starts; its rejection does not touch the first's state or token", async function() {
+                let finishStart;
+                let startCalls = 0;
+                flows.setFlows = sinon.spy(async function() {
+                    startCalls++;
+                    if (startCalls === 1) {
+                        // as flows.setFlows with deploy.startTimeoutReleasesLock: the lock is released after the limit
+                        lock.holdUntil(new Promise(resolve => { finishStart = () => resolve({ errors: [] }) }), { limit: 20 });
+                    }
+                    return "rev" + startCalls;
+                });
+                hooks.add("preDeploy.a", function(event) { return event.flows[0] === "reject" ? false : undefined });
+                (await pipeline.deploy({ type: "full", flows: { flows: ["first"] } })).should.eql({ rev: "rev1" });
+                const stateBefore = instanceState.get();
+                stateBefore.state.should.equal("deploying");
+                const err = await pipeline.deploy({ type: "full", flows: { flows: ["reject"] } }).then(() => null, e => e);
+                err.should.have.property("code", "deploy_rejected");
+                // the first deployment is still starting: its state and token are untouched
+                instanceState.get().should.eql(stateBefore);
+                flows.setFlows.calledOnce.should.be.true();
+                finishStart();
+                await lock.runExclusive(async () => {});
+                instanceState.get().should.containEql({ state: "ready", previous: "deploying", reason: "deploy" });
+                // preDeploy ran exactly once for each of the two deployments
+                (await pipeline.deploy({ type: "full", flows: { flows: ["third"] } })).should.eql({ rev: "rev2" });
+            });
+            it("an accepted second deployment during the start (supersede) runs the hook once", async function() {
+                let finishStart;
+                let startCalls = 0;
+                flows.setFlows = sinon.spy(async function() {
+                    startCalls++;
+                    if (startCalls === 1) {
+                        lock.holdUntil(new Promise(resolve => { finishStart = () => resolve({ errors: [] }) }), { limit: 20 });
+                    }
+                    return "rev" + startCalls;
+                });
+                const hook = sinon.spy();
+                hooks.add("preDeploy.a", hook);
+                await pipeline.deploy({ type: "full", flows: { flows: ["first"] } });
+                await pipeline.deploy({ type: "full", flows: { flows: ["second"] } });
+                hook.calledTwice.should.be.true();
+                finishStart();
+                await lock.runExclusive(async () => {});
+            });
+        });
+
+        describe("a handler that never finishes (I14)", function() {
+            it("three deployments: the first times out, the next two are answered at once without calling the handler; the late result does not change a later deployment", async function() {
+                let calls = 0;
+                let finishLate;
+                hooks.add("preDeploy.hang", function() {
+                    calls++;
+                    if (calls === 1) {
+                        return new Promise(resolve => { finishLate = resolve });
+                    }
+                });
+                const first = await pipeline.deploy({ type: "full", flows: { flows: [1] } }).then(() => null, e => e);
+                first.should.have.property("code", "deploy_hook_timeout");
+                const started = Date.now();
+                for (let i = 0; i < 2; i++) {
+                    (await pipeline.deploy({ type: "full", flows: { flows: [1] } }).then(() => null, e => e)).should.have.property("code", "deploy_hook_timeout");
+                }
+                (Date.now() - started).should.be.below(50);
+                calls.should.equal(1);
+                finishLate(false);
+                await new Promise(r => setTimeout(r, 10));
+                // the call ended: the handler accepts again and the late `false` is not applied
+                (await pipeline.deploy({ type: "full", flows: { flows: [1] } })).should.eql({ rev: "newRev" });
+                calls.should.equal(2);
+            });
+        });
+
+        describe("a deployment started from the hook (SEC-104a, documented)", function() {
+            it("ends with 503 within the hookTimeout (plus a margin): the inner one waits for the lock, the limit stops the outer one, the inner one meets the busy handler", async function() {
+                pipeline.init({ flows: flows, settings: { deploy: { hookTimeout: 200 } } });
+                const results = {};
+                let inner;
+                hooks.add("preDeploy.reentrant", function() {
+                    inner = pipeline.deploy({ type: "full", flows: { flows: ["inner"] } }).then(() => { results.inner = null }, e => { results.inner = e });
+                    return inner;
+                });
+                const started = Date.now();
+                const outer = await pipeline.deploy({ type: "full", flows: { flows: ["outer"] } }).then(() => null, e => e);
+                outer.should.have.property("code", "deploy_hook_timeout");
+                await inner;
+                results.inner.should.have.property("code", "deploy_hook_timeout");
+                // hookTimeout is 200 ms: both ended within it (+ a margin of less than half of it), not after 2 x hookTimeout
+                (Date.now() - started).should.be.below(350);
+                flows.setFlows.called.should.be.false();
+                lock.isLocked().should.be.false();
+            });
+        });
+
+        describe("scope (I8)", function() {
+            it("a reload from storage (source storage) does not run preDeploy", async function() {
+                const hook = sinon.spy();
+                hooks.add("preDeploy.a", hook);
+                instanceState.markReloadPending();
+                flows.reloadFromStorage = sinon.spy(async (loaded) => loaded.rev);
+                const result = await pipeline.deploy({ type: "reload", source: "storage", reread: async () => ({ apply: { flows: [], rev: "B" }, reloadType: "full" }) });
+                result.should.eql({ rev: "B" });
+                hook.called.should.be.false();
+            });
         });
     });
 });

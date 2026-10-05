@@ -21,6 +21,7 @@
  *   W-3: contract of the deploy errors of the single-flow api (rev, revAll, errors)
  *   Z-15: PUT v2 passes started: false of an editor-only instance (R-39)
  *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
+ *   Z-06 (#10): contract tests of the preDeploy hook errors of the single-flow api (400 deploy_rejected, 503, 503)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -453,6 +454,34 @@ describe("api/admin/flow", function() {
         it("DELETE returns 500 with rev null and revAll", async function() {
             const res = await request(app).delete("/flow/t1").expect(500);
             res.body.should.eql({code:"deploy_stop_failed", message:"stop failed", rev:null, revAll:"rev-all"});
+        });
+    });
+
+    describe("preDeploy hook errors of the single-flow api (Z-06)", function() {
+        function failWith(code, status, extra) {
+            const fail = function() {
+                return Promise.reject(Object.assign(new Error("message of " + code), {code: code, status: status}, extra));
+            };
+            flow.init({flows: {addFlow: fail, updateFlow: fail, deleteFlow: fail}});
+        }
+        const routes = [
+            ["POST /flow", () => request(app).post("/flow").send({label: "x", nodes: []})],
+            ["PUT /flow/:id", () => request(app).put("/flow/t1").send({nodes: []})],
+            ["DELETE /flow/:id", () => request(app).delete("/flow/t1")]
+        ];
+        routes.forEach(function(route) {
+            it(route[0] + ": deploy_rejected is 400 with code, message, reason and details", async function() {
+                failWith("deploy_rejected", 400, {reason: "forbidden_node", details: ["n1"], rev: "internal"});
+                const res = await route[1]().expect(400);
+                res.body.should.eql({code: "deploy_rejected", message: "message of deploy_rejected", reason: "forbidden_node", details: ["n1"]});
+            });
+            it(route[0] + ": deploy_hook_failed and deploy_hook_timeout are 503 with code and message only", async function() {
+                for (const code of ["deploy_hook_failed", "deploy_hook_timeout"]) {
+                    failWith(code, 503, {reason: "internal", details: {secret: 1}});
+                    const res = await route[1]().expect(503);
+                    res.body.should.eql({code: code, message: "message of " + code});
+                }
+            });
         });
     });
 
