@@ -66,6 +66,45 @@ describe("nr-test-utils/free-port", function() {
         await close(foreign);
     });
 
+    it("skips a candidate port held by a foreign server on 127.0.0.1 (the main scenario)", async function() {
+        const foreign = net.createServer();
+        const held = await listen(foreign, 0, "127.0.0.1");
+        try {
+            const fresh = await freePort();
+            // the system offers the held port first, then a fresh one
+            const offered = [held, fresh];
+            const port = await freePort(5, async () => offered.shift());
+            port.should.equal(fresh);
+            offered.should.have.length(0);
+        } finally {
+            await close(foreign);
+        }
+    });
+
+    it("gives up with an error when every candidate is held", async function() {
+        const foreign = net.createServer();
+        const held = await listen(foreign, 0, "127.0.0.1");
+        try {
+            await freePort(3, async () => held).should.be.rejectedWith(/no free port in 3 attempts/);
+        } finally {
+            await close(foreign);
+        }
+    });
+
+    it("releases the port: it can be listened on at once, on all interfaces and then on 127.0.0.1", async function() {
+        const port = await freePort();
+        // one after the other: Linux does not let a server on 127.0.0.1 share the port
+        // with one on all interfaces
+        for (const host of [undefined, "127.0.0.1"]) {
+            const server = net.createServer();
+            try {
+                (await listen(server, port, host)).should.equal(port);
+            } finally {
+                if (server.listening) { await close(server); }
+            }
+        }
+    });
+
     it("listenOnFreePort starts the server and gives its port", async function() {
         const server = net.createServer();
         const port = await listenOnFreePort(server);

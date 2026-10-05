@@ -29,6 +29,9 @@ var udpNode = require("nr-test-utils").require("@node-red/nodes/core/network/32-
 describe('UDP in Node', function() {
     // A free UDP port of the given type (udp4 or udp6): the "udp in" node binds the port
     // given in its configuration, so it is known only before the node starts.
+    // Not checked: a foreign UDP socket on 127.0.0.1 that shares the port (the node binds with
+    // reuseAddr: true, so on macOS it can coexist with such a socket); only the port that the
+    // system gives for a plain bind is used.
     function getFreePort(proto, done) {
         var probe = dgram.createSocket(proto);
         probe.once("error", done);
