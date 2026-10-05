@@ -1,3 +1,11 @@
+# Modified by Actuna Sp. z o.o.:
+#   #57: actions on Node 24 (checkout/setup-node v7); package-manager-cache: false is a
+#   safeguard - setup-node v5+ would cache npm on its own if package.json named npm in
+#   packageManager; fail-fast off, so every Node version reports its own result.
+#   ubuntu-latest kept: the suite passed on ubuntu-26.04, which ubuntu-latest becomes
+#   from 2026-10-19
+# This notice is required by section 4(b) of the Apache License 2.0.
+
 name: Run tests
 
 on:
@@ -15,14 +23,16 @@ jobs:
       contents: read  # for actions/checkout to fetch code
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         node-version: [22, 24]
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: ${{ matrix.node-version }}
+        package-manager-cache: false
     - name: Install Dependencies
       run: npm ci
     - name: Run tests

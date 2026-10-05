@@ -438,6 +438,10 @@ Fixes
    (127.0.0.1) instead of `helper.request()`; the helper reports an explicit error for a TLS server, a URL
    given as text and http2; the macOS event of the `watch` test is explained (node-watch replays the
    events of the preparation of the test); the reload test waits for its pollers after a failed check
+ - CI only, no change of the product: the test workflow uses `actions/checkout` and `actions/setup-node` v7
+   (Node 24) and runs every Node version to its own result (`fail-fast: false`); the suite was checked on
+   Ubuntu 26.04, which `ubuntu-latest` becomes from 2026-10-19. The release workflow of upstream runs only in
+   `node-red/node-red` (#57)
 
 Features
 
