@@ -37,6 +37,8 @@
  *   #43: `type` of the preReload payload is the configured one - the scope is decided by
  *   changedFlows (documented); an unusual object of the storage in digest() (SEC-004):
  *   credentials_digest_failed without the message of the cause in the log, the R2 rule
+ *   #56 (REV-N01): the tests with the real credentials module drop its state after each test
+ *   (init() resets a migration that was started and not finished by a failed test)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -562,6 +564,14 @@ describe("flows/reload (Z-09)", function() {
                         nodes: { getType: () => function() {} }
                     });
                 }
+                afterEach(function() {
+                    // #56 (REV-N01): a test of a pending migration may stop on a failed assertion before it
+                    // ends the migration with export(). load() then leaves removeDefaultKey set in the module,
+                    // and the next redeploy of a later spec gets "settings.not-available". init() resets the
+                    // flag, so this drops the state of the instance whatever way the test ended (it cannot
+                    // throw and does not depend on the settings of the test, unlike an export() in a finally).
+                    initCredentials(settingsValues);
+                });
                 async function encryptedWith(content, secretSettings) {
                     initCredentials(secretSettings);
                     await credentialsModule.load({});

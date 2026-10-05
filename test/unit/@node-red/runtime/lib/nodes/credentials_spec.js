@@ -21,6 +21,7 @@
  *   a fixed error credentials_digest_failed without the message of the cause
  *   Test isolation: the tests of load() with a pending migration finish it (export) after
  *   each test, so the module flag removeDefaultKey does not leak to other specs of the process
+ *   #56: a test that init() resets removeDefaultKey (a started migration is not carried over)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -731,11 +732,35 @@ describe('red/runtime/nodes/credentials', function() {
             });
             afterEach(function() {
                 // A load() with a pending migration sets the module flag removeDefaultKey, which
-                // init() does not reset and only export() clears. Finish the migration here (the
+                // only export() clears (and, since #56, also init()). Finish the migration here (the
                 // settings stub of this block is still the one of the module), so that the flag
                 // does not leak to the tests that run later in the same process (they would get
-                // "settings.not-available" from the export of a redeploy).
+                // "settings.not-available" from the export of a redeploy). Since #56 this is a
+                // second safeguard: init() of the next test resets the flag as well.
                 return credentials.export();
+            });
+
+            it("init() does not carry a started migration over: the next export() does not delete the default key (#56)", function() {
+                var deleted = sinon.spy(function(key) { delete settingsValues[key]; return Promise.resolve() });
+                runtime.settings.delete = deleted;
+                return credentials.load(OLD).then(function() {
+                    // the migration has started: load() waits for export() to remove the default key
+                    credentials.dirty().should.be.true();
+                    // a new init() in the same process (embedding: a repeated RED.init()) starts from scratch
+                    credentials.init(runtime);
+                    return credentials.export();
+                }).then(function() {
+                    deleted.called.should.be.false();
+                    settingsValues.should.have.property("_credentialSecret", DEFAULT_KEY);
+                    // the migration is still done by the load() and the export() of the new instance
+                    return credentials.load(OLD);
+                }).then(function() {
+                    return credentials.export();
+                }).then(function() {
+                    deleted.calledOnce.should.be.true();
+                    deleted.firstCall.args[0].should.equal("_credentialSecret");
+                    settingsValues.should.not.have.property("_credentialSecret");
+                });
             });
 
             it("during the migration the credentials still encrypted with the old key have a digest, nothing is changed", function() {
