@@ -347,11 +347,16 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
             // nothing was accepted, so nothing is waited for
             (Date.now() - started).should.be.below(DELAY);
             const result = await slow.done;
-            slow.cancel();
             result.status.should.equal(503);
             result.body.code.should.equal("http_drain_not_accepted");
             result.headers["retry-after"].should.equal("1");
             result.headers.connection.should.equal("close");
+            // the server closes the connection after the 503 while the client keeps sending the body: no crash, no error
+            try { slow.req.write("0123456789", () => {}) } catch (err) { /* the socket is already closed */ }
+            await sleep(200);
+            slow.cancel();
+            (await send(inst.url, "/fast").done).status.should.equal(200);
+            inst.output().should.not.match(/uncaught|TypeError|ERR_HTTP_HEADERS_SENT|Cannot set headers/i);
         });
         it("a request that the flow keeps and answers after a full stop gets 503, the late response is dropped without an error", async function() {
             await reset(inst);
@@ -373,6 +378,33 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
             await sleep(100);
             inst.output().should.match(/already answered with 503/);
             inst.output().should.not.match(/ERR_HTTP_HEADERS_SENT|Cannot set headers/);
+        });
+    });
+
+    describe("on, timeout 2000: a request that arrives in the drain of a deployment that changes its node (A18)", function() {
+        let inst;
+        before(async function() { inst = await startInstance({ timeout: 2000 }) });
+
+        ["flows-holder", "nodes-holder"].forEach(function(name) {
+            it(name + ": the request of the drain is answered by the flow, the new one is lost with the node and gets 503 after its deadline, not none", async function() {
+                const result = await scenario(inst, name, {
+                    waitMs: 5000,
+                    during: async function(i) {
+                        // the drain ends when the request of S0 is answered (900 ms), then the node that holds
+                        // this one is stopped; the deadline (the arrival + 2000 ms) is still ahead
+                        await sleep(300);
+                        return send(i.url, "/slow", { waitMs: 8000 }).done;
+                    }
+                });
+                result.status.should.equal(200);
+                should.not.exist(result.during.hang);
+                result.during.status.should.equal(503);
+                result.during.body.code.should.equal("http_drain_outcome_unknown");
+                result.during.headers["retry-after"].should.equal("1");
+                // after the deadline (about 2000 ms after the arrival), long after the stop of the node
+                result.during.ms.should.be.above(1500);
+                result.during.ms.should.be.below(4500);
+            });
         });
     });
 

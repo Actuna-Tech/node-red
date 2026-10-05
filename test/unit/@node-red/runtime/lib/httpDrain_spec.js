@@ -350,6 +350,21 @@ describe("runtime/httpDrain (#40)", function() {
             (await settled(promise)).should.be.true();
             httpDrain.afterStop("full");
         });
+        it("resolves only when the last of many accepted requests is answered", async function() {
+            init();
+            const all = [];
+            for (let i = 0; i < 3000; i++) {
+                all.push(accept(route(arrive())));
+            }
+            const promise = httpDrain.beforeStop();
+            for (let i = 0; i < all.length - 1; i++) {
+                all[i].res.end("ok");
+            }
+            (await settled(promise)).should.be.false();
+            all[all.length - 1].res.end("ok");
+            (await settled(promise)).should.be.true();
+            httpDrain.afterStop("full");
+        });
         it("abortWait without a wait does nothing", function() {
             init();
             httpDrain.abortWait();
@@ -598,16 +613,71 @@ describe("runtime/httpDrain (#40)", function() {
             clock.countTimers().should.equal(0);
             r.res.end("ok");
         });
-        it("a deadline never makes the guard answer a request outside the window (after it closes)", async function() {
+        it("a request accepted in the window is answered 503 after its deadline also when the window has closed: the limit is hard (A18)", async function() {
             init();
             const token = deploying();
-            await httpDrain.beforeStop();
-            const r = accept(route(arrive("POST")));
+            // the request of an old node that the deployment changes: its message is lost with the node
+            const old = accept(route(arrive("POST")));
+            const promise = httpDrain.beforeStop();
+            old.res.end("answered by the flow");
+            await promise;
+            // arrives in the drain, goes to the node that is stopped
+            clock.tick(100);
+            const lost = accept(route(arrive("POST")));
+            httpDrain.afterStop("partial");
+            lost.res.writableEnded.should.be.false();
+            // the deployment ends: the window is closed, the guard must stay for the deadline
             instanceState.end(token, { errors: [] });
             clock.tick(1);
+            lost.res.writableEnded.should.be.false();
+            clock.countTimers().should.equal(1);
+            clock.tick(TIMEOUT + 250);
+            lost.res.statusCode.should.equal(503);
+            body(lost).code.should.equal("http_drain_outcome_unknown");
+            lost.res.headers.should.not.have.property("retry-after");
+            clock.countTimers().should.equal(0);
+        });
+        it("after the window has closed the guard answers a GET with Retry-After, a request that is not accepted as not_accepted", async function() {
+            init();
+            const token = deploying();
+            await drainNow();
+            const accepted = accept(route(arrive("GET")));
+            const notAccepted = route(arrive("POST"));
+            clock.tick(100);
+            httpDrain.afterStop("partial");
+            instanceState.end(token, { errors: [] });
+            clock.tick(1);
+            clock.tick(TIMEOUT + 250);
+            body(accepted).code.should.equal("http_drain_outcome_unknown");
+            accepted.res.headers["retry-after"].should.equal("1");
+            body(notAccepted).code.should.equal("http_drain_not_accepted");
+            notAccepted.res.headers["retry-after"].should.equal("1");
+            clock.countTimers().should.equal(0);
+        });
+        it("the guard after the window does not answer a request that finished first and then stops", async function() {
+            init();
+            const token = deploying();
+            await drainNow();
+            const r = accept(route(arrive("POST")));
+            httpDrain.afterStop("partial");
+            instanceState.end(token, { errors: [] });
+            r.res.end("late but in time");
+            clock.countTimers().should.equal(0);
             clock.tick(10 * TIMEOUT);
+            r.res.body.should.equal("late but in time");
+        });
+        it("a request that a handler passes on with next('route') to a route without the mark is not answered (the deadline stays)", async function() {
+            init();
+            const token = deploying();
+            const r = accept(route(arrive("POST")));
+            await drainNow();
+            // the marked route passed the request on: Express now has another route
+            r.req.route = { stack: [{ handle: function other() {} }] };
+            httpDrain.afterStop("full");
+            clock.tick(10 * TIMEOUT);
+            httpDrain.finalize();
             r.res.writableEnded.should.be.false();
-            r.res.end("ok");
+            instanceState.end(token, { errors: [] });
         });
         it("a request without a route in the window never gets a deadline", async function() {
             init();
@@ -825,13 +895,15 @@ describe("runtime/httpDrain (#40)", function() {
             httpDrain.afterStop("full");
             r.res.statusCode.should.equal(503);
         });
-        it("stops the guard when the window has closed", async function() {
+        it("the guard stops when the window has closed and the requests are finished", async function() {
             init();
             const r = route(arrive());
             await httpDrain.beforeStop();
             httpDrain.afterStop("partial");
-            clock.countTimers().should.equal(0);
+            // the request has a deadline: the guard stays for it
+            clock.countTimers().should.equal(1);
             r.res.end("ok");
+            clock.countTimers().should.equal(0);
         });
     });
 

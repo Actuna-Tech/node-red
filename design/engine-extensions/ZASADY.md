@@ -124,7 +124,7 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
  6b. odpowiedzi na otwarte zapytania – #40: `httpDrain.afterStop(scope)` (nie rzuca; także po błędzie kroku 6): zakres pełny (typ `full`,
        `globalConfigChanged`, `setState` stop, `RED.stop`, projekty) – 503 wszystkim otwartym zapytaniom z dopasowaną trasą; zakres
        częściowy (`nodes`/`flows`) – tylko tym po terminie (P1: twardy limit, także flow niezmieniane); okno zapytań trwa do końca
-       kroku 8 (stan `deploying`/`reloading`) – zapytania przychodzące w oknie dostają termin
+       kroku 8 (stan `deploying`/`reloading`) – zapytania przychodzące w oknie dostają termin; strażnik odpowiada 503 po terminie także po zamknięciu okna (limit twardy, A18) – zapytania spoza okna terminu nie mają
  7. start nowych węzłów         – Z-15 editorOnly: krok pominięty; tryb "started" → odpowiedź {rev, started: false} (R-39)
  8. stan = "ready" (lub "failed" przy błędzie startu)
  ── koniec blokady ─────────────────────────────────────────────────────────────
