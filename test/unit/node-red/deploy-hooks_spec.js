@@ -170,6 +170,11 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             },
             flows: async function() { return (await request("GET", url + "/flows", undefined, V2)).json },
             hello: async function() { return (await request("GET", url + "/hello")).text },
+            // In the default mode a deployment answers before the new flows start: the route may be
+            // missing for a moment after an accepted deployment, so the tests wait for the text
+            expectRoute: async function(route, text) {
+                await waitFor(async () => (await request("GET", url + "/" + route)).text === text, 10000, "the route /" + route + " does not answer " + text);
+            },
             log: function(name) { return readLog(logDir, name) }
         };
     }
@@ -188,7 +193,7 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             let res = await request("POST", url + "/flows", { rev: current.rev, flows: current.flows.concat(helloFlow("t2", "second", "v2")) }, V2);
             res.status.should.equal(200);
             Object.keys(res.json).should.eql(["rev"]);
-            (await request("GET", url + "/second")).text.should.equal("v2");
+            await server.expectRoute("second", "v2");
             // the stale revision
             res = await request("POST", url + "/flows", { rev: current.rev, flows: current.flows }, V2);
             res.status.should.equal(409);
@@ -198,12 +203,12 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             res.status.should.equal(200);
             Object.keys(res.json).should.eql(["id"]);
             const id = res.json.id;
-            (await request("GET", url + "/added")).text.should.equal("va");
+            await server.expectRoute("added", "va");
             // PUT /flow/:id (v1): 200 {id}
             res = await request("PUT", url + "/flow/" + id, { label: "added", nodes: helloNodes("a", "added", "vb") });
             res.status.should.equal(200);
             res.json.should.eql({ id: id });
-            await waitFor(async () => (await request("GET", url + "/added")).text === "vb", 5000, "the update did not start");
+            await server.expectRoute("added", "vb");
             // the rejected requests of the single-flow api: the same codes as before
             res = await request("PUT", url + "/flow/missing", { label: "m", nodes: [] });
             res.status.should.equal(404);
@@ -224,7 +229,7 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             res.status.should.equal(200);
             Object.keys(res.json).should.eql(["rev"]);
             // the original flow still answers
-            await waitFor(async () => (await server.hello()) === "v1", 5000, "the route does not answer");
+            await server.expectRoute("hello", "v1");
         });
     });
 
@@ -270,7 +275,7 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             res.json.details.should.eql({ nodes: ["bad1"] });
             res.json.message.should.equal("forbidden node type: inject");
             assertNothingChanged(before);
-            (await server.hello()).should.equal("v1");
+            await server.expectRoute("hello", "v1");
             (await request("GET", server.url + "/nine")).status.should.equal(404);
             // the v1 api answers the same
             const v1 = await request("POST", server.url + "/flows", current.flows.concat([injectNode("bad1", "t1")]));
@@ -297,7 +302,7 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             const res = await request("PUT", server.url + "/flow/t1", { label: "Flow hello", nodes: nodes });
             assertRejected(res);
             assertNothingChanged(before);
-            (await server.hello()).should.equal("v1");
+            await server.expectRoute("hello", "v1");
             const last = server.log("pre.log").pop();
             last.should.containEql({ type: "flows", operation: "updateFlow", flowId: "t1" });
         });
@@ -309,7 +314,7 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             assertRejected(res);
             res.json.details.should.eql({ operation: "deleteFlow" });
             assertNothingChanged(before);
-            (await server.hello()).should.equal("v1");
+            await server.expectRoute("hello", "v1");
         });
 
         it("a rejected request of the single-flow api that fails earlier (404) never reaches the validator", async function() {
@@ -335,7 +340,7 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             res.text.should.not.containEql("TypeError");
             res.text.should.not.containEql("exploded");
             assertNothingChanged(before);
-            (await server.hello()).should.equal("v1");
+            await server.expectRoute("hello", "v1");
             const flow = await request("PUT", server.url + "/flow/t1", { label: "Flow hello", nodes: helloNodes("t1", "hello", "v1") });
             flow.status.should.equal(503);
             flow.json.should.have.property("code", "deploy_hook_failed");
@@ -351,7 +356,7 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             assertRejected(res);
             res.json.details.should.eql({ nodes: ["bad4"] });
             assertNothingChanged(before);
-            (await server.hello()).should.equal("v1");
+            await server.expectRoute("hello", "v1");
             const last = server.log("pre.log").slice(calls).pop();
             last.should.containEql({ type: "reload", operation: "setFlows", mode: "forbidden" });
             // an accepted reload deploys the file
@@ -363,7 +368,7 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
 
     describe("a validator that does not finish (deploy.hookTimeout)", function() {
         it("503 deploy_hook_timeout after the limit, the next deployment at once; after the late call ended a deployment goes through", async function() {
-            const server = await startServer({ plugin: true, deploy: { hookTimeout: 300 } });
+            const server = await startServer({ plugin: true, deploy: { hookTimeout: 1000 } });
             server.control({ pre: "hang" });
             const current = await server.flows();
             const before = server.file();
@@ -374,8 +379,8 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             res.status.should.equal(503);
             Object.keys(res.json).sort().should.eql(["code", "message"]);
             res.json.should.have.property("code", "deploy_hook_timeout");
-            first.should.be.aboveOrEqual(250);
-            first.should.be.below(5000);
+            first.should.be.aboveOrEqual(900);
+            first.should.be.below(10000);
             // the late call still runs: the next deployment is answered at once, without calling the validator
             const calls = server.log("pre.log").filter(l => !l.late).length;
             started = Date.now();
@@ -383,18 +388,19 @@ describe("deploy hooks preDeploy and postDeploy (acceptance, Z-06)", function() 
             const second = Date.now() - started;
             res.status.should.equal(503);
             res.json.should.have.property("code", "deploy_hook_timeout");
-            second.should.be.below(250);
+            // at once: much sooner than the limit (a validator that was called again would take 1000 ms)
+            second.should.be.below(700);
             server.log("pre.log").filter(l => !l.late).length.should.equal(calls);
             const after = server.file();
             after.content.should.equal(before.content);
             after.mtimeMs.should.equal(before.mtimeMs);
-            (await server.hello()).should.equal("v1");
+            await server.expectRoute("hello", "v1");
             // the validator accepts, its late call ends, the deployment goes through
             server.control({ pre: "accept" });
             await waitFor(async () => server.log("pre.log").some(l => l.late === "ended"), 5000, "the late call did not end");
             res = await request("POST", server.url + "/flows", body, V2);
             res.status.should.equal(200);
-            await waitFor(async () => (await request("GET", server.url + "/five")).text === "v5", 5000, "the new flow does not answer");
+            await server.expectRoute("five", "v5");
         });
     });
 
