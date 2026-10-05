@@ -100,41 +100,63 @@ describe('TCP Request Node', function() {
         });
     }
 
-    // The messages of a connection in "sit" mode arrive one per chunk of the answer, and how the answer is
-    // split into chunks depends on the timing of the sockets (#54). The payloads are joined and compared with
-    // the whole expected answer; the other properties (the topic) are checked on every message.
-    function testTCPMany(flow, values, result, done) {
+    // The payload check depends on the mode of the node (#54):
+    // - "sit" without "newline" has no frames: the node passes on one message per chunk of the answer, and how
+    //   the answer is split into chunks depends on the timing of the sockets. The payloads are joined and
+    //   compared with the whole expected answer; the other properties (the topic) are checked on every message.
+    // - every other mode ("time", "char", "count", "sit" with "newline") passes on whole frames: the first
+    //   message must equal the whole expected result, payload included.
+    // onMessage(msg), when given, is called for every message that the helper takes.
+    function testTCPMany(flow, values, result, done, onMessage) {
         helper.load(tcpinNode, flow, () => {
             const n1 = helper.getNode("n1");
             const n2 = helper.getNode("n2");
             const asString = flow[0].ret === "string";
             const expected = (typeof result === 'object') ? result : {payload: result};
             const wanted = asString ? expected.payload : Buffer.from(expected.payload);
-            const others = Object.assign({}, expected);
-            delete others.payload;
-            const chunks = [];
-            let finished = false;
-            n2.on("input", msg => {
-                if (finished) {
-                    return;
-                }
-                try {
-                    msg.should.have.properties(others);
-                    chunks.push(msg.payload);
-                    const joined = asString ? chunks.join('') : Buffer.concat(chunks);
-                    if (joined.length < wanted.length) {
-                        // not all of the answer yet: what came must be the start of it
-                        should(joined).eql(wanted.slice(0, joined.length));
+            const unframed = flow[0].out === "sit" && !flow[0].newline;
+            if (!unframed) {
+                n2.on("input", msg => {
+                    if (onMessage) {
+                        onMessage(msg);
+                    }
+                    try {
+                        msg.should.have.properties(Object.assign({}, expected, {payload: wanted}));
+                        done();
+                    } catch(err) {
+                        done(err);
+                    }
+                });
+            } else {
+                const others = Object.assign({}, expected);
+                delete others.payload;
+                const chunks = [];
+                let finished = false;
+                n2.on("input", msg => {
+                    if (finished) {
                         return;
                     }
-                    should(joined).eql(wanted);
-                    finished = true;
-                    done();
-                } catch(err) {
-                    finished = true;
-                    done(err);
-                }
-            });
+                    if (onMessage) {
+                        onMessage(msg);
+                    }
+                    try {
+                        msg.should.have.properties(others);
+                        chunks.push(msg.payload);
+                        const joined = asString ? chunks.join('') : Buffer.concat(chunks);
+                        if (joined.length < wanted.length) {
+                            // not all of the answer yet: what came must be the start of it
+                            should(joined).eql(wanted.slice(0, joined.length));
+                            return;
+                        }
+                        should(joined).eql(wanted);
+                        finished = true;
+                        done();
+                    } catch(err) {
+                        finished = true;
+                        done(err);
+                    }
+                });
+            }
             values.forEach(value => {
                 n1.receive(typeof value === 'object' ? value : {payload: value});
             });
