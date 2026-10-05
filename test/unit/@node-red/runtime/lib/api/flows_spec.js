@@ -1752,6 +1752,49 @@ describe("runtime-api/flows", function() {
             posts.should.have.length(1);
             posts[0].start.should.eql({status: "start_failed", errors: [{code: "missing_types", message: "m"}]});
         });
+        it("I8: POST /flows/state (start and stop) calls neither preDeploy nor postDeploy", async function() {
+            setup();
+            runtime.settings.runtimeState = {enabled: true};
+            runtime.settings.set = function() {};
+            runtime.flows.startFlows = sinon.spy(function() { return Promise.resolve({errors: []}) });
+            runtime.flows.stopFlows = sinon.spy(function() { return Promise.resolve() });
+            runtime.flows.state = function() { return "start" };
+            const post = sinon.spy();
+            hooks.add("postDeploy.spy", post);
+            runtime.hookBehaviour = () => false;
+            await flows.setState({state: "start"});
+            await flows.setState({state: "stop"});
+            await new Promise(r => setImmediate(r));
+            await new Promise(r => setImmediate(r));
+            events.should.eql([]);
+            post.called.should.be.false();
+            runtime.flows.startFlows.calledOnce.should.be.true();
+            runtime.flows.stopFlows.calledOnce.should.be.true();
+        });
+        it("I8: the start of the process (flows.load) and a reload from storage (Z-09) call neither hook", async function() {
+            const runtimeFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+            const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+            const load = sinon.stub(credentials, "load").callsFake(async function() {});
+            try {
+                const pre = sinon.spy();
+                const post = sinon.spy();
+                hooks.clear();
+                hooks.add("preDeploy.spy", pre);
+                hooks.add("postDeploy.spy", post);
+                await runtimeFlows.init({
+                    log: mockLog(),
+                    settings: {editorOnly: true},
+                    storage: {getFlows: async () => ({flows: [{id: "t1", type: "tab"}], rev: "A", credentials: {}}), saveFlows: async () => "B"}
+                });
+                await runtimeFlows.load();
+                await runtimeFlows.reloadFromStorage({flows: [{id: "t1", type: "tab"}], rev: "C", credentials: {}}, {type: "full"});
+                await new Promise(r => setImmediate(r));
+                pre.called.should.be.false();
+                post.called.should.be.false();
+            } finally {
+                load.restore();
+            }
+        });
         it("the deployed configuration of /flows is the client's (I4)", async function() {
             setup();
             const body = {flows: [{id: "a", type: "tab", credentials: {x: "secret"}}], credentials: {a: {x: "secret"}}};
