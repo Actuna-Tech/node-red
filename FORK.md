@@ -145,7 +145,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   `started`, `pending` (także `start_timeout`), `not_started`, `start_failed`, `stop_failed`, `unknown`. Nie opóźnia odpowiedzi ani następnego wdrożenia; błąd handlera tylko w logu.
   Najwyżej 10 niezakończonych wywołań na handler – kolejne są pomijane z ostrzeżeniem; handler `(event, done)` musi wywołać `done`. W `preDeploy` zwrócony (nie rzucony) `Error` jest akceptacją.
 - **Czego hook nie obejmuje (nie jest granicą bezpieczeństwa):** przeładowania z magazynu (Z-09) – treść odrzucona przy `reload` może trafić do flow tą drogą albo przy restarcie
-  procesu (D20); operacji Projektów, `POST /flows/state`, startu procesu i kodu w procesie (`RED.hooks.remove`). `POST /flows` w trybie Projektów jest wdrożeniem (hooki działają).
+  procesu (D20); operacji Projektów, `POST /flows/state`, startu procesu i kodu w procesie (`RED.hooks.remove`; ta sama możliwość pozwala podmienić `RED.hooks.has`). `POST /flows` w trybie Projektów jest wdrożeniem (hooki działają).
 - **Zawieszony walidator:** po limicie runtime nie czeka, ale handler z niezakończonym wywołaniem jest „zajęty” – następne wdrożenia dostają 503 od razu, do końca wywołania albo restartu
   (fail-closed). Handler musi respektować `event.signal` / `event.deadline` i dawać własny limit wywołaniom sieciowym. Procedura awaryjna: wyłączyć wtyczkę z walidatorem i zrestartować instancję.
   Z hooków nie wolno wdrażać (503 po `hookTimeout`, a w `postDeploy` pętla wdrożeń).

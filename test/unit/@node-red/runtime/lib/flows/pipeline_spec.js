@@ -907,6 +907,46 @@ describe("flows/pipeline", function() {
                 flows.setFlows.firstCall.args.should.eql([[], undefined, "load", null, null, "u", undefined]);
                 calls.map(c => c.fn + ":" + c.state).should.eql(["setFlows:deploying"]);
             });
+            describe("with a preDeploy and a postDeploy handler (D2-3)", function() {
+                let active;
+                const flush = async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)) };
+                beforeEach(function() {
+                    active = { rev: "A", flows: [] };
+                    flows.getFlows = sinon.spy(() => active);
+                    // like flows/index.js: setFlows with a loaded configuration replaces the active one by it
+                    flows.setFlows = sinon.spy(async function(config, credentials, type, muteLog, forceStart, user, deployOpts, loaded) {
+                        active = { rev: loaded.rev, flows: loaded.flows };
+                        return loaded.rev;
+                    });
+                });
+                it("accepted: exactly one postDeploy - type load, source api, the stored revision, the start status of the mock", async function() {
+                    const posts = [];
+                    flows.readStoredFlows = sinon.spy(async () => ({ flows: [{ id: "t1", type: "tab" }], rev: "storedRev", credentials: {} }));
+                    hooks.add("preDeploy.a", () => undefined);
+                    hooks.add("postDeploy.a", e => { posts.push(e) });
+                    const result = await pipeline.deploy({ type: "load", source: "api", req: {}, operation: "setFlows", flows: {} });
+                    result.should.eql({ rev: "storedRev" });
+                    await flush();
+                    posts.should.have.length(1);
+                    posts[0].type.should.equal("load");
+                    posts[0].source.should.equal("api");
+                    posts[0].rev.should.equal("storedRev");
+                    posts[0].operation.should.equal("setFlows");
+                    // the mock registers no start with the lock, so nothing started
+                    posts[0].start.should.eql({ status: "not_started" });
+                    posts[0].should.not.have.property("reloadType");
+                    should.not.exist(posts[0].error);
+                });
+                it("rejected by preDeploy: no postDeploy", async function() {
+                    const posts = [];
+                    hooks.add("preDeploy.a", () => false);
+                    hooks.add("postDeploy.a", e => { posts.push(e) });
+                    await pipeline.deploy({ type: "load", source: "api", req: {}, operation: "setFlows", flows: {} }).should.be.rejectedWith({ code: "deploy_rejected" });
+                    await flush();
+                    posts.should.have.length(0);
+                    active.rev.should.equal("A");
+                });
+            });
             it("a postDeploy handler alone does not change the path of load", async function() {
                 const post = [];
                 hooks.add("postDeploy.a", e => { post.push(e) });

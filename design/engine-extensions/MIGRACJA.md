@@ -189,10 +189,13 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   bez hooków, ale pozwalają tylko zatrzymać albo wznowić obecne flow, nie wdrożyć poprawki.
 - **„Restart flows” jest walidowany** (typ `reload`, `event.type === "reload"`, treść z magazynu); tak samo typ wdrożenia `load` (nagłówek `Node-RED-Deployment-Type: load` ignoruje treść żądania i wdraża zawartość magazynu): przy zarejestrowanym `preDeploy` handler dostaje zawartość magazynu z `event.type === "load"` i `event.rev`, a wdrażany jest ten sam obiekt. **D20:** `preDeploy` chroni zapisy przez API i runtime
   tej instancji, **nie treść magazynu** – treść odrzucona przy `reload` może trafić do flow przez przeładowanie z magazynu (Z-09, bez `preDeploy`)
-  albo przy restarcie procesu; zalecenie dla konsumentów: walidować zapisy (`type !== "reload"`). **D26:** przy `reload` z Projektami błąd
+  albo przy restarcie procesu; zalecenie dla konsumentów: walidować zapisy (`type !== "reload" && type !== "load"` – oba typy niosą treść z magazynu). **D26:** przy `reload` z Projektami błąd
   `credentials_load_failed` pojawia się **po** hooku (poświadczenia ładuje krok 3a); odrzucenie przez hook go przesłania – klient dostaje `deploy_rejected`.
+  **Błąd odczytu magazynu:** dla `reload` i dla `load` przy zarejestrowanym `preDeploy` występuje przed stanem `deploying` (krok 2), więc bez przejścia `instance:state`;
+  dla `load` bez handlera – wewnątrz `deploying`, jak w 5.0.7.
+- **Moment rejestracji:** to, czy handler `preDeploy` jest zarejestrowany, jest czytane **raz na wdrożenie**, pod blokadą, przed krokiem 2 – handler dodany lub usunięty w trakcie wdrożenia działa od następnego.
 - **Ograniczenia (SEC-105):** hook nie jest granicą bezpieczeństwa – omijają go Z-09 (zapis do wspólnego magazynu), operacje Projektów, start procesu
-  i kod w procesie (np. `RED.hooks.remove`).
+  i kod w procesie (np. `RED.hooks.remove`; ta sama możliwość pozwala też podmienić `RED.hooks.has`).
 - **Ponowne wejście (SEC-104):** z `preDeploy` i `postDeploy` nie wolno wdrażać. Wdrożenie z `preDeploy` czeka na blokadę trzymaną przez własne
   wdrożenie i kończy się 503 po `hookTimeout`; `postDeploy`, który wdraża, wdraża w nieskończoność.
 - **`postDeploy`:** wywoływany asynchronicznie po wyniku, **dokładnie raz** dla każdej zapisanej albo przeładowanej konfiguracji (także gdy wdrożenie

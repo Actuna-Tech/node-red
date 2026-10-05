@@ -109,7 +109,7 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
  ── blokada wdrożeń (runtime/lib/flows/lock.js) ─────────────────────────────────
  2. kontrola rewizji            – istniejące 409 version_mismatch; Z-05 version_required (także klient v1 przy
        requireRevision – R-14; DELETE /flow/:id wymaga ?rev= – R-14); Z-04 rewizja flow
-       (typ reload: zwolniony z wymogu rewizji – R-14; odczyt magazynu tutaj, pod blokadą, PRZED preDeploy – R-11;
+       (typ reload: zwolniony z wymogu rewizji – R-14; odczyt magazynu tutaj, pod blokadą, PRZED preDeploy – R-11 – także typ `load` przy zarejestrowanym `preDeploy`: ignoruje treść żądania i wdraża zawartość magazynu, więc jest walidowany na tej zawartości jak reload, R-C1;
         preDeploy w kroku 3 widzi treść, która zostanie uruchomiona; krok 2 tylko CZYTA: `readStoredFlows()` – bez zmiany
         poświadczeń i bez zdarzenia `runtime-state`, #10 D15)
        `/flow`: sprawdzenie rewizji i budowa nowej konfiguracji (`build*FlowConfig`) – funkcja `prepare` w `pipeline.deploy` –
@@ -133,7 +133,7 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
        `reason` `[A-Za-z0-9_.:-]{1,64}`, `details` obiekt/tablica ≤ 8 KB). Przy odrzuceniu, awarii i limicie nic się nie zmienia (brak
        zapisu, zatrzymania, stanu, drenażu, wstrzymywania, poświadczeń, `runtime-deploy` i `postDeploy`), blokada jest zwalniana.
        Bez handlera: brak kopii, timera i wywołania akcesora. To nie jest granica bezpieczeństwa (R-50, SEC-105)
- 3a. (tylko `reload`) poświadczenia i `runtime-state` – `loadStoredCredentials()`: załadowanie poświadczeń odczytanej konfiguracji i
+ 3a. (tylko `reload` oraz `load` przy zarejestrowanym `preDeploy`) poświadczenia i `runtime-state` – `loadStoredCredentials()`: załadowanie poświadczeń odczytanej konfiguracji i
        zdarzenie `runtime-state` (retain), PO hooku, przed stanem `deploying` (#10, D15) – odrzucony `reload` niczego nie zmienia;
        błąd `credentials_load_failed` (Projekty) pojawia się po hooku, przed `deploying`, jak dotąd przed `deploying`
  4. stan = "deploying"          – E-02 / Z-08 (/ready → 503)
@@ -235,7 +235,7 @@ w którym pakiet dopisuje swój krok (bez pustych hooków).
 | A2 | `pipeline.deploy` → `checkRevision` (409 `version_mismatch`); `/flow`: `opts.prepare()` (rewizje + `build*FlowConfig`, #10); `reload`: `flows/index.js` `readStoredFlows()` pod blokadą (tylko odczyt, #10 D15) | E-01; Z-04, Z-05; Z-06 |
 | A2a | kotwica w `pipeline.deploy` | Z-12.08 (R-27) |
 | A3 | `pipeline.deploy` → `flows/deployHooks.js` `runPreDeploy` (`reload` – po odczycie A2); handlery z akcesora `util/lib/hooks.js` `handlers(id)` | Z-06 (#10) |
-| A3a | `pipeline.deploy` → `flows/index.js` `loadStoredCredentials()` (tylko `reload`; po hooku, przed A4) | Z-06 (#10, D15) |
+| A3a | `pipeline.deploy` → `flows/index.js` `loadStoredCredentials()` (tylko `reload` oraz `load` przy zarejestrowanym `preDeploy`; po hooku, przed A4) | Z-06 (#10, D15) |
 | A4, A8 | kotwice w `pipeline.deploy`; A8 wykonuje się po zakończeniu startu (obietnica startu zarejestrowana przez `setFlows` w `lock.holdUntil`), blokada zwalniana po starcie także przy błędzie (R-43) | E-02, Z-08 |
 | A5–A7 | `flows/index.js` `setFlows(…, deployOpts, loaded)` (zapis → `stop` → `context.clean` → `start` asynchronicznie, zarejestrowany w `lock.holdUntil`); `/flow`: krok `apply(deployOpts, prepared)` → `addFlow`/`updateFlow`/`removeFlow(…, {built})` = `setFlows` (konfiguracja zbudowana w `prepare`, A2); `reload`: `load(true, deployOpts, loaded)` | E-01; P-01 (`deployOpts.waitForStart`, punkt rozszerzenia w `setFlows`), Z-04 (`build*FlowConfig`), Z-15 |
 | A7 (wynik) | `flows/index.js` `start()` → `{errors: [{code: "missing_types" \| "missing_modules" \| "flow_start_failed", …}]}` | E-01; P-01 (+ `safe_mode`, `start_timeout`) |
