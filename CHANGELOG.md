@@ -478,6 +478,28 @@ Features
 
 Features
 
+ - Hooks of the deploy pipeline `preDeploy` and `postDeploy` (#10, Z-06, R-50), registered **only** with
+   `RED.hooks.add("preDeploy.<label>", fn)` / `RED.hooks.add("postDeploy.<label>", fn)` in a plugin or a node; the `hooks`
+   setting of `settings.js` (#7) is unchanged and still rejects them (`invalid_hook_setting`). Without a registered handler
+   nothing is copied or timed and the pipeline behaves as before. `preDeploy` runs under the deploy lock before anything
+   is saved, stopped or changed, with a frozen copy of the resulting configuration (`POST /flows` of every type and
+   "Restart flows", `POST /flow`, `PUT` and `DELETE /flow/:id`, `RED.runtime.flows.*`; the copy has no `credentials` and no
+   `value` of `env` entries of type "cred"). An accepted deployment goes on; `false` or an `Error` with `status: 400` answers
+   **400 `deploy_rejected`** `{code, message, reason, details?}` (`reason` is the `code` of the error, `details` a plain
+   object or array up to 8 KB); any other result of the validator (an exception, `Promise.reject()`, `done("x")`) answers
+   **503 `deploy_hook_failed`** with a fixed message (fail-closed, the cause only in the log); no result within
+   `deploy.hookTimeout` (default 30000 ms) answers **503 `deploy_hook_timeout`**, and so does a handler whose earlier
+   late call still runs (it is not called again until that call ends). A rejection, a failure and a timeout change nothing
+   (no save, no `deploying` state, no events, no drain, no credentials change) and do not cancel a pending reload from
+   storage. `postDeploy` is called asynchronously after the result, once for every configuration that was saved or
+   reloaded (also when the deployment then failed, also for a reload from storage with `source: "storage"`), never for
+   one that was not saved, with `start.status` `started | pending | not_started | start_failed | stop_failed | unknown`;
+   it never delays a deployment, an error is only logged. The accessor
+   `hooks.handlers(id)` (non-enumerable, for the runtime) is new; `trigger` and `invokeStack` are unchanged. The hook is not
+   a security boundary (a reload from storage, a project switch, the start and code in the process bypass it)
+ - New setting `deploy.hookTimeout` (ms, default 30000; a number > 0 and <= 2147483647, otherwise a warning and the
+   default): the limit of the chain of the `preDeploy` hooks (#10)
+
  - With `deploy.response: "started"` the `start_timeout` entry of `errors[]` has the additive fields `timeout`,
    `phase` (`"modules"` while the modules of the flows are checked, `"flows"` while they start), `startedAt`,
    `elapsed`, `pending` (flows not started yet; for a "flows" or "nodes" deployment only the flows it starts something in) and `current` (only while a flow of `pending` is being started); a `flow_start_failed` entry of a rejected start has
@@ -517,6 +539,9 @@ Security
 
 Editor
 
+ - The editor shows its own texts for the errors of the `preDeploy` hook (#10): `deploy_rejected` as "Deployment rejected by
+   validation: <message of the validator>" (escaped; `reason` and `details` are not shown), `deploy_hook_timeout` and
+   `deploy_hook_failed` as a fixed text (en-US and pl); nothing was saved, so the changes stay marked as changed
  - New setting `editorTheme.deploy.staleFlows: "prompt" | "reload-only"` (default `"prompt"`,
    unchanged). With `"reload-only"` an editor whose flows were changed elsewhere (a deploy that
    gets 409, or a background update notification with another revision) shows a blocking dialog
@@ -533,6 +558,16 @@ Editor
 
 Fixes
 
+ - A rejected single-flow request (`POST /flow`, `PUT` and `DELETE /flow/:id` with 409, 404, `duplicate_id`,
+   `invalid_flow_id` or 400 `global`) no longer passes through the instance state "deploying" and back (#10, U1): the
+   revisions are checked and the configuration is built before the state changes, so there are no `instance:state`
+   events, no brief 503 of `/ready`, no brief hold of the HTTP requests (#8), and a pending reload from storage is no longer
+   cancelled as superseded by a request that deployed nothing. Responses, codes, messages and the audit are unchanged;
+   consumers of `instance:state` no longer see such a request (MIGRACJA 4.5)
+ - A reload through the Admin API reads storage in a step of its own and loads the credentials (and publishes the runtime
+   state) in the next one, after the `preDeploy` hook (#10, D15): a reload that the hook rejects changes nothing. The order
+   relative to the state "deploying" and the result are unchanged; `flows.readFlowsFromStorage()` is the composition of
+   `readStoredFlows()` and `loadStoredCredentials()`
  - Restarting the flows from the editor no longer fails with a script error when the server
    answers 409; the conflict dialog is shown
  - "Merge" and "Ignore & deploy" in the conflict dialog no longer fail with a script error when

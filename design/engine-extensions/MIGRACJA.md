@@ -73,7 +73,7 @@ nowego flow tuż po wdrożeniu (wraca zachowanie 5.0.7).
 | #8 | – | `deploy.holdHttpNodeRequests: {enabled, timeout, maxPending, retryAfter}` | `enabled: false`, `timeout: 5000` ms, `maxPending: 1000`, `retryAfter: 1` s | żądania do tras węzłów (`httpNode`) bez istniejącej trasy (trasy niezmienionych węzłów odpowiadają od razu) czekają na koniec restartu flow (wdrożenie, przeładowanie z magazynu) zamiast 404; po limicie 503 `http_hold_timeout` / `http_hold_queue_full` z `Retry-After`; klienci powinni ponawiać 503 po `Retry-After` |
 | #40 | – | `deploy.drainHttpNodeRequests: {enabled, timeout, retryAfter}` | `enabled: false`, `timeout: 30000` ms, `retryAfter: 1` s | drenaż zapytań HTTP przed zatrzymaniem flow: runtime czeka (≤ `timeout`, limit twardy) na zapytania przyjęte przez `http in`, po zatrzymaniu odpowiada 503 na otwarte (`http_drain_not_accepted` / `http_drain_outcome_unknown`); zalecane `timeout` 5000–10000 dla Bot-Engine i ruchu publicznego; szczegóły: §4.7 (R-49) |
 | P-01 / Z-08 | – | `deploy.startTimeout` (ms) | wyłączony | limit czasu startu w trybie `deploy.response: "started"`; po przekroczeniu 500 `deploy_start_failed` z `errors[].code: "start_timeout"`, flow startują dalej w tle (R-38) |
-| Z-06 | – | `deploy.hookTimeout` | 30000 ms | |
+| Z-06 (#10) | – | `deploy.hookTimeout` | 30000 ms | jeden limit łańcucha hooków `preDeploy` (pod blokadą wdrożeń); skończona liczba > 0 i ≤ 2147483647, inaczej ostrzeżenie i 30000; hooki rejestruje się tylko przez `RED.hooks.add` we wtyczce (§4.3, §5); kontrakt: R-50 |
 | Z-10 | – | `coordination: {plugin, options}`; `singleInstance` w węźle `inject` | wtyczka lokalna | wtyczkę zewnętrzną wybiera się **tylko jawnie** w `coordination.plugin` (bez automatycznego wykrywania) (R-21) |
 | Z-11 | `readOnlyUserDir` | `readOnlyUserDir` + zmienna środowiskowa `NODE_RED_READ_ONLY_USER_DIR` (R-33) | `false` | inne niż istniejące `readOnly` magazynu plikowego (`readOnly` opisane w szablonie `settings.js` – R-40); zmienna działa także w CLI przed wyborem pliku ustawień (R-18); chroni także bezwzględny `flowFile` (R-40) |
 | Z-15 | – | `editorOnly` | `false` | wyklucza się z `disableEditor`; wybrane zamiast `runtimeState.autoStart` (R-19); tylko `true` włącza (inna wartość – ostrzeżenie) |
@@ -163,13 +163,46 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   `false`) – **ryzyko:** kolejne wdrożenie może zatrzymywać i uruchamiać flow równolegle z niezakończonym startem
   poprzedniego (R-45).
 
-### 4.3 Walidacja przed wdrożeniem (Z-06)
+### 4.3 Walidacja przed wdrożeniem (Z-06, #10, R-15, R-50)
 
-- Odrzucenie przez hook `preDeploy`: **400 `deploy_rejected`** z komunikatem; przekroczenie limitu (`deploy.hookTimeout`,
-  30 s): **503 `deploy_hook_timeout`** (R-15) – narzędzie może ponowić później.
-- `preDeploy` służy **tylko do walidacji** (nie modyfikuje treści); `postDeploy` wykonuje się asynchronicznie po odpowiedzi,
-  jego błąd trafia tylko do logu (R-15).
-- Hooki **nie** są wywoływane przy starcie procesu (wczytanie flow z magazynu) ani przy operacjach Projektów (R-15).
+- **Rejestracja:** wyłącznie `RED.hooks.add("preDeploy.<etykieta>", fn)` i `RED.hooks.add("postDeploy.<etykieta>", fn)` we wtyczce
+  (`node-red.plugins`) albo węźle. Ustawienie `hooks` w `settings.js` **nie** przyjmuje tych hooków (wpis `hooks: {"preDeploy.x": …}`
+  kończy start błędem `invalid_hook_setting`, jak dotąd; do `settings.js` wolno rejestrować tylko `preReload` i `preShutdown`, W7).
+- **Kontrakt `preDeploy`:** `fn(event)` albo `fn(event, done)`; `event` to zamrożona kopia wynikowej konfiguracji:
+  `{type, source: "api"|"internal", operation, flowId?, created?, flows, activeRev, rev?, user, deadline, signal}`.
+  `flows` nie zawiera `credentials` żadnego elementu ani `value` wpisów `env` typu `cred`; **pozostałe pola mogą zawierać sekrety**
+  (`env` typu `str`, adresy z `user:pass@`, kod `function`) – nie wysyłać całych `flows` do usług zewnętrznych, tylko potrzebne pola.
+  Handlery wykonują się po kolei, pod blokadą wdrożeń, najwyżej raz na wdrożenie.
+- **Sposób odrzucenia i kody odpowiedzi:**
+  - akceptacja: zwrot wartości innej niż `false` (także w obietnicy) albo `done()`;
+  - **400 `deploy_rejected`** `{code, message, reason, details?}` – `false` / `done(false)` albo `Error` ze `status: 400` (rzucony, odrzucona
+    obietnica lub `done(err)`): `message` = komunikat błędu, `reason` = jego `code` (litery, cyfry, `_ . : -`, do 64 znaków; inaczej `"rejected"`),
+    `details` = jego `details` (zwykły obiekt albo tablica, do 8 KB); **to jedyne odrzucenie zamierzone** – klient nie ponawia bez zmiany treści;
+  - **503 `deploy_hook_failed`** `{code, message}` – awaria walidatora (wyjątek, `Promise.reject()` bez wartości, `done("x")`, mutacja
+    zamrożonego zdarzenia): stały komunikat, nic nie zapisano; narzędzie może ponowić później (fail-closed, P2);
+  - **503 `deploy_hook_timeout`** – brak wyniku w `deploy.hookTimeout` (30 s) albo poprzednie wywołanie tego samego handlera jeszcze trwa (SEC-103).
+- W `message` i `details` **nie umieszczać** sekretów, adresów wewnętrznych ani odpowiedzi usług (trafiają do klienta i do audytu).
+- **Handler musi respektować `event.signal` / `event.deadline`** i dawać własny limit wywołaniom sieciowym: po limicie runtime nie czeka, ale wywołanie,
+  które się nie skończyło, blokuje handler – następne wdrożenia dostają 503 od razu, bez wywołania handlera, **do końca tego wywołania albo restartu**
+  (konsekwencja fail-closed). Log `warn` podaje wiek spóźnionego wywołania w ms. **Procedura awaryjna:** wyłączyć wtyczkę z walidatorem i zrestartować
+  instancję (np. zmienna środowiskowa czytana przez wtyczkę); nie ma ustawienia omijającego walidację. `POST /flows/state` i Projekty działają
+  bez hooków, ale pozwalają tylko zatrzymać albo wznowić obecne flow, nie wdrożyć poprawki.
+- **„Restart flows” jest walidowany** (typ `reload`, `event.type === "reload"`, treść z magazynu). **D20:** `preDeploy` chroni zapisy przez API i runtime
+  tej instancji, **nie treść magazynu** – treść odrzucona przy `reload` może trafić do flow przez przeładowanie z magazynu (Z-09, bez `preDeploy`)
+  albo przy restarcie procesu; zalecenie dla konsumentów: walidować zapisy (`type !== "reload"`). **D26:** przy `reload` z Projektami błąd
+  `credentials_load_failed` pojawia się **po** hooku (poświadczenia ładuje krok 3a); odrzucenie przez hook go przesłania – klient dostaje `deploy_rejected`.
+- **Ograniczenia (SEC-105):** hook nie jest granicą bezpieczeństwa – omijają go Z-09 (zapis do wspólnego magazynu), operacje Projektów, start procesu
+  i kod w procesie (np. `RED.hooks.remove`).
+- **Ponowne wejście (SEC-104):** z `preDeploy` i `postDeploy` nie wolno wdrażać. Wdrożenie z `preDeploy` czeka na blokadę trzymaną przez własne
+  wdrożenie i kończy się 503 po `hookTimeout`; `postDeploy`, który wdraża, wdraża w nieskończoność.
+- **`postDeploy`:** wywoływany asynchronicznie po wyniku, **dokładnie raz** dla każdej zapisanej albo przeładowanej konfiguracji (także gdy wdrożenie
+  zakończyło się potem błędem, np. 500 `deploy_start_failed`; nigdy dla niezapisanej), równolegle z innymi handlerami, błąd tylko w logu.
+  `event`: `{rev, type, source: "api"|"internal"|"storage", operation, flowId, user, reloadType?, start: {status, errors?}, error?, deadline, signal}`;
+  `start.status`: `started` · `pending` (także `start_timeout` z `errors`) · `not_started` · `start_failed` · `stop_failed` · `unknown`. W chwili
+  wywołania stan instancji to zwykle jeszcze `deploying` – wynik startu podają `instance:state` i `deploy-start-result`. Handler publikujący
+  zmianę innym instancjom **musi pomijać `source === "storage"`**.
+- Hooki **nie** są wywoływane przy starcie procesu (wczytanie flow z magazynu), `POST /flows/state` ani przy operacjach Projektów (R-15);
+  `preDeploy` nie jest wywoływany także przy przeładowaniu z magazynu (Z-09), `postDeploy` – tak (`source: "storage"`, gdy zapisano).
 - Uprawnienia do typów węzłów (Z-12.08): wdrożenie z dodanym/zmienionym węzłem typu niedozwolonego dla użytkownika
   jest odrzucane w całości – **403 `node_type_not_permitted`** z `types[]` (R-27, R-33). Obsługiwane są obie listy
   (R-42): odbierająca (`["*", "!nodes.type.exec"]`) i dozwolonych (`["!nodes.type.*", "nodes.type.inject", …]`);
@@ -187,6 +220,11 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   lub safe mode); `loaded` – instancja tylko edycyjna (`editorOnly`).
 - **Zdarzenie `instance:state`** z treścią `{state, previous, reason}` (R-23); kod osadzający zatrzymuje runtime przez
   `RED.stop(reason)` – powód trafia do hooka `preShutdown` i logu.
+- **Odrzucone żądanie `/flow` nie emituje `deploying` (#10, U1, A24, D19):** `POST /flow`, `PUT` i `DELETE /flow/:id` sprawdzają rewizje i budują
+  konfigurację przed stanem `deploying`, więc odrzucone żądanie (409, 404, `duplicate_id`, `invalid_flow_id`, 400 `global`) nie przechodzi przez
+  `deploying` i z powrotem: brak zdarzeń `instance:state`, brak chwilowego 503 na `/ready` i brak chwilowego wstrzymania z #8; nie unieważnia też
+  oczekującego przeładowania z magazynu (Z-09). Odbiorca zdarzeń, który liczył takie żądania jako wdrożenie, ich już nie zobaczy.
+  Zmiana nie zależy od hooków.
 - **Warunek `reload` (R-47)** – obok stanu, nie nowy stan (tabela przejść R-23 bez zmian): zdarzenie i `runtime.state.get()`
   zawierają pole `reload` `{error: {code}, since, attempts, activeRev, rev, keepReady, staleDeadline, stale?}` – tylko
   gdy przeładowanie z magazynu nie powiodło się po wyczerpaniu ponowień (kod `storage_error`, `credentials_load_failed`,
@@ -279,7 +317,7 @@ zewnętrznych rejestrujących trasy na `RED.httpNode`. Przy `deploy.drainHttpNod
 |---|---|---|
 | Wtyczka magazynu | opcjonalna funkcja `watchFlows(callback)` – powiadomienia o zmianie flow z innej instancji | Z-09 |
 | Wtyczka koordynacji | nowy typ wtyczki `node-red-coordination` (lider, zajęcie zadania); wybór tylko jawnie w `coordination.plugin`; `inject` z `singleInstance`: cron – zajęcie klucza `<id>:<czas>` (dokładnie raz), interwał – lider (D-14); węzeł na instancji niebędącej liderem pokazuje status „standby”; `mqtt in` z `singleInstance` – osobny pakiet (R-21) | Z-10 |
-| Hooki | `preDeploy` (tylko walidacja), `postDeploy` (source `api`/`internal`/`storage`, asynchronicznie), `preReload` (bez weta), `preShutdown` (z `reason`); brak hooków wdrożenia przy starcie procesu i operacjach Projektów (R-15, R-20, R-23); `preReload` i `preShutdown` także z ustawienia `hooks` w `settings.js` (rejestracja przy `init`, #7) | Z-06, Z-09, Z-08 |
+| Hooki | `preDeploy` (tylko walidacja: 400 `deploy_rejected` + `reason`, 503 `deploy_hook_failed`, 503 `deploy_hook_timeout`; §4.3), `postDeploy` (source `api`/`internal`/`storage`, asynchronicznie), `preReload` (bez weta), `preShutdown` (z `reason`); brak hooków wdrożenia przy starcie procesu i operacjach Projektów (R-15, R-20, R-23, R-50); **`preDeploy` i `postDeploy` rejestruje się tylko przez `RED.hooks.add`** (wtyczka, węzeł); `preReload` i `preShutdown` także z ustawienia `hooks` w `settings.js` (rejestracja przy `init`, #7) | Z-06, Z-09, Z-08 |
 | Trasy administracyjne bloczków | przy `httpAdminNodeRoutes: "authenticated"` trasa bez uprawnienia wymaga sesji; publiczne – `RED.auth.publicRoute()` | Z-02 |
 | Trasy HTTP bloczków | `node.registerHttpRoute(method, path, ...handlers)` – automatyczne zdejmowanie przy zamknięciu | Z-07 |
 | Dodatki edytora (15 obecnych) | przeniesienie na API z Z-12.01…Z-12.14 (bez selektorów DOM); kolejność pakietów Z-12c → a → b → d → e; przestarzałe API – min. jedna wersja minor z ostrzeżeniem (R-24) | Z-12 |
@@ -350,7 +388,7 @@ watchFlows(callback)
   wariant z `done` i nie kończy się) i zwrócić obietnicę rozwiązywaną, gdy praca w toku się zakończy.
 - Brak prawa weta (R-20): błąd, odrzucenie, `false` lub przekroczenie limitu → log i przeładowanie mimo to.
 - `/ready` 503 od wywołania hooka do końca przeładowania; hook działa **bez** blokady wdrożeń; `preDeploy` nie jest
-  wywoływany przy przeładowaniu z magazynu (`postDeploy` – po realizacji Z-06, obecnie odłożone).
+  wywoływany przy przeładowaniu z magazynu (`postDeploy` z `source: "storage"` – tak, gdy zapisano; Z-06, R-50).
 - Flow zmienione w trakcie drenażu poza `changedFlows` (`type: "diff"`) → jeszcze jeden `preReload` tylko dla nich,
   w ramach pozostałego limitu, najwyżej jedna runda (D-17, R-36).
 - Przy `deploy.reload.concurrency` instancja przed drenażem zajmuje slot `slot:reload:<i>` przez wtyczkę koordynacji
@@ -382,12 +420,12 @@ Nagłówki „Modified by Actuna Sp. z o.o.” – zachowane w forku (D-19); pli
 
 - [ ] `settings.js` / Helm: nazwy z §3.2; brak kluczy `flows.*` i `editor.staleFlowsPolicy`.
 - [ ] Ustawienia odtwarzające łatki (§3.1) na wszystkich instancjach.
-- [ ] Każde narzędzie Admin API: v2, wysyła rewizję, obsługuje `version_mismatch` i `version_required`, `deploy_start_failed` (przyjmuje `rev`; `errors[].code` m.in. `safe_mode`, `start_timeout`), `deploy_rejected`; `POST /flow` → 201 tylko w v2 (R-34); odpowiedź `{rev, started: false}` instancji `editorOnly` (R-39).
+- [ ] Każde narzędzie Admin API: v2, wysyła rewizję, obsługuje `version_mismatch` i `version_required`, `deploy_start_failed` (przyjmuje `rev`; `errors[].code` m.in. `safe_mode`, `start_timeout`), `deploy_rejected` (z `reason` i opcjonalnym `details`), 503 `deploy_hook_failed`; `POST /flow` → 201 tylko w v2 (R-34); odpowiedź `{rev, started: false}` instancji `editorOnly` (R-39).
 - [ ] Kod nie wywołuje `waitForDeployStart()` (N-02).
 - [ ] Konfiguracje globalne w `globalConfigs[]`, nie w `configs` (gdy używane `/flow`).
 - [ ] K8s: sondy i drenaż wg §3.3.
 - [ ] Dodatki edytora przeniesione na API Z-12 (po wdrożeniu Z-12); linki w formacie `#flow/<id>/node/<id>`; źródła osadzenia w `editorTheme.embedding.allowedOrigins` (R-28).
-- [ ] Narzędzia obsługują 503 `deploy_hook_timeout` (ponowienie), 403 `node_type_not_permitted`, 400 `read_only_user_dir`; `DELETE /flow/:id` z `?rev=` (R-14, R-15, R-18, R-27).
+- [ ] Narzędzia obsługują 503 `deploy_hook_timeout` i `deploy_hook_failed` (ponowienie później; nic nie zapisano), 403 `node_type_not_permitted`, 400 `read_only_user_dir`; `DELETE /flow/:id` z `?rev=` (R-14, R-15, R-18, R-27).
 - [ ] Monitoring stanu: nazwy stanów i zdarzenie `instance:state` wg §4.5; brak parsowania treści 503 sondy (R-22, R-23).
 - [ ] Lista `Origin` dla `/comms` i `editorTheme.embedding.allowedOrigins` ustawione na naszych instalacjach (R-06, R-35); klienty `/comms` bez założenia `auth fail` przy wyłączonym `adminAuth` (R-05).
 - [ ] Konfiguracja uploadu tylko przez `externalModules.palette.allowUpload` (R-17); instancje tylko do odczytu – `readOnlyUserDir` lub zmienna środowiskowa (R-18).
