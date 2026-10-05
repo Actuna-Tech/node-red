@@ -1,0 +1,870 @@
+/**
+ * Copyright OpenJS Foundation and other contributors, https://openjsf.org/
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #40: tests of the drain of the HTTP requests before the flows stop
+ *   (deploy.drainHttpNodeRequests): settings, tracking, the window, deadlines, the
+ *   wait, the answers and their codes
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
+
+const should = require("should");
+const sinon = require("sinon");
+const EventEmitter = require("events");
+const NR_TEST_UTILS = require("nr-test-utils");
+const httpDrain = NR_TEST_UTILS.require("@node-red/runtime/lib/httpDrain");
+const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+const { log } = NR_TEST_UTILS.require("@node-red/util");
+
+const S = httpDrain.S;
+const TIMEOUT = 1000;
+const START = 1000000;
+
+// The mark of a route that follows the contract (the handler of "http in")
+function markedHandler() {
+    const handler = function() {};
+    handler[S] = true;
+    return handler;
+}
+
+// A response with what the drain uses of ServerResponse
+function fakeRes() {
+    const res = new EventEmitter();
+    const headers = {};
+    Object.assign(res, { statusCode: 200, headersSent: false, writableEnded: false, destroyed: false, body: undefined, headers: headers, endThrows: null });
+    res.getHeaderNames = () => Object.keys(headers);
+    res.setHeader = (name, value) => { headers[name.toLowerCase()] = value };
+    res.getHeader = name => headers[name.toLowerCase()];
+    res.removeHeader = name => { delete headers[name.toLowerCase()] };
+    res.end = function(body) {
+        if (this.endThrows) {
+            throw this.endThrows;
+        }
+        this.body = body;
+        this.writableEnded = true;
+        this.headersSent = true;
+        this.emit("finish");
+        return this;
+    };
+    res.destroy = function() {
+        this.destroyed = true;
+        this.emit("close");
+    };
+    return res;
+}
+
+function fakeReq(method, url) {
+    const req = new EventEmitter();
+    Object.assign(req, { method: method || "GET", url: url || "/x", complete: true, route: null, resumed: 0 });
+    req.resume = function() { req.resumed++ };
+    return req;
+}
+
+describe("runtime/httpDrain (#40)", function() {
+    let clock;
+
+    function init(options) {
+        httpDrain.init({ deploy: { drainHttpNodeRequests: Object.assign({ enabled: true, timeout: TIMEOUT }, options) } });
+    }
+
+    // The ready state; deploying() starts a deployment
+    function ready() {
+        instanceState.reset();
+        instanceState.markStarting();
+        instanceState.report({ errors: [] });
+    }
+    function deploying() {
+        return instanceState.begin("deploy");
+    }
+
+    // A request that entered the httpNode app
+    function arrive(method, url) {
+        const r = { req: fakeReq(method, url), res: fakeRes() };
+        httpDrain.middleware(r.req, r.res, function() { r.next = true });
+        r.entry = r.req[S];
+        return r;
+    }
+    function route(r, handlers) {
+        r.req.route = { stack: (handlers || [markedHandler()]).map(handle => ({ handle })) };
+        return r;
+    }
+    function accept(r) {
+        r.req[S].accepted = true;
+        return r;
+    }
+    // beforeStop with the wait ended at once (abortWait): the window is open afterwards
+    async function drainNow() {
+        const promise = httpDrain.beforeStop();
+        httpDrain.abortWait();
+        await promise;
+    }
+    function flush() {
+        return new Promise(resolve => setImmediate(resolve));
+    }
+    // Whether the promise has resolved by now
+    async function settled(promise) {
+        let done = false;
+        promise.then(() => { done = true });
+        await flush();
+        return done;
+    }
+    function body(r) {
+        return JSON.parse(r.res.body);
+    }
+    function logged() {
+        return [log.info, log.warn, log.debug].map(stub => stub.args.map(args => args.join(" ")).join("\n")).join("\n");
+    }
+
+    beforeEach(function() {
+        clock = sinon.useFakeTimers({ now: START, toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+        sinon.stub(log, "warn");
+        sinon.stub(log, "info");
+        sinon.stub(log, "debug");
+        sinon.stub(log, "_").callsFake((key, v) => key + (v ? " " + JSON.stringify(v) : ""));
+        ready();
+    });
+    afterEach(function() {
+        httpDrain.dispose();
+        instanceState.reset();
+        const timers = clock.countTimers();
+        clock.restore();
+        sinon.restore();
+        timers.should.equal(0);
+    });
+
+    describe("settings", function() {
+        it("is disabled without the setting, with null and without deploy", function() {
+            httpDrain.readConfig(undefined).should.eql({ enabled: false });
+            httpDrain.readConfig({}).should.eql({ enabled: false });
+            httpDrain.readConfig({ deploy: {} }).should.eql({ enabled: false });
+            httpDrain.readConfig({ deploy: { drainHttpNodeRequests: null } }).should.eql({ enabled: false });
+            log.warn.called.should.be.false();
+        });
+        it("a setting that is not an object disables the drain with a warning", function() {
+            httpDrain.readConfig({ deploy: { drainHttpNodeRequests: true } }).should.eql({ enabled: false });
+            httpDrain.readConfig({ deploy: { drainHttpNodeRequests: [] } }).should.eql({ enabled: false });
+            log.warn.callCount.should.equal(2);
+            log.warn.firstCall.args[0].should.match(/httpDrain.invalid-setting/);
+        });
+        it("only enabled: true enables, with the defaults 30000 ms and 1 s", function() {
+            httpDrain.readConfig({ deploy: { drainHttpNodeRequests: {} } }).should.eql({ enabled: false, timeout: 30000, retryAfter: 1 });
+            httpDrain.readConfig({ deploy: { drainHttpNodeRequests: { enabled: "true" } } }).enabled.should.be.false();
+            httpDrain.readConfig({ deploy: { drainHttpNodeRequests: { enabled: 1 } } }).enabled.should.be.false();
+            httpDrain.readConfig({ deploy: { drainHttpNodeRequests: { enabled: true } } }).should.eql({ enabled: true, timeout: 30000, retryAfter: 1 });
+            log.warn.called.should.be.false();
+        });
+        it("accepts a valid timeout and retryAfter", function() {
+            httpDrain.readConfig({ deploy: { drainHttpNodeRequests: { enabled: true, timeout: 2500.5, retryAfter: 7 } } })
+                .should.eql({ enabled: true, timeout: 2500.5, retryAfter: 7 });
+            httpDrain.readConfig({ deploy: { drainHttpNodeRequests: { enabled: true, timeout: 2147483647 } } }).timeout.should.equal(2147483647);
+            log.warn.called.should.be.false();
+        });
+        it("warns and uses the defaults for an invalid timeout or retryAfter", function() {
+            [0, -1, "5", NaN, Infinity, 2147483648, null].forEach(function(timeout) {
+                httpDrain.readConfig({ deploy: { drainHttpNodeRequests: { enabled: true, timeout } } }).timeout.should.equal(30000);
+            });
+            [0, -1, 1.5, "1", NaN, null].forEach(function(retryAfter) {
+                httpDrain.readConfig({ deploy: { drainHttpNodeRequests: { enabled: true, retryAfter } } }).retryAfter.should.equal(1);
+            });
+            log.warn.callCount.should.equal(13);
+            log.warn.firstCall.args[0].should.match(/httpDrain.invalid-option.*timeout/);
+        });
+        it("init enables and dispose disables again", function() {
+            httpDrain.isEnabled().should.be.false();
+            init();
+            httpDrain.isEnabled().should.be.true();
+            httpDrain.dispose();
+            httpDrain.isEnabled().should.be.false();
+        });
+    });
+
+    describe("middleware", function() {
+        it("creates the entry on req and res, passes the request on and removes the entry on finish", function() {
+            init();
+            const r = arrive();
+            r.next.should.be.true();
+            should.exist(r.req[S]);
+            r.res[S].should.equal(r.req[S]);
+            httpDrain.size().should.equal(1);
+            r.res.end("ok");
+            httpDrain.size().should.equal(0);
+        });
+        it("removes the entry when the client closes the connection", function() {
+            init();
+            const r = arrive();
+            httpDrain.size().should.equal(1);
+            r.res.destroy();
+            httpDrain.size().should.equal(0);
+        });
+        it("does nothing when the drain is not enabled", function() {
+            httpDrain.dispose();
+            const r = arrive();
+            r.next.should.be.true();
+            should.not.exist(r.req[S]);
+            should.not.exist(r.res[S]);
+            httpDrain.size().should.equal(0);
+        });
+        it("does not touch the request stream (nothing is read before the authentication)", function() {
+            init();
+            const r = arrive();
+            r.req.listenerCount("data").should.equal(0);
+            r.req.listenerCount("readable").should.equal(0);
+            r.req.eventNames().should.eql([]);
+            r.req.resumed.should.equal(0);
+            r.res.eventNames().sort().should.eql(["close", "finish"]);
+        });
+        it("the entries of 10000 aborted requests are all removed", function() {
+            init();
+            const all = [];
+            for (let i = 0; i < 10000; i++) {
+                all.push(arrive());
+            }
+            httpDrain.size().should.equal(10000);
+            all.forEach(r => r.res.destroy());
+            httpDrain.size().should.equal(0);
+        });
+    });
+
+    describe("classification of the route", function() {
+        it("answers a request whose matched route has a marked handler", async function() {
+            init();
+            const r = route(arrive(), [function cookieParser() {}, markedHandler(), function errorHandler() {}]);
+            await httpDrain.beforeStop();
+            httpDrain.afterStop("full");
+            r.res.statusCode.should.equal(503);
+        });
+        it("leaves alone a request whose route has no marked handler", async function() {
+            init();
+            const r = route(arrive(), [function other() {}]);
+            const unmarked = function() {};
+            unmarked[S] = "yes";
+            const r2 = route(arrive(), [unmarked]);
+            await httpDrain.beforeStop();
+            httpDrain.afterStop("full");
+            httpDrain.finalize();
+            r.res.writableEnded.should.be.false();
+            r2.res.writableEnded.should.be.false();
+        });
+        it("leaves alone a request without a matched route (static files, 404, the upload before the route)", async function() {
+            init();
+            const r = arrive();
+            await httpDrain.beforeStop();
+            httpDrain.afterStop("full");
+            httpDrain.finalize();
+            r.res.writableEnded.should.be.false();
+        });
+    });
+
+    describe("beforeStop", function() {
+        it("resolves at once when no request is accepted", async function() {
+            init();
+            await httpDrain.beforeStop();
+            log.info.called.should.be.false();
+            httpDrain.afterStop("full");
+        });
+        it("resolves at once when the drain is not enabled", async function() {
+            httpDrain.dispose();
+            await httpDrain.beforeStop();
+            clock.countTimers().should.equal(0);
+        });
+        it("waits for the accepted requests and resolves when they are answered", async function() {
+            init();
+            const a = accept(route(arrive()));
+            const b = accept(route(arrive()));
+            const promise = httpDrain.beforeStop();
+            log.info.firstCall.args[0].should.match(/httpDrain.waiting/);
+            (await settled(promise)).should.be.false();
+            a.res.end("a");
+            (await settled(promise)).should.be.false();
+            b.res.end("b");
+            (await settled(promise)).should.be.true();
+            httpDrain.afterStop("full");
+            a.res.body.should.equal("a");
+            b.res.body.should.equal("b");
+        });
+        it("does not wait for a request that is not accepted (slow body, authentication in progress)", async function() {
+            init();
+            const slow = route(arrive("POST"));
+            slow.req.complete = false;
+            const unrouted = arrive();
+            await httpDrain.beforeStop();
+            clock.tick(0);
+            // the request that is routed gets the answer after the stop, the other is left alone
+            httpDrain.afterStop("full");
+            slow.res.statusCode.should.equal(503);
+            slow.res.writableEnded.should.be.true();
+            unrouted.res.writableEnded.should.be.false();
+        });
+        it("a request that is not accepted does not extend the wait for the accepted ones", async function() {
+            init();
+            const accepted = accept(route(arrive()));
+            const slow = route(arrive("POST"));
+            const promise = httpDrain.beforeStop();
+            accepted.res.end("ok");
+            (await settled(promise)).should.be.true();
+            slow.res.writableEnded.should.be.false();
+            httpDrain.afterStop("full");
+            slow.res.writableEnded.should.be.true();
+        });
+        it("waits only for the requests accepted when it starts (a new request does not extend it)", async function() {
+            init();
+            const old = accept(route(arrive()));
+            const promise = httpDrain.beforeStop();
+            const fresh = accept(route(arrive()));
+            old.res.end("old");
+            (await settled(promise)).should.be.true();
+            fresh.res.writableEnded.should.be.false();
+        });
+        it("ends at the timeout with a warning; the request is then answered by afterStop", async function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            const promise = httpDrain.beforeStop();
+            clock.tick(TIMEOUT - 1);
+            (await settled(promise)).should.be.false();
+            clock.tick(1);
+            (await settled(promise)).should.be.true();
+            log.warn.args.map(a => a[0]).join().should.match(/httpDrain.timeout/);
+            httpDrain.afterStop("full");
+            r.res.statusCode.should.equal(503);
+            body(r).code.should.equal("http_drain_outcome_unknown");
+        });
+        it("is aborted by abortWait", async function() {
+            init();
+            accept(route(arrive()));
+            const promise = httpDrain.beforeStop();
+            (await settled(promise)).should.be.false();
+            httpDrain.abortWait();
+            (await settled(promise)).should.be.true();
+            httpDrain.afterStop("full");
+        });
+        it("abortWait without a wait does nothing", function() {
+            init();
+            httpDrain.abortWait();
+        });
+        it("ends at once when the client aborts the last accepted request, with no 503", async function() {
+            init();
+            const r = accept(route(arrive()));
+            const promise = httpDrain.beforeStop();
+            (await settled(promise)).should.be.false();
+            r.res.destroy();
+            (await settled(promise)).should.be.true();
+            httpDrain.afterStop("full");
+            r.res.statusCode.should.equal(200);
+            log.warn.called.should.be.false();
+        });
+        it("notices by itself an accepted request whose response has ended (the guard looks every 250 ms)", async function() {
+            init();
+            const r = accept(route(arrive()));
+            const promise = httpDrain.beforeStop();
+            // ended, but 'finish' has not been emitted yet
+            r.res.writableEnded = true;
+            (await settled(promise)).should.be.false();
+            clock.tick(250);
+            (await settled(promise)).should.be.true();
+        });
+        it("does not wait in the state stopping (the runtime stops itself)", async function() {
+            init();
+            accept(route(arrive()));
+            instanceState.markStopping("SIGTERM");
+            await httpDrain.beforeStop();
+            log.info.called.should.be.false();
+            httpDrain.afterStop("full");
+        });
+        it("never rejects", async function() {
+            init();
+            sinon.stub(instanceState, "get").throws(new Error("boom"));
+            await httpDrain.beforeStop();
+            log.warn.args.map(a => a[0]).join().should.match(/httpDrain.drain-failed/);
+        });
+    });
+
+    describe("codes and headers of the 503", function() {
+        async function stopWith(r, scope) {
+            await drainNow();
+            httpDrain.afterStop(scope || "full");
+            return r;
+        }
+        it("an accepted POST gets http_drain_outcome_unknown without Retry-After", async function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            await stopWith(r);
+            r.res.statusCode.should.equal(503);
+            body(r).code.should.equal("http_drain_outcome_unknown");
+            r.res.headers.should.not.have.property("retry-after");
+            r.res.headers["cache-control"].should.equal("no-store");
+        });
+        it("a POST that is not accepted gets http_drain_not_accepted with Retry-After", async function() {
+            init({ retryAfter: 4 });
+            const r = route(arrive("POST"));
+            await stopWith(r);
+            body(r).code.should.equal("http_drain_not_accepted");
+            r.res.headers["retry-after"].should.equal("4");
+        });
+        it("an accepted GET, HEAD and OPTIONS get http_drain_outcome_unknown with Retry-After", async function() {
+            init();
+            const all = ["GET", "HEAD", "OPTIONS"].map(method => accept(route(arrive(method))));
+            await stopWith(all[0]);
+            all.forEach(function(r) {
+                r.res.statusCode.should.equal(503);
+                r.res.headers["retry-after"].should.equal("1");
+            });
+            body(all[0]).code.should.equal("http_drain_outcome_unknown");
+            should.not.exist(all[1].res.body);
+        });
+        it("an accepted PUT, PATCH and DELETE get no Retry-After", async function() {
+            init();
+            const all = ["PUT", "PATCH", "DELETE"].map(method => accept(route(arrive(method))));
+            await stopWith(all[0]);
+            all.forEach(function(r) {
+                r.res.statusCode.should.equal(503);
+                r.res.headers.should.not.have.property("retry-after");
+            });
+        });
+        it("Connection: close only when the request was not read to the end", async function() {
+            init();
+            const open = route(arrive("POST"));
+            open.req.complete = false;
+            const complete = route(arrive("POST"));
+            await httpDrain.beforeStop();
+            httpDrain.afterStop("full");
+            open.res.headers.connection.should.equal("close");
+            complete.res.headers.should.not.have.property("connection");
+        });
+        it("the headers that a handler set before are not in the 503, CORS and Vary stay", async function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            r.res.setHeader("Set-Cookie", "sid=1");
+            r.res.setHeader("Content-Encoding", "gzip");
+            r.res.setHeader("Content-Type", "text/html");
+            r.res.setHeader("Access-Control-Allow-Origin", "*");
+            r.res.setHeader("Vary", "Origin");
+            await stopWith(r);
+            r.res.headers.should.not.have.property("set-cookie");
+            r.res.headers.should.not.have.property("content-encoding");
+            r.res.headers["content-type"].should.match(/^application\/json/);
+            r.res.headers["access-control-allow-origin"].should.equal("*");
+            r.res.headers.vary.should.equal("Origin");
+        });
+        it("a HEAD request gets no body", async function() {
+            init();
+            const r = accept(route(arrive("HEAD")));
+            await stopWith(r);
+            r.res.statusCode.should.equal(503);
+            should.not.exist(r.res.body);
+        });
+        it("a response that has started (a stream) is destroyed, not replaced", async function() {
+            init();
+            const r = accept(route(arrive()));
+            r.res.headersSent = true;
+            await stopWith(r);
+            r.res.destroyed.should.be.true();
+            r.res.statusCode.should.equal(200);
+            r.entry.drained.should.be.true();
+        });
+        it("a response that has ended is left alone", async function() {
+            init();
+            const r = accept(route(arrive()));
+            r.res.writableEnded = true;
+            r.res.headersSent = true;
+            await stopWith(r);
+            r.res.destroyed.should.be.false();
+            r.entry.drained.should.be.false();
+        });
+        it("drained is set after the answer", async function() {
+            init();
+            const r = accept(route(arrive()));
+            r.entry.drained.should.be.false();
+            await stopWith(r);
+            r.entry.drained.should.be.true();
+        });
+        it("an error while answering leaves drained unset and does not stop the others", async function() {
+            init();
+            const bad = accept(route(arrive()));
+            const error = new Error("secret detail of the failure");
+            error.code = "EBOOM";
+            bad.res.endThrows = error;
+            const good = accept(route(arrive("POST")));
+            await stopWith(good);
+            bad.entry.drained.should.be.false();
+            good.res.statusCode.should.equal(503);
+            const text = logged();
+            text.should.match(/httpDrain.answer-failed/);
+            text.should.match(/EBOOM/);
+            text.should.not.match(/secret detail/);
+        });
+        it("afterStop does not throw when a request cannot be answered", async function() {
+            init();
+            const bad = route(arrive());
+            const worse = route(arrive());
+            const error = new Error("x");
+            bad.res.endThrows = error;
+            worse.res.endThrows = error;
+            const good = route(arrive());
+            await httpDrain.beforeStop();
+            httpDrain.afterStop("full");
+            good.res.statusCode.should.equal(503);
+        });
+        it("the logs contain no URL, path or query", async function() {
+            init();
+            const r = accept(route(arrive("GET", "/private/path?token=abc123")));
+            const bad = accept(route(arrive("GET", "/another/secret?x=1")));
+            bad.res.endThrows = Object.assign(new Error("failed for /another/secret"), { code: "EFAIL" });
+            const promise = httpDrain.beforeStop();
+            clock.tick(TIMEOUT);
+            await promise;
+            httpDrain.afterStop("full");
+            const text = logged();
+            text.should.match(/httpDrain.answered/);
+            text.should.not.match(/private|token|abc123|another|secret/);
+        });
+        it("one warning with the counters answers the requests of a stop", async function() {
+            init();
+            const accepted = accept(route(arrive("POST")));
+            const notAccepted = route(arrive("POST"));
+            const promise = httpDrain.beforeStop();
+            clock.tick(TIMEOUT);
+            await promise;
+            httpDrain.afterStop("full");
+            accepted.res.statusCode.should.equal(503);
+            notAccepted.res.statusCode.should.equal(503);
+            const warns = log.warn.args.map(a => a[0]).filter(m => /httpDrain.answered /.test(m));
+            warns.length.should.equal(1);
+            warns[0].should.match(/"notAccepted":1,"outcomeUnknown":1,"destroyed":0,"failed":0/);
+        });
+    });
+
+    describe("deadlines in the window", function() {
+        it("a request that is accepted in the window gets the deadline t0 + timeout and is answered after it by a partial stop", async function() {
+            init();
+            const token = deploying();
+            const r = accept(route(arrive("POST")));
+            const promise = httpDrain.beforeStop();
+            clock.setSystemTime(START + TIMEOUT - 1);
+            httpDrain.afterStop("partial");
+            r.res.writableEnded.should.be.false();
+            clock.setSystemTime(START + TIMEOUT);
+            httpDrain.afterStop("partial");
+            r.res.statusCode.should.equal(503);
+            body(r).code.should.equal("http_drain_outcome_unknown");
+            instanceState.end(token, { errors: [] });
+            await promise;
+        });
+        it("a partial stop leaves the requests that have no deadline yet", async function() {
+            init();
+            const token = deploying();
+            const r = accept(route(arrive()));
+            const slow = arrive();
+            const promise = httpDrain.beforeStop();
+            r.res.end("done");
+            await promise;
+            httpDrain.afterStop("partial");
+            slow.res.writableEnded.should.be.false();
+            instanceState.end(token, { errors: [] });
+        });
+        it("a request that arrives in the window and is matched later gets a deadline from the guard (at most 250 ms late)", async function() {
+            init();
+            const token = deploying();
+            await httpDrain.beforeStop();
+            const r = arrive("POST");
+            clock.tick(100);
+            // the route is matched, the node has not accepted the request yet (it is reading the body)
+            route(r);
+            clock.tick(250);
+            r.res.writableEnded.should.be.false();
+            // the deadline: the moment the guard saw the route + timeout
+            clock.tick(TIMEOUT + 250);
+            r.res.statusCode.should.equal(503);
+            body(r).code.should.equal("http_drain_not_accepted");
+            instanceState.end(token, { errors: [] });
+        });
+        it("outside a window a request is accepted without a deadline and no stop answers it by the guard", async function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            clock.tick(10 * TIMEOUT);
+            r.res.writableEnded.should.be.false();
+            clock.countTimers().should.equal(0);
+            r.res.end("ok");
+        });
+        it("a deadline never makes the guard answer a request outside the window (after it closes)", async function() {
+            init();
+            const token = deploying();
+            await httpDrain.beforeStop();
+            const r = accept(route(arrive("POST")));
+            instanceState.end(token, { errors: [] });
+            clock.tick(1);
+            clock.tick(10 * TIMEOUT);
+            r.res.writableEnded.should.be.false();
+            r.res.end("ok");
+        });
+        it("a request without a route in the window never gets a deadline", async function() {
+            init();
+            const token = deploying();
+            await httpDrain.beforeStop();
+            const r = arrive();
+            clock.tick(10 * TIMEOUT);
+            r.res.writableEnded.should.be.false();
+            instanceState.end(token, { errors: [] });
+            r.res.end("ok");
+        });
+        it("the new requests do not extend beforeStop but get a deadline", async function() {
+            init();
+            const token = deploying();
+            const old = accept(route(arrive()));
+            const promise = httpDrain.beforeStop();
+            const fresh = accept(route(arrive("POST")));
+            old.res.end("ok");
+            await promise;
+            // deadline = t0 + timeout, not (arrival + timeout) when the arrival was later; here the same instant
+            clock.tick(TIMEOUT);
+            fresh.res.statusCode.should.equal(503);
+            instanceState.end(token, { errors: [] });
+        });
+        it("the deadline of a request accepted later than t0 is accepted moment + timeout", async function() {
+            init();
+            const token = deploying();
+            await httpDrain.beforeStop();
+            clock.tick(400);
+            const r = accept(route(arrive("POST")));
+            clock.tick(TIMEOUT - 1);
+            r.res.writableEnded.should.be.false();
+            clock.tick(1 + 250);
+            r.res.statusCode.should.equal(503);
+            instanceState.end(token, { errors: [] });
+        });
+        it("a deadline from an earlier window that passed outside of any window starts again in the next one", async function() {
+            init();
+            const request = accept(route(arrive("POST")));
+            let token = deploying();
+            await drainNow();
+            clock.setSystemTime(START + 500);
+            httpDrain.afterStop("partial");
+            request.res.writableEnded.should.be.false();
+            instanceState.end(token, { errors: [] });
+            // the old deadline (START + TIMEOUT) passes with no window open
+            clock.setSystemTime(START + 5 * TIMEOUT);
+            token = deploying();
+            await drainNow();
+            httpDrain.afterStop("partial");
+            request.res.writableEnded.should.be.false();
+            clock.tick(TIMEOUT);
+            request.res.statusCode.should.equal(503);
+            instanceState.end(token, { errors: [] });
+        });
+    });
+
+    describe("the window follows the instance state (D2)", function() {
+        // An accepted request that arrives in the window has the deadline; one that arrives
+        // outside it has not: the answer of the guard tells which it was
+        function probe() {
+            const r = accept(route(arrive("POST")));
+            clock.tick(10 * TIMEOUT);
+            const answered = r.res.writableEnded;
+            if (!answered) {
+                r.res.end("ok");
+            }
+            return answered;
+        }
+        it("is open until the deployment ends", async function() {
+            init();
+            const token = deploying();
+            await httpDrain.beforeStop();
+            probe().should.be.true();
+            instanceState.end(token, { errors: [] });
+        });
+        it("is closed after the end of the deployment", async function() {
+            init();
+            const token = deploying();
+            await httpDrain.beforeStop();
+            instanceState.end(token, { errors: [] });
+            clock.tick(1);
+            probe().should.be.false();
+        });
+        it("is closed after a failed start, an aborted operation and a failure to stop", async function() {
+            init();
+            for (const result of [{ errors: [{ code: "flow_start_failed" }] }, { aborted: true }, { errors: [{ code: "deploy_stop_failed" }] }]) {
+                ready();
+                clock.tick(1);
+                const token = deploying();
+                await httpDrain.beforeStop();
+                instanceState.end(token, result);
+                clock.tick(1);
+                probe().should.be.false();
+            }
+        });
+        it("a request that the hold (#8) releases when the state leaves deploying has no deadline", async function() {
+            init();
+            const token = deploying();
+            await httpDrain.beforeStop();
+            let released;
+            // a listener of the state, registered before and after the drain would see the same
+            const unsubscribe = instanceState.onChange(function(info) {
+                if (info.state !== "deploying") {
+                    released = accept(route(arrive("POST")));
+                }
+            });
+            instanceState.end(token, { errors: [] });
+            unsubscribe();
+            should.exist(released);
+            clock.tick(10 * TIMEOUT);
+            released.res.writableEnded.should.be.false();
+        });
+        it("clearReloadFailed and markReloadFailed in deploying do not close the window (R-47)", async function() {
+            init();
+            const token = deploying();
+            await httpDrain.beforeStop();
+            instanceState.markReloadFailed({ error: "storage_unreachable" });
+            instanceState.clearReloadFailed();
+            probe().should.be.true();
+            instanceState.end(token, { errors: [] });
+        });
+        it("stays open when a later operation takes over under the same state (startTimeoutReleasesLock) and closes at the end of the last one", async function() {
+            init();
+            deploying();
+            await httpDrain.beforeStop();
+            const second = instanceState.begin("deploy", { supersede: true });
+            probe().should.be.true();
+            instanceState.end(second, { errors: [] });
+            clock.tick(1);
+            probe().should.be.false();
+        });
+        it("a new deployment does not inherit the window of the earlier one", async function() {
+            init();
+            const first = deploying();
+            await httpDrain.beforeStop();
+            instanceState.end(first, { errors: [] });
+            clock.tick(5);
+            const second = deploying();
+            // no beforeStop of the second one yet
+            probe().should.be.false();
+            instanceState.end(second, { errors: [] });
+        });
+        it("a reload from storage (reloading) is a window", async function() {
+            init();
+            instanceState.markReloadPending();
+            instanceState.markDraining();
+            const token = instanceState.begin("reload");
+            instanceState.get().state.should.equal("reloading");
+            await httpDrain.beforeStop();
+            probe().should.be.true();
+            instanceState.end(token, { errors: [] });
+            clock.tick(1);
+            probe().should.be.false();
+        });
+        it("outside a deployment the window is the operation: it closes with afterStop", async function() {
+            init();
+            await httpDrain.beforeStop();
+            httpDrain.afterStop("full");
+            probe().should.be.false();
+        });
+        it("a window that never ends logs a warning once after twice the timeout", async function() {
+            init();
+            deploying();
+            await httpDrain.beforeStop();
+            const r = arrive();
+            clock.tick(2 * TIMEOUT);
+            log.warn.args.map(a => a[0]).filter(m => /httpDrain.window-long/.test(m)).length.should.equal(0);
+            clock.tick(250);
+            clock.tick(5 * TIMEOUT);
+            log.warn.args.map(a => a[0]).filter(m => /httpDrain.window-long/.test(m)).length.should.equal(1);
+            r.res.end("ok");
+        });
+    });
+
+    describe("afterStop", function() {
+        it("full: answers every open request with a matched route, accepted or not", async function() {
+            init();
+            const accepted = accept(route(arrive("POST")));
+            const notAccepted = route(arrive("POST"));
+            const unrouted = arrive();
+            await drainNow();
+            httpDrain.afterStop("full");
+            accepted.res.statusCode.should.equal(503);
+            notAccepted.res.statusCode.should.equal(503);
+            unrouted.res.writableEnded.should.be.false();
+        });
+        it("partial: only the requests past their deadline", async function() {
+            init();
+            const token = deploying();
+            const past = accept(route(arrive("POST")));
+            const promise = httpDrain.beforeStop();
+            clock.setSystemTime(START + TIMEOUT / 2);
+            const young = accept(route(arrive("POST")));
+            clock.setSystemTime(START + TIMEOUT);
+            httpDrain.afterStop("partial");
+            past.res.statusCode.should.equal(503);
+            young.res.writableEnded.should.be.false();
+            instanceState.end(token, { errors: [] });
+            await promise;
+        });
+        it("does not answer a request twice", async function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            await drainNow();
+            httpDrain.afterStop("full");
+            const calls = sinon.spy(r.res, "end");
+            httpDrain.afterStop("full");
+            httpDrain.finalize();
+            calls.called.should.be.false();
+        });
+        it("works without beforeStop", function() {
+            init();
+            const r = route(arrive());
+            httpDrain.afterStop("full");
+            r.res.statusCode.should.equal(503);
+        });
+        it("stops the guard when the window has closed", async function() {
+            init();
+            const r = route(arrive());
+            await httpDrain.beforeStop();
+            httpDrain.afterStop("partial");
+            clock.countTimers().should.equal(0);
+            r.res.end("ok");
+        });
+    });
+
+    describe("finalize (RED.stop)", function() {
+        it("answers the requests that are still open and routed, without a prior beforeStop", function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            const unrouted = arrive();
+            httpDrain.finalize();
+            r.res.statusCode.should.equal(503);
+            body(r).code.should.equal("http_drain_outcome_unknown");
+            unrouted.res.writableEnded.should.be.false();
+        });
+        it("is a no-op when the drain is not enabled", function() {
+            httpDrain.dispose();
+            httpDrain.finalize();
+            clock.countTimers().should.equal(0);
+        });
+        it("ends a wait that is running and stops the guard", async function() {
+            init();
+            accept(route(arrive()));
+            const promise = httpDrain.beforeStop();
+            httpDrain.finalize();
+            (await settled(promise)).should.be.true();
+            clock.countTimers().should.equal(0);
+        });
+        it("does not throw when a request cannot be answered", function() {
+            init();
+            const bad = route(arrive());
+            bad.res.endThrows = new Error("x");
+            const good = route(arrive());
+            (function() { httpDrain.finalize() }).should.not.throw();
+            good.res.statusCode.should.equal(503);
+        });
+    });
+});
