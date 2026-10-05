@@ -19,7 +19,8 @@
  *   for the handler (no credentials), the calling styles, the results (400 deploy_rejected, 503
  *   deploy_hook_failed, 503 deploy_hook_timeout), the sanitising of what leaves the runtime, the
  *   limits for a handler that does not finish; the postDeploy hook (step 11): classifyStart, the event, the
- *   parallel calls, a failure only in the log, the limit of 10 unfinished calls
+ *   parallel calls, a failure only in the log, the limit of 10 unfinished calls; a result that cannot be read
+ *   (a getter that throws, a revoked Proxy) is a failure and never an unhandled rejection (S-C1)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -896,5 +897,115 @@ describe("flows/deployHooks", function() {
                 called.should.be.true();
             });
         });
+    });
+
+    describe("what a handler throws can be anything (S-C1): no unhandled rejection, no end of the process", function() {
+        let unhandled;
+        let onUnhandled;
+        const flush = () => new Promise(resolve => setImmediate(resolve));
+        beforeEach(function() {
+            unhandled = [];
+            onUnhandled = reason => unhandled.push(reason);
+            process.on("unhandledRejection", onUnhandled);
+        });
+        afterEach(function() {
+            process.removeListener("unhandledRejection", onUnhandled);
+        });
+        function throwingStatus() {
+            const error = new Error("boom");
+            Object.defineProperty(error, "status", { get: function() { throw new Error("status getter") } });
+            return error;
+        }
+        function throwingStack() {
+            const error = new Error("boom");
+            Object.defineProperty(error, "stack", { get: function() { throw new Error("stack getter") } });
+            return error;
+        }
+        function revoked() {
+            const proxy = Proxy.revocable({}, {});
+            proxy.revoke();
+            return proxy.proxy;
+        }
+        // [description, how the handler produces it]
+        const producers = [
+            ["rejects a promise", value => () => Promise.reject(value())],
+            ["throws", value => () => { throw value() }],
+            ["passes it to done", value => (event, done) => done(value())]
+        ];
+        const values = [
+            ["an Error whose status getter throws", throwingStatus],
+            ["an Error whose stack getter throws", throwingStack],
+            ["a revoked Proxy", revoked]
+        ];
+        values.forEach(function(v) {
+            producers.forEach(function(p) {
+                it("preDeploy: a handler that " + p[0] + " " + v[0] + " is a 503 deploy_hook_failed", async function() {
+                    hooks.add("preDeploy.a", p[1](v[1]));
+                    const err = await run();
+                    err.should.have.property("code", "deploy_hook_failed");
+                    err.should.have.property("status", 503);
+                    await flush();
+                    await flush();
+                    unhandled.should.eql([]);
+                    logged.error.should.have.length(1);
+                    // the next deployment is not blocked (the call ended)
+                    hooks.clear();
+                    hooks.add("preDeploy.a", () => {});
+                    should.not.exist(await run());
+                });
+                it("postDeploy: a handler that " + p[0] + " " + v[0] + " is a warning only", async function() {
+                    const calls = [];
+                    hooks.add("postDeploy.a", p[1](v[1]));
+                    hooks.add("postDeploy.b", () => { calls.push("b") });
+                    deployHooks.notifyPostDeploy({ rev: "r", type: "full", source: "api", operation: "setFlows", flowId: null, user: null, start: { status: "pending" } });
+                    await flush();
+                    await flush();
+                    unhandled.should.eql([]);
+                    calls.should.eql(["b"]);
+                    logged.warn.should.have.length(1);
+                    logged.warn[0].should.containEql("deploy.post-hook-failed");
+                });
+            });
+        });
+        it("preDeploy: an Error with status 400 whose stack getter throws is still a rejection (the stack is never read)", async function() {
+            const error = Object.assign(throwingStack(), { status: 400, code: "forbidden_node" });
+            hooks.add("preDeploy.a", () => Promise.reject(error));
+            const err = await run();
+            err.should.have.property("code", "deploy_rejected");
+            err.should.have.property("reason", "forbidden_node");
+            unhandled.should.eql([]);
+        });
+        it("preDeploy: details that cannot be read (a revoked Proxy, as the object or an array of them) are dropped with a warning, the rejection stays", async function() {
+            for (const details of [revoked(), [revoked()], { nested: revoked() }]) {
+                logged.warn.length = 0;
+                hooks.clear();
+                hooks.add("preDeploy.a", () => { throw Object.assign(new Error("no"), { status: 400, code: "x", details: details }) });
+                const err = await run();
+                err.should.have.property("code", "deploy_rejected");
+                should(err.details).be.undefined();
+                logged.warn.should.have.length(1);
+                logged.warn[0].should.containEql("deploy.hook-details-dropped");
+            }
+            unhandled.should.eql([]);
+        });
+        it("preDeploy: an exception in the code that reads the result becomes a 503 (the last resort of the chain)", async function() {
+            // a handler whose id cannot be cleaned is not possible; a log function that throws once is
+            hooks.add("preDeploy.a", () => { throw new TypeError("x") });
+            logStubsFailOnce();
+            const err = await run();
+            err.should.have.property("code", "deploy_hook_failed");
+            err.should.have.property("status", 503);
+            unhandled.should.eql([]);
+        });
+        function logStubsFailOnce() {
+            let first = true;
+            log.error.callsFake(function(m) {
+                if (first) {
+                    first = false;
+                    throw new Error("the logger failed");
+                }
+                logged.error.push(m);
+            });
+        }
     });
 });
