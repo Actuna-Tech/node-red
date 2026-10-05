@@ -19,7 +19,7 @@
  *   E-01: the lock is held until the start completes (R-43); a failed storage read releases it
  *   E-02: the instance state in steps 4 and 8
  *   Z-09: reload from storage (source "storage" with reread)
- *   Z-06 (#10): prepare/apply of the single-flow api (U1)
+ *   Z-06 (#10): prepare/apply of the single-flow api (U1); reload: read in step 2, credentials in step 3a (D15)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -42,9 +42,14 @@ describe("flows/pipeline", function() {
                 calls.push({ fn: "setFlows", locked: lock.isLocked() });
                 return "newRev";
             }),
-            readFlowsFromStorage: sinon.spy(async function() {
-                calls.push({ fn: "readFlowsFromStorage", locked: lock.isLocked() });
+            // Z-06 (D15): step 2 reads, step 3a loads the credentials
+            readStoredFlows: sinon.spy(async function() {
+                calls.push({ fn: "readStoredFlows", locked: lock.isLocked() });
                 return loadedConfig;
+            }),
+            loadStoredCredentials: sinon.spy(async function(config) {
+                calls.push({ fn: "loadStoredCredentials", locked: lock.isLocked() });
+                return config;
             }),
             loadFlows: sinon.spy(async function() {
                 calls.push({ fn: "loadFlows", locked: lock.isLocked() });
@@ -89,17 +94,19 @@ describe("flows/pipeline", function() {
         flows.setFlows.called.should.be.false();
         lock.isLocked().should.be.false();
     });
-    it("api reload reads storage under lock before preDeploy anchor", async function() {
+    it("api reload reads storage under lock before preDeploy anchor and loads the credentials after it (D15)", async function() {
         const result = await pipeline.deploy({ type: "reload", source: "api" });
         result.should.eql({ rev: "loadRev" });
-        calls.map(c => c.fn).should.eql(["readFlowsFromStorage", "loadFlows"]);
+        calls.map(c => c.fn).should.eql(["readStoredFlows", "loadStoredCredentials", "loadFlows"]);
         calls.every(c => c.locked).should.be.true();
         flows.loadFlows.firstCall.args.should.eql([true, undefined, loadedConfig]);
     });
     it("reload with loaded config does not read storage again", async function() {
         const loaded = { flows: [], rev: "x" };
         await pipeline.deploy({ type: "reload", source: "storage", loaded: loaded });
-        flows.readFlowsFromStorage.called.should.be.false();
+        flows.readStoredFlows.called.should.be.false();
+        // the configuration comes with its credentials loaded: no step 3a
+        flows.loadStoredCredentials.called.should.be.false();
         flows.loadFlows.firstCall.args[2].should.equal(loaded);
     });
     it("reload saves nothing", async function() {
@@ -151,7 +158,7 @@ describe("flows/pipeline", function() {
         result.should.eql({ rev: "rev1" });
         lock.isLocked().should.be.true();
         const order = [];
-        flows.readFlowsFromStorage = sinon.spy(async function() {
+        flows.readStoredFlows = sinon.spy(async function() {
             order.push("second");
             return loadedConfig;
         });
@@ -159,7 +166,7 @@ describe("flows/pipeline", function() {
         const setState = lock.runExclusive(async () => order.push("setState"));
         await new Promise(resolve => setTimeout(resolve, 10));
         order.should.eql([]);
-        flows.readFlowsFromStorage.called.should.be.false();
+        flows.readStoredFlows.called.should.be.false();
         finishStart({ errors: [] });
         await Promise.all([second, setState]);
         order.should.eql(["second", "setState"]);
@@ -178,7 +185,7 @@ describe("flows/pipeline", function() {
         lock.isLocked().should.be.false();
     });
     it("releases the lock when reading storage for reload fails (D4)", async function() {
-        flows.readFlowsFromStorage = sinon.spy(async () => { throw new Error("read failed") });
+        flows.readStoredFlows = sinon.spy(async () => { throw new Error("read failed") });
         await pipeline.deploy({ type: "reload" }).should.be.rejectedWith("read failed");
         flows.loadFlows.called.should.be.false();
         lock.isLocked().should.be.false();
@@ -365,6 +372,58 @@ describe("flows/pipeline", function() {
         it("an error of apply returns to the state before the deployment", async function() {
             await pipeline.deploy({ type: "flows", prepare: async () => ({}), apply: async () => { throw new Error("apply failed") } }).should.be.rejectedWith("apply failed");
             instanceState.get().should.containEql({ state: "ready", previous: "deploying" });
+        });
+    });
+    describe("reload: step 2 reads, step 3a loads the credentials (Z-06, D15)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        beforeEach(function() {
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({ errors: [] });
+        });
+        afterEach(function() {
+            instanceState.reset();
+        });
+        it("the read is under the lock in the state ready, the credentials too - the state deploying only after step 3a", async function() {
+            flows.readStoredFlows = sinon.spy(async function() {
+                calls.push({ fn: "readStoredFlows", state: instanceState.get().state });
+                return loadedConfig;
+            });
+            flows.loadStoredCredentials = sinon.spy(async function(config) {
+                calls.push({ fn: "loadStoredCredentials", state: instanceState.get().state });
+                return { flows: config.flows, rev: config.rev, credentials: "loaded" };
+            });
+            flows.loadFlows = sinon.spy(async function() {
+                calls.push({ fn: "loadFlows", state: instanceState.get().state });
+                return "loadRev";
+            });
+            await pipeline.deploy({ type: "reload", source: "api" });
+            calls.should.eql([
+                { fn: "readStoredFlows", state: "ready" },
+                { fn: "loadStoredCredentials", state: "ready" },
+                { fn: "loadFlows", state: "deploying" }
+            ]);
+            // step 3a gets what step 2 read; the result of step 3a is deployed
+            flows.loadStoredCredentials.firstCall.args[0].should.equal(loadedConfig);
+            flows.loadFlows.firstCall.args[2].should.have.property("credentials", "loaded");
+        });
+        it("an error of step 3a (credentials_load_failed) comes before the state deploying, releases the lock and does not deploy", async function() {
+            const seen = [];
+            const off = instanceState.onChange(info => seen.push(info.state));
+            flows.loadStoredCredentials = sinon.spy(async function() {
+                throw Object.assign(new Error("Failed to decrypt credentials"), { code: "credentials_load_failed" });
+            });
+            const err = await pipeline.deploy({ type: "reload" }).should.be.rejected();
+            off();
+            err.should.have.property("code", "credentials_load_failed");
+            seen.should.eql([]);
+            flows.loadFlows.called.should.be.false();
+            lock.isLocked().should.be.false();
+        });
+        it("a failed read (step 2) does not reach step 3a", async function() {
+            flows.readStoredFlows = sinon.spy(async () => { throw new Error("read failed") });
+            await pipeline.deploy({ type: "reload" }).should.be.rejectedWith("read failed");
+            flows.loadStoredCredentials.called.should.be.false();
         });
     });
     describe("reload from storage (Z-09)", function() {

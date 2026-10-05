@@ -29,7 +29,8 @@
  *   #2: the v2 result of getFlows is only {flows, rev} - no digest of the credentials
  *   #40: setState stop with deploy.drainHttpNodeRequests waits for the accepted requests and answers
  *   the open ones with 503
- *   Z-06 (#10): a rejected single-flow request does not change the instance state (A24, U1)
+ *   Z-06 (#10): a rejected single-flow request does not change the instance state (A24, U1);
+ *   a reload from the api reads storage and loads the credentials as before (D15, A32 - guards)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -126,7 +127,8 @@ describe("runtime-api/flows", function() {
                     getFlows: function() { return {rev:"currentRev",flows:[]} },
                     setFlows: setFlows,
                     loadFlows: loadFlows,
-                    readFlowsFromStorage: function() { return Promise.resolve({flows:[],rev:"storedRev"}) }
+                    readStoredFlows: function() { return Promise.resolve({flows:[],rev:"storedRev"}) },
+                    loadStoredCredentials: function(config) { return Promise.resolve(config) }
                 }
             })
 
@@ -789,7 +791,8 @@ describe("runtime-api/flows", function() {
                     getFlows: function() { return {rev:"currentRev",flows:[]} },
                     setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
                     loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
-                    readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    readStoredFlows: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    loadStoredCredentials: sinon.spy(function(config) { return Promise.resolve(config) }),
                     buildAddFlowConfig: function() { return {config: [], id: "newId"} },
                     buildUpdateFlowConfig: function() { return {config: [], label: "l", created: false} },
                     buildRemoveFlowConfig: function() { return {config: [], flow: {id: "1"}} },
@@ -925,7 +928,8 @@ describe("runtime-api/flows", function() {
                     getFlowRevision: function(id) { return "flowRev-" + id },
                     setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
                     loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
-                    readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    readStoredFlows: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    loadStoredCredentials: sinon.spy(function(config) { return Promise.resolve(config) }),
                     buildAddFlowConfig: function() { return {config: [], id: "newId"} },
                     buildUpdateFlowConfig: function() { return {config: [], label: "l", created: false} },
                     buildRemoveFlowConfig: function() { return {config: [], flow: {id: "1"}} },
@@ -1469,6 +1473,107 @@ describe("runtime-api/flows", function() {
         });
     });
 
+    describe("reload from the api: the read of storage and of the credentials (Z-06, D15, A32 - guards: pass before and after the change)", function() {
+        const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+        const runtimeFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const events = NR_TEST_UTILS.require("@node-red/util/lib/events");
+        let load;
+        let record;
+        let listener;
+        let log;
+        let storage;
+        const stored = () => ({flows: [{id: "t1", type: "tab", label: "Stored"}], rev: "S", credentials: {n1: {a: 1}}});
+        async function setup(opts) {
+            opts = opts || {};
+            record = [];
+            log = mockLog();
+            storage = {
+                getFlows: async () => {
+                    record.push("getFlows");
+                    if (opts.storageError) {
+                        throw opts.storageError;
+                    }
+                    return stored();
+                },
+                saveFlows: async () => { record.push("saveFlows"); return "X" }
+            };
+            if (opts.projects) {
+                storage.projects = {};
+            }
+            // editorOnly: the flows are loaded and published but never stopped or started
+            await runtimeFlows.init({log: log, settings: {editorOnly: true}, storage: storage});
+            flows.init({log: log, settings: {editorOnly: true}, flows: runtimeFlows});
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({errors: []});
+            listener = function(evt) {
+                if (evt.id === "runtime-state") {
+                    record.push("runtime-state:" + (evt.payload ? (evt.payload.error || evt.payload.type || evt.payload.state) + "/" + (evt.payload.text || "") : "retain") + (evt.retain ? ":retain" : ""));
+                }
+            };
+            events.on("runtime-event", listener);
+        }
+        beforeEach(function() {
+            load = sinon.stub(credentials, "load").callsFake(async function(creds) {
+                record.push("credentials.load:" + JSON.stringify(creds));
+                if (load.failWith) {
+                    throw load.failWith;
+                }
+            });
+        });
+        afterEach(function() {
+            events.removeListener("runtime-event", listener);
+            instanceState.reset();
+            load.restore();
+        });
+        it("success: storage is read, then the credentials are loaded, then the runtime state is published; the configuration is the stored one", async function() {
+            await setup();
+            const result = await flows.setFlows({deploymentType: "reload"});
+            result.should.have.property("rev", "S");
+            record.slice(0, 3).should.eql(["getFlows", 'credentials.load:{"n1":{"a":1}}', "runtime-state:retain:retain"]);
+            runtimeFlows.getFlows().rev.should.equal("S");
+            record.should.not.containEql("saveFlows");
+        });
+        it("a storage error: the active configuration is dropped, the runtime state warns, the error is passed on, nothing else changes", async function() {
+            await setup({storageError: Object.assign(new Error("disk"), {code: "storage_error"})});
+            // an active configuration exists before the failing reload
+            storage.getFlows = async () => stored();
+            await runtimeFlows.load();
+            runtimeFlows.getFlows().rev.should.equal("S");
+            storage.getFlows = async () => { record.push("getFlows"); throw Object.assign(new Error("disk"), {code: "storage_error"}) };
+            record.length = 0;
+            const err = await flows.setFlows({deploymentType: "reload"}).then(() => { throw new Error("not rejected") }, e => e);
+            err.should.have.property("code", "storage_error");
+            should.not.exist(runtimeFlows.getFlows());
+            record.should.eql(["getFlows", "runtime-state:storage_error/notification.warnings.storage_error:retain"]);
+            log.warn.called.should.be.true();
+            instanceState.get().state.should.equal("ready");
+        });
+        it("credentials_load_failed without projects: the credentials are reset with a warning, the reload goes on", async function() {
+            await setup();
+            load.failWith = Object.assign(new Error("Failed to decrypt credentials"), {code: "credentials_load_failed"});
+            const result = await flows.setFlows({deploymentType: "reload"});
+            result.should.have.property("rev", "S");
+            record.should.containEql("runtime-state:credentials_load_failed/notification.warnings.credentials_load_failed_reset:retain");
+            runtimeFlows.getFlows().rev.should.equal("S");
+        });
+        it("credentials_load_failed with projects: the error is passed on before the state deploying, the active configuration is dropped", async function() {
+            await setup({projects: true});
+            storage.getFlows = async () => stored();
+            await runtimeFlows.load();
+            const seen = [];
+            const off = instanceState.onChange(info => seen.push(info.state));
+            load.failWith = Object.assign(new Error("Failed to decrypt credentials"), {code: "credentials_load_failed"});
+            const err = await flows.setFlows({deploymentType: "reload"}).then(() => { throw new Error("not rejected") }, e => e);
+            off();
+            err.should.have.property("code", "credentials_load_failed");
+            seen.should.eql([]);
+            should.not.exist(runtimeFlows.getFlows());
+            record.should.containEql("runtime-state:credentials_load_failed/notification.warnings.credentials_load_failed:retain");
+        });
+    });
+
     describe("requireRevision (Z-05)", function() {
         let runtime;
         let revisions;
@@ -1482,7 +1587,8 @@ describe("runtime-api/flows", function() {
                     getFlowRevision: function(id) { return revisions[id] || null },
                     setFlows: sinon.spy(function() { return Promise.resolve("newRev") }),
                     loadFlows: sinon.spy(function() { return Promise.resolve("loadRev") }),
-                    readFlowsFromStorage: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    readStoredFlows: sinon.spy(function() { return Promise.resolve({flows:[],rev:"storedRev"}) }),
+                    loadStoredCredentials: sinon.spy(function(config) { return Promise.resolve(config) }),
                     buildAddFlowConfig: function() { return {config: [], id: "added"} },
                     buildUpdateFlowConfig: sinon.spy(function(id, flow, opts) {
                         if (!revisions[id] && !(opts && opts.create)) {

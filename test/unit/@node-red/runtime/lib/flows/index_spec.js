@@ -31,7 +31,8 @@
  *   #40: tests of the stop with deploy.drainHttpNodeRequests (the order beforeStop, stop of the nodes,
  *   afterStop; no change with the setting off; the serialisation of the stops; a node type registered
  *   during the drain)
- *   Z-06 (#10): tests of opts.built of addFlow/updateFlow/removeFlow (the configuration built by the pipeline)
+ *   Z-06 (#10): tests of opts.built of addFlow/updateFlow/removeFlow (the configuration built by the pipeline);
+ *   readStoredFlows/loadStoredCredentials (the halves of readFlowsFromStorage, D15, A32)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -844,6 +845,114 @@ describe('flows/index', function() {
             const loaded = await flows.readFlowsFromStorage();
             loaded.should.have.property("rev","storedRev");
             loaded.flows.should.eql(baseConfig);
+        });
+        describe('readStoredFlows and loadStoredCredentials (Z-06, D15, A32)', function() {
+            let runtimeEvents;
+            let listener;
+            beforeEach(function() {
+                runtimeEvents = [];
+                listener = function(evt) { if (evt.id === "runtime-state") { runtimeEvents.push(evt) } };
+                events.on("runtime-event", listener);
+            });
+            afterEach(function() {
+                events.removeListener("runtime-event", listener);
+            });
+            const stored = () => ({flows:clone(baseConfig), rev:"storedRev", credentials:{n1:{a:1}}});
+            it('readStoredFlows has no side effects on success: no credentials, no event, the active configuration is unchanged', async function() {
+                storage.getFlows = function() { return Promise.resolve(stored()) };
+                flows.init({log:mockLog, settings:{},storage:storage});
+                await flows.load();
+                credentialsLoad.resetHistory();
+                runtimeEvents.length = 0;
+                storage.getFlows = function() { return Promise.resolve({flows:[], rev:"other", credentials:{}}) };
+                const loaded = await flows.readStoredFlows();
+                loaded.should.have.property("rev", "other");
+                credentialsLoad.called.should.be.false();
+                runtimeEvents.should.eql([]);
+                flows.getFlows().rev.should.equal("storedRev");
+            });
+            it('readStoredFlows on a storage error: drops the active configuration, publishes the warning, logs and throws (as readFlowsFromStorage)', async function() {
+                storage.getFlows = function() { return Promise.resolve(stored()) };
+                flows.init({log:mockLog, settings:{},storage:storage});
+                await flows.load();
+                runtimeEvents.length = 0;
+                mockLog.warn.resetHistory();
+                const error = Object.assign(new Error("disk"), {code:"storage_error"});
+                storage.getFlows = function() { return Promise.reject(error) };
+                (await flows.readStoredFlows().then(() => null, e => e)).should.equal(error);
+                should.not.exist(flows.getFlows());
+                runtimeEvents.should.have.length(1);
+                runtimeEvents[0].should.have.property("retain", true);
+                runtimeEvents[0].payload.should.eql({type:"warning", error:"storage_error", project:undefined, text:"notification.warnings.storage_error"});
+                mockLog.warn.calledOnce.should.be.true();
+            });
+            it('readStoredFlows: project_not_found is logged with its own message', async function() {
+                flows.init({log:mockLog, settings:{},storage:storage});
+                const logSpy = sinon.spy(mockLog, "_");
+                try {
+                    storage.getFlows = function() { return Promise.reject(Object.assign(new Error("x"), {code:"project_not_found", project:"p1"})) };
+                    await flows.readStoredFlows().should.be.rejected();
+                    logSpy.calledWith("storage.localfilesystem.projects.project-not-found", {project:"p1"}).should.be.true();
+                } finally {
+                    logSpy.restore();
+                }
+            });
+            it('loadStoredCredentials loads the credentials, publishes the runtime state (retained) and returns the configuration', async function() {
+                flows.init({log:mockLog, settings:{},storage:storage});
+                const config = stored();
+                (await flows.loadStoredCredentials(config)).should.equal(config);
+                credentialsLoad.calledOnce.should.be.true();
+                credentialsLoad.firstCall.args[0].should.eql({n1:{a:1}});
+                runtimeEvents.should.have.length(1);
+                runtimeEvents[0].should.eql({id:"runtime-state", retain:true});
+            });
+            it('loadStoredCredentials: credentials_load_failed without projects resets the credentials (warning, the config is returned, the first start publishes no runtime state)', async function() {
+                flows.init({log:mockLog, settings:{},storage:storage});
+                credentialsLoad.callsFake(function() { return Promise.reject(Object.assign(new Error("fail"), {code:"credentials_load_failed"})) });
+                const config = stored();
+                (await flows.loadStoredCredentials(config)).should.equal(config);
+                runtimeEvents.should.have.length(1);
+                runtimeEvents[0].payload.should.have.property("text", "notification.warnings.credentials_load_failed_reset");
+                // credentialsPendingReset: the next start does not publish {state: 'start'}
+                storage.getFlows = function() { return Promise.resolve(stored()) };
+                credentialsLoad.callsFake(function() { return Promise.resolve() });
+                await flows.load();
+                runtimeEvents.length = 0;
+                await flows.startFlows();
+                runtimeEvents.filter(e => e.payload && e.payload.state === "start").should.have.length(0);
+                // the control: the next start publishes it again
+                await flows.stopFlows();
+                await flows.startFlows();
+                runtimeEvents.filter(e => e.payload && e.payload.state === "start").should.have.length(1);
+            });
+            it('loadStoredCredentials: credentials_load_failed with projects, and any other error, drop the active configuration and throw', async function() {
+                storage.projects = {};
+                storage.getFlows = function() { return Promise.resolve(stored()) };
+                flows.init({log:mockLog, settings:{},storage:storage});
+                await flows.load();
+                runtimeEvents.length = 0;
+                const error = Object.assign(new Error("fail"), {code:"credentials_load_failed"});
+                credentialsLoad.callsFake(function() { return Promise.reject(error) });
+                (await flows.loadStoredCredentials(stored()).then(() => null, e => e)).should.equal(error);
+                should.not.exist(flows.getFlows());
+                runtimeEvents.should.have.length(1);
+                runtimeEvents[0].payload.should.have.property("text", "notification.warnings.credentials_load_failed");
+            });
+            it('readFlowsFromStorage is the composition: read, credentials, runtime state - in this order, the same result', async function() {
+                const order = [];
+                storage.getFlows = function() { order.push("getFlows"); return Promise.resolve(stored()) };
+                credentialsLoad.callsFake(function() { order.push("credentials.load"); return Promise.resolve() });
+                flows.init({log:mockLog, settings:{},storage:storage});
+                const l = function(evt) { if (evt.id === "runtime-state") { order.push("runtime-state") } };
+                events.on("runtime-event", l);
+                try {
+                    const loaded = await flows.readFlowsFromStorage();
+                    loaded.should.have.property("rev", "storedRev");
+                    order.should.eql(["getFlows", "credentials.load", "runtime-state"]);
+                } finally {
+                    events.removeListener("runtime-event", l);
+                }
+            });
         });
         it('reload saves nothing and restarts all flows', async function() {
             await loadAndStart();
