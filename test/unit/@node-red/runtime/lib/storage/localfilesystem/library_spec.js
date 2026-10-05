@@ -13,13 +13,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #54: acceptance tests of saving a library entry - the save waits for the write and passes on a failed write,
+ *   a name that does not denote an entry is refused, the entries are listed right after the save (flaky tests)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var fs = require('fs-extra');
+var os = require('os');
 var path = require('path');
+var sinon = require('sinon');
 var NR_TEST_UTILS = require("nr-test-utils");
 
 var localfilesystemLibrary = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/library");
+var writeUtil = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/util");
+var logger = NR_TEST_UTILS.require("@node-red/util").log;
 
 describe('storage/localfilesystem/library', function() {
     var userDir = path.join(__dirname,".testUserHome");
@@ -239,6 +249,230 @@ describe('storage/localfilesystem/library', function() {
             });
         }).catch(function(err) {
             done(err);
+        });
+    });
+    // #54: saving an entry waits for the write of the file and passes on a failed write
+    describe('saving an entry (#54)', function() {
+        let dir;
+        let libDir;
+        let writes;
+        let originalWriteFile;
+
+        function save(type, name, meta, body) {
+            return localfilesystemLibrary.saveLibraryEntry(type, name, meta, body);
+        }
+
+        function listing() {
+            return fs.readdirSync(libDir, { recursive: true }).map(String);
+        }
+
+        function turns(count) {
+            return new Promise(function(resolve) {
+                (function next(n) { n === 0 ? resolve() : setImmediate(next, n - 1) })(count);
+            });
+        }
+
+        beforeEach(async function() {
+            dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nr-library-'));
+            libDir = path.join(dir, 'lib');
+            writes = [];
+            originalWriteFile = writeUtil.writeFile;
+            // The promise of a write that the caller does not wait for is marked as seen, so that its
+            // failure is not reported to a later test; the writes are awaited before the directory goes
+            writeUtil.writeFile = function() {
+                const result = originalWriteFile.apply(this, arguments);
+                result.catch(function() {});
+                writes.push(result);
+                return result;
+            };
+            await localfilesystemLibrary.init({ userDir: dir });
+        });
+
+        afterEach(async function() {
+            writeUtil.writeFile = originalWriteFile;
+            sinon.restore();
+            await Promise.allSettled(writes);
+            fs.chmodSync(dir, 0o755);
+            fs.removeSync(dir);
+        });
+
+        it('AC-22: the save resolves after the write of the file', async function() {
+            let finish;
+            const stub = sinon.stub().callsFake(function() { return new Promise(function(resolve) { finish = resolve }) });
+            writeUtil.writeFile = stub;
+            let settled = false;
+            const saving = save('functions', path.join('B', 'D', 'file3.js'), { mno: 'pqr' }, 'body').then(function(result) {
+                settled = true;
+                return result;
+            });
+            while (!stub.called) {
+                await turns(1);
+            }
+            stub.firstCall.args.should.eql([path.join(libDir, 'functions', 'B', 'D', 'file3.js'), '// mno: pqr\nbody']);
+            await turns(10);
+            settled.should.be.false();
+            finish();
+            should(await saving).be.undefined();
+        });
+
+        it('AC-23: a failed write rejects the save with the error of the write', async function() {
+            const failure = new Error('write failed');
+            failure.code = 'EIO';
+            writeUtil.writeFile = function() {
+                const rejected = Promise.reject(failure);
+                rejected.catch(function() {});
+                return rejected;
+            };
+            let outcome;
+            try {
+                await save('functions', 'B/file.js', {}, 'x');
+                outcome = 'resolved';
+            } catch (err) {
+                outcome = err;
+            }
+            (outcome === failure).should.be.true();
+        });
+
+        it('AC-24: a folder that cannot be written rejects the save with EACCES and leaves nothing behind', async function() {
+            if (process.getuid && process.getuid() === 0) {
+                // chmod does not stop root from writing
+                this.skip();
+            }
+            const target = path.join(libDir, 'functions', 'RO');
+            fs.ensureDirSync(target);
+            fs.chmodSync(target, 0o555);
+            let outcome;
+            try {
+                await save('functions', 'RO/b.js', {}, 'x');
+                outcome = 'resolved';
+            } catch (err) {
+                outcome = err;
+            }
+            try {
+                outcome.should.have.property('code', 'EACCES');
+                fs.readdirSync(target).should.eql([]);
+            } finally {
+                fs.chmodSync(target, 0o755);
+            }
+        });
+
+        it('AC-25: a saved function is listed right after the save, with its content', async function() {
+            const name = path.join('B', 'D', 'file3.js');
+            await save('functions', name, { mno: 'pqr' }, '// another non meta line\n\n Hi There');
+            (await localfilesystemLibrary.getLibraryEntry('functions', path.join('B', 'D'))).should.eql([{ mno: 'pqr', fn: 'file3.js' }]);
+            (await localfilesystemLibrary.getLibraryEntry('functions', name)).should.eql('// another non meta line\n\n Hi There');
+        });
+
+        it('AC-25: a saved flow is listed right after the save, with its content', async function() {
+            await save('flows', path.join('B', 'D', 'file3'), { mno: 'pqr' }, 'Hi');
+            (await localfilesystemLibrary.getLibraryEntry('flows', path.join('B', 'D'))).should.eql([{ mno: 'pqr', fn: 'file3.json' }]);
+            (await localfilesystemLibrary.getLibraryEntry('flows', path.join('B', 'D', 'file3.json'))).should.eql('Hi');
+        });
+
+        it('AC-25: a saved flow with multi-byte characters is listed right after the save, with its content', async function() {
+            await save('flows', path.join('B', 'D', 'file4'), { mno: 'pqr' }, 'こんにちわこんにちわこんにちわ');
+            (await localfilesystemLibrary.getLibraryEntry('flows', path.join('B', 'D'))).should.eql([{ mno: 'pqr', fn: 'file4.json' }]);
+            (await localfilesystemLibrary.getLibraryEntry('flows', path.join('B', 'D', 'file4.json'))).should.eql('こんにちわこんにちわこんにちわ');
+        });
+
+        it('AC-26: a failed fsync is logged and the entry is saved in full', async function() {
+            const warn = sinon.stub(logger, 'warn');
+            const fs2 = require('fs-extra');
+            sinon.stub(fs2, 'fsync').callsFake(function(fd, callback) { callback(new Error('fsync failed')) });
+            await save('functions', 'B/file.js', { a: 'b' }, 'content');
+            warn.called.should.be.true();
+            const logged = warn.args.map(function(args) { return String(args[0]) }).join('\n');
+            logged.should.containEql('fsync-fail');
+            logged.should.containEql('file.js.$$$');
+            fs.readFileSync(path.join(libDir, 'functions', 'B', 'file.js'), 'utf8').should.eql('// a: b\ncontent');
+        });
+
+        it('AC-27: with readOnly the save resolves without writing', async function() {
+            const readOnlyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nr-library-ro-'));
+            try {
+                await localfilesystemLibrary.init({ userDir: readOnlyDir, readOnly: true });
+                should(await save('functions', 'B/file.js', {}, 'x')).be.undefined();
+                fs.existsSync(path.join(readOnlyDir, 'lib')).should.be.false();
+            } finally {
+                fs.removeSync(readOnlyDir);
+            }
+        });
+
+        it('AC-28: two saves of one entry, one after the other: each resolves after its own write, the last wins', async function() {
+            const file = path.join(libDir, 'functions', 'C', 'x.js');
+            const first = save('functions', 'C/x.js', {}, 'X');
+            const second = save('functions', 'C/x.js', {}, 'Y');
+            await first;
+            ['X', 'Y'].should.containEql(fs.readFileSync(file, 'utf8'));
+            await second;
+            fs.readFileSync(file, 'utf8').should.eql('Y');
+            listing().filter(function(n) { return n.endsWith('.$$$') }).should.eql([]);
+        });
+
+        it('AC-29: a flow with a body that is not JSON is rejected before anything is written', async function() {
+            await localfilesystemLibrary.init({ userDir: dir, flowFilePretty: true });
+            const err = await save('flows', 'bad', {}, '{not json').should.be.rejected();
+            err.should.be.instanceof(SyntaxError);
+            fs.existsSync(path.join(libDir, 'flows', 'bad.json')).should.be.false();
+        });
+
+        it('AC-29: meta with a value that is not text is rejected before anything is written', async function() {
+            const err = await save('functions', 'B/file.js', { a: 5 }, 'x').should.be.rejected();
+            err.should.be.instanceof(TypeError);
+            fs.existsSync(path.join(libDir, 'functions', 'B')).should.be.false();
+        });
+
+        it('AC-44: a name that does not denote an entry is refused (403 code) and nothing is written', async function() {
+            let outcome;
+            try {
+                await save('functions', '', {}, 'x');
+                outcome = 'resolved';
+            } catch (err) {
+                outcome = err;
+            }
+            outcome.should.have.property('code', 'forbidden');
+            outcome.should.have.property('message', '');
+            await Promise.allSettled(writes);
+            // the folder of the type is not replaced by a file
+            if (fs.existsSync(path.join(libDir, 'functions'))) {
+                fs.statSync(path.join(libDir, 'functions')).isDirectory().should.be.true();
+            }
+            listing().filter(function(n) { return n.endsWith('.$$$') }).should.eql([]);
+        });
+
+        it('AC-46: two names that differ in letter case only are both settled and leave no temporary file', async function() {
+            // where letter case matters (most Linux file systems) each name has its own file
+            const probe = path.join(dir, 'Probe');
+            fs.writeFileSync(probe, '');
+            const caseSensitive = !fs.existsSync(path.join(dir, 'probe'));
+            const results = await Promise.allSettled([
+                save('functions', 'A.js', {}, 'AAAA'),
+                save('functions', 'a.js', {}, 'bb')
+            ]);
+            results.should.have.length(2);
+            results.forEach(function(result) { ['fulfilled', 'rejected'].should.containEql(result.status) });
+            listing().filter(function(n) { return n.endsWith('.$$$') }).should.eql([]);
+            if (caseSensitive) {
+                results.forEach(function(result) { result.status.should.equal('fulfilled') });
+                fs.readFileSync(path.join(libDir, 'functions', 'A.js'), 'utf8').should.eql('AAAA');
+                fs.readFileSync(path.join(libDir, 'functions', 'a.js'), 'utf8').should.eql('bb');
+            }
+        });
+
+        it('AC-47: a name that starts with two dots is a normal entry', async function() {
+            should(await save('functions', '..notes.js', { a: 'b' }, 'x')).be.undefined();
+            fs.readFileSync(path.join(libDir, 'functions', '..notes.js'), 'utf8').should.eql('// a: b\nx');
+        });
+
+        it('AC-48: with readOnly an empty name resolves like any other name', async function() {
+            const readOnlyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nr-library-ro-'));
+            try {
+                await localfilesystemLibrary.init({ userDir: readOnlyDir, readOnly: true });
+                should(await save('functions', '', {}, 'x')).be.undefined();
+                fs.existsSync(path.join(readOnlyDir, 'lib')).should.be.false();
+            } finally {
+                fs.removeSync(readOnlyDir);
+            }
         });
     });
 });

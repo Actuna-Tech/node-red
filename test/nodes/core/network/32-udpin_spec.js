@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #41: no fixed port - every test uses a free UDP port found before the node starts
  *   (two test runs on one machine do not collide)
+ *   #54: acceptance tests of a port that is taken before the node binds (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -43,8 +44,15 @@ describe('UDP in Node', function() {
         });
     }
 
+    // where the free ports come from: getFreePort(proto, done) (#54: a test can offer ports that are taken)
+    var portSource = getFreePort;
+
     before(function(done) {
         helper.startServer(done);
+    });
+
+    beforeEach(function() {
+        portSource = getFreePort;
     });
 
     after(function(done) {
@@ -63,7 +71,7 @@ describe('UDP in Node', function() {
     }
 
     function checkRecv(dt, proto, val0, val1, done) {
-        getFreePort(proto, function(err, port) {
+        portSource(proto, function(err, port) {
             if (err) { return done(err); }
             checkRecvOnPort(port, dt, proto, val0, val1, done);
         });
@@ -116,6 +124,90 @@ describe('UDP in Node', function() {
 
     it('should recv IPv6 data (base64)', function(done) {
         checkRecv('base64', 'udp6', 'hello', Buffer('hello').toString('base64'), done);
+    });
+
+    // #54: a port that is taken, without reuseAddr and on all interfaces, before the node binds
+    describe('a port that is taken before the node binds (#54)', function() {
+        let holders;
+
+        beforeEach(function() {
+            holders = [];
+        });
+
+        afterEach(async function() {
+            for (const holder of holders) {
+                await new Promise(function(resolve) { holder.close(resolve) });
+            }
+        });
+
+        function holdPort() {
+            return new Promise(function(resolve, reject) {
+                const holder = dgram.createSocket({type: "udp4", reuseAddr: false});
+                holder.once("error", reject);
+                holder.bind(0, function() {
+                    holders.push(holder);
+                    resolve(holder.address().port);
+                });
+            });
+        }
+
+        // The ports the source gives, in this order (the last one again when they are used up)
+        function offer(ports) {
+            const handedOut = [];
+            portSource = function(proto, done) {
+                const next = ports[Math.min(handedOut.length, ports.length - 1)];
+                handedOut.push(next);
+                done(null, next);
+            };
+            return handedOut;
+        }
+
+        function text(err) {
+            return [err.message].concat((err.errors || []).map(function(e) { return e.message })).join(" ");
+        }
+
+        it('AC-18: a taken port is replaced by another one', function(done) {
+            holdPort().then(function(taken) {
+                return new Promise(function(resolve, reject) {
+                    getFreePort("udp4", function(err, free) { err ? reject(err) : resolve([taken, free]) });
+                });
+            }).then(function(ports) {
+                const handedOut = offer(ports);
+                checkRecv('buffer', 'udp4', 'hello', Buffer('hello'), function(err) {
+                    try {
+                        should.not.exist(err);
+                        handedOut.should.eql(ports);
+                        done();
+                    } catch(e) {
+                        done(e);
+                    }
+                });
+            }).catch(done);
+        });
+
+        it('AC-18: when every port is taken the test fails with an error that names the last port', function(done) {
+            const taken = [];
+            (function hold(n) {
+                if (n === 0) {
+                    return start();
+                }
+                holdPort().then(function(port) { taken.push(port); hold(n - 1) }, done);
+            })(12);
+            function start() {
+                const handedOut = offer(taken);
+                checkRecv('buffer', 'udp4', 'hello', Buffer('hello'), function(err) {
+                    try {
+                        should.exist(err);
+                        handedOut.should.have.length(10);
+                        text(err).should.containEql("EADDRINUSE");
+                        text(err).should.containEql(String(handedOut[handedOut.length - 1]));
+                        done();
+                    } catch(e) {
+                        done(e);
+                    }
+                });
+            }
+        });
     });
 
 });

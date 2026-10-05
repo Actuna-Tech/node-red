@@ -7,6 +7,7 @@
  *   FL-B-010: tests for replacing a flow after the rest of the import, copies, change flags and failures
  *   Z-14: tests for exporting flows with editorTheme.flowLayout.enabled set and unset
  *   FL-B-006: tests for matching an imported subflow whose properties are in another order
+ *   #54: acceptance tests of the timers that the changed objects leave at the end of a test (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
@@ -44,10 +45,15 @@ describe("editor-client/nodes", function() {
         require(nodesModulePath);
     });
 
-    afterEach(function() {
+    // The clean-up after a test; also called by the tests of the timers (#54), which end with it
+    function cleanup() {
         delete global.RED;
         delete require.cache[viewLayoutModulePath];
         delete require.cache[nodesModulePath];
+    }
+
+    afterEach(function() {
+        return cleanup();
     });
 
     function tab(props) {
@@ -680,6 +686,129 @@ describe("editor-client/nodes", function() {
             RED.nodes.workspace("t1").should.have.property("label", "Local");
             idsOn("t1").should.eql(["c1", "g1", "j1", "li1", "n1", "n2"]);
             RED.nodes.filterNodes({ z: result.workspaces[0].id }).should.have.length(3);
+        });
+    });
+    // #54: the proxy of a changed or moved object marks its tab as changed in a timer of 0 ms; the clean-up
+    // after a test must not leave that timer behind (it would read RED when nothing of the test is left)
+    describe("timers of the changed objects at the end of a test (#54)", function() {
+        let events;
+        let waiting;
+        let realSetTimeout;
+        let realClearTimeout;
+
+        function turn() {
+            return new Promise(function(resolve) { realSetTimeout(resolve, 0) });
+        }
+
+        beforeEach(function() {
+            events = [];
+            RED.events = {
+                emit: function(name, obj) { events.push({ name: name, id: obj && obj.id }); },
+                on: function() {}
+            };
+            RED.workspaces = {
+                active: function() { return "t1"; },
+                add: function() {},
+                refresh: function() {},
+                contains: function(id) { return !!RED.nodes.workspace(id); }
+            };
+            RED.editor = { validateNode: function() {} };
+            RED.group = {
+                markDirty: function() {},
+                def: { defaults: { name: { value: "" }, style: { value: { label: true } }, nodes: { value: [] }, env: { value: [] } }, category: "config" }
+            };
+            RED.notify = function() {};
+            RED.view = { redraw: function() {} };
+            RED.nodes.setNodeList([{ id: "node-red/test", module: "node-red", name: "test", enabled: true, types: ["test-node", "test-config"] }]);
+            RED.nodes.registerType("test-config", { category: "config", defaults: { name: { value: "" } } });
+            RED.nodes.registerType("test-node", { category: "function", inputs: 1, outputs: 1, defaults: { name: { value: "" } } });
+            RED.nodes.import([
+                { id: "t1", type: "tab", label: "Flow 1", disabled: false, info: "", env: [] },
+                { id: "n1", type: "test-node", z: "t1", name: "one", x: 100, y: 50, wires: [[]] },
+                { id: "g1", type: "group", z: "t1", name: "group", nodes: [], x: 10, y: 10, w: 20, h: 20, style: {} },
+                { id: "j1", type: "junction", z: "t1", x: 200, y: 50, wires: [[]] },
+                { id: "c1", type: "test-config", name: "config" }
+            ]);
+            waiting = new Set();
+            realSetTimeout = global.setTimeout;
+            realClearTimeout = global.clearTimeout;
+        });
+
+        afterEach(function() {
+            // whatever a failed test left waiting must not fire in the next test
+            global.setTimeout = realSetTimeout;
+            global.clearTimeout = realClearTimeout;
+            waiting.forEach(function(timer) { realClearTimeout(timer) });
+        });
+
+        // The timers that are set (and not yet run or cleared) while `fn` runs and after it
+        function watchTimers() {
+            global.setTimeout = function(callback, ms) {
+                const args = Array.prototype.slice.call(arguments, 2);
+                const timer = realSetTimeout(function() {
+                    waiting.delete(timer);
+                    return callback.apply(this, args);
+                }, ms);
+                waiting.add(timer);
+                return timer;
+            };
+            global.clearTimeout = function(timer) {
+                waiting.delete(timer);
+                return realClearTimeout(timer);
+            };
+        }
+
+        // Sets the property in the last statement of the test, then ends it with the clean-up of afterEach
+        async function endsWith(change) {
+            // the timers of the import have run before the one under test is set
+            await turn();
+            await turn();
+            events.length = 0;
+            watchTimers();
+            change();
+            await cleanup();
+            waiting.size.should.equal(0, "a timer of nodes.js is still waiting after the clean-up");
+            await turn();
+            await turn();
+            // nothing is left of the test; an error of a late timer would be reported by mocha
+        }
+
+        it("AC-19: a node that was changed in the last statement leaves no timer", async function() {
+            await endsWith(function() { RED.nodes.node("n1").changed = true });
+        });
+
+        it("AC-19: a node that was moved in the last statement leaves no timer", async function() {
+            await endsWith(function() { RED.nodes.node("n1").moved = true });
+        });
+
+        it("AC-20: a group that was changed in the last statement leaves no timer", async function() {
+            await endsWith(function() { RED.nodes.group("g1").changed = true });
+        });
+
+        it("AC-20: a junction that was changed in the last statement leaves no timer", async function() {
+            await endsWith(function() { RED.nodes.junction("j1").changed = true });
+        });
+
+        it("AC-20: a group that was moved and a junction that was moved leave no timer", async function() {
+            await endsWith(function() {
+                RED.nodes.group("g1").moved = true;
+                RED.nodes.junction("j1").moved = true;
+            });
+        });
+
+        it("AC-21: a timer that runs before the clean-up marks the tab as changed", async function() {
+            await turn();
+            await turn();
+            events.length = 0;
+            RED.nodes.node("n1").changed = true;
+            await turn();
+            await turn();
+            events.should.containEql({ name: "flows:change", id: "t1" });
+        });
+
+        it("AC-21: a node without a tab leaves no timer and causes no error", async function() {
+            await endsWith(function() { RED.nodes.node("c1").changed = true });
+            events.should.eql([]);
         });
     });
 });

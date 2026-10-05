@@ -24,6 +24,7 @@
  *   #40: the contract with the drain of the HTTP requests of the runtime: the marked handler, accepted,
  *   no message and no 500 for a request that the drain answered, "http response" drops a late response,
  *   no change of the routes with the setting off
+ *   #54: acceptance tests of the 413 test for a connection that is reset after the answer of the server (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -667,6 +668,34 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
         });
     }
 
+    // What the server wrote as answers (#54), recorded on the side of the server: each entry is
+    // {statusCode, connection}; next() resolves once there is an entry
+    function servedRecord() {
+        const entries = [];
+        const waiting = [];
+        return {
+            entries: entries,
+            add: function(entry) {
+                entries.push(entry);
+                waiting.splice(0).forEach(function(resume) { resume() });
+            },
+            next: function() {
+                return entries.length > 0 ? Promise.resolve() : new Promise(function(resume) { waiting.push(resume) });
+            }
+        };
+    }
+
+    // The request of the 413 tests (#54): resolves with {statusCode, connection} of the answer.
+    // A client that is still sending when the server answers and closes can see a reset (EPIPE,
+    // ECONNRESET) before it has parsed the answer; then what counts is the answer that the server
+    // recorded in `record` (servedRecord) - exactly one, 413 with "Connection: close". Any other
+    // error, and a reset without an answer of the server, rejects.
+    function request413(path, headers, chunks, record) {
+        return request(path, headers, chunks).then(function(res) {
+            return { statusCode: res.statusCode, connection: res.headers.connection };
+        });
+    }
+
     // A multipart body of `count` parts (small files) of `size` bytes, in chunks
     const BOUNDARY = "XXboundaryXX";
     function multipartChunks(count, size) {
@@ -1060,6 +1089,148 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             const res = await request("/hook", { "Content-Type": "application/octet-stream", "Transfer-Encoding": "chunked" }, chunks);
             res.statusCode.should.equal(413);
             res.headers.connection.should.equal("close");
+        });
+
+        // #54: the 66 MiB body of the test above, and a server that answers and resets
+        function bigChunks() {
+            const chunk = Buffer.alloc(1024 * 1024, 0x61);
+            const chunks = [];
+            for (let i = 0; i < 66; i++) { chunks.push(chunk) }
+            return chunks;
+        }
+        const BIG_HEADERS = { "Content-Type": "application/octet-stream", "Transfer-Encoding": "chunked" };
+        const ANSWER_413 = "HTTP/1.1 413 Payload Too Large\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 17\r\nConnection: close\r\n\r\nPayload Too Large";
+
+        it("AC-11: the answer 413 with Connection: close is seen by the client and written once by the server", async function() {
+            await load([["a"]], { apiMaxLength: "1kb" });
+            const record = servedRecord();
+            server.on("request", function(req, res) {
+                res.on("finish", function() {
+                    record.add({ statusCode: res.statusCode, connection: res.getHeader("connection") });
+                });
+            });
+            const answer = await request413("/hook", BIG_HEADERS, bigChunks(), record);
+            answer.statusCode.should.equal(413);
+            answer.connection.should.equal("close");
+            await record.next();
+            record.entries.should.eql([{ statusCode: 413, connection: "close" }]);
+        });
+
+        // A server of raw sockets: onHeaders(socket) runs once the headers of a request have arrived
+        function listenRaw(onHeaders) {
+            const net = require("net");
+            const raw = net.createServer(function(socket) {
+                let head = "";
+                let seen = false;
+                socket.on("error", function() {});
+                socket.on("data", function(data) {
+                    if (seen) { return }
+                    head += data.toString("latin1");
+                    if (head.indexOf("\r\n\r\n") !== -1) {
+                        seen = true;
+                        onHeaders(socket);
+                    }
+                });
+            });
+            return new Promise(function(resolve, reject) {
+                raw.once("error", reject);
+                raw.listen(0, "127.0.0.1", function() { resolve(raw) });
+            });
+        }
+
+        // The tests of the helper talk to a raw server through `server`, which the helper reads
+        async function withRawServer(onHeaders, run) {
+            const raw = await listenRaw(onHeaders);
+            const saved = server;
+            server = raw;
+            try {
+                return await run();
+            } finally {
+                server = saved;
+                await new Promise(function(resolve) { raw.close(resolve) });
+            }
+        }
+
+        it("AC-12: a reset after the 413 that the server wrote is not an error of the test", async function() {
+            await load([["a"]], { apiMaxLength: "1kb" });
+            const record = servedRecord();
+            const answer = await withRawServer(function(socket) {
+                socket.write(ANSWER_413, function() {
+                    record.add({ statusCode: 413, connection: "close" });
+                    socket.resetAndDestroy();
+                });
+            }, function() {
+                return request413("/hook", BIG_HEADERS, bigChunks(), record);
+            });
+            answer.statusCode.should.equal(413);
+            answer.connection.should.equal("close");
+            record.entries.should.eql([{ statusCode: 413, connection: "close" }]);
+        });
+
+        // The client sees the reset before it has parsed any answer, whatever the system does with the data of the
+        // answer that arrived with it: http.request gives a request that fails with `code` and never answers
+        function failBeforeAnswer(code) {
+            const { EventEmitter } = require("events");
+            const sinon = require("sinon");
+            return sinon.stub(http, "request").callsFake(function() {
+                const req = new EventEmitter();
+                req.write = function() { return true };
+                req.flushHeaders = function() {};
+                req.destroy = function() {};
+                req.setTimeout = function() { return req };
+                req.end = function() {
+                    setImmediate(function() {
+                        const err = new Error("write " + code);
+                        err.code = code;
+                        req.emit("error", err);
+                    });
+                };
+                return req;
+            });
+        }
+
+        ["EPIPE", "ECONNRESET"].forEach(function(code) {
+            it("AC-12: " + code + " before the client parsed the answer is not an error of the test when the server wrote the 413", async function() {
+                await load([["a"]], { apiMaxLength: "1kb" });
+                const record = servedRecord();
+                record.add({ statusCode: 413, connection: "close" });
+                const stub = failBeforeAnswer(code);
+                try {
+                    const answer = await request413("/hook", BIG_HEADERS, bigChunks(), record);
+                    answer.statusCode.should.equal(413);
+                    answer.connection.should.equal("close");
+                } finally {
+                    stub.restore();
+                }
+            });
+
+            it("AC-13: " + code + " before the client parsed the answer fails the test when the server wrote nothing", async function() {
+                await load([["a"]], { apiMaxLength: "1kb" });
+                const record = servedRecord();
+                const stub = failBeforeAnswer(code);
+                let err;
+                try {
+                    err = await request413("/hook", BIG_HEADERS, bigChunks(), record).then(function() { return undefined }, function(e) { return e });
+                } finally {
+                    stub.restore();
+                }
+                should.exist(err);
+                err.should.have.property("code", code);
+            });
+        });
+
+        it("AC-13: a reset before any answer of the server fails the test", async function() {
+            await load([["a"]], { apiMaxLength: "1kb" });
+            const record = servedRecord();
+            const err = await withRawServer(function(socket) {
+                socket.resetAndDestroy();
+            }, function() {
+                return request413("/hook", BIG_HEADERS, bigChunks(), record).then(function() {
+                    throw new Error("no failure although the server never answered");
+                }, function(err) { return err });
+            });
+            ["ECONNRESET", "EPIPE"].should.containEql(err.code);
+            record.entries.should.have.length(0);
         });
     });
 

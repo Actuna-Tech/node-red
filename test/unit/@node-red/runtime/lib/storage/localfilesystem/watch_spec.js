@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-09: watchFlows of the file storage - flowFile and the credentials file
  *   written by another instance (shared volume), own writes ignored
+ *   #54: acceptance tests of the polling with a replaced fs.watchFile, in both orders of the first poll and a write (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -190,18 +191,106 @@ describe("storage/localfilesystem watchFlows (Z-09)", function() {
         }
     });
 
-    it("without file system events (shared volume) the polling notifies", async function() {
+    it("AC-35: without file system events (shared volume) the polling notifies", async function() {
         const nodeFs = require("fs");
         const original = nodeFs.watch;
+        const originalWatchFile = nodeFs.watchFile;
         nodeFs.watch = function() { throw new Error("not supported") };
+        // #54: the poller starts after the write of the test below, so its first stat (the base for
+        // the comparison) already sees the new file: the order that the real poller takes when its
+        // thread pool is busy
+        nodeFs.watchFile = function(file, options, listener) {
+            setTimeout(function() { originalWatchFile.call(nodeFs, file, options, listener) }, 300);
+        };
         try {
             await start();
         } finally {
             nodeFs.watch = original;
+            nodeFs.watchFile = originalWatchFile;
         }
         writeAtomically(path.join(userDir, "flows.json"), JSON.stringify(flowsB));
         await waitFor(() => notifications.length > 0);
         notifications[0].rev.should.equal(revOf(flowsB));
+    });
+
+    // #54: the polling with a replaced fs.watchFile: the test decides when, and whether, the poller sees a change
+    describe("polling with a replaced fs.watchFile (#54)", function() {
+        const nodeFs = require("fs");
+
+        // Starts the watch without file system events and with a fs.watchFile that only records its
+        // arguments; resolves with the recorded registrations
+        async function startWithRecordedPolling() {
+            const originalWatch = nodeFs.watch;
+            const originalWatchFile = nodeFs.watchFile;
+            const registered = [];
+            nodeFs.watch = function() { throw new Error("not supported") };
+            nodeFs.watchFile = function(file, options, listener) {
+                registered.push({ file: file, options: options, listener: listener });
+            };
+            try {
+                await start();
+            } finally {
+                nodeFs.watch = originalWatch;
+                nodeFs.watchFile = originalWatchFile;
+            }
+            return registered;
+        }
+
+        function listenerOf(registered, name) {
+            const entry = registered.find(function(r) { return path.basename(r.file) === name });
+            should.exist(entry);
+            return entry.listener;
+        }
+
+        const STAT = { mtimeMs: 1000, size: 10, ino: 5 };
+
+        it("AC-33: the poller is registered for flowFile and the credentials file with an interval of 1000 ms", async function() {
+            const registered = await startWithRecordedPolling();
+            registered.map(function(r) { return path.basename(r.file) }).sort().should.eql(["flows.json", "flows_cred.json"]);
+            registered.forEach(function(r) { r.options.should.have.property("interval", 1000) });
+        });
+
+        ["ino", "mtimeMs", "size"].forEach(function(field) {
+            it("AC-33: a change of " + field + " together with other content notifies once with the revision", async function() {
+                const registered = await startWithRecordedPolling();
+                writeAtomically(path.join(userDir, "flows.json"), JSON.stringify(flowsB));
+                listenerOf(registered, "flows.json")(Object.assign({}, STAT, { [field]: STAT[field] + 1 }), STAT);
+                await waitFor(() => notifications.length > 0);
+                await delay(400);
+                notifications.should.have.length(1);
+                notifications[0].rev.should.equal(revOf(flowsB));
+                notifications[0].credentialsChanged.should.be.false();
+            });
+        });
+
+        it("AC-33: a call with identical stat does not notify", async function() {
+            const registered = await startWithRecordedPolling();
+            writeAtomically(path.join(userDir, "flows.json"), JSON.stringify(flowsB));
+            listenerOf(registered, "flows.json")(STAT, STAT);
+            await delay(600);
+            notifications.should.have.length(0);
+        });
+
+        it("AC-33: a change of mtime without a change of the content does not notify", async function() {
+            const registered = await startWithRecordedPolling();
+            listenerOf(registered, "flows.json")(Object.assign({}, STAT, { mtimeMs: STAT.mtimeMs + 1 }), STAT);
+            await delay(600);
+            notifications.should.have.length(0);
+        });
+
+        it("AC-34: a write that the poller did not see notifies at the next change of stat, once", async function() {
+            const registered = await startWithRecordedPolling();
+            // the first poll came after this write: the poller took the new file as its base and never called the listener
+            writeAtomically(path.join(userDir, "flows.json"), JSON.stringify(flowsB));
+            await delay(600);
+            notifications.should.have.length(0);
+            // a later change of stat without a change of the content: the difference to the known content is found
+            listenerOf(registered, "flows.json")(Object.assign({}, STAT, { mtimeMs: STAT.mtimeMs + 1 }), STAT);
+            await waitFor(() => notifications.length > 0);
+            await delay(400);
+            notifications.should.have.length(1);
+            notifications[0].rev.should.equal(revOf(flowsB));
+        });
     });
 
     it("no notification after unwatch", async function() {

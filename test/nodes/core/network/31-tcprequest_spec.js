@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #19: the test server hook calls done exactly once, retries on a taken port and answers with one ACK per connection, whatever the split of the chunks (flaky tests)
  *   #41: the test server listens on a port assigned by the system (port 0), no fixed port
+ *   #54: acceptance tests of the "sit" mode with an answer that arrives in two chunks (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -372,6 +373,160 @@ describe('TCP Request Node', function() {
                 payload: 'ACK:foo',
                 topic: 'quux'
             }, done);
+        });
+    });
+    // #54: the answer of a connection arrives in more than one chunk
+    describe('the answer arrives in two chunks (#54)', function () {
+        // The pause between two writes of the server: the client reads them one by one
+        const PAUSE = 25;
+        let splitServer = undefined;
+        let splitPort = undefined;
+
+        // A server that answers a connection in separate writes, with "ACK:" once at the start.
+        // surplus: the answer gets one more character at its end.
+        // The first write holds the "ACK:" and the first `firstLength` bytes of what the server
+        // receives; whatever follows (in the same chunk or in the next ones) goes in writes of its own,
+        // each one PAUSE ms after the previous one has been written out.
+        function listenSplit(firstLength, surplus, done) {
+            const candidate = stoppable(net.createServer(function(c) {
+                c.setNoDelay(true);
+                let acknowledged = false;
+                const queue = [];
+                let writing = false;
+                function pump() {
+                    if (queue.length === 0) {
+                        writing = false;
+                        return;
+                    }
+                    writing = true;
+                    c.write(queue.shift(), function() { setTimeout(pump, PAUSE) });
+                }
+                function enqueue(text) {
+                    if (text.length === 0) {
+                        return;
+                    }
+                    queue.push(text);
+                    if (!writing) {
+                        pump();
+                    }
+                }
+                c.on('data', function(data) {
+                    let text = data.toString();
+                    if (!acknowledged) {
+                        acknowledged = true;
+                        enqueue("ACK:" + text.slice(0, firstLength));
+                        text = text.slice(firstLength);
+                    }
+                    enqueue(text + (surplus ? "X" : ""));
+                });
+                c.on('error', function() { c.destroy() });
+            }));
+            candidate.once('error', done);
+            candidate.listen(0, "127.0.0.1", function() {
+                candidate.removeAllListeners('error');
+                splitServer = candidate;
+                splitPort = candidate.address().port;
+                done();
+            });
+        }
+
+        function stopSplitServer(done) {
+            splitServer.stop(done);
+        }
+
+        // The messages of a connection in "sit" mode are one per chunk; the payloads joined are compared
+        function sitFlow(extra) {
+            return [Object.assign({id:"n1", type:"tcp request", server:"localhost", port:splitPort, out:"sit", wires:[["n2"]] }, extra),
+                    {id:"n2", type:"helper"}];
+        }
+
+        describe('with a first chunk of 3 bytes', function () {
+            before(function(done) { listenSplit(3, false, done) });
+            after(function(done) { stopSplitServer(done) });
+
+            it('AC-1: should send & receive, then keep connection, and not split return strings', function(done) {
+                testTCPMany(sitFlow({ret:"string", newline:""}), [{
+                    payload: "foo",
+                    topic: 'boo'
+                }, {
+                    payload: "bar<A>\nfoo",
+                    topic: 'boo'
+                }], {
+                    payload: "ACK:foobar<A>\nfoo",
+                    topic: 'boo'
+                }, done);
+            });
+
+            it('AC-2: should limit the queue size', function (done) {
+                RED.settings.tcpMsgQueueSize = 10;
+                const msgs = new Array(RED.settings.tcpMsgQueueSize + 1).fill('x');
+                const expected = msgs.slice(0, -1);
+                testTCPMany(sitFlow({splitc: "5"}), msgs, "ACK:" + expected.join(''), done);
+            });
+
+            it('AC-3: should send & receive, then keep connection', function(done) {
+                testTCPMany(sitFlow({splitc: "5"}), [{
+                    payload: "foo",
+                    topic: 'bar'
+                }, {
+                    payload: "bar",
+                    topic: 'bar'
+                }, {
+                    payload: "baz",
+                    topic: 'bar'
+                }], {
+                    payload: "ACK:foobarbaz",
+                    topic: 'bar'
+                }, done);
+            });
+
+            it('AC-5: the node passes on one message per chunk it receives', function(done) {
+                const flow = sitFlow({ret:"string", newline:""});
+                const seen = [];
+                helper.load(tcpinNode, flow, function() {
+                    const n1 = helper.getNode("n1");
+                    const n2 = helper.getNode("n2");
+                    n2.on("input", function(msg) {
+                        seen.push(msg.payload);
+                        if (seen.length === 2) {
+                            // nothing more arrives after the second one
+                            setTimeout(function() {
+                                try {
+                                    seen.should.eql(["ACK:foo", "bar<A>\nfoo"]);
+                                    done();
+                                } catch(err) {
+                                    done(err);
+                                }
+                            }, 4 * PAUSE);
+                        }
+                    });
+                    n1.receive({payload: "foo", topic: 'boo'});
+                    n1.receive({payload: "bar<A>\nfoo", topic: 'boo'});
+                });
+            });
+        });
+
+        describe('with a server that adds a character to the answer', function () {
+            before(function(done) { listenSplit(2, true, done) });
+            after(function(done) { stopSplitServer(done) });
+
+            it('AC-6: data beyond the expected answer fails the comparison, not the time limit', function(done) {
+                testTCPMany(sitFlow({ret:"string", newline:""}), [{
+                    payload: "foo",
+                    topic: 'boo'
+                }], {
+                    payload: "ACK:foo",
+                    topic: 'boo'
+                }, function(err) {
+                    try {
+                        should.exist(err);
+                        err.name.should.equal("AssertionError");
+                        done();
+                    } catch(e) {
+                        done(e);
+                    }
+                });
+            });
         });
     });
 });

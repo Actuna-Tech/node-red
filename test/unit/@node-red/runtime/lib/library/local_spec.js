@@ -13,12 +13,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #54: a failed write of a library entry reaches the caller of the library (flaky tests)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require("sinon");
+var fs = require("fs-extra");
+var os = require("os");
+var path = require("path");
 
 var NR_TEST_UTILS = require("nr-test-utils");
 var localLibrary = NR_TEST_UTILS.require("@node-red/runtime/lib/library/local")
+var fileLibrary = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/library")
+var writeUtil = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem/util")
 
 var mockLog = {
     log: sinon.stub(),
@@ -89,5 +99,53 @@ describe("runtime/library/local", function() {
             }).catch(done);
         })
 
+    });
+    // #54: the file storage behind the library
+    describe("saveEntry with the file storage (#54)", function() {
+        let dir;
+        let writes;
+        let originalWriteFile;
+
+        beforeEach(async function() {
+            dir = fs.mkdtempSync(path.join(os.tmpdir(), "nr-local-library-"));
+            writes = [];
+            originalWriteFile = writeUtil.writeFile;
+            // The promise of a write that the caller does not wait for is marked as seen, so that its
+            // failure is not reported to a later test; the writes are awaited before the directory goes
+            writeUtil.writeFile = function() {
+                const result = originalWriteFile.apply(this, arguments);
+                result.catch(function() {});
+                writes.push(result);
+                return result;
+            };
+            await fileLibrary.init({ userDir: dir });
+            localLibrary.init({ log: mockLog, storage: fileLibrary });
+        });
+        afterEach(async function() {
+            writeUtil.writeFile = originalWriteFile;
+            await Promise.allSettled(writes);
+            const readOnlyFolder = path.join(dir, "lib", "functions", "RO");
+            if (fs.existsSync(readOnlyFolder)) {
+                fs.chmodSync(readOnlyFolder, 0o755);
+            }
+            fs.removeSync(dir);
+        });
+
+        it("AC-30: a folder that cannot be written rejects the save with EACCES", async function() {
+            if (process.getuid && process.getuid() === 0) {
+                // chmod does not stop root from writing
+                this.skip();
+            }
+            fs.ensureDirSync(path.join(dir, "lib", "functions", "RO"));
+            fs.chmodSync(path.join(dir, "lib", "functions", "RO"), 0o555);
+            let outcome;
+            try {
+                await localLibrary.saveEntry("functions", "RO/b.js", {}, "x");
+                outcome = "resolved";
+            } catch (err) {
+                outcome = err;
+            }
+            outcome.should.have.property("code", "EACCES");
+        });
     });
 });
