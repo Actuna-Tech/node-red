@@ -453,6 +453,18 @@ Fixes
    cannot be read, and with an expired token also when the save of the sessions fails. The original error is
    only logged. With an external strategy (`adminAuth.type: "strategy"`) a session that cannot be created gives
    the general message `unexpected_error` in the redirect
+ - Fix (#67): when `RED.start()` rejects in the command line `red.js`, the process stops the runtime
+   (`RED.stop("startup-error")`, log `Stopping Node-RED (startup-error)`) and exits with code 1. Before, the
+   process exited with 0, or stayed alive without a listening main server when a handle kept it open (an own
+   `health.port`, `logging.*.metrics`, the IPC channel of PM2). This stop does not run the `preShutdown` hook
+   and does not wait for `health.unreadyGrace`. It is limited to a fixed 5000 ms; a stop that rejects or
+   does not finish in time is logged as `Shutdown failed: …` and the exit code is still 1. A signal during
+   this stop exits with 1 at once; a signal that came before the rejection keeps its own stop and exit code.
+   Any value of the rejection (`undefined`, `null`, an object whose `stack` getter throws) is logged; before,
+   `undefined` and `null` caused an uncaught exception. A rejected `https` settings function now also exits
+   with 1 (before: 0). Unchanged: the embedded mode (`RED.start()` rejects with the same error and the
+   library never calls `process.exit`), the `/live` probe and errors after a successful start. With a
+   supervisor that restarts on failure, a lasting configuration error now gives a restart loop
  - Tests only, no change of the product: flaky tests fixed. The HTTP tests no longer reach a foreign server
    on the same machine (supertest started the app on all interfaces but connected to `127.0.0.1`; the
    shared helper `nr-test-utils/supertest` listens on `127.0.0.1`), the `tcp request` test server hook calls
