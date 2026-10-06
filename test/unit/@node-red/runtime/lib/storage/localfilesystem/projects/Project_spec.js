@@ -405,6 +405,21 @@ describe("storage/localfilesystem/projects/Project - update (#63)", function() {
             texts[second].should.containEql("the project key may need to be entered again");
         });
 
+        it("the project cannot be loaded again after the failure: still the same error, a warning says that the reload failed", async function() {
+            h = await harnessModule.createHarness();
+            failWrite("README.md");
+            const project = h.active();
+            sinon.stub(project, "load").callsFake(function() {
+                const err = new Error("EACCES: permission denied, open '" + path.join(h.projectDir, "package.json") + "'");
+                err.code = "EACCES";
+                return Promise.reject(err);
+            });
+            const err = await update({ description: "new" });
+            assertConstantFailure(err);
+            project.load.called.should.be.true("the project was not loaded again");
+            warned().some(t => t.indexOf("Reloading the project failed") !== -1).should.be.true("no warning: " + JSON.stringify(warned()));
+        });
+
         it("a failed save of the settings of a new project entry or of the git user fails the update too", async function() {
             h = await harnessModule.createHarness({ credentialSecret: null });
             h.settings.failSaves(1);
