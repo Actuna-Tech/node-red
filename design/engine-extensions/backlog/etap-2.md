@@ -747,6 +747,13 @@ Funkcja: Hooki wdrożenia
 
 ### Z-07 – Automatyczne zdejmowanie tras HTTP węzła przy zamknięciu
 
+> **Projekt zastąpiony (2026-10-06):** wykonanie wg [R-53](../REJESTR-DECYZJI.md) i specyfikacji zadania #11
+> (`local/briefs/11-spec.md`, poza repozytorium): bez dyspozytora – każda trasa węzła jest osobną warstwą aplikacji
+> `httpNode`, runtime zdejmuje ją po tożsamości trasy przez adapter routera Express 4/5; `http in` bez ścieżki zapasowej;
+> klucz rejestru – instancja węzła, nie `id`. Specyfikacja, cele i scenariusze niżej obowiązują w zakresie niesprzecznym z R-53;
+> projekt rozwiązania (pkt 1, 4), DoD „brak `_router`” i łagodzenie `httpRoutes.list()` – nieaktualne. Stan: API w runtime
+> zrealizowane, przejście `http in` po scaleniu #48 (FORK §5, §8).
+
 | Pole | Wartość |
 |---|---|
 | Etap / typ | 2 / funkcja (nowe API, addytywne) + poprawka błędu (`http in`) |

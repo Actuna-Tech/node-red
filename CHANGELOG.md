@@ -640,6 +640,23 @@ Features
 
 Features
 
+ - API of the HTTP routes of a node (#11, Z-07, R-53): `node.registerHttpRoute(method, path, ...handlers)` registers a
+   route on the app of the nodes (`RED.httpNode`) and returns a frozen handle `{method, path, remove()}`; the runtime
+   removes the route when it stops the node (every deployment that stops it, the removal of the node, the stop of the
+   flows, `RED.stop`) - at the start of `close`, before the close callbacks, and also for a node that overrides `close`.
+   Only the routes of that instance are removed, not the routes of other nodes or of a new instance with the same id;
+   `remove()` removes a route earlier. The route is an ordinary route of the app, added at the moment of the call with
+   the public `app.route()`, at the same place as `RED.httpNode[method]()` would add it, so the hold of the requests (#8)
+   and the drain (#40, with the mark on the handler) work as for any route. Methods `get`, `post`, `put`, `patch`,
+   `delete`, `options`, `head`, `all` (any case); the path is a string or a `RegExp`, passed to Express unchanged;
+   handlers are functions or arrays of them. An invalid method, path or handler throws a `TypeError` and leaves the app
+   unchanged. The API adds no `httpNodeMiddleware`, CORS or body parsing (the node passes them itself); `httpNodeAuth`
+   applies. A registration after the node started to close adds no route and logs one warning per node
+   (`httpRoutes.after-close`); a failed removal is logged (`httpRoutes.remove-failed`) and the close goes on. No setting:
+   without a call nothing changes (`RED.httpNode` is the same object, a node without routes closes as before). The
+   router of the app is read only by one adapter for Express 4 and 5 (`routerStack` in `runtime/lib/nodes/httpRoutes.js`).
+   The `http in` node still registers its routes as before; its move to the API follows. Tests: `httpRoutes_spec.js`,
+   `Node_spec.js`, `Flow_spec.js`, `21-httpin-routes_spec.js`
  - Hooks of the deploy pipeline `preDeploy` and `postDeploy` (#10, Z-06, R-50), registered **only** with
    `RED.hooks.add("preDeploy.<label>", fn)` / `RED.hooks.add("postDeploy.<label>", fn)` in a plugin or a node; the `hooks`
    setting of `settings.js` (#7) is unchanged and still rejects them (`invalid_hook_setting`). Without a registered handler

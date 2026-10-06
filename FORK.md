@@ -259,6 +259,36 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 - **Wybory projektowe:** nazwa z rodziny `deploy.*`, symetryczna z `holdHttpNodeRequests`; `timeout` ma inne znaczenie niż `holdHttpNodeRequests.timeout`
   (limit czekania na zapytania przyjęte i odstęp terminu); w logach i dokumentach „drenaż HTTP” (nie mylić z `preReload`/`preShutdown`).
 
+### Trasy HTTP węzłów (`node.registerHttpRoute`, #11, Z-07, R-53)
+- **Problem:** węzeł, który rejestruje trasę przez `RED.httpNode.<metoda>()`, musiał ją sam zdjąć w `close`, a jedyną drogą był
+  prywatny `RED.httpNode._router.stack` (w Express 5 go nie ma). Bez tego trasa zostawała do restartu i dublowała się po każdym wdrożeniu.
+- **API:** `node.registerHttpRoute(method, path, ...handlers)` → zamrożony uchwyt `{method, path, remove()}`. `method` – `get`, `post`, `put`,
+  `patch`, `delete`, `options`, `head`, `all` (bez rozróżniania wielkości liter; `handle.method` małymi literami); `path` – string albo
+  `RegExp`, przekazywany do Express bez zmian (składnię ścieżek ustala wersja Express); `handlers` – funkcje albo tablice funkcji dowolnej
+  głębokości (także handler błędu o 4 argumentach). Zła metoda, ścieżka, handlery albo wywołanie nie na węźle → `TypeError`; runtime bez
+  aplikacji węzłów → `Error`; błąd Express dla ścieżki (np. `"/("`) przechodzi bez zmian. Argumenty są sprawdzane przed dodaniem czegokolwiek –
+  nieudana rejestracja nie zmienia stosu aplikacji.
+- **Działanie:** trasa jest zwykłą warstwą aplikacji `httpNode`, dodaną w chwili wywołania publicznym `app.route(path)[method]()` – ta sama
+  warstwa i pozycja co `RED.httpNode[method]()` w tej chwili (kolejność wobec tras dodanych po staremu – wg czasu rejestracji). Wstrzymywanie
+  (#8) widzi ją jak każdą trasę; drenaż (#40) obejmuje ją, gdy handler ma znacznik `Symbol.for("node-red.httpNode.drain")` (MIGRACJA §4.7).
+  Runtime zdejmuje trasy instancji węzła **na początku `close`** (przed callbackami `close`, więc także przy zawieszonym lub rzucającym
+  callbacku) i w zatrzymaniu węzła przez flow przed `close` (węzeł, który nadpisuje `close`) – przy każdym wdrożeniu zatrzymującym węzeł,
+  usunięciu węzła, zatrzymaniu flow i `RED.stop`. Zdejmowane są tylko trasy tej instancji (po tożsamości trasy, nie po ścieżce ani handlerze):
+  trasy innych węzłów i nowej instancji o tym samym `id` zostają. `remove()` zdejmuje trasę wcześniej; działa bez `this` i wielokrotnie.
+  Żądanie już obsługiwane przez trasę kończy się normalnie, nowe dostaje 404 (albo następną pasującą trasę).
+- **Czego API nie dodaje:** `httpNodeMiddleware`, CORS, parsowania cookies i ciała – węzeł przekazuje je sam w `handlers`. `httpNodeAuth`
+  obowiązuje (ta sama aplikacja). Przy `httpNodeRoot: false` rejestracja się udaje, ale trasa nie jest osiągalna z serwera.
+- **Błędy:** rejestracja po rozpoczęciu zamykania instancji (np. spóźniony callback) nie dodaje trasy, nie rzuca, zwraca uchwyt z `remove()`
+  bez skutku i daje jedno ostrzeżenie na instancję (`httpRoutes.after-close`). Błąd zdejmowania (np. uszkodzony stos routera) – jedno
+  ostrzeżenie `httpRoutes.remove-failed` z `id` i `type` węzła (bez ścieżki i metody); zamykanie węzła trwa dalej.
+- **Ograniczenia:** konstruktor, który rzuci po rejestracji, zostawia trasę do restartu (węzeł nie powstaje, runtime go nie zamyka) –
+  rejestruj trasy na końcu konstruktora; brak `use()` (middleware bez trasy); trasy dodane przez `RED.httpNode.<metoda>()` nie są zdejmowane
+  automatycznie (jak dotąd); żądanie w toku, które wraca z trasy do routera (`next()`) po zdjęciu warstwy przed nim, może pominąć jedną warstwę
+  (jak dotąd przy zdejmowaniu tras `http in`).
+- **Ustawienie:** brak – API jest dodane, bez wywołania nic się nie zmienia (`RED.httpNode` to ten sam obiekt, bez nowych właściwości; węzeł
+  bez tras zamyka się jak dotąd). Router aplikacji czyta przy zdejmowaniu tylko adapter `routerStack(app)` w `runtime/lib/nodes/httpRoutes.js`
+  (Express 4 `_router`, Express 5 `router`). Rdzeniowy `http in` rejestruje jeszcze trasy po staremu (`removeNodeRoutes`); przejście na API – §8.
+
 ### Potok wdrożenia (E-01)
 - Wspólna blokada (`runtime/lib/flows/lock.js`) dla `POST /flows`, `/flow`, `POST /flows/state` i operacji
   Projektów (zmiana gałęzi, pull, revert, scalanie); druga operacja czeka. Blokada trwa do końca startu flow (R-43).
@@ -361,7 +391,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   (albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”) zamiast surowego JSON-a wstawianego jako HTML – zmiana tylko
   wyświetlania, bez wpływu na zapis i API; wartości z odpowiedzi i nazwy flow są escapowane. Zmiany zachowania dla 409
   (`version_mismatch`, `version_required`) i dla błędów bez `rev` (zmiany zostają niewdrożone) nie ma.
-- `http in` (#11): przy zamknięciu węzła (wdrożenie, zatrzymanie) usuwane są **tylko trasy tego węzła**, rozpoznane po jego handlerze. Wcześniej usuwane były wszystkie trasy z tą samą ścieżką i metodą – także innych węzłów `http in` i tras dodanych przez inne moduły przez `RED.httpNode` – a trasa następująca bezpośrednio po usuniętej była pomijana (`splice` w trakcie `forEach`). Klucz trasy „surowego ciała” (`skipBodyParsing`) jest utrzymywany, dopóki korzysta z niego jakikolwiek węzeł (licznik na klucz). Skutek: gdy dwa węzły `http in` mają tę samą ścieżkę i metodę, odpowiada pierwszy zarejestrowany (Express), a po jego zamknięciu odpowiada drugi, zamiast 404. Węzły spoza rdzenia nadal nie mają wspieranego sposobu zdejmowania własnych tras (API tras węzła jest osobnym etapem #11).
+- `http in` (#11): przy zamknięciu węzła (wdrożenie, zatrzymanie) usuwane są **tylko trasy tego węzła**, rozpoznane po jego handlerze. Wcześniej usuwane były wszystkie trasy z tą samą ścieżką i metodą – także innych węzłów `http in` i tras dodanych przez inne moduły przez `RED.httpNode` – a trasa następująca bezpośrednio po usuniętej była pomijana (`splice` w trakcie `forEach`). Klucz trasy „surowego ciała” (`skipBodyParsing`) jest utrzymywany, dopóki korzysta z niego jakikolwiek węzeł (licznik na klucz). Skutek: gdy dwa węzły `http in` mają tę samą ścieżkę i metodę, odpowiada pierwszy zarejestrowany (Express), a po jego zamknięciu odpowiada drugi, zamiast 404. Węzły spoza rdzenia zdejmują własne trasy przez `node.registerHttpRoute` (§5, „Trasy HTTP węzłów”).
 - Edytor, błąd zapisu do biblioteki (okno biblioteki) i eksportu do biblioteki (okno eksportu schowka) (#30): komunikat
   `library.saveFailed` wstawiał surową treść odpowiedzi serwera jako HTML (XSS przy odpowiedzi z znacznikami). Teraz
   pokazuje pole `message` odpowiedzi JSON (albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”) z escapowaniem
@@ -498,7 +528,13 @@ w stanie `stopping`, awaryjne pominięcie drenażu przez operatora, ochrona usuw
 `deploy_hook_reentrant` (po pomiarze na Node 22 i 24), `signal` przerywany przy `stopping`, `Retry-After` dla 503, `details` w edytorze (tylko z escapowaniem), krok 2a (Z-12.08) przed hookiem,
 metryka czasu hooka, ochrona hooków przed `RED.hooks.remove`. Rejestracja z `settings.js` (poza #7) wymaga nowej decyzji zgodnej z zasadą W7.
 
-**Poza zakresem (kolejny etap):** Z-03, Z-07, Z-12 (rozszerzenia
+**#11 (Z-07, trasy HTTP węzłów, R-53):** API `node.registerHttpRoute` w runtime zrealizowane (§5). Do zrobienia: przejście
+`http in` na API i usunięcie `removeNodeRoutes` (po scaleniu #48, które zmienia ten sam plik). Pozostałe odczyty wnętrza routera Express
+przed przejściem na Express 5: `rawBodyCapture` w `http in` (R-16, osobne zadanie z osobnym ustawieniem), `httpHold.hasRoute`
+(`runtime/lib/httpHold.js`, #8), `matchesEveryPath` w `registry/lib/util.js` (Z-02); adapter `routerStack(app)` w
+`runtime/lib/nodes/httpRoutes.js` obsługuje już oba kształty (`_router` i `router`).
+
+**Poza zakresem (kolejny etap):** Z-03, Z-12 (rozszerzenia
 edytora), Z-13 (język polski), FL-B-011.
 
 **Do wykonania przez właściciela repozytorium:** przepisanie historii (usunięcie `design/k8s-postgres/` z
