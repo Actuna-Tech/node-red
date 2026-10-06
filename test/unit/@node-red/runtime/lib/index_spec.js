@@ -3820,6 +3820,23 @@ describe("runtime", function() {
                     });
                 });
 
+                describe("start() after a stop", function() {
+                    it("a stop after an init() that followed an earlier stop, then start() without init(): startup_stopped, no step (the instance is stopped)", async function() {
+                        init({});
+                        await runtime.stop("first");
+                        init({});
+                        await runtime.start();
+                        await runtime.stop("second");
+                        instanceState.get().should.containEql({state: "stopped"});
+                        stubs.forEach(function(s) { s.resetHistory && s.resetHistory() });
+                        const outcome = track(runtime.start());
+                        await flush();
+                        outcome.rejected.should.be.true("a stopped instance started again without init()");
+                        outcome.error.should.have.property("code", "startup_stopped");
+                        storage.init.called.should.be.false();
+                        redNodes.loadFlows.called.should.be.false();
+                    });
+                });
             });
         });
     });
