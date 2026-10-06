@@ -17,6 +17,8 @@
  * Modified by Actuna Sp. z o.o.:
  *   #67: integration tests of the end of the process after a failed start (CLI)
  *   #75: SIGTERM with a coordination plugin whose resign rejects with undefined
+ *   #63: a start rejected with a Symbol (the header of the failure is logged once for every value); RED.stop rejecting
+ *   with a value that has no prototype or whose properties throw
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -293,13 +295,18 @@ const failingStorage = Object.assign({}, localfs, { watchFlows: () => Promise.re
             { name: "an object whose stack getter throws", expr: `{ get stack() { throw new Error("stack getter throws") } }` },
             // R67-1: util.inspect reads the stack of an Error, so this one needs more than the plain object above
             { name: "an Error whose stack getter throws", expr: `(() => { const e = new Error("m"); Object.defineProperty(e, "stack", { get() { throw new Error("x") } }); return e })()` },
-            { name: "a Proxy whose get throws", expr: `new Proxy({}, { get() { throw new Error("proxy get throws") } })` }
+            { name: "a Proxy whose get throws", expr: `new Proxy({}, { get() { throw new Error("proxy get throws") } })` },
+            // #63 (B4-AC-6): RED.log.error(Symbol()) throws after the header was logged: the header must not be written twice
+            { name: "a Symbol", expr: `Symbol("s")` },
+            { name: "a Symbol without a description", expr: `Symbol()` }
         ];
         values.forEach(v => {
-            it("AC-5: rejection with " + v.name + ": exit 1, no Uncaught Exception", async function() {
+            it("AC-5 (#63 B4-AC-6): rejection with " + v.name + ": exit 1, the header once, no Uncaught Exception", async function() {
                 const proc = await launch({ pre: rejectCoordination(v.expr) });
                 const code = await exitsWithin(proc, EXIT_BOUND);
                 proc.output.should.match(/Failed to start server/);
+                // #63 B4-AC-6: the header of the failure appears exactly once
+                (proc.output.match(/Failed to start server/g) || []).should.have.length(1);
                 proc.output.should.not.match(/Uncaught Exception/);
                 // R67-3: the planned stop happened
                 proc.output.should.match(/Stopping Node-RED \(startup-error\)/);
@@ -328,6 +335,26 @@ const failingStorage = Object.assign({}, localfs, { watchFlows: () => Promise.re
         proc.output.should.match(/Failed to start server/);
         proc.output.should.match(/Shutdown failed: stop failed on purpose/);
         proc.output.should.not.match(/Uncaught Exception/);
+    });
+
+    describe("#63 B4-AC-7: a RED.stop that rejects with a value that cannot be printed as usual", function() {
+        const values = [
+            { name: "an object without a prototype", expr: "Object.create(null)" },
+            { name: "a Proxy whose get throws", expr: `new Proxy({}, { get() { throw new Error("proxy get throws") } })` }
+        ];
+        values.forEach(v => {
+            it("B4-AC-7: " + v.name + ": Shutdown failed is logged, exit 1, no Uncaught Exception", async function() {
+                const proc = await launch({
+                    pre: rejectCoordination(COORDINATION_ERROR) +
+                        `\nrequire(${JSON.stringify(RED_LIB)}).stop = function() { return Promise.reject(${v.expr}) };`
+                });
+                const code = await exitsWithin(proc, EXIT_BOUND);
+                should(code).equal(1);
+                proc.output.should.match(/Failed to start server/);
+                proc.output.should.match(/Shutdown failed:/);
+                proc.output.should.not.match(/Uncaught Exception/);
+            });
+        });
     });
 
     it("AC-7: a RED.stop that never finishes is cut off after 5000 ms: exit 1 and Shutdown failed", async function() {

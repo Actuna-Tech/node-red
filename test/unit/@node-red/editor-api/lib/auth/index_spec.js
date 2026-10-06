@@ -19,6 +19,8 @@
  *   #68: tests of a failed save of the sessions in the token request, the revoke request,
  *   the exchange of the code and the generic strategy (a failed save is logged and answered
  *   with a general error)
+ *   #63: the exchange of the code - no second answer when the response was already sent, and the level of the log
+ *   for each kind of error (debug for an invalid code and a missing session store, warn for the others)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -429,6 +431,93 @@ describe("api/auth/index - a failed save of the sessions (#68)", function() {
             warn.called.should.be.true();
             auditedEvents().should.not.containEql("auth.login");
             tracker.dropped().should.have.length(0);
+        });
+    });
+});
+
+describe("exchangeCodeForToken (#63)", function() {
+    var sandbox;
+    var debug;
+    var warn;
+
+    beforeEach(function() {
+        sandbox = sinon.createSandbox();
+        debug = sandbox.stub(utilLog, "debug");
+        warn = sandbox.stub(utilLog, "warn");
+        auth.init({}, {});
+    });
+    afterEach(function() {
+        sandbox.restore();
+    });
+
+    // a response whose json() can fail: `failFirst` - the first call throws (after the headers were sent, or before)
+    function createRes(options) {
+        options = options || {};
+        var res = {
+            headersSent: false,
+            statusCode: undefined,
+            status: sinon.spy(function(code) { res.statusCode = code; return res; }),
+            json: sinon.spy(function() {
+                if (options.failFirst && res.json.callCount === 1) {
+                    if (options.sentBeforeFailing) {
+                        res.headersSent = true;
+                    }
+                    throw new Error("the write failed");
+                }
+                res.headersSent = true;
+            })
+        };
+        return res;
+    }
+
+    it("B4-AC-4: success answers with the token once", async function() {
+        sandbox.stub(Tokens, "exchangeCodeForToken").resolves({ access_token: "t", token_type: "Bearer" });
+        var res = createRes();
+        await auth.exchangeCodeForToken({ body: { code: "c" } }, res);
+        res.json.callCount.should.equal(1);
+        res.json.firstCall.args[0].should.eql({ access_token: "t", token_type: "Bearer" });
+        res.status.called.should.be.false();
+        warn.called.should.be.false();
+    });
+
+    it("B4-AC-4: res.json throws after the headers were sent - no second answer, a warning is logged", async function() {
+        sandbox.stub(Tokens, "exchangeCodeForToken").resolves({ access_token: "t" });
+        var res = createRes({ failFirst: true, sentBeforeFailing: true });
+        await auth.exchangeCodeForToken({ body: { code: "c" } }, res);
+        res.status.called.should.be.false();
+        res.json.callCount.should.equal(1);
+        warn.called.should.be.true();
+        warn.args.map(a => a.join(" ")).join("\n").should.containEql("Exchanging the code for a token failed");
+    });
+
+    it("B4-AC-4: res.json throws before anything was sent - the answer is 400 unexpected_error", async function() {
+        sandbox.stub(Tokens, "exchangeCodeForToken").resolves({ access_token: "t" });
+        var res = createRes({ failFirst: true, sentBeforeFailing: false });
+        await auth.exchangeCodeForToken({ body: { code: "c" } }, res);
+        res.status.calledOnce.should.be.true();
+        res.status.firstCall.args[0].should.equal(400);
+        res.json.callCount.should.equal(2);
+        res.json.secondCall.args[0].should.eql({ error: "unexpected_error" });
+    });
+
+    [
+        ["invalid_exchange_code", Object.assign(new Error("invalid"), { code: "invalid_exchange_code" }), "debug"],
+        ["not_initialised", Object.assign(new Error("not initialised"), { code: "not_initialised" }), "debug"],
+        ["any other error", new Error("the save failed"), "warn"],
+        ["an error with another code", Object.assign(new Error("other"), { code: "ENOSPC" }), "warn"]
+    ].forEach(function(row) {
+        it("B4-AC-5: " + row[0] + " is logged with " + row[2] + " and answered with 400 unexpected_error", async function() {
+            sandbox.stub(Tokens, "exchangeCodeForToken").rejects(row[1]);
+            var res = createRes();
+            await auth.exchangeCodeForToken({ body: { code: "c" } }, res);
+            res.status.calledOnce.should.be.true();
+            res.status.firstCall.args[0].should.equal(400);
+            res.json.calledOnce.should.be.true();
+            res.json.firstCall.args[0].should.eql({ error: "unexpected_error" });
+            var written = (row[2] === "debug" ? debug : warn);
+            var other = (row[2] === "debug" ? warn : debug);
+            written.args.map(a => a.join(" ")).join("\n").should.containEql("Exchanging the code for a token failed");
+            other.args.map(a => a.join(" ")).join("\n").should.not.containEql("Exchanging the code for a token failed");
         });
     });
 });

@@ -40,7 +40,11 @@
  *   #56 (REV-N01): the tests with the real credentials module drop its state after each test
  *   (init() resets a migration that was started and not finished by a failed test)
  *   #51: tests of the error code of a failed comparison of the credentials in the reread
- *   under the lock (reload_failed, as in step 2; a read error of storage stays storage_error)
+ *   under the lock (reload_failed, as in step 2; a read error of storage stays storage_error);
+ *   the tests of a falsy value thrown by storage.getFlows (a falsy getFlows rejection)
+ *   #63: the revision of the condition after a failed comparison in the reread is the revision the reread read;
+ *   one failRereads helper for the describes of #17 and #51; AC-2 of #51 asserts the reload.read-failed warning;
+ *   AC-4 of #51 compares the result of step 2 with the result of the reread of the same scenario
  *   #61: test of a preReload handler that rejects without a value
  *   #76: the report of an error that has no text or cannot be printed (unwatch, registration, read of storage,
  *   slots, preReload hook) does not throw
@@ -692,6 +696,10 @@ describe("flows/reload (Z-09)", function() {
                             env.applied.should.have.length(0);
                             JSON.stringify(env.logs).should.not.containEql(SECRET);
                             JSON.stringify(state.get()).should.not.containEql(SECRET);
+                            // #63 B4-AC-3: one warning reload.read-failed for the one failed cycle (retry.attempts is 1), attempt 1
+                            const warned = env.logs.warn.filter(m => m.indexOf("reload.read-failed") === 0);
+                            warned.should.have.length(1);
+                            JSON.parse(warned[0].slice("reload.read-failed ".length)).attempt.should.equal(1);
                         });
                     });
                     it("the same revision, the running credentials have no digest (R2 of #2): not an error, nothing happens", async function() {
@@ -1402,6 +1410,23 @@ describe("flows/reload (Z-09)", function() {
         function logged(level, key) {
             return env.logs[level].filter(m => m.indexOf(key) === 0);
         }
+        // The second read of a cycle (under the deploy lock) fails with env.rereadError; a test sets it to null to stop
+        // the failures (#63: one helper for the describes of #17 and #51)
+        function failRereads(error) {
+            const original = env.storage.getFlows;
+            env.rereadError = error;
+            env.storage.getFlows = async function(readOpts) {
+                if (env.rereadError && lock.isLocked()) {
+                    env.getFlowsCalls++;
+                    throw env.rereadError;
+                }
+                return original(readOpts);
+            };
+        }
+        // The attempt numbers of the reload.read-failed warnings, in the order they were logged
+        function attemptsLogged() {
+            return logged("warn", "reload.read-failed").map(m => JSON.parse(m.slice("reload.read-failed ".length)).attempt);
+        }
         function retry(onExhausted, extra) {
             return { retry: Object.assign({ min: 1, max: 10, attempts: 2, onExhausted: onExhausted }, extra || {}) };
         }
@@ -1836,26 +1861,11 @@ describe("flows/reload (Z-09)", function() {
         describe("the failures are counted until the cycle succeeds (#17)", function() {
             const CREDENTIALS_ERROR = () => Object.assign(new Error("credentials cannot be decrypted"), { code: "credentials_load_failed" });
 
-            // The second read of a cycle (under the deploy lock) fails with env.rereadError
-            function failRereads(error) {
-                const original = env.storage.getFlows;
-                env.rereadError = error;
-                env.storage.getFlows = async function(readOpts) {
-                    if (env.rereadError && lock.isLocked()) {
-                        env.getFlowsCalls++;
-                        throw env.rereadError;
-                    }
-                    return original(readOpts);
-                };
-            }
             // Lets the promise chains of a cycle run (fake time does not advance)
             async function settle() {
                 for (let i = 0; i < 5; i++) {
                     await clock.tickAsync(0);
                 }
-            }
-            function attemptsLogged() {
-                return logged("warn", "reload.read-failed").map(m => JSON.parse(m.slice("reload.read-failed ".length)).attempt);
             }
             // The first read of the first cycle waits for gate.resolve() and then fails
             function failFirstReadAfter(gate) {
@@ -2421,20 +2431,6 @@ describe("flows/reload (Z-09)", function() {
                     return original.apply(this, arguments);
                 };
             }
-            // The second read of a cycle (under the lock) fails with `error`
-            function failRereads(error) {
-                const original = env.storage.getFlows;
-                env.storage.getFlows = async function(readOpts) {
-                    if (lock.isLocked()) {
-                        env.getFlowsCalls++;
-                        throw error;
-                    }
-                    return original(readOpts);
-                };
-            }
-            function attemptsLogged() {
-                return logged("warn", "reload.read-failed").map(m => JSON.parse(m.slice("reload.read-failed ".length)).attempt);
-            }
             // Waits until the failure of the reread was handled, whatever the outcome
             async function afterReread() {
                 await waitFor(() => state.get().state === "failed" || thrownUnderLock >= 2, 2000, "the reread never failed");
@@ -2497,29 +2493,103 @@ describe("flows/reload (Z-09)", function() {
                 withDigest.should.eql(withReadError);
             });
 
-            [
-                ["keepReady", { error: { code: "reload_failed" }, keepReady: false }, READY_503],
-                ["fail", null, READY_503]
-            ].forEach(function(row) {
-                it("AC-4 (#51): " + row[0] + " - credentials_digest_failed in step 2 (regression): the same result as in the reread", async function() {
-                    env = createEnv({ reload: retry(row[0], { attempts: 1 }) });
-                    env.credentialsError = DIGEST();
-                    const hook = sinon.spy();
-                    hooks.add("preReload", hook);
-                    await env.start();
-                    env.change("B");
-                    env.notify();
-                    await waitFor(() => state.get().state === "failed", 2000, "not failed");
-                    readiness().should.eql(row[2]);
-                    if (row[1]) {
-                        state.get().reload.should.containEql(row[1]);
-                    } else {
-                        state.get().should.not.have.property("reload");
+            // #63 B4-AC-3: the same scenario twice - the comparison of the credentials fails in step 2 and, in the other run,
+            // in the reread under the lock - and the two results are compared with each other (not with literals)
+            ["keepReady", "fail"].forEach(function(mode) {
+                it("AC-4 (#51): " + mode + " - credentials_digest_failed in step 2 (regression): the same result as in the reread", async function() {
+                    async function run(inject) {
+                        env = createEnv({ reload: retry(mode, { attempts: 1, min: 60000, max: 60000 }) });
+                        // one parameter: a handler of preReload with none would get `done` and has to call it
+                        const hook = sinon.spy();
+                        hooks.add("preReload", function(payload) { hook(payload) });
+                        inject(env);
+                        await env.start();
+                        env.change("B");
+                        if (env.credentialsError === undefined) {
+                            failCompareUnderLock(DIGEST());
+                        }
+                        env.notify();
+                        await afterReread();
+                        const result = {
+                            state: state.get().state,
+                            reload: state.get().reload,
+                            readiness: readiness(),
+                            exhausted: logged("error", "reload.retries-exhausted").length,
+                            applied: env.applied.length,
+                            warned: attemptsLogged()
+                        };
+                        result.hookCalled = hook.called;
+                        await env.reloader.stop();
+                        env = null;
+                        hooks.clear();
+                        state.reset();
+                        state.markStarting();
+                        state.report({ errors: [] });
+                        return result;
                     }
-                    logged("error", "reload.retries-exhausted").should.have.length(1);
-                    hook.called.should.be.false();
-                    env.applied.should.have.length(0);
+                    const inStep2 = await run(e => { e.credentialsError = DIGEST() });
+                    thrownUnderLock = 0;
+                    const inReread = await run(() => {});
+                    thrownUnderLock.should.be.aboveOrEqual(1);
+                    // step 2 stops before the hook; the reread comes after it - the only difference
+                    inStep2.hookCalled.should.be.false();
+                    inReread.hookCalled.should.be.true();
+                    delete inStep2.hookCalled;
+                    delete inReread.hookCalled;
+                    // the time of the first failure differs between the two runs
+                    [inStep2, inReread].forEach(r => { if (r.reload) { delete r.reload.since } });
+                    inStep2.state.should.equal("failed");
+                    inStep2.readiness.should.eql(READY_503);
+                    inStep2.exhausted.should.equal(1);
+                    inStep2.applied.should.equal(0);
+                    inReread.should.eql(inStep2);
+                    if (mode === "keepReady") {
+                        should.exist(inStep2.reload);
+                        inStep2.reload.should.containEql({ error: { code: "reload_failed" }, keepReady: false });
+                    } else {
+                        should.not.exist(inStep2.reload);
+                    }
                 });
+            });
+
+            // #63 B4-AC-1 (L21): the revision of the condition is the revision the reread read, not the one of step 2
+            it("B4-AC-1 (#63): keepReady - the storage changes during the preReload hook and the comparison fails in the reread: reload.rev is the revision of the reread", async function() {
+                env = createEnv({ reload: retry("keepReady", { attempts: 1, min: 60000, max: 60000 }) });
+                await env.start();
+                // step 2 reads B; the hook changes the storage to C before the reread
+                env.change("B");
+                hooks.add("preReload.rev", p => { env.change("C") });
+                failCompareUnderLock(DIGEST());
+                env.notify();
+                await afterReread();
+                thrownUnderLock.should.be.aboveOrEqual(1);
+                state.get().state.should.equal("failed");
+                state.get().reload.should.containEql({ error: { code: "reload_failed" }, keepReady: false });
+                state.get().reload.rev.should.equal("C");
+                env.applied.should.have.length(0);
+            });
+
+            it("B4-AC-2 (#63, regression): keepReady - the reread itself fails: reload.rev is the revision of step 2", async function() {
+                env = createEnv({ reload: retry("keepReady", { attempts: 1, min: 60000, max: 60000 }) });
+                await env.start();
+                env.change("B");
+                hooks.add("preReload.rev", p => { env.change("C") });
+                failRereads(new Error("storage unavailable under the lock"));
+                env.notify();
+                await waitFor(() => state.get().reload !== undefined, 2000, "no condition");
+                state.get().reload.should.containEql({ error: { code: "storage_error" }, keepReady: true, rev: "B" });
+            });
+
+            it("B4-AC-2 (#63, regression): fail - a failed comparison in the reread after a change of the revision sets no condition", async function() {
+                env = createEnv({ reload: retry("fail", { attempts: 1, min: 60000, max: 60000 }) });
+                await env.start();
+                env.change("B");
+                hooks.add("preReload.rev", p => { env.change("C") });
+                failCompareUnderLock(DIGEST());
+                env.notify();
+                await afterReread();
+                state.get().state.should.equal("failed");
+                state.get().should.not.have.property("reload");
             });
 
             it("AC-5 (#51): a kept-ready instance, the storage is readable again, credentials_digest_failed in the reread: failed, reload_failed, not-kept-ready", async function() {
