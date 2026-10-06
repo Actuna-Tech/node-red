@@ -16,10 +16,12 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #37: tests of RED.utils.sanitize (escapes the quotes too) and RED.utils.sanitizeContent (& < > only)
+ *   #63: tests of RED.utils.renderMarkdown (a text that cannot be rendered is escaped, not returned raw)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
 const should = require("should");
+const sinon = require("sinon");
 const cheerio = require("cheerio");
 
 const NR_TEST_UTILS = require("nr-test-utils");
@@ -99,6 +101,58 @@ describe("editor-client/ui/utils (#37)", function() {
     describe("sanitizeContent", function() {
         it("escapes only & < >: the text goes through markdown or is cut by characters", function() {
             utils.sanitizeContent(`a "b" 'c' <d> &`).should.equal(`a "b" 'c' &lt;d&gt; &amp;`);
+        });
+    });
+
+    describe("renderMarkdown (#63, B1-AC-3, B1-AC-4)", function() {
+        let savedMarkdownGlobals;
+        let warn;
+
+        beforeEach(function() {
+            savedMarkdownGlobals = { _marked: global._marked, DOMPurify: global.DOMPurify };
+            warn = sinon.stub(console, "warn");
+        });
+
+        afterEach(function() {
+            warn.restore();
+            Object.keys(savedMarkdownGlobals).forEach(function(key) {
+                if (savedMarkdownGlobals[key] === undefined) {
+                    delete global[key];
+                } else {
+                    global[key] = savedMarkdownGlobals[key];
+                }
+            });
+        });
+
+        it("B1-AC-3: a text the markdown library cannot render is shown as text, not as raw HTML", function() {
+            global._marked = { parse() { throw new Error("x"); } };
+            const input = "<img src=x onerror=alert(1)>";
+            const result = utils.renderMarkdown(input);
+            result.should.equal(utils.sanitize(input));
+            result.should.not.containEql("<img");
+            catalog.assertNoElement("<p>" + result + "</p>", "img");
+        });
+
+        it("B1-AC-3: the escaping covers the quotes and ampersands of the text too", function() {
+            global._marked = { parse() { throw new Error("x"); } };
+            utils.renderMarkdown("a \"b\" 'c' & <d>").should.equal("a &quot;b&quot; &#39;c&#39; &amp; &lt;d&gt;");
+        });
+
+        it("B1-AC-3: what is no text is returned unchanged when the markdown library throws", function() {
+            global._marked = { parse() { throw new Error("x"); } };
+            const object = { a: 1 };
+            should(utils.renderMarkdown(undefined)).equal(undefined);
+            should(utils.renderMarkdown(null)).equal(null);
+            utils.renderMarkdown(5).should.equal(5);
+            utils.renderMarkdown(object).should.equal(object);
+        });
+
+        it("B1-AC-4: a text that is rendered gives the result of DOMPurify (unchanged behaviour)", function() {
+            global._marked = { parse() { return "<p>a</p>"; } };
+            const seen = [];
+            global.DOMPurify = { sanitize(html) { seen.push(html); return "cleaned:" + html; } };
+            utils.renderMarkdown("a").should.equal("cleaned:<p>a</p>");
+            seen.should.eql(["<p>a</p>"]);
         });
     });
 });

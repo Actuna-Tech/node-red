@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #34: tests of RED.errors, the shared escaping of error texts shown as HTML
  *   #37: notifyGitError, shared by the projects and the version control; httpUrl; translateEscaped keeps numbers
+ *   #63: httpUrl gives no address for a relative one (the test that pinned the resolution against the editor address is replaced)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -175,7 +176,7 @@ describe("editor-client/ui/common/errors (#34)", function() {
             [
                 "javascript:alert(1)", "JaVaScRiPt:alert(1)", " javascript:alert(1)", "\tjava\nscript:alert(1)",
                 "data:text/html,<img src=x onerror=alert(1)>", "vbscript:msgbox(1)", "file:///etc/passwd",
-                "blob:https://example.org/1", "ftp://example.org/", "//example.org/x", "mailto:a@b.c"
+                "blob:https://example.org/1", "ftp://example.org/", "mailto:a@b.c"
             ].forEach(function(value) {
                 should(errors.httpUrl(value)).equal(null, value);
             });
@@ -187,15 +188,42 @@ describe("editor-client/ui/common/errors (#34)", function() {
             });
         });
 
-        it("resolves a relative address against the address of the editor", function() {
-            global.window = { location: { href: "https://editor.example/red/" } };
-            try {
-                errors.httpUrl("docs/x").should.equal("https://editor.example/red/docs/x");
-                should(errors.httpUrl("javascript:alert(1)")).equal(null);
-            } finally {
+        // #63 (B1-AC-1, Q7): the test "resolves a relative address against the address of the editor" pinned the
+        // behaviour that is changed on purpose (a relative address of the catalog gave a link into the editor itself);
+        // it is replaced by this one, which is the opposite.
+        describe("a relative address gives no address (#63, B1-AC-1)", function() {
+            const relative = ["docs/x", "/x", "?q=1", "#a", "//example.org/x"];
+
+            it("with the address of the editor known", function() {
+                global.window = { location: { href: "https://editor.example/red/" } };
+                try {
+                    relative.forEach(function(value) {
+                        should(errors.httpUrl(value)).equal(null, value);
+                    });
+                    errors.httpUrl("https://example.org/a b?x=1").should.equal("https://example.org/a%20b?x=1");
+                    should(errors.httpUrl("javascript:alert(1)")).equal(null);
+                } finally {
+                    delete global.window;
+                }
+            });
+
+            it("without the address of the editor", function() {
                 delete global.window;
-            }
-            should(errors.httpUrl("docs/x")).equal(null);
+                relative.forEach(function(value) {
+                    should(errors.httpUrl(value)).equal(null, value);
+                });
+            });
+
+            it("with a window that has no location", function() {
+                global.window = {};
+                try {
+                    relative.forEach(function(value) {
+                        should(errors.httpUrl(value)).equal(null, value);
+                    });
+                } finally {
+                    delete global.window;
+                }
+            });
         });
     });
 

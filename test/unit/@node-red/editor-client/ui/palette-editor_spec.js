@@ -20,6 +20,7 @@
  *   Review buttons take only http and https addresses, the handlers of enable and disable are driven
  *   #37: the confirmations and the progress message show the module name escaped; a failed enable or disable of a
  *   module names the action (enable / disable) and the module; a failed upload shows the file name escaped
+ *   #63: a relative address of the catalog gives no documentation link and no Review button
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -379,6 +380,18 @@ describe("editor-client/ui/palette-editor (#34)", function() {
                 links.should.have.length(0);
             });
 
+            it("#63 B1-AC-1: a module with a relative address has no link, also when the address of the editor is known", function() {
+                global.window.location = { href: "https://editor.example/red/" };
+                ["docs/x", "/x", "?q=1", "#a", "//example.org/x"].forEach(function(url) {
+                    const module = catalogModuleOfCatalog(0);
+                    module.url = url;
+                    const elements = jq.record.elements.length;
+                    addItem(module);
+                    const links = jq.record.elements.slice(elements).filter(e => /palette-module-link/.test(e.state.source));
+                    links.should.have.length(0, url);
+                });
+            });
+
             it("a module with an https address has the link, that opens without access to the editor", function() {
                 const module = catalogModuleOfCatalog(0);
                 const elements = jq.record.elements.length;
@@ -520,6 +533,21 @@ describe("editor-client/ui/palette-editor (#34)", function() {
             should.not.exist(editor.reviewButton("not an address", "x"));
             should.exist(editor.reviewButton("https://example.org/a", "x"));
             should.exist(editor.reviewButton("http://example.org/a", "x"));
+        });
+
+        it("#63 B1-AC-1: no button is made for a relative address, also when the address of the editor is known", function() {
+            global.window.location = { href: "https://editor.example/red/" };
+            ["docs/x", "/x", "?q=1", "#a", "//example.org/x"].forEach(function(url) {
+                should(editor.reviewButton(url, "x")).equal(null, url);
+            });
+            delete global.window.location;
+            should(editor.reviewButton("docs/x", "x")).equal(null);
+        });
+
+        it("#63 B1-AC-1: the install confirmation of a module with a relative address has no Review button", function() {
+            global.window.location = { href: "https://editor.example/red/" };
+            editor.install({ id: "m", version: "1.0.0", url: "docs/x" }, {}, function() {});
+            lastNotification().options.buttons.map(b => b.text).should.eql(["Cancel", "Install"]);
         });
 
         it("opens the address in a new window without access to the editor", function() {

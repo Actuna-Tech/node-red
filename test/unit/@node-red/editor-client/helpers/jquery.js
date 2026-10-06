@@ -26,8 +26,10 @@
  * handlers (a test clicks by calling them), `hasClass` knows the classes that were added.
  *
  * What is recorded (all of it is plain data for the assertions):
- * - `htmlSinks`: the strings that jQuery parses as HTML - `$("<...>")`, `.html(s)`, `.append(s)`,
- *   `.prepend(s)`, `.before(s)`, `.after(s)`, `.appendTo/.prependTo` are not (they take elements);
+ * - `htmlSinks`: the strings that jQuery parses as HTML - `$("<...>")`, `$("<...>", {html: s})`, `.html(s)`,
+ *   `.append(s)`, `.prepend(s)`, `.before(s)`, `.after(s)`, `.replaceWith(s)`, `.wrap(s)`, `.wrapAll(s)`,
+ *   `.wrapInner(s)`, `$.parseHTML(s)`; an element given instead of a string is not recorded,
+ *   `.appendTo/.prependTo` are not (they take elements);
  * - `texts`: the values set as text - `.text(v)` and the `text` property of `$("<option>", {...})`;
  * - `editableLists`: the options of every `.editableList(options)` (a test calls `addItem`);
  * - `requests`: the `$.ajax` requests, answered by the test.
@@ -75,6 +77,10 @@ function createJQuery() {
             prepend(...args) { args.forEach(a => typeof a === "string" && sink(".prepend()", a)); return proxy; },
             before(...args) { args.forEach(a => typeof a === "string" && sink(".before()", a)); return proxy; },
             after(...args) { args.forEach(a => typeof a === "string" && sink(".after()", a)); return proxy; },
+            replaceWith(...args) { args.forEach(a => typeof a === "string" && sink(".replaceWith()", a)); return proxy; },
+            wrap(...args) { args.forEach(a => typeof a === "string" && sink(".wrap()", a)); return proxy; },
+            wrapAll(...args) { args.forEach(a => typeof a === "string" && sink(".wrapAll()", a)); return proxy; },
+            wrapInner(...args) { args.forEach(a => typeof a === "string" && sink(".wrapInner()", a)); return proxy; },
             editableList(options) {
                 if (typeof options === "object") { record.editableLists.push(options); }
                 return proxy;
@@ -101,6 +107,10 @@ function createJQuery() {
         if (props && typeof props === "object") {
             Object.keys(props).forEach(function(key) {
                 if (key === "text") { proxy.text(props[key]); }
+                else if (key === "html") {
+                    if (typeof props[key] === "string") { sink("$(html:)", props[key]); }
+                    state.attrs[key] = props[key];
+                }
                 else if (key === "class") { String(props[key]).split(" ").forEach(n => state.classes.add(n)); }
                 else { state.attrs[key] = props[key]; }
             });
@@ -110,6 +120,15 @@ function createJQuery() {
     }
 
     function jq(source, props) { return makeElement(source, props); }
+
+    // $.parseHTML(s) parses the string as HTML
+    jq.parseHTML = function(value) {
+        if (typeof value === "string") {
+            const entry = { sink: "$.parseHTML()", html: value };
+            record.htmlSinks.push(entry);
+        }
+        return [];
+    };
 
     jq.ajax = function(options) {
         const callbacks = {};
