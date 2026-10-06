@@ -18,6 +18,7 @@
  *   #45: tests of hiding the credentials of remote URLs in the project returned to the API;
  *   toJSON() of a project gives export() (no credentialSecret); the literal secrets of a project
  *   are forgotten when the project is deleted (SEC-007)
+ *   #63: getRemotes() of a project with an old ambiguous remote URL does not show the password
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -140,6 +141,10 @@ describe("storage/localfilesystem/projects/Project", function() {
             }, {});
             var project = await Project.load(projectDir);
             JSON.stringify(project.export()).should.not.containEql("pa ss");
+            // #63 B2-AC-2: GET /projects/:id/remotes goes through getRemotes()
+            var listed = await project.getRemotes();
+            JSON.stringify(listed).should.not.containEql("pa ss");
+            listed.remotes.find(r => r.name === "origin").fetch.should.equal("https://***@host.example/org/repo.git");
             project.export().git.remotes.origin.fetch.should.equal("https://***@host.example/org/repo.git");
             gitTools.maskCredentials("pa ss", projectDir).should.equal("***");
             await Project.delete(null, projectDir);

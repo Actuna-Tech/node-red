@@ -13,6 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #63: tests that the credentials of an install URL (and of a module given as a URL) are not in the log of the
+ *   installer and are passed to exec.run as literal secrets for the event-log
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require("sinon");
@@ -491,6 +497,157 @@ describe('nodes/registry/installer', function() {
                 done();
             }).catch(done);
         })
+        });
+    });
+    describe("credentials of the install URL (#63)", function() {
+        var sandbox;
+        var LOG_METHODS = ["log", "debug", "trace", "warn", "info", "error"];
+
+        beforeEach(function() {
+            sandbox = sinon.createSandbox();
+            LOG_METHODS.forEach(m => sandbox.stub(log, m));
+            // the values of the interpolation are part of the text, as in the real catalog
+            sandbox.stub(log, "_").callsFake((key, params) => key + " " + JSON.stringify(params || {}));
+        });
+        afterEach(function() {
+            sandbox.restore();
+        });
+
+        function failNpm(stderr) {
+            var p = Promise.reject({ code: 1, stdout: "", stderr: stderr });
+            p.catch(() => {});
+            execResponse = p;
+        }
+        function logged(methods) {
+            return (methods || LOG_METHODS).map(m => log[m].args.map(a => JSON.stringify(a))).reduce((a, b) => a.concat(b), []);
+        }
+        function secretsOfRun() {
+            return exec.run.firstCall.args[4];
+        }
+        function install() {
+            return installer.installModule.apply(installer, arguments).then(
+                () => { throw new Error("should have failed"); }, err => err);
+        }
+
+        describe("B2-AC-4 npm fails with the URL in its output", function() {
+            it("a password in the URL is not in trace, warn or the other lines; the URL is shown masked", async function() {
+                failNpm("npm ERR! fetch https://user:s3cret@host.example/x.tgz failed; auth user:s3cret; p@ss1");
+                var err = await install("x", null, "https://user:s3cret@host.example/x.tgz");
+                logged().join("\n").should.not.containEql("s3cret");
+                JSON.stringify([err.message, err.stack]).should.not.containEql("s3cret");
+                var warned = logged(["warn"]).join("\n");
+                warned.should.containEql("https://***@host.example/x.tgz");
+                // the trace line of the npm command names the masked URL
+                logged(["trace"]).join("\n").should.containEql("https://***@host.example/x.tgz");
+            });
+
+            it("the literal secrets of the URL go to exec.run for the event-log (user info and password)", async function() {
+                failNpm("npm ERR! auth user:s3cret");
+                await install("x", null, "https://user:s3cret@host.example/x.tgz");
+                exec.run.callCount.should.equal(1);
+                var secrets = secretsOfRun();
+                should(secrets).be.an.Array();
+                secrets.should.containEql("user:s3cret");
+                secrets.should.containEql("s3cret");
+                // the other arguments of exec.run are as before
+                exec.run.firstCall.args[0].should.equal(process.execPath);
+                exec.run.firstCall.args[2].should.have.property("cwd");
+                exec.run.firstCall.args[3].should.equal(true);
+            });
+
+            it("an encoded password: the encoded and the decoded forms are hidden and passed as secrets", async function() {
+                failNpm("npm ERR! fetch https://user:p%40ss1@host.example/x.tgz failed; auth user:p@ss1; p@ss1; p%40ss1");
+                await install("x", null, "https://user:p%40ss1@host.example/x.tgz");
+                var text = logged().join("\n");
+                text.should.not.containEql("p%40ss1");
+                text.should.not.containEql("p@ss1");
+                logged(["warn"]).join("\n").should.containEql("https://***@host.example/x.tgz");
+                var secrets = secretsOfRun();
+                secrets.should.containEql("user:p%40ss1");
+                secrets.should.containEql("p%40ss1");
+                secrets.should.containEql("user:p@ss1");
+                secrets.should.containEql("p@ss1");
+            });
+
+            it("a token as the user info is hidden and passed as a secret", async function() {
+                failNpm("npm ERR! fetch https://ghp_t0k3nvalue@host.example/x.tgz failed; token ghp_t0k3nvalue");
+                await install("x", null, "https://ghp_t0k3nvalue@host.example/x.tgz");
+                logged().join("\n").should.not.containEql("t0k3nvalue");
+                secretsOfRun().should.containEql("ghp_t0k3nvalue");
+            });
+
+            it("a git+https URL with a password is treated the same way", async function() {
+                failNpm("npm ERR! git clone git+https://user:s3cret@host.example/o/x.git");
+                await install("x", null, "git+https://user:s3cret@host.example/o/x.git");
+                logged().join("\n").should.not.containEql("s3cret");
+                secretsOfRun().should.containEql("s3cret");
+            });
+        });
+
+        describe("B2-AC-4 a URL that is refused", function() {
+            it("ftp:// with a password: the warning has no password", async function() {
+                var err = await install("x", null, "ftp://user:s3cret@h/x.tgz");
+                err.code.should.equal("invalid_module_url");
+                logged().join("\n").should.not.containEql("s3cret");
+                // the warning is written, and names the masked address
+                log.warn.called.should.be.true();
+                logged(["warn"]).join("\n").should.containEql("ftp://***@h/x.tgz");
+                exec.run.called.should.be.false();
+            });
+        });
+
+        describe("B2-AC-4 unchanged behaviour: no credentials, a short password", function() {
+            it("a URL without credentials is logged as it is and no secret is passed", async function() {
+                failNpm("npm ERR! fetch https://host.example/x.tgz failed");
+                await install("x", null, "https://host.example/x.tgz");
+                (secretsOfRun() || []).should.have.length(0);
+                logged(["trace"]).join("\n").should.containEql("https://host.example/x.tgz");
+                logged(["warn"]).join("\n").should.containEql("https://host.example/x.tgz failed");
+            });
+
+            it("an ssh user without a password is logged as it is and no secret is passed", async function() {
+                failNpm("npm ERR! git clone git+ssh://git@host.example/o/x.git");
+                await install("x", null, "git+ssh://git@host.example/o/x.git");
+                (secretsOfRun() || []).should.have.length(0);
+                logged(["trace"]).join("\n").should.containEql("git+ssh://git@host.example/o/x.git");
+                logged(["warn"]).join("\n").should.containEql("git+ssh://git@host.example/o/x.git");
+            });
+
+            it("a password shorter than 4 characters is hidden by the pattern only; it is not passed as a secret", async function() {
+                failNpm("npm ERR! fetch https://user:abc@host.example/x.tgz failed");
+                await install("x", null, "https://user:abc@host.example/x.tgz");
+                (secretsOfRun() || []).forEach(function(secret) {
+                    secret.length.should.be.aboveOrEqual(4);
+                });
+                (secretsOfRun() || []).should.not.containEql("abc");
+                var text = logged().join("\n");
+                text.should.not.containEql("user:abc@");
+                logged(["warn"]).join("\n").should.containEql("https://***@host.example/x.tgz failed");
+            });
+        });
+
+        describe("B2-AC-7 a module that is a URL with credentials", function() {
+            it("given without a url (the path branch): no log line has the password", async function() {
+                var err = await install("https://user:s3cret@host.example/x");
+                should.exist(err);
+                logged().join("\n").should.not.containEql("s3cret");
+                JSON.stringify([err.message, err.stack]).should.not.containEql("s3cret");
+            });
+
+            it("with a url of its own: the info and trace lines that name the module show it masked", async function() {
+                failNpm("npm ERR! something about user:s3cret failed");
+                await install("https://user:s3cret@host.example/x", null, "https://host.example/x.tgz");
+                logged().join("\n").should.not.containEql("s3cret");
+                // the module is named in the lines (it is not left out)
+                logged(["info"]).join("\n").should.containEql("https://***@host.example/x");
+            });
+
+            it("a failed npm install of such a module: the failure warning shows it masked", async function() {
+                failNpm("npm ERR! install of https://user:s3cret@host.example/x failed");
+                await install("https://user:s3cret@host.example/x", null, "https://host.example/x.tgz");
+                logged(["warn"]).join("\n").should.not.containEql("s3cret");
+                logged(["warn"]).join("\n").should.containEql("https://***@host.example/x");
+            });
         });
     });
     describe("uninstalls module", function() {

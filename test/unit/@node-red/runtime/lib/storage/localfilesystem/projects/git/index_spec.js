@@ -18,6 +18,7 @@
  *   #45: tests of hiding the credentials of a git URL in errors and in the log, of rejecting
  *   an ambiguous user info and of hiding the known user infos literally (per project, only what
  *   the pattern does not hide; SEC-006..010)
+ *   #63: a test that a git command passes the known user infos of the project to exec.run
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -262,6 +263,23 @@ describe("storage/localfilesystem/projects/git/index", function() {
                 gitTools.maskCredentials(remotes.origin.fetch, PROJECT_A).should.equal("https://***@host.example/org/repo.git");
                 gitTools.maskCredentials(remotes.other.push, PROJECT_A).should.equal("https://***@other.example/b.git");
                 gitTools.maskCredentials("plain text without secrets", PROJECT_A).should.equal("plain text without secrets");
+            });
+
+            it("#63 B2-AC-1: a git command passes the known user infos of the project to exec.run as its 5th argument", async function() {
+                await loadRemotes(PROJECT_A, CONFIG_OUTPUT);
+                var run = sinon.stub(util.exec, "run").resolves({ stdout: "", stderr: "" });
+                await gitTools.fetch(PROJECT_A, "origin");
+                run.callCount.should.equal(1);
+                var secrets = run.firstCall.args[4];
+                should(secrets).be.an.Array();
+                secrets.should.containEql("user:pa/ss");
+                secrets.should.containEql("user:pa ss");
+                // the secrets of another project are not passed
+                run.resetHistory();
+                await gitTools.fetch(PROJECT_B, "origin");
+                var other = run.firstCall.args[4];
+                (other || []).should.not.containEql("user:pa/ss");
+                (other || []).should.not.containEql("user:pa ss");
             });
 
             it("a bare ssh user does not register a secret", async function() {
