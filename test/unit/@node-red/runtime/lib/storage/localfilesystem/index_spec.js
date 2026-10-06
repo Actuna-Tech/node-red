@@ -13,6 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #68: tests of the saves of the flows, the settings and the sessions when the write of
+ *   the file content fails (the save is rejected, the file is kept)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var fs = require('fs-extra');
@@ -23,6 +29,7 @@ var process = require("process");
 
 var localfilesystem = NR_TEST_UTILS.require("@node-red/runtime/lib/storage/localfilesystem");
 var log = NR_TEST_UTILS.require("@node-red/util").log;
+var { settle, stubFsWrite, fsError } = require("nr-test-utils/fault-injection");
 
 describe('storage/localfilesystem', function() {
     var mockRuntime = {
@@ -515,4 +522,63 @@ describe('storage/localfilesystem', function() {
         });
     });
     
+});
+
+describe('storage/localfilesystem - saves with a failed write of the content (#68)', function() {
+    var mockRuntime = {
+        log:{
+            _:function() { return "placeholder message"},
+            info: function() { },
+            warn: function() { },
+            trace: function() { }
+        }
+    };
+    var sandbox;
+    var userDir;
+
+    beforeEach(async function() {
+        sandbox = sinon.createSandbox();
+        userDir = await fs.mkdtemp(path.join(require("os").tmpdir(), "nr-test-"));
+        sandbox.stub(log, "warn");
+        sandbox.stub(log, "debug");
+        sandbox.stub(log, "trace");
+        await localfilesystem.init({
+            userDir: userDir,
+            flowFile: path.join(userDir, "flows.json"),
+            getUserSettings: () => ({})
+        }, mockRuntime);
+    });
+    afterEach(async function() {
+        sandbox.restore();
+        await fs.remove(userDir);
+    });
+
+    async function expectRejectedWithoutChange(file, save) {
+        var before = fs.readFileSync(file, "utf8");
+        stubFsWrite(sandbox, function() { return fsError("ENOSPC") });
+        var result = await settle(save());
+        result.state.should.equal("rejected", "the save was " + result.state + " instead of rejected");
+        result.err.should.have.property("code", "ENOSPC");
+        fs.readFileSync(file, "utf8").should.equal(before);
+        fs.existsSync(file + ".$$$").should.be.false();
+    }
+
+    it('AC-15: saveFlows is rejected with the error and flows.json keeps the content', async function() {
+        var file = path.join(userDir, "flows.json");
+        await localfilesystem.saveFlows([{id:"a"}]);
+        fs.readFileSync(file, "utf8").should.equal('[{"id":"a"}]');
+        await expectRejectedWithoutChange(file, function() { return localfilesystem.saveFlows([{id:"b"}]) });
+    });
+    it('AC-15: saveSettings is rejected with the error and the settings file keeps the content', async function() {
+        var file = path.join(userDir, ".config.runtime.json");
+        await localfilesystem.saveSettings({first: 1});
+        fs.existsSync(file).should.be.true();
+        await expectRejectedWithoutChange(file, function() { return localfilesystem.saveSettings({second: 2}) });
+    });
+    it('AC-15: saveSessions is rejected with the error and the sessions file keeps the content', async function() {
+        var file = path.join(userDir, ".sessions.json");
+        await localfilesystem.saveSessions({s1: {user: "a"}});
+        fs.existsSync(file).should.be.true();
+        await expectRejectedWithoutChange(file, function() { return localfilesystem.saveSessions({s2: {user: "b"}}) });
+    });
 });

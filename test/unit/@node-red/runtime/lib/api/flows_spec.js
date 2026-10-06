@@ -42,6 +42,8 @@ var sinon = require("sinon");
 
 var NR_TEST_UTILS = require("nr-test-utils");
 var flows = NR_TEST_UTILS.require("@node-red/runtime/lib/api/flows")
+const { log: utilLog } = NR_TEST_UTILS.require("@node-red/util");
+const { trackRejections, flush } = require("nr-test-utils/fault-injection");
 
 var mockLog = () => ({
     log: sinon.stub(),
@@ -555,6 +557,44 @@ describe("runtime-api/flows", function() {
             state.should.have.property("state", "stop")
             stopFlows.called.should.be.true();
             startFlows.called.should.not.be.true();
+        });
+        describe("a failed save of the state (#68)", function() {
+            let tracker, utilWarn;
+            beforeEach(function() {
+                tracker = trackRejections();
+                utilWarn = sinon.stub(utilLog, "warn");
+                runtime.settings.set = sinon.spy(function() {
+                    return tracker.reject(new Error("ENOSPC: no space left on device, write"));
+                });
+            });
+            afterEach(function() {
+                utilWarn.restore();
+            });
+            function loggedSaveFailure() {
+                return runtime.log.warn.args.concat(utilWarn.args).some(function(args) {
+                    return /Saving the settings failed/.test(args.join(" "));
+                });
+            }
+            it("AC-Q1a (S3): start logs the failed save and starts the flows", async function() {
+                flows.init(runtime);
+                const state = await flows.setState({state:"start"});
+                await flush();
+                runtime.settings.set.calledWith("runtimeFlowState", "start").should.be.true();
+                state.should.have.property("state", "start");
+                startFlows.called.should.be.true();
+                tracker.dropped().should.have.length(0);
+                loggedSaveFailure().should.be.true();
+            });
+            it("AC-Q1a (S4): stop logs the failed save and stops the flows", async function() {
+                flows.init(runtime);
+                const state = await flows.setState({state:"stop"});
+                await flush();
+                runtime.settings.set.calledWith("runtimeFlowState", "stop").should.be.true();
+                state.should.have.property("state", "stop");
+                stopFlows.called.should.be.true();
+                tracker.dropped().should.have.length(0);
+                loggedSaveFailure().should.be.true();
+            });
         });
         it("rejects starting flows when setting disabled", async function() {
             let err;

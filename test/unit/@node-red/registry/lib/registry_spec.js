@@ -13,6 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #68: tests of a failed save of the node list (migration of the legacy format,
+ *   removeModule and cleanModuleList log it and return as after a saved list)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require("sinon");
@@ -21,7 +27,8 @@ var path = require("path");
 var NR_TEST_UTILS = require("nr-test-utils");
 
 var typeRegistry = NR_TEST_UTILS.require("@node-red/registry/lib/registry");
-const { events } = NR_TEST_UTILS.require("@node-red/util");
+const { events, log } = NR_TEST_UTILS.require("@node-red/util");
+const { trackRejections, flush } = require("nr-test-utils/fault-injection");
 
 describe("red/nodes/registry/registry",function() {
 
@@ -455,6 +462,73 @@ describe("red/nodes/registry/registry",function() {
     describe('#cleanModuleList', function() {
         it.skip("cleans the module list");
     });
+    describe('a failed save of the node list (#68)', function() {
+        let sandbox;
+        let tracker;
+        beforeEach(function() {
+            sandbox = sinon.createSandbox();
+            sandbox.stub(log, "warn");
+            tracker = trackRejections();
+        });
+        afterEach(function() {
+            sandbox.restore();
+        });
+        function failingSettings(initialConfig) {
+            return {
+                available: function() { return true },
+                set: sinon.spy(function() { return tracker.reject(new Error("ENOSPC: no space left on device, write")) }),
+                get: function() { return initialConfig }
+            };
+        }
+        function loggedSaveFailure() {
+            return log.warn.args.some(function(args) { return /Saving the settings failed/.test(args.join(" ")) });
+        }
+
+        it('AC-Q1a (S5): the migration of the legacy format logs the failed save and keeps the migrated list', async function() {
+            var s = failingSettings({
+                "123": { "name": "72-sentiment.js", "types": ["sentiment"], "enabled": true },
+                "789": { "name": "testModule:a-module.js", "types": ["example"], "enabled": true, "module": "testModule" }
+            });
+            typeRegistry.init(s, null);
+            typeRegistry.load();
+            await flush();
+            s.set.calledOnce.should.be.true();
+            var moduleList = typeRegistry.getModuleList();
+            moduleList.should.have.property("node-red");
+            moduleList.should.have.property("testModule");
+            tracker.dropped().should.have.length(0);
+            loggedSaveFailure().should.be.true();
+        });
+
+        it('AC-Q1a (S6): removeModule logs the failed save and returns the removed nodes', async function() {
+            var s = failingSettings({});
+            typeRegistry.init(s, null);
+            typeRegistry.addModule({name: "test-module", version: "0.0.1", nodes: {
+                "test-name": testNodeSet1
+            }});
+            var info = typeRegistry.removeModule('test-module');
+            await flush();
+            info.should.have.lengthOf(1);
+            typeRegistry.getModuleList().should.not.have.property("test-module");
+            s.set.called.should.be.true();
+            tracker.dropped().should.have.length(0);
+            loggedSaveFailure().should.be.true();
+        });
+
+        it('AC-Q1a (S7): cleanModuleList logs the failed save and keeps the cleaned list', async function() {
+            var s = failingSettings({"node-red":{module:"testModule",name:"testName",version:"testVersion",nodes:{"node":{id:"node-red/testName",name:"test",types:["a","b"],enabled:true}}}});
+            typeRegistry.init(s, null);
+            typeRegistry.load();
+            typeRegistry.getModuleList()["node-red"].nodes.should.have.property("node");
+            typeRegistry.cleanModuleList();
+            await flush();
+            typeRegistry.getModuleList()["node-red"].nodes.should.not.have.property("node");
+            s.set.called.should.be.true();
+            tracker.dropped().should.have.length(0);
+            loggedSaveFailure().should.be.true();
+        });
+    });
+
     describe('#getNodeList', function() {
         it("returns a filtered list", function() {
             typeRegistry.init(settings,{});

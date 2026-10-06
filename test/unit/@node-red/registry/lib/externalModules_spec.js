@@ -1,3 +1,8 @@
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #68: test of a failed save of the list of the installed modules (logged, the install is reported as done)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
     // init: init,
     // register: register,
     // registerSubflow: registerSubflow,
@@ -15,6 +20,8 @@ const NR_TEST_UTILS = require("nr-test-utils");
 const externalModules = NR_TEST_UTILS.require("@node-red/registry/lib/externalModules");
 const exec = NR_TEST_UTILS.require("@node-red/util/lib/exec");
 const hooks = NR_TEST_UTILS.require("@node-red/util/lib/hooks");
+const { log } = NR_TEST_UTILS.require("@node-red/util");
+const { trackRejections, flush } = require("nr-test-utils/fault-injection");
 
 let homeDir;
 
@@ -102,6 +109,24 @@ describe("externalModules api", function() {
             exec.run.called.should.be.true();
         })
 
+
+        it("AC-Q1a (S8): a failed save of the installed modules is logged and the install is reported as done", async function() {
+            const tracker = trackRejections();
+            const warn = sinon.stub(log, "warn");
+            try {
+                externalModules.init({userDir: homeDir, get:()=>{}, set:()=> tracker.reject(new Error("ENOSPC: no space left on device, write"))});
+                externalModules.register("function", "libs");
+                await externalModules.checkFlowDependencies([
+                    {type: "function", libs:[{module: "foo"}]}
+                ])
+                await flush();
+                exec.run.called.should.be.true();
+                tracker.dropped().should.have.length(0);
+                warn.args.some(args => /Saving the settings failed/.test(args.join(" "))).should.be.true();
+            } finally {
+                warn.restore();
+            }
+        })
 
         it("calls pre/postInstall hooks", async function() {
             externalModules.init({userDir: homeDir, get:()=>{}, set:()=>{}});

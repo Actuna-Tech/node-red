@@ -17,6 +17,8 @@
  * Modified by Actuna Sp. z o.o.:
  *   tokens before init: regression tests for calls made before init()
  *   tokens before init: prototype property names are not treated as tokens
+ *   #68: tests of a failed save of the sessions (the expiry of the sessions, the first load,
+ *   get with an expired token, a session that was not saved is not kept)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -26,6 +28,9 @@ var sinon = require("sinon");
 var NR_TEST_UTILS = require("nr-test-utils");
 
 var Tokens = NR_TEST_UTILS.require("@node-red/editor-api/lib/auth/tokens");
+var Users = NR_TEST_UTILS.require("@node-red/editor-api/lib/auth/users");
+var { log: utilLog } = NR_TEST_UTILS.require("@node-red/util");
+var { settle, flush, trackRejections } = require("nr-test-utils/fault-injection");
 
 
 describe("api/auth/tokens", function() {
@@ -367,4 +372,191 @@ describe("api/auth/tokens", function() {
         });
     });
 
+});
+
+describe("api/auth/tokens - a failed save of the sessions (#68)", function() {
+    var tokensPath = require.resolve(NR_TEST_UTILS.resolve("@node-red/editor-api/lib/auth/tokens"));
+    var strategiesPath = require.resolve(NR_TEST_UTILS.resolve("@node-red/editor-api/lib/auth/strategies"));
+    var sandbox;
+    var clock;
+    var tracker;
+    var warn;
+    var savedModules;
+    var Fresh;
+    var freshStrategies;
+
+    // Module state is shared between the test files: a fresh copy of the modules is used
+    beforeEach(function() {
+        sandbox = sinon.createSandbox();
+        clock = sinon.useFakeTimers({ now: Date.now(), toFake: ["setTimeout", "clearTimeout", "Date"] });
+        tracker = trackRejections();
+        warn = sandbox.stub(utilLog, "warn");
+        sandbox.stub(utilLog, "audit");
+        savedModules = {};
+        [tokensPath, strategiesPath].forEach(function(modulePath) {
+            savedModules[modulePath] = require.cache[modulePath];
+            delete require.cache[modulePath];
+        });
+        Fresh = require(tokensPath);
+        freshStrategies = require(strategiesPath);
+    });
+    afterEach(function() {
+        clock.restore();
+        sandbox.restore();
+        [tokensPath, strategiesPath].forEach(function(modulePath) {
+            if (savedModules[modulePath]) {
+                require.cache[modulePath] = savedModules[modulePath];
+            } else {
+                delete require.cache[modulePath];
+            }
+        });
+    });
+
+    function saveError() {
+        return new Error("ENOSPC: no space left on device, write '/tmp/userdir/.sessions.json'");
+    }
+    function loggedSessionsFailure() {
+        return warn.args.filter(function(args) { return /Saving the sessions failed/.test(args.join(" ")) });
+    }
+
+    it("AC-Q1b (S9): the timer that expires a session logs a failed save", async function() {
+        var now = Date.now();
+        var storage = {
+            getSessions: function() { return Promise.resolve({ "A": { user: "fred", expires: now + 1000 } }) },
+            saveSessions: sinon.spy(function() { return tracker.reject(saveError()) })
+        };
+        await Fresh.init({}, storage);
+        await Fresh.get("unknown");
+        storage.saveSessions.called.should.be.false();
+        clock.tick(6001);
+        await flush();
+        storage.saveSessions.calledOnce.should.be.true();
+        tracker.dropped().should.have.length(0);
+        loggedSessionsFailure().should.have.length(1);
+    });
+    it("AC-Q1b (S10): the timer set when a session is created logs a failed save", async function() {
+        var failing = false;
+        var storage = {
+            getSessions: function() { return Promise.resolve({}) },
+            saveSessions: sinon.spy(function() { return failing ? tracker.reject(saveError()) : Promise.resolve() })
+        };
+        await Fresh.init({ sessionExpiryTime: 10 }, storage);
+        var created = await Fresh.create("fred", "client", "*", false);
+        created.should.have.property("accessToken");
+        failing = true;
+        clock.tick(15001);
+        await flush();
+        storage.saveSessions.calledTwice.should.be.true();
+        tracker.dropped().should.have.length(0);
+        loggedSessionsFailure().should.have.length(1);
+    });
+
+    it("AC-Q1g (S15, S16): a failed save when the sessions are loaded does not break the next requests", async function() {
+        var now = Date.now();
+        var user = { username: "fred", permissions: "*" };
+        sandbox.stub(Users, "get").callsFake(function() { return Promise.resolve(user) });
+        var saves = 0;
+        var storage = {
+            getSessions: function() {
+                return Promise.resolve({
+                    "A": { user: "fred", scope: "*", expires: now + 100000 },
+                    "B": { user: "fred", scope: "*", expires: now - 1000 }
+                });
+            },
+            saveSessions: sinon.spy(function() { return ++saves === 1 ? tracker.reject(saveError()) : Promise.resolve() })
+        };
+        await Fresh.init({}, storage);
+
+        var resultA = await settle(Fresh.get("A"));
+        resultA.state.should.equal("resolved", "get(A) was " + resultA.state);
+        resultA.value.should.have.property("user", "fred");
+        var resultB = await settle(Fresh.get("B"));
+        resultB.state.should.equal("resolved", "get(B) was " + resultB.state);
+        should.not.exist(resultB.value);
+        var resultCreate = await settle(Fresh.create("user", "node-red-admin", "*", false));
+        resultCreate.state.should.equal("resolved", "create was " + resultCreate.state);
+        resultCreate.value.should.have.property("accessToken");
+
+        var doneArgs = [];
+        var done = new Promise(function(resolve) {
+            freshStrategies.bearerStrategy("A", function() {
+                doneArgs.push(Array.prototype.slice.call(arguments));
+                resolve();
+            });
+        });
+        var resultBearer = await settle(done, 500);
+        resultBearer.state.should.equal("resolved", "the bearer strategy was " + resultBearer.state);
+        await flush();
+        doneArgs.should.have.length(1);
+        should.not.exist(doneArgs[0][0]);
+        doneArgs[0][1].should.equal(user);
+        doneArgs[0][2].should.eql({ scope: "*" });
+        loggedSessionsFailure().should.have.length(1);
+        tracker.dropped().should.have.length(0);
+    });
+    it("AC-Q1g (S16): a failed save when a token is found expired answers as for an expired token", async function() {
+        var now = Date.now();
+        var failing = false;
+        var storage = {
+            getSessions: function() { return Promise.resolve({ "C": { user: "fred", expires: now + 1000 } }) },
+            saveSessions: sinon.spy(function() { return failing ? tracker.reject(saveError()) : Promise.resolve() })
+        };
+        await Fresh.init({}, storage);
+        var valid = await Fresh.get("C");
+        valid.should.have.property("user", "fred");
+        // the token expires before the timer of the expiry (5 s of grace) runs
+        clock.tick(2000);
+        failing = true;
+        var result = await settle(Fresh.get("C"));
+        result.state.should.equal("resolved", "get was " + result.state);
+        should(result.value).be.null();
+        await flush();
+        loggedSessionsFailure().should.have.length(1);
+        tracker.dropped().should.have.length(0);
+    });
+
+    it("AC-Q1i (S17): a session whose save failed is not kept (create)", async function() {
+        var failing = true;
+        var keysAtSave = [];
+        var storage = {
+            getSessions: function() { return Promise.resolve({}) },
+            saveSessions: function(sessions) {
+                keysAtSave.push(Object.keys(sessions));
+                return failing ? tracker.reject(saveError()) : Promise.resolve();
+            }
+        };
+        await Fresh.init({}, storage);
+        var result = await settle(Fresh.create("fred", "client", "*", false));
+        result.state.should.equal("rejected", "create was " + result.state);
+        keysAtSave.should.have.length(1);
+        keysAtSave[0].should.have.length(1);
+        var token = keysAtSave[0][0];
+        failing = false;
+        var session = await settle(Fresh.get(token));
+        session.state.should.equal("resolved");
+        should.not.exist(session.value);
+    });
+    it("AC-Q1i (S17): a session whose save failed is not kept (exchange of the code)", async function() {
+        var failing = true;
+        var keysAtSave = [];
+        var storage = {
+            getSessions: function() { return Promise.resolve({}) },
+            saveSessions: function(sessions) {
+                keysAtSave.push(Object.keys(sessions));
+                return failing ? tracker.reject(saveError()) : Promise.resolve();
+            }
+        };
+        await Fresh.init({ exchangeCodeExpiryTime: 20 }, storage);
+        var pending = await Fresh.create("fred", "client", "*", true);
+        pending.should.have.property("exchangeCode");
+        var result = await settle(Fresh.exchangeCodeForToken(pending.exchangeCode));
+        result.state.should.equal("rejected", "the exchange was " + result.state);
+        keysAtSave.should.have.length(1);
+        keysAtSave[0].should.have.length(1);
+        var token = keysAtSave[0][0];
+        failing = false;
+        var session = await settle(Fresh.get(token));
+        session.state.should.equal("resolved");
+        should.not.exist(session.value);
+    });
 });
