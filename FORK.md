@@ -280,7 +280,8 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   obowiązuje (ta sama aplikacja). Przy `httpNodeRoot: false` rejestracja się udaje, ale trasa nie jest osiągalna z serwera.
 - **Błędy:** rejestracja po rozpoczęciu zamykania instancji (np. spóźniony callback) nie dodaje trasy, nie rzuca, zwraca uchwyt z `remove()`
   bez skutku i daje jedno ostrzeżenie na instancję (`httpRoutes.after-close`). Błąd zdejmowania (np. uszkodzony stos routera) – jedno
-  ostrzeżenie `httpRoutes.remove-failed` z `id` i `type` węzła (bez ścieżki i metody); zamykanie węzła trwa dalej.
+  ostrzeżenie `httpRoutes.remove-failed` z `id` i `type` węzła (bez ścieżki i metody) na każdą nieudaną próbę; zamykanie węzła trwa
+  dalej, a niezdjęta trasa zostaje zapamiętana – kolejne `close()` albo `remove()` próbuje ją zdjąć ponownie.
 - **Ograniczenia:** konstruktor, który rzuci po rejestracji, zostawia trasę do restartu (węzeł nie powstaje, runtime go nie zamyka) –
   rejestruj trasy na końcu konstruktora; brak `use()` (middleware bez trasy); trasy dodane przez `RED.httpNode.<metoda>()` nie są zdejmowane
   automatycznie (jak dotąd); żądanie w toku, które wraca z trasy do routera (`next()`) po zdjęciu warstwy przed nim, może pominąć jedną warstwę
