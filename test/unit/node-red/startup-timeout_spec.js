@@ -17,6 +17,8 @@
  * Modified by Actuna Sp. z o.o.:
  *   #71: integration tests of the startupTimeout setting (the limit of runtime.start()): the CLI in a
  *   child process and an embedding script
+ *   #73: AC-18 changed on purpose - a signal during the start abandons the start, so the limit no longer
+ *   fires during the stop and there is no "Failed to start server" (AC-21 of #73)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -318,7 +320,7 @@ RED.start().then(
     });
 
     describe("AC-18, AC-19: signals", function() {
-        it("AC-18: a signal before the limit decides about the exit (0), the limit that fires during that stop does not stop a second time", async function() {
+        it("AC-18 (changed by #73 AC-21): a signal before the limit decides about the exit (0), the signal abandons the start: no limit during that stop, no second stop, no failed-start message", async function() {
             const proc = await launch({
                 pre: HANDLE + "\n" + HANGING_COORDINATION + `
 require(${JSON.stringify(RED_LIB)}).stop = function() { fs.appendFileSync(MARKER, "stop\\n"); return new Promise(resolve => setTimeout(resolve, ${LIMIT + 2000})) };`,
@@ -329,7 +331,9 @@ require(${JSON.stringify(RED_LIB)}).stop = function() { fs.appendFileSync(MARKER
             const code = await exitsWithin(proc, LIMIT + 2000 + EXIT_BOUND);
             should(code).equal(0);
             lines(proc.marker).filter(l => l === "stop").should.have.length(1);
-            proc.output.should.match(/Failed to start server/);
+            proc.output.should.match(/The start was stopped \(SIGTERM\)/);
+            proc.output.should.not.match(/Failed to start server/);
+            proc.output.should.not.match(/did not complete within startupTimeout/);
             proc.output.should.not.match(/Stopping Node-RED \(startup-error\)/);
         });
 

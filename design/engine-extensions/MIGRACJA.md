@@ -114,7 +114,8 @@ uruchamia instancję ponownie. Limit obejmuje tylko start runtime, nie wczytanie
 `startupProbe` na `<path>/ready` nadal jest zalecana: wykrywa też instancję zawieszoną przy wczytaniu flow. Reguła
 budżetu: `failureThreshold` × `periodSeconds` sondy `startupProbe` musi być większe niż `startupTimeout` + 5 s
 (zatrzymanie po nieudanym starcie, #67) + czas wczytania flow; inaczej kubelet wysyła SIGTERM przed limitem i proces
-kończy się kodem 0 bez przyczyny w logu.
+kończy się kodem 0 – log podaje wtedy krok, na który start czekał (`The start was stopped (SIGTERM) before it completed -
+waiting for: <step>`, #73).
 
 ## 4. Narzędzia Admin API (automaty, MCP, CI/CD)
 
@@ -252,6 +253,8 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 
   ```js
   RED.start().catch(err => {
+      // #73: the start was abandoned by RED.stop() - not a failed start, the application is already stopping
+      if (err && err.code === "startup_stopped") return;
       console.error("Node-RED failed to start:", err);
       const stopped = Promise.resolve()
           .then(() => RED.stop("startup-error"))
@@ -266,9 +269,19 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   oraz polami `step` (krok, na który runtime czekał) i `timeout`; stan `failed`/`startup-error`, dalej jak przy
   nieudanym starcie wyżej. Krok, który skończy się po limicie, jest ignorowany (ostrzeżenie w logu, flow nie są
   wczytywane); późno uruchomiona wtyczka koordynacji dostaje od razu `resign()` i `stop()`, późny własny serwer sond i
-  obserwator magazynu są zatrzymywane. `RED.stop()` wywołane w trakcie zawieszonego startu nie przerywa limitu: proces
-  osadzający żyje do jego upływu, a potem `RED.start()` odrzuca `startup_timeout` – `catch` przy `RED.start()` jest
-  więc wymagany. Zwolnienie timera przy `RED.stop()` to osobne zgłoszenie (#73).
+  obserwator magazynu są zatrzymywane.
+- **Zatrzymanie w trakcie startu (#73):** `RED.stop()` albo `RED.health.shutdown()` (sygnał w CLI), które przyjdą przed
+  końcem startu, porzucają start w chwili wejścia instancji w stan `stopping` (także w trakcie drenażu
+  `shutdownTimeout`). `RED.start()` od razu odrzuca błędem z `code: "startup_stopped"` oraz polami `step` (krok, na
+  który start czekał, `null` przed pierwszym) i `reason` (przyczyna zatrzymania); runtime loguje jedno ostrzeżenie z
+  krokiem. Timer `startupTimeout` jest czyszczony, więc proces osadzający kończy się sam po `RED.stop()` (limit, który
+  odpalił przed zatrzymaniem, zachowuje wynik `startup_timeout`). Stan instancji: `starting` → `stopping` → `stopped`,
+  bez `failed`. Krok, który skończy się po zatrzymaniu, jest ignorowany, a jego zasoby zwalniane jak po limicie.
+  `RED.start()` wywołane po `RED.stop()` odrzuca `startup_stopped` ze `step: null` bez żadnego kroku. Ponowne
+  `RED.init()` po `RED.stop()` w tym samym procesie nie jest obsługiwane: pierwszy `RED.start()` po takim `RED.init()`
+  działa jak przed #73 (bez odrzucenia), kolejne – jak wyżej. `catch` przy
+  `RED.start()` jest wymagany i powinien pominąć `startup_stopped` – to nie nieudany start (przykład wyżej); drugie
+  `RED.stop("startup-error")` i kod 1 byłyby błędem.
 - **Odrzucone żądanie `/flow` nie emituje `deploying` (#10, U1, A24, D19):** `POST /flow`, `PUT` i `DELETE /flow/:id` sprawdzają rewizje i budują
   konfigurację przed stanem `deploying`, więc odrzucone żądanie (409, 404, `duplicate_id`, `invalid_flow_id`, 400 `global`) nie przechodzi przez
   `deploying` i z powrotem: brak zdarzeń `instance:state`, brak chwilowego 503 na `/ready` i brak chwilowego wstrzymania z #8; nie unieważnia też
@@ -365,7 +378,7 @@ zewnętrznych rejestrujących trasy na `RED.httpNode`. Przy `deploy.drainHttpNod
 | Obszar | Zmiana | Pakiet |
 |---|---|---|
 | Wtyczka magazynu | opcjonalna funkcja `watchFlows(callback)` – powiadomienia o zmianie flow z innej instancji | Z-09 |
-| Wtyczka koordynacji | nowy typ wtyczki `node-red-coordination` (lider, zajęcie zadania); wybór tylko jawnie w `coordination.plugin`; `inject` z `singleInstance`: cron – zajęcie klucza `<id>:<czas>` (dokładnie raz), interwał – lider (D-14); węzeł na instancji niebędącej liderem pokazuje status „standby”; `mqtt in` z `singleInstance` – osobny pakiet (R-21); `start` tylko łączy z koordynatorem i nie czeka na przywództwo; przy `startupTimeout` (#71) start wtyczki, który rozwiąże się po limicie, jest od razu zakończony wywołaniami `resign()` i `stop()` (`stop()` także wtedy, gdy `resign()` się nie powiedzie), a start, który nigdy się nie rozstrzygnie, nie może zostać zwolniony – wtyczka powinna mieć własne limity połączenia | Z-10 |
+| Wtyczka koordynacji | nowy typ wtyczki `node-red-coordination` (lider, zajęcie zadania); wybór tylko jawnie w `coordination.plugin`; `inject` z `singleInstance`: cron – zajęcie klucza `<id>:<czas>` (dokładnie raz), interwał – lider (D-14); węzeł na instancji niebędącej liderem pokazuje status „standby”; `mqtt in` z `singleInstance` – osobny pakiet (R-21); `start` tylko łączy z koordynatorem i nie czeka na przywództwo; przy `startupTimeout` (#71) start wtyczki, który rozwiąże się po limicie albo po zatrzymaniu (#73), jest od razu zakończony wywołaniami `resign()` i `stop()` (`stop()` także wtedy, gdy `resign()` się nie powiedzie), a start, który nigdy się nie rozstrzygnie, nie może zostać zwolniony – wtyczka powinna mieć własne limity połączenia | Z-10 |
 | Hooki | `preDeploy` (tylko walidacja: 400 `deploy_rejected` + `reason`, 503 `deploy_hook_failed`, 503 `deploy_hook_timeout`; §4.3), `postDeploy` (source `api`/`internal`/`storage`, asynchronicznie), `preReload` (bez weta), `preShutdown` (z `reason`); brak hooków wdrożenia przy starcie procesu i operacjach Projektów (R-15, R-20, R-23, R-50); **`preDeploy` i `postDeploy` rejestruje się tylko przez `RED.hooks.add`** (wtyczka, węzeł); `preReload` i `preShutdown` także z ustawienia `hooks` w `settings.js` (rejestracja przy `init`, #7) | Z-06, Z-09, Z-08 |
 | Trasy administracyjne bloczków | przy `httpAdminNodeRoutes: "authenticated"` trasa bez uprawnienia wymaga sesji; publiczne – `RED.auth.publicRoute()` | Z-02 |
 | Trasy HTTP bloczków | `node.registerHttpRoute(method, path, ...handlers)` – automatyczne zdejmowanie przy zamknięciu | Z-07 |

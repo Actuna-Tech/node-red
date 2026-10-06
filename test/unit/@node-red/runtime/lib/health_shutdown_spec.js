@@ -18,6 +18,7 @@
  *   Z-08: tests of the drain on shutdown (shutdownTimeout, preShutdown hook)
  *   Z-16: tests of health.unreadyGrace on shutdown
  *   #61: test of a preShutdown handler that rejects without a value
+ *   #76: a preShutdown handler that rejects with a value that cannot be printed
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -133,6 +134,43 @@ describe("runtime/health shutdown (Z-08, D-11)", function() {
         log.error.firstCall.args[0].should.startWith("health.shutdown-hook-failed");
         log.error.firstCall.args[0].should.containEql("Hook handler rejected without an error: undefined");
         hook.calledOnce.should.be.true();
+    });
+
+    [
+        {name: "Object.create(null)", make: function() { return Object.create(null) }},
+        {name: "a Proxy that throws on every get", make: function() { return new Proxy({}, {get: function() { throw new Error("p") }}) }},
+        {name: "an Error with a throwing getter of message", make: function() {
+            const err = new Error("x");
+            Object.defineProperty(err, "message", {get: function() { throw new Error("getter of message") }});
+            return err;
+        }}
+    ].forEach(function(v) {
+        it("AC-22 (#76): a preShutdown handler that rejects with " + v.name + " proceeds at once with one error log and no unhandled rejection", async function() {
+            const unhandled = [];
+            const onUnhandled = function(reason) { unhandled.push(reason) };
+            process.on("unhandledRejection", onUnhandled);
+            clock = sinon.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+            try {
+                health.init({ shutdownTimeout: 1000 });
+                log._.callsFake((key, params) => key + (params ? " " + params.message : ""));
+                hooks.add("preShutdown", function(payload) { return Promise.reject(v.make()) });
+                const done = health.shutdown({ reason: "SIGTERM", stop: stop });
+                await clock.tickAsync(0);
+                await flush();
+                await clock.tickAsync(0);
+                stop.calledOnce.should.be.true("RED.stop was not called before shutdownTimeout");
+                // lets a shutdown that waits for the limit end, so that nothing is left behind
+                await clock.tickAsync(2000);
+                await done;
+                await flush();
+                log.error.calledOnce.should.be.true();
+                log.error.firstCall.args[0].should.equal("health.shutdown-hook-failed (the value cannot be printed)");
+                log.warn.calledWithMatch("health.shutdown-timeout").should.be.false();
+                unhandled.should.eql([]);
+            } finally {
+                process.removeListener("unhandledRejection", onUnhandled);
+            }
+        });
     });
 
     it("no hook - no wait", async function() {

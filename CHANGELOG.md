@@ -89,7 +89,9 @@
    `RED.start()` rejects with that error and the library never calls `process.exit`. A step that completes after
    the limit is ignored and logged as a warning (nothing after it runs, the flows are not loaded); a coordination
    plugin that starts late is resigned and stopped at once (stopped also when the resign fails), a late own server of the probes and a late observer
-   of storage are stopped. A step that fails after the limit is only a warning. An invalid value (not a number of
+   of storage are stopped. A step that fails after the limit is only a warning. A stop during the start
+   (`RED.stop()`, a signal) ends the attempt at once with `startup_stopped` and clears the limit (#73). An
+   invalid value (not a number of
    ms > 0 and <= 2147483647, for example the string of an environment variable) logs one warning and sets no
    limit. The calls of `resign()` and `stop()` of the coordination are made one after the other (a stop of the
    runtime waits for the release of a late coordination). Recommended value in `FORK.md` §2: `120000`; the budget
@@ -303,6 +305,45 @@ Fixes
    (`coordination.instance-id-generated`). The generated id is not made safe against instances that
    start at the same time (the storages have no compare-and-set; a re-read after the save would not
    help), so only an explicit id is a solution for a cluster
+ - Fix (#75): the coordination of instances logs an error of the coordination plugin or of a leadership listener
+   with any value - also `undefined` (`reject()` without an argument), `null`, an object without a prototype or a
+   value whose `toString` throws - as one warning, instead of throwing while it logs the error. Before, such a
+   value made `resign()` and `stop()` of the coordination reject: `RED.stop()` skipped the stop of the flows, the
+   answer to the open HTTP requests, the stop of the plugin and the save of the context, the leadership stayed
+   taken, and the command line exited with 1 (`Shutdown failed`); a listener that threw such a value skipped the
+   next listeners and left the event of the plugin (an instance that took over the leadership did not tell its
+   nodes). Now `resign()` and `stop()` never reject because of it, the listeners are all called, and `stop()` always
+   ends stopped (`isLeader()` is `false`, a next `start()` starts the plugin again), also when the unsubscribe
+   function returned by `onLeaderChange` of the plugin throws (one more `coordination.stop-failed` warning). A value
+   that cannot be printed gives the text `(the value cannot be printed)`. The text of every value that was printed
+   before, every `Error` included, is the same. After a SIGTERM with a plugin whose `resign()` rejects with
+   `undefined` the command line now exits with 0, as with an `Error`. The late release of a coordination plugin
+   that started after `startupTimeout` (#71) logs such a rejection as `coordination.resign-failed` /
+   `coordination.stop-failed` instead of `runtime.startup-step-late-failed`. The defect was released in
+   `5.0.7-actuna.1`. Tests: `coordination/index_spec.js`, `index_spec.js`, `startup-failure_spec.js`
+ - Fix (#76): the other extensions of the fork log an error with any value (also `undefined`, `null` or a value
+   that cannot be converted to a string) without throwing, and the operation goes on as it does for an `Error`:
+   a failed save of the generated `instanceId` with `undefined` or `null` is only a warning and the start goes on
+   (before, the start failed); an instance state listener that throws no longer skips the other listeners and the
+   `instance:state` event; a held HTTP request that cannot be released no longer leaves the other held requests
+   waiting; a `preShutdown` or `preReload` hook that rejects with such a value is logged and the stop or the reload
+   goes on at once (before, it waited for `shutdownTimeout` or `preReloadTimeout`); the observer of storage
+   (`deploy.reload.watch`) logs such errors of its stop, of a read of storage (the retry is still scheduled), of the
+   slots of `deploy.reload.concurrency` and of a whole cycle, without an unhandled rejection (also when the `code`
+   of the error in the debug line of a failed comparison of the credentials cannot be read); the `postDeploy` hooks
+   log an error whose `message` or `stack` getter throws as `no message` / `no stack`; the drain of the HTTP
+   requests (`deploy.drainHttpNodeRequests`) logs a failure whose `code` cannot be read with the code `unknown`
+   and goes on (the other requests are answered, the wait ends). In `RED.hooks.trigger` (promise form) a handler
+   that rejects with a value that `new Error(value)` cannot convert, that breaks `instanceof` (a Proxy whose
+   `getPrototypeOf` throws) or that cannot take the hook id (`err.hook`) now rejects with an `Error` with the message
+   `(the value cannot be printed)` and the hook id; before, the promise never settled. A value that converts gives
+   the same message as before and an `Error` is passed on as the same object. The texts of the log are the same for
+   every value that was printed before (every `Error`), except that a concatenated debug or warning text of an
+   object or `Error` without a `message` and with its own `valueOf` is now its string form. The texts come from one
+   internal module of the runtime (`printable.js`), not a part of `RED.util`. The state listeners, the `preShutdown`
+   hook and the observer of storage were released in `5.0.7-actuna.1` with this defect. Tests: `printable_spec.js`,
+   `index_spec.js`, `state_spec.js`, `httpHold_spec.js`, `health_shutdown_spec.js`, `flows/reload_spec.js`,
+   `flows/deployHooks_spec.js`, `httpDrain_spec.js`, `util/lib/hooks_spec.js`
 
 Documentation
 
@@ -485,6 +526,26 @@ Fixes
    start as well: the same stop and exit code 1 (before: logged as `Failed to start server`, then exit 0 or a
    process without a listening server). With a supervisor that restarts on failure, a lasting configuration
    error now gives a restart loop
+ - Fix (#73): a stop during the start (`RED.stop()`, `RED.health.shutdown()`, a stop signal in the command
+   line) abandons the start as soon as the instance enters `stopping` (also during the drain of
+   `shutdownTimeout`, before `RED.stop()` is called). `RED.start()` rejects at once with an error `startup_stopped`
+   (fields `step` - the step the start was waiting for, `null` before the first one - and `reason` - the reason of
+   the stop) and the runtime logs one warning `The start was stopped (<reason>) before it completed - waiting
+   for: <step>`. Before, a step that completed after the stop finished the start in the stopped instance (the
+   flows were loaded and started, a coordination plugin that started late kept the leadership, `RED.start()`
+   resolved), and a step that never completed left `RED.start()` pending - with `startupTimeout` until the
+   limit, whose timer kept an embedding process alive. Now nothing of the start runs after the stop; a step that
+   completes later is logged as `The start step <step> completed after the stop - ignored` (info) and what it
+   holds is released as after `startupTimeout` (the coordination plugin is resigned and stopped, the own server
+   of the probes and the observer of storage are stopped); a step that fails later is one warning. The timer of
+   `startupTimeout` is cleared, so the result is never `startup_timeout` after a stop (a limit that fired before
+   the stop keeps its result). The instance state goes `starting` -> `stopping` -> `stopped`, never `failed`.
+   `RED.start()` called after `RED.stop()` rejects `startup_stopped` with `step: null` and runs no step (before:
+   it started the flows in the stopped instance). After `RED.stop()` no new attempt to install a missing module
+   (`externalModules.autoInstall`) is planned or made. In the command line a signal during the start no longer
+   logs `Failed to start server`; the exit code is unchanged (0). Embedding applications that use the recipe of
+   #67 (`RED.start().catch(...)` -> `RED.stop("startup-error")` and exit code 1) should skip `startup_stopped`:
+   it is not a failed start, the application is already stopping (see `MIGRACJA.md` §4.5)
  - Tests only, no change of the product: flaky tests fixed. The HTTP tests no longer reach a foreign server
    on the same machine (supertest started the app on all interfaces but connected to `127.0.0.1`; the
    shared helper `nr-test-utils/supertest` listens on `127.0.0.1`), the `tcp request` test server hook calls

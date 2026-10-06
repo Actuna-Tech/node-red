@@ -18,6 +18,7 @@
  *   #40: tests of the drain of the HTTP requests before the flows stop
  *   (deploy.drainHttpNodeRequests): settings, tracking, the window, deadlines, the
  *   wait, the answers and their codes
+ *   #76: a failure whose code cannot be read does not make the report of the failure throw
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -937,6 +938,101 @@ describe("runtime/httpDrain (#40)", function() {
             const good = route(arrive());
             (function() { httpDrain.finalize() }).should.not.throw();
             good.res.statusCode.should.equal(503);
+        });
+    });
+
+    // #76: the report of a failure reads `err.code`; a failure with a value whose `code` cannot be read (a getter that
+    // throws, a Proxy) must not make the report throw. Such a value reaches the drain from code that shares the request
+    // and the response (a middleware or a node that replaces `res.end`, or defines a getter on `res`, or registers a
+    // route handler as a Proxy): the drain says it never throws and never rejects
+    describe("a failure whose code cannot be read (#76)", function() {
+        const hostiles = [
+            ["an Error whose code getter throws", () => Object.defineProperty(new Error("x"), "code", { get: function() { throw new Error("code getter") } })],
+            ["a Proxy that throws on every get", () => new Proxy({}, { get: function() { throw new Error("p") } })]
+        ];
+
+        // runs the work and turns a failure into an ordinary Error, so that a hostile value never reaches the runner
+        async function ok(what, work) {
+            try {
+                return await work();
+            } catch (err) {
+                let text;
+                try { text = String(err) } catch (e) { text = "(the value cannot be printed)" }
+                throw new Error(what + " must not throw but threw: " + text);
+            }
+        }
+        // a request whose response cannot be read: isOpen() fails
+        function unreadable(r, value) {
+            Object.defineProperty(r.res, "writableEnded", { get: function() { throw value } });
+            return r;
+        }
+        function driveFailedWith(text) {
+            text.should.match(/httpDrain.drain-failed \{"code":"unknown"\}/);
+        }
+
+        hostiles.forEach(function(h) {
+            it("beforeStop (drain-failed): " + h[0] + " - never throws, one warning with the code 'unknown'", async function() {
+                init();
+                unreadable(accept(route(arrive("POST"))), h[1]());
+                const promise = ok("beforeStop()", () => httpDrain.beforeStop());
+                await promise;
+                driveFailedWith(logged());
+            });
+
+            it("afterStop (drain-failed): " + h[0] + " - never throws, one warning with the code 'unknown'", async function() {
+                init();
+                unreadable(route(arrive("POST")), h[1]());
+                await ok("afterStop()", () => httpDrain.afterStop("full"));
+                driveFailedWith(logged());
+                clock.countTimers().should.equal(0);
+            });
+
+            it("finalize (drain-failed): " + h[0] + " on a second request - never throws, the first is answered, the wait ends, no timer is left", async function() {
+                init();
+                const good = accept(route(arrive("POST")));
+                const waiting = httpDrain.beforeStop();
+                unreadable(route(arrive("POST")), h[1]());
+                await ok("finalize()", () => httpDrain.finalize());
+                good.res.statusCode.should.equal(503);
+                (await settled(waiting)).should.be.true();
+                driveFailedWith(logged());
+                clock.countTimers().should.equal(0);
+            });
+
+            it("the guard tick (drain-failed): " + h[0] + " - the timer callback does not throw, one warning with the code 'unknown'", async function() {
+                init();
+                deploying();
+                const good = accept(route(arrive("POST")));
+                const waiting = httpDrain.beforeStop();
+                unreadable(route(arrive("POST")), h[1]());
+                await ok("the guard tick", () => clock.tick(250));
+                driveFailedWith(logged());
+                httpDrain.abortWait();
+                await waiting;
+                good.res.writableEnded.should.be.false();
+            });
+
+            it("answer (answer-failed): a res.end that throws " + h[0] + " - never throws, the code is 'unknown', the other requests are answered", async function() {
+                init();
+                const bad = accept(route(arrive()));
+                bad.res.endThrows = h[1]();
+                const good = accept(route(arrive("POST")));
+                await ok("finalize()", () => httpDrain.finalize());
+                bad.entry.drained.should.be.false();
+                good.res.statusCode.should.equal(503);
+                logged().should.match(/httpDrain.answer-failed \{"code":"unknown"\}/);
+            });
+        });
+
+        it("regression: an Error with a code is logged with that code, as before", async function() {
+            init();
+            const bad = accept(route(arrive()));
+            const error = new Error("secret detail");
+            error.code = "EBOOM";
+            bad.res.endThrows = error;
+            await ok("finalize()", () => httpDrain.finalize());
+            logged().should.match(/httpDrain.answer-failed \{"code":"EBOOM"\}/);
+            logged().should.not.match(/secret detail/);
         });
     });
 });
