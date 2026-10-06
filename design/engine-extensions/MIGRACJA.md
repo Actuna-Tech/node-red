@@ -90,6 +90,7 @@ nowego flow tuż po wdrożeniu (wraca zachowanie 5.0.7).
 |---|---|
 | `health.port`, `health.path` | `readinessProbe.httpGet` (`<path>/ready`), `livenessProbe.httpGet` (`<path>/live`) |
 | `shutdownTimeout: 1140000` (19 min) | `terminationGracePeriodSeconds: 1200` (20 min) – grace period dłuższy niż drenaż; brak osobnego limitu `RED.stop()` – ostatecznym limitem jest grace period (R-37) |
+| `startupTimeout: 120000` (2 min) | `startupProbe` na `<path>/ready` z budżetem 180 s (`periodSeconds: 10`, `failureThreshold: 18`) – budżet większy niż `startupTimeout` + 5 s (zatrzymanie po nieudanym starcie, #67) + czas wczytania flow (#71) |
 | `deploy.reload.preReloadTimeout: 1200000` | – |
 | `health.unreadyGrace` (np. 15000; większe niż `periodSeconds` × `failureThreshold` sondy `readiness` lub odpytywania balansera) | `/ready` 503 przez co najmniej tyle ms PRZED zatrzymaniem flow (SIGTERM i przeładowanie z magazynu); mieści się w `shutdownTimeout`/`preReloadTimeout`; bez `shutdownTimeout` zamykanie czeka dokładnie `unreadyGrace` – `terminationGracePeriodSeconds` dłuższy; nie dotyczy wdrożenia z edytora |
 | workery: `disableEditor: true`, `httpAdminRoot: false` (Admin API wyłączone) | sondy na osobnym porcie (`health.port`) |
@@ -105,10 +106,15 @@ Bez `shutdownTimeout` drenaż jest wyłączony (zachowanie jak dotąd), a hook `
 powstaje pętla restartów: `CrashLoopBackOff` w Kubernetes, `StartLimitBurst` w systemd. To zamierzony, widoczny skutek;
 przyczynę podaje log `Failed to start server:` z poprzedniego uruchomienia.
 
-**Zawieszony start:** gdy krok startu nie kończy się wcale (np. magazyn koordynacji nie odpowiada zamiast odmówić),
-proces nie kończy się sam – stan `starting` trwa, `/ready` 503, `/live` 200. Taką instancję wykrywa `startupProbe`
-na `<path>/ready` (np. `failureThreshold` × `periodSeconds` dłuższe niż najdłuższy oczekiwany start); po jej
-przekroczeniu kubelet restartuje kontener. Limit czasu startu w samym Node-RED to osobne zgłoszenie (#71).
+**Zawieszony start (#71):** gdy krok startu nie kończy się wcale (np. magazyn koordynacji nie odpowiada zamiast
+odmówić), bez ustawienia `startupTimeout` proces nie kończy się sam, jak dotąd – stan `starting` trwa, `/ready` 503,
+`/live` 200. Z `startupTimeout` (zalecane `120000`, FORK §2) zawieszony `RED.start()` jest nieudanym startem: po limicie
+błąd `startup_timeout` z nazwą kroku, na który runtime czekał, zatrzymanie (najwyżej 5000 ms) i kod 1, więc supervisor
+uruchamia instancję ponownie. Limit obejmuje tylko start runtime, nie wczytanie i start flow po nim, dlatego
+`startupProbe` na `<path>/ready` nadal jest zalecana: wykrywa też instancję zawieszoną przy wczytaniu flow. Reguła
+budżetu: `failureThreshold` × `periodSeconds` sondy `startupProbe` musi być większe niż `startupTimeout` + 5 s
+(zatrzymanie po nieudanym starcie, #67) + czas wczytania flow; inaczej kubelet wysyła SIGTERM przed limitem i proces
+kończy się kodem 0 bez przyczyny w logu.
 
 ## 4. Narzędzia Admin API (automaty, MCP, CI/CD)
 
@@ -256,6 +262,13 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   ```
 
   Kontrakt `/live` bez zmian.
+- **Limit startu (`startupTimeout`, #71):** po przekroczeniu `RED.start()` odrzuca błędem z `code: "startup_timeout"`
+  oraz polami `step` (krok, na który runtime czekał) i `timeout`; stan `failed`/`startup-error`, dalej jak przy
+  nieudanym starcie wyżej. Krok, który skończy się po limicie, jest ignorowany (ostrzeżenie w logu, flow nie są
+  wczytywane); późno uruchomiona wtyczka koordynacji dostaje od razu `resign()` i `stop()`, późny własny serwer sond i
+  obserwator magazynu są zatrzymywane. `RED.stop()` wywołane w trakcie zawieszonego startu nie przerywa limitu: proces
+  osadzający żyje do jego upływu, a potem `RED.start()` odrzuca `startup_timeout` – `catch` przy `RED.start()` jest
+  więc wymagany. Zwolnienie timera przy `RED.stop()` to osobne zgłoszenie (#73).
 - **Odrzucone żądanie `/flow` nie emituje `deploying` (#10, U1, A24, D19):** `POST /flow`, `PUT` i `DELETE /flow/:id` sprawdzają rewizje i budują
   konfigurację przed stanem `deploying`, więc odrzucone żądanie (409, 404, `duplicate_id`, `invalid_flow_id`, 400 `global`) nie przechodzi przez
   `deploying` i z powrotem: brak zdarzeń `instance:state`, brak chwilowego 503 na `/ready` i brak chwilowego wstrzymania z #8; nie unieważnia też
@@ -352,7 +365,7 @@ zewnętrznych rejestrujących trasy na `RED.httpNode`. Przy `deploy.drainHttpNod
 | Obszar | Zmiana | Pakiet |
 |---|---|---|
 | Wtyczka magazynu | opcjonalna funkcja `watchFlows(callback)` – powiadomienia o zmianie flow z innej instancji | Z-09 |
-| Wtyczka koordynacji | nowy typ wtyczki `node-red-coordination` (lider, zajęcie zadania); wybór tylko jawnie w `coordination.plugin`; `inject` z `singleInstance`: cron – zajęcie klucza `<id>:<czas>` (dokładnie raz), interwał – lider (D-14); węzeł na instancji niebędącej liderem pokazuje status „standby”; `mqtt in` z `singleInstance` – osobny pakiet (R-21) | Z-10 |
+| Wtyczka koordynacji | nowy typ wtyczki `node-red-coordination` (lider, zajęcie zadania); wybór tylko jawnie w `coordination.plugin`; `inject` z `singleInstance`: cron – zajęcie klucza `<id>:<czas>` (dokładnie raz), interwał – lider (D-14); węzeł na instancji niebędącej liderem pokazuje status „standby”; `mqtt in` z `singleInstance` – osobny pakiet (R-21); `start` tylko łączy z koordynatorem i nie czeka na przywództwo; przy `startupTimeout` (#71) start wtyczki, który rozwiąże się po limicie, jest od razu zakończony wywołaniami `resign()` i `stop()`, a start, który nigdy się nie rozstrzygnie, nie może zostać zwolniony – wtyczka powinna mieć własne limity połączenia | Z-10 |
 | Hooki | `preDeploy` (tylko walidacja: 400 `deploy_rejected` + `reason`, 503 `deploy_hook_failed`, 503 `deploy_hook_timeout`; §4.3), `postDeploy` (source `api`/`internal`/`storage`, asynchronicznie), `preReload` (bez weta), `preShutdown` (z `reason`); brak hooków wdrożenia przy starcie procesu i operacjach Projektów (R-15, R-20, R-23, R-50); **`preDeploy` i `postDeploy` rejestruje się tylko przez `RED.hooks.add`** (wtyczka, węzeł); `preReload` i `preShutdown` także z ustawienia `hooks` w `settings.js` (rejestracja przy `init`, #7) | Z-06, Z-09, Z-08 |
 | Trasy administracyjne bloczków | przy `httpAdminNodeRoutes: "authenticated"` trasa bez uprawnienia wymaga sesji; publiczne – `RED.auth.publicRoute()` | Z-02 |
 | Trasy HTTP bloczków | `node.registerHttpRoute(method, path, ...handlers)` – automatyczne zdejmowanie przy zamknięciu | Z-07 |
