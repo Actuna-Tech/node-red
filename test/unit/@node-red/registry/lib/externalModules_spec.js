@@ -1,8 +1,3 @@
-/*
- * Modified by Actuna Sp. z o.o.:
- *   #68: test of a failed save of the list of the installed modules (logged, the install is reported as done)
- * This notice is required by section 4(b) of the Apache License 2.0.
- */
     // init: init,
     // register: register,
     // registerSubflow: registerSubflow,

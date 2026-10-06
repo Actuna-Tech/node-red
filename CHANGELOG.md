@@ -437,8 +437,8 @@ Fixes
    existing file is kept; a failed save of the settings or the sessions is logged. A failed write of the content
    of a file of the local file storage (for example `ENOSPC` or `EIO`) rejects the save with the error of the
    write; the target is kept and the temporary file of the call (`<file>.$$$`) removed. Before, the save
-   resolved and the file was left empty or cut short. Content that is not a string rejects with a `TypeError`
-   and the next save of the same file works. This covers the flows, the credentials, the settings, the
+   resolved and the file was left empty or cut short. Content that is not a string rejects with a `TypeError`.
+   This covers the flows, the credentials, the settings, the
    sessions, the library and the files of a project. Unchanged: a failed fsync is only a warning and a failed
    rename keeps the temporary file. A failed save of the settings or the sessions is logged as a warning
    (`Saving the settings failed`, `Saving the sessions failed`) and the operation that asked for it carries on
@@ -447,7 +447,7 @@ Fixes
    Behaviour change of the Admin API, answers of errors only: `POST /auth/token` with a password answers 500
    `{"error":"server_error","error_description":"unexpected_error"}` without a token when the session cannot
    be created; `POST /auth/revoke` answers 400 `{"error":"unexpected_error"}` when the session cannot be
-   removed (before, both requests got no answer); `POST /auth/token` with an exchange code answers every error
+   removed; `POST /auth/token` with an exchange code answers every error
    with 400 `{"error":"unexpected_error"}`, also a wrong or expired code (before: `{"error":"Error: Invalid
    exchange code"}` or the text of another error); a request with a bearer token answers 401 when the sessions
    cannot be read, and with an expired token also when the save of the sessions fails. The original error is

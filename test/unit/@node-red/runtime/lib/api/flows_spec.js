@@ -33,6 +33,7 @@
  *   a reload from the api reads storage and loads the credentials as before (D15, A32 - guards);
  *   the preDeploy hook through the runtime api (the event, 400/503/503, nothing saved, audit with the reason);
  *   a reload rejected by the hook changes nothing (I12, D15, D26)
+ *   #68: tests of a failed save of the flow state (setState start and stop log it and carry on)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
