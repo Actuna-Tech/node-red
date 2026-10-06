@@ -13,6 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #11: tests of the API of the HTTP routes of a node (node.registerHttpRoute) on Node.prototype and
+ *   of the close of a node that never used it
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require('sinon');
@@ -21,6 +27,7 @@ var RedNode = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/Node");
 var Log = NR_TEST_UTILS.require("@node-red/util").log;
 var hooks = NR_TEST_UTILS.require("@node-red/util/lib/hooks");
 var flows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+var nodeUtil = require("util");
 
 describe('Node', function() {
     describe('#constructor',function() {
@@ -832,6 +839,54 @@ describe('Node', function() {
             flow.handleStatus.args[0][0].should.eql(n);
             flow.handleStatus.args[0][1].should.eql({text:"123"});
             done();
+        });
+    });
+
+    describe('HTTP routes API (#11)', function() {
+        it('AC-1: registerHttpRoute is a method of Node.prototype, inherited by the node types', function() {
+            should(RedNode.prototype.registerHttpRoute).be.a.Function();
+            function TestType(n) { RedNode.call(this,n) }
+            nodeUtil.inherits(TestType,RedNode);
+            var n = new TestType({id:'123',type:'abc'});
+            should(n.registerHttpRoute).be.a.Function();
+        });
+
+        describe('AC-38: a node that never registered a route closes as before', function() {
+            var logSpy;
+            beforeEach(function() { logSpy = sinon.spy(Log,"log") });
+            afterEach(function() { logSpy.restore() });
+
+            [true,false].forEach(function(removed) {
+                it('close('+removed+') calls the callbacks with the same arguments and logs nothing of the routes', async function() {
+                    var n = new RedNode({id:'123',type:'abc'});
+                    var seen = {};
+                    n.on('close',function() { seen.none = Array.prototype.slice.call(arguments) });
+                    n.on('close',function(done) {
+                        seen.one = Array.prototype.slice.call(arguments);
+                        done();
+                    });
+                    n.on('close',function(removedFlag,done) {
+                        seen.two = Array.prototype.slice.call(arguments);
+                        done();
+                    });
+                    await n.close(removed);
+                    seen.none.should.have.length(0);
+                    seen.one.should.have.length(1);
+                    seen.one[0].should.be.a.Function();
+                    seen.two.should.have.length(2);
+                    seen.two[0].should.equal(removed);
+                    seen.two[1].should.be.a.Function();
+                    logSpy.args.filter(function(a) { return a[0] && /httpRoutes/.test(String(a[0].msg)) }).should.eql([]);
+                });
+            });
+
+            it('a close(undefined) gives the 2-argument callback a false removed flag', async function() {
+                var n = new RedNode({id:'123',type:'abc'});
+                var removedSeen;
+                n.on('close',function(removed,done) { removedSeen = removed; done() });
+                await n.close();
+                removedSeen.should.be.false();
+            });
         });
     });
 

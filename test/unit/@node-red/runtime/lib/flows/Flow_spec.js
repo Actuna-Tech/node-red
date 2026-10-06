@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #61: test of an onSend hook handler that rejects without a value
+ *   #11: tests of the removal of the HTTP routes of a node (node.registerHttpRoute) when the flow stops the node
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -33,6 +34,10 @@ var Node = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/Node");
 var credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
 var hooks = NR_TEST_UTILS.require("@node-red/util/lib/hooks");
 var typeRegistry = NR_TEST_UTILS.require("@node-red/registry");
+var redNodes = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes");
+var express = require("express");
+var EventEmitter = require("events").EventEmitter;
+var supertest = require("nr-test-utils/supertest");
 
 describe('Flow', function() {
     var getType;
@@ -512,6 +517,154 @@ describe('Flow', function() {
             stoppedNodes.should.have.a.property("1");
         });
 
+    });
+
+    describe('HTTP routes of the nodes (#11)', function() {
+        var app;
+        var closeLog;
+
+        function routeInStack(path) {
+            return !!(app._router && app._router.stack.some(function(layer) { return layer.route && layer.route.path === path }));
+        }
+
+        // A type that overrides close without calling Node.prototype.close (as inject and watch do)
+        function OverridingNode(n) {
+            Node.call(this,n);
+            var node = this;
+            var path = "/route-" + n.id;
+            assert_api(this);
+            this.registerHttpRoute("get", path, function(req,res) { res.status(200).send("answer-"+n.id) });
+            this.close = function(removed) {
+                closeLog.push({id:n.id, routePresent: routeInStack(path)});
+                return Promise.resolve();
+            };
+        }
+        util.inherits(OverridingNode,Node);
+
+        // A type that closes the usual way (a close listener)
+        function ListeningNode(n) {
+            Node.call(this,n);
+            var path = "/route-" + n.id;
+            assert_api(this);
+            this.registerHttpRoute("get", path, function(req,res) { res.status(200).send("answer-"+n.id) });
+            this.on("close", function() {
+                closeLog.push({id:n.id, routePresent: routeInStack(path)});
+            });
+        }
+        util.inherits(ListeningNode,Node);
+
+        // Without the API the constructor would throw "is not a function": that is the failure to see
+        function assert_api(node) {
+            if (typeof node.registerHttpRoute !== "function") {
+                throw new Error("Node.prototype.registerHttpRoute is not defined");
+            }
+        }
+
+        before(function() {
+            getType.withArgs("httpRouteOverriding").returns(OverridingNode);
+            getType.withArgs("httpRouteListening").returns(ListeningNode);
+        });
+
+        beforeEach(function() {
+            closeLog = [];
+            app = express();
+            app.use(function base(req,res,next) { next() });
+            var noop = function() {};
+            redNodes.init({
+                settings: {available: function() { return false }, get: function() { return false }},
+                storage: {},
+                log: {log: noop, debug: noop, trace: noop, warn: noop, info: noop, metric: noop, _: function() { return "abc" }},
+                events: new EventEmitter(),
+                nodeApp: app
+            });
+        });
+
+        function nodesOf(type, ids) {
+            var list = [{id:"t1",type:"tab"}];
+            ids.forEach(function(id) { list.push({id:id,z:"t1",type:type,wires:[]}) });
+            return flowUtils.parseConfig(list);
+        }
+
+        // The constructors throw without the API, the runtime logs it and the node is not created
+        function created(flow, ids) {
+            ids.forEach(function(id) {
+                should.exist(flow.getNode(id), "the node " + id + " was not created (is Node.prototype.registerHttpRoute defined?)");
+            });
+        }
+
+        async function answers(path) {
+            var res = await supertest(app).get(path);
+            return res.status;
+        }
+
+        it("AC-14: a node that overrides close: flow.stop() removes its route before close is called", async function() {
+            var config = nodesOf("httpRouteOverriding", ["1"]);
+            var flow = Flow.create({},config,config.flows["t1"]);
+            await flow.start();
+            created(flow, ["1"]);
+            try {
+                (await answers("/route-1")).should.equal(200);
+                await flow.stop();
+                (await answers("/route-1")).should.equal(404);
+                closeLog.should.eql([{id:"1", routePresent:false}]);
+            } finally {
+                await flow.stop();
+            }
+        });
+
+        it("AC-14: flow.stop([id],[id]) removes the route of the stopped node only", async function() {
+            var config = nodesOf("httpRouteOverriding", ["1","2"]);
+            var flow = Flow.create({},config,config.flows["t1"]);
+            await flow.start();
+            created(flow, ["1","2"]);
+            try {
+                await flow.stop(["1"],["1"]);
+                (await answers("/route-1")).should.equal(404);
+                (await answers("/route-2")).should.equal(200);
+                await flow.stop();
+                (await answers("/route-2")).should.equal(404);
+            } finally {
+                await flow.stop();
+            }
+        });
+
+        it("AC-14: a node that closes with a listener: its route is removed when the flow stops it", async function() {
+            var config = nodesOf("httpRouteListening", ["1","2"]);
+            var flow = Flow.create({},config,config.flows["t1"]);
+            await flow.start();
+            created(flow, ["1","2"]);
+            try {
+                (await answers("/route-1")).should.equal(200);
+                await flow.stop(["1"]);
+                (await answers("/route-1")).should.equal(404);
+                (await answers("/route-2")).should.equal(200);
+                closeLog.should.eql([{id:"1", routePresent:false}]);
+                await flow.stop();
+                (await answers("/route-2")).should.equal(404);
+            } finally {
+                await flow.stop();
+            }
+        });
+
+        it("AC-14: a node that times out in close has its route removed at once", async function() {
+            var noop = function() {};
+            Flow.init({settings:{nodeCloseTimeout:50},log:{log: noop, debug: noop, trace: noop, warn: noop, info: noop, metric: noop, _: function() { return "abc" }}});
+            function HangingNode(n) {
+                Node.call(this,n);
+                assert_api(this);
+                this.registerHttpRoute("get", "/route-hang", function(req,res) { res.status(200).send("hang") });
+                this.on("close", function(done) { /* never */ });
+            }
+            util.inherits(HangingNode,Node);
+            getType.withArgs("httpRouteHanging").returns(HangingNode);
+            var config = nodesOf("httpRouteHanging", ["1"]);
+            var flow = Flow.create({},config,config.flows["t1"]);
+            await flow.start();
+            created(flow, ["1"]);
+            (await answers("/route-hang")).should.equal(200);
+            await flow.stop();
+            (await answers("/route-hang")).should.equal(404);
+        });
     });
 
     describe('#getNode',function() {
