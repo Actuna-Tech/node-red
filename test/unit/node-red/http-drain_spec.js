@@ -18,6 +18,8 @@
  *   #40: acceptance test of deploy.drainHttpNodeRequests - a request that "http in" accepted gets an
  *   answer, whatever stops the flows (deployments of every type, a reload from storage, a stop
  *   of the flows), with the setting off, on with a long limit and on with a short one
+ *   #63: every describe stops its own instance in its `after`; the slow-body test asserts that the client socket is
+ *   closed after the 503 with `Connection: close`
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -230,6 +232,20 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
         return inst;
     }
 
+    // Stops an instance at the end of its describe (a child that is still running is killed, SIGKILL), so no
+    // instance lives on until the last describe has ended; the final sweep stays for a failed `before`
+    async function stopInstance(inst) {
+        if (!inst || !inst.child) {
+            return;
+        }
+        const child = inst.child;
+        if (child.exitCode === null && child.signalCode === null) {
+            const exited = new Promise(resolve => child.once("exit", resolve));
+            child.kill("SIGKILL");
+            await Promise.race([exited, sleep(5000)]);
+        }
+    }
+
     // The base flows, running
     async function reset(inst) {
         const state = await api(inst.url, "POST", "/flows/state", { state: "start" });
@@ -268,6 +284,7 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
     describe("the setting off", function() {
         let inst;
         before(async function() { inst = await startInstance(undefined) });
+        after(function() { return stopInstance(inst) });
 
         Object.keys(OFF_RESULTS).forEach(function(name) {
             it(name + ": " + (OFF_RESULTS[name] === "hang" ? "the request is lost (no answer), as before" : "the flow answers 200, as before"), async function() {
@@ -289,6 +306,7 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
     describe("on, timeout 5000", function() {
         let inst;
         before(async function() { inst = await startInstance({ timeout: 5000 }) });
+        after(function() { return stopInstance(inst) });
 
         Object.keys(OPERATIONS).forEach(function(name) {
             it(name + ": the flow answers the request in progress, 200", async function() {
@@ -340,6 +358,10 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
             // the headers announce 1000 bytes, 10 arrive: the body parser of the route waits (text: the Admin API,
             // mounted on the same root, would read a JSON body before the route is matched)
             const slow = send(inst.url, "/slowpost", { method: "POST", write: "0123456789", headers: { "Content-Type": "text/plain", "Content-Length": "1000" }, waitMs: 4000 });
+            // the client socket: it must be closed by the server after the 503 (Connection: close)
+            const socketClosed = new Promise(resolve => slow.req.on("socket", socket => {
+                if (socket.destroyed) { resolve(); } else { socket.once("close", resolve); }
+            }));
             await sleep(150);
             const started = Date.now();
             const op = await deploy(inst, "full", { other: "3" });
@@ -351,6 +373,9 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
             result.body.code.should.equal("http_drain_not_accepted");
             result.headers["retry-after"].should.equal("1");
             result.headers.connection.should.equal("close");
+            // asserted, not tolerated: the connection is closed within 1000 ms after the answer
+            const closedInTime = await Promise.race([socketClosed.then(() => true), sleep(1000).then(() => false)]);
+            closedInTime.should.equal(true, "the client socket was not closed within 1000 ms after the 503");
             // the server closes the connection after the 503 while the client keeps sending the body: no crash, no error
             try { slow.req.write("0123456789", () => {}) } catch (err) { /* the socket is already closed */ }
             await sleep(200);
@@ -384,6 +409,7 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
     describe("on, timeout 2000: a request that arrives in the drain of a deployment that changes its node (A18)", function() {
         let inst;
         before(async function() { inst = await startInstance({ timeout: 2000 }) });
+        after(function() { return stopInstance(inst) });
 
         ["flows-holder", "nodes-holder"].forEach(function(name) {
             it(name + ": the request of the drain is answered by the flow, the new one is lost with the node and gets 503 after its deadline, not none", async function() {
@@ -411,6 +437,7 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
     describe("on, timeout 200", function() {
         let inst;
         before(async function() { inst = await startInstance({ timeout: 200 }) });
+        after(function() { return stopInstance(inst) });
 
         Object.keys(OPERATIONS).forEach(function(name) {
             it(name + ": 503 http_drain_outcome_unknown after the limit, with Retry-After for a GET", async function() {

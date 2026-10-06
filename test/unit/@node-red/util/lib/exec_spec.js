@@ -18,6 +18,7 @@
  *   #45: tests of hiding the credentials of URLs in the event-log; the output is logged by
  *   lines (one event per line and stream instead of one per chunk); a very long line is not
  *   cut inside a URL or a secret, also when the cut falls inside a complete one (SEC-009)
+ *   #63: a long line without a newline is cut at a white space (the first logged event ends with it)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -203,6 +204,18 @@ describe("runtime/exec", function() {
                 text.should.not.containEql("s3c");
                 text.should.not.containEql("ret@host");
                 text.should.containEql("see https://***@host/r.git end\n");
+            });
+        });
+
+        it("#63 B2-AC-3: one chunk of words without a newline is cut after a white space, nothing is lost", function(done) {
+            var input = "word ".repeat(14000);
+            run([input], done, function() {
+                var events = logged();
+                events.length.should.be.above(1);
+                // the cut falls at a white space (it would fall inside a word at the limit of 65904 characters)
+                events[0].should.endWith(" ");
+                events[0].length.should.be.below(input.length);
+                events.join("").should.equal(input);
             });
         });
 

@@ -33,6 +33,7 @@
  *   during the drain)
  *   Z-06 (#10): tests of opts.built of addFlow/updateFlow/removeFlow (the configuration built by the pipeline);
  *   readStoredFlows/loadStoredCredentials (the halves of readFlowsFromStorage, D15, A32)
+ *   #63: load(true), the project switch path, does not call preDeploy or postDeploy handlers (I8 of #10)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -968,6 +969,28 @@ describe('flows/index', function() {
             await waitFor("runtime-deploy");
             // global + t1 + t2 recreated
             flowCreate.callCount.should.equal(3);
+        });
+        it('#63 B3-AC-4: load(true), as called by a switch of the project, calls no preDeploy or postDeploy handler', async function() {
+            const { hooks } = NR_TEST_UTILS.require("@node-red/util");
+            const pre = sinon.spy();
+            const post = sinon.spy();
+            hooks.add("preDeploy.projectSwitch", pre);
+            hooks.add("postDeploy.projectSwitch", post);
+            try {
+                await loadAndStart();
+                // the handlers were registered before the first load too: nothing of the start calls them
+                storage.getFlows = function() { return Promise.resolve({flows:clone(baseConfig), rev:"storedRev"}) };
+                storage.saveFlows = sinon.spy(function() { return Promise.resolve() });
+                const rev = await flows.load(true);
+                rev.should.equal("storedRev");
+                // postDeploy runs after the start, asynchronously: let it run if it were going to
+                await new Promise(r => setImmediate(r));
+                await new Promise(r => setImmediate(r));
+                pre.called.should.be.false();
+                post.called.should.be.false();
+            } finally {
+                hooks.remove("*.projectSwitch");
+            }
         });
         it('reload with a loaded config does not read storage again', async function() {
             await loadAndStart();

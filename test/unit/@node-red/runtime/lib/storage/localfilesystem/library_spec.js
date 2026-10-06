@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #54: acceptance tests of saving a library entry - the save waits for the write and passes on a failed write,
  *   a name that does not denote an entry is refused, the entries are listed right after the save (flaky tests)
+ *   #63: the working file of a write (name ending with .$$$) is not listed and cannot be saved as an entry
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -251,6 +252,138 @@ describe('storage/localfilesystem/library', function() {
         });
     });
     // #54: saving an entry waits for the write of the file and passes on a failed write
+    // #63: the file that util.writeFile writes first and renames (`<name>.$$$`) is not an entry of the library
+    describe('the working file of a write (#63)', function() {
+        let dir;
+        let typeDir;
+
+        function names(list) {
+            return list.map(function(item) { return typeof item === 'string' ? item : item.fn });
+        }
+
+        beforeEach(async function() {
+            dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nr-library-work-'));
+            typeDir = path.join(dir, 'lib', 'functions');
+            fs.ensureDirSync(typeDir);
+        });
+        afterEach(function() {
+            fs.removeSync(dir);
+        });
+
+        describe('B6-AC-7, B6-AC-8: the list of a type directory', function() {
+            it('B6-AC-7: a file and its working file: only the file is listed', async function() {
+                await localfilesystemLibrary.init({ userDir: dir });
+                fs.writeFileSync(path.join(typeDir, 'a.js'), '// k: v\nbody');
+                fs.writeFileSync(path.join(typeDir, 'a.js.$$$'), '// k: v\npartial');
+                const list = await localfilesystemLibrary.getLibraryEntry('functions', '');
+                names(list).should.eql(['a.js']);
+                list.filter(function(item) { return /\.\$\$\$$/.test(typeof item === 'string' ? item : item.fn) }).should.eql([]);
+            });
+
+            it('B6-AC-7: a working file that is left alone (a failed rename) is not listed', async function() {
+                await localfilesystemLibrary.init({ userDir: dir });
+                fs.writeFileSync(path.join(typeDir, 'b.js.$$$'), 'leftover');
+                (await localfilesystemLibrary.getLibraryEntry('functions', '')).should.eql([]);
+            });
+
+            it('B6-AC-7: the same in a sub-folder', async function() {
+                await localfilesystemLibrary.init({ userDir: dir });
+                fs.ensureDirSync(path.join(typeDir, 'sub'));
+                fs.writeFileSync(path.join(typeDir, 'sub', 'c.js'), 'x');
+                fs.writeFileSync(path.join(typeDir, 'sub', 'c.js.$$$'), 'x');
+                names(await localfilesystemLibrary.getLibraryEntry('functions', 'sub')).should.eql(['c.js']);
+            });
+
+            it('B6-AC-8 (regression): a folder x.$$$, a file a.$$$x and the normal files are listed as before; a name that starts with a dot stays hidden', async function() {
+                await localfilesystemLibrary.init({ userDir: dir });
+                fs.ensureDirSync(path.join(typeDir, 'x.$$$'));
+                fs.writeFileSync(path.join(typeDir, 'a.$$$x'), 'x');
+                fs.writeFileSync(path.join(typeDir, 'normal.js'), 'x');
+                fs.writeFileSync(path.join(typeDir, '.$$$'), 'x');
+                fs.writeFileSync(path.join(typeDir, '.hidden.js'), 'x');
+                const list = await localfilesystemLibrary.getLibraryEntry('functions', '');
+                list[0].should.equal('x.$$$');
+                names(list).should.eql(['x.$$$', 'a.$$$x', 'normal.js']);
+            });
+        });
+
+        describe('B6-AC-10: saving a name that ends with the suffix of the working file', function() {
+            function listing() {
+                return fs.readdirSync(path.join(dir, 'lib'), { recursive: true }).map(String);
+            }
+
+            beforeEach(async function() {
+                await localfilesystemLibrary.init({ userDir: dir });
+            });
+
+            ['a.js.$$$', 'x/y.$$$', 'a.$$$'].forEach(function(name) {
+                it('B6-AC-10: ' + name + ' is refused with the code forbidden and no message, nothing is written', async function() {
+                    const err = await localfilesystemLibrary.saveLibraryEntry('functions', name, { k: 'v' }, 'body').then(
+                        function() { throw new Error('the save was not refused'); }, function(e) { return e; });
+                    err.should.have.property('code', 'forbidden');
+                    err.should.have.property('message', '');
+                    // no file of that name, and no working file of it (a.js.$$$.$$$); no folder is made for it either
+                    listing().filter(function(n) { return /\$\$\$/.test(n) }).should.eql([]);
+                    fs.existsSync(path.join(typeDir, 'x')).should.be.false();
+                });
+            });
+
+            it('B6-AC-10: the file that a save of a.js writes first is written under the name a.js.$$$, and that name is refused as an entry', async function() {
+                // the working file of the save of a.js is a.js.$$$ (util.writeFile); that name is refused as an entry
+                const seen = [];
+                const original = writeUtil.writeFile;
+                writeUtil.writeFile = function(file) { seen.push(file); return original.apply(this, arguments); };
+                try {
+                    await localfilesystemLibrary.saveLibraryEntry('functions', 'a.js', {}, 'x');
+                } finally {
+                    writeUtil.writeFile = original;
+                }
+                seen.should.eql([path.join(typeDir, 'a.js')]);
+                const refused = await localfilesystemLibrary.saveLibraryEntry('functions', 'a.js.$$$', {}, 'x').then(
+                    function() { return null; }, function(e) { return e; });
+                should.exist(refused);
+                refused.should.have.property('code', 'forbidden');
+            });
+
+            it('B6-AC-10 (unchanged): type flows with the name a.$$$ is saved as a.$$$.json', async function() {
+                await localfilesystemLibrary.saveLibraryEntry('flows', 'a.$$$', {}, '[]');
+                fs.existsSync(path.join(dir, 'lib', 'flows', 'a.$$$.json')).should.be.true();
+                names(await localfilesystemLibrary.getLibraryEntry('flows', '')).should.eql(['a.$$$.json']);
+            });
+
+            it('B6-AC-10 (unchanged): a name that does not end with the suffix, also one that contains it, is saved', async function() {
+                await localfilesystemLibrary.saveLibraryEntry('functions', 'a.$$$x', {}, 'x');
+                await localfilesystemLibrary.saveLibraryEntry('functions', 'b.$$$.js', {}, 'x');
+                fs.existsSync(path.join(typeDir, 'a.$$$x')).should.be.true();
+                fs.existsSync(path.join(typeDir, 'b.$$$.js')).should.be.true();
+            });
+
+            it('B6-AC-10 (unchanged): with readOnly the save is a no-op that resolves, also for such a name', async function() {
+                const readOnlyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nr-library-ro-'));
+                try {
+                    await localfilesystemLibrary.init({ userDir: readOnlyDir, readOnly: true });
+                    should(await localfilesystemLibrary.saveLibraryEntry('functions', 'a.js.$$$', {}, 'x')).be.undefined();
+                    fs.existsSync(path.join(readOnlyDir, 'lib')).should.be.false();
+                } finally {
+                    fs.removeSync(readOnlyDir);
+                }
+            });
+
+            it('B6-AC-10 (unchanged): with readOnlyUserDir the error is read_only_user_dir, also for such a name (that check comes first)', async function() {
+                const roDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nr-library-rod-'));
+                try {
+                    await localfilesystemLibrary.init({ userDir: roDir, readOnlyUserDir: true });
+                    const err = await localfilesystemLibrary.saveLibraryEntry('functions', 'a.js.$$$', {}, 'x').then(
+                        function() { throw new Error('the save was not refused'); }, function(e) { return e; });
+                    err.should.have.property('code', 'read_only_user_dir');
+                    fs.existsSync(path.join(roDir, 'lib')).should.be.false();
+                } finally {
+                    fs.removeSync(roDir);
+                }
+            });
+        });
+    });
+
     describe('saving an entry (#54)', function() {
         let dir;
         let libDir;

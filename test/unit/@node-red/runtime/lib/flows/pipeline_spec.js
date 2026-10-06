@@ -23,6 +23,7 @@
  *   the preDeploy hook (step 3): the order, a rejection/failure/timeout without effects, no credentials in the
  *   event, I10, I13, I14, SEC-104(a); without a handler nothing is done (I1); the postDeploy hook (step 11):
  *   once per saved or reloaded configuration (I11, D18, D22/A31, D23, D24), the dictionary of start.status, I7
+ *   #63: a handler added or removed during a deployment (after the gate, before step 3)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -580,6 +581,47 @@ describe("flows/pipeline", function() {
                 hooks.add("preDeploy.a", function() { order.push("hook:" + instanceState.get().state) });
                 await pipeline.deploy({ type: "reload", source: "api" });
                 order.should.eql(["read:ready", "hook:ready", "credentials:ready", "load:deploying"]);
+            });
+            describe("a handler added or removed during a deployment (#63, B3-AC-5)", function() {
+                // the stubbed storage read of a reload runs after the gate (is there a preDeploy handler) and before step 3
+                function readerThat(change) {
+                    let done = false;
+                    flows.readStoredFlows = sinon.spy(async () => {
+                        if (!done) {
+                            done = true;
+                            change();
+                        }
+                        return loadedConfig;
+                    });
+                }
+                it("with another handler at the gate: a handler added before step 3 is called in this deployment", async function() {
+                    const p1 = sinon.spy();
+                    const p2 = sinon.spy();
+                    hooks.add("preDeploy.p1", p1);
+                    readerThat(() => hooks.add("preDeploy.p2", p2));
+                    await pipeline.deploy({ type: "reload", source: "api" });
+                    p1.calledOnce.should.be.true();
+                    p2.calledOnce.should.be.true();
+                });
+                it("without a handler at the gate: a handler added before step 3 is not called in this deployment, and is called in the next one", async function() {
+                    const p2 = sinon.spy();
+                    readerThat(() => hooks.add("preDeploy.p2", p2));
+                    await pipeline.deploy({ type: "reload", source: "api" });
+                    p2.called.should.be.false();
+                    flows.loadFlows.calledOnce.should.be.true();
+                    await pipeline.deploy({ type: "reload", source: "api" });
+                    p2.calledOnce.should.be.true();
+                });
+                it("a handler removed before step 3 is not called in this deployment", async function() {
+                    const p1 = sinon.spy();
+                    const p2 = sinon.spy();
+                    hooks.add("preDeploy.p1", p1);
+                    hooks.add("preDeploy.p2", p2);
+                    readerThat(() => hooks.remove("preDeploy.p2"));
+                    await pipeline.deploy({ type: "reload", source: "api" });
+                    p1.calledOnce.should.be.true();
+                    p2.called.should.be.false();
+                });
             });
             it("the hook gets the candidate configuration: /flows the body, /flow prepared.config, reload the stored flows", async function() {
                 const events = [];

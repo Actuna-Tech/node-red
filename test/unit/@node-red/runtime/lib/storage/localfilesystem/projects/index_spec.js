@@ -19,6 +19,8 @@
  *   E-01: project operations that change the flow files run with the reload under the lock (R-11)
  *   E-01: commit checks the merge state under the lock; getProject and a project created
  *   from the existing flow files under the lock; tests wait for the lock to be released
+ *   #63: tests of updateProject with a real project: a failed save of the settings, the order of the save of the
+ *   key and the re-encryption of the credentials, a retry, a second request queued behind a failed one
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -457,5 +459,132 @@ describe("storage/localfilesystem/projects - project created from the existing f
         sinon.stub(Project, "create").rejects(new Error("create failed"));
         await projects.createProject(null, { name: "p2", files: { flow: "flows.json" }, migrateFiles: true }).should.be.rejectedWith("create failed");
         lock.isLocked().should.be.false();
+    });
+});
+
+
+describe("storage/localfilesystem/projects - updateProject: the key, the settings and the re-encryption (#63)", function() {
+    const harnessModule = require("nr-test-utils/projects-harness");
+    const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
+    let h;
+    let warn;
+    let unhandled;
+    let onUnhandled;
+
+    beforeEach(async function() {
+        warn = sinon.stub(util.log, "warn");
+        sinon.stub(util.log, "error");
+        sinon.stub(console, "log");
+        unhandled = [];
+        onUnhandled = reason => unhandled.push(reason);
+        process.on("unhandledRejection", onUnhandled);
+        h = await harnessModule.createHarness();
+    });
+    afterEach(async function() {
+        process.removeListener("unhandledRejection", onUnhandled);
+        await waitForDeployLockRelease(lock);
+        await h.cleanup();
+        sinon.restore();
+    });
+
+    function update(body) {
+        return h.projects.updateProject(null, "p1", body);
+    }
+    function failure(promise) {
+        return promise.then(() => null, err => err);
+    }
+    function reencrypted() {
+        return h.runtime.nodes.setCredentialSecret.called || h.runtime.nodes.exportCredentials.called || h.runtime.storage.saveCredentials.called;
+    }
+
+    describe("B7-AC-6: a failed save of the settings", function() {
+        it("the credentials are not re-encrypted, the flows are not reloaded, the key is as before when the request ends", async function() {
+            h.settings.failSaves(1);
+            const err = await failure(update({ credentialSecret: "new", currentCredentialSecret: "old" }));
+            should.exist(err, "the update did not fail");
+            err.should.have.property("code", "unexpected_error");
+            err.should.have.property("message", "Saving the project failed");
+            reencrypted().should.be.false("the credentials were re-encrypted: " + JSON.stringify(h.order));
+            h.runtime.nodes.loadFlows.called.should.be.false();
+            // the restore is finished when the promise of the update is settled (the deploy lock is held until then)
+            h.settings.store.projects.projects.p1.credentialSecret.should.equal("old");
+            h.active().credentialSecret.should.equal("old");
+            lock.isLocked().should.be.false();
+        });
+
+        it("a second request that was queued behind the failed one sees the restored key and succeeds", async function() {
+            h.settings.failSaves(1);
+            const first = failure(update({ credentialSecret: "new", currentCredentialSecret: "old" }));
+            const second = failure(update({ credentialSecret: "new2", currentCredentialSecret: "old" }));
+            const firstError = await first;
+            should.exist(firstError, "the first update did not fail");
+            firstError.should.have.property("code", "unexpected_error");
+            const secondError = await second;
+            should.not.exist(secondError, "the second update failed: " + (secondError && (secondError.code || secondError.message)));
+            h.settings.store.projects.projects.p1.credentialSecret.should.equal("new2");
+            h.runtime.nodes.setCredentialSecret.calledOnce.should.be.true();
+            h.runtime.nodes.setCredentialSecret.firstCall.args[0].should.equal("new2");
+        });
+    });
+
+    describe("B7-AC-10: the same request again after a failed save", function() {
+        it("the new key is saved in the settings before the credentials are re-encrypted with it", async function() {
+            h.settings.failSaves(1);
+            const first = await failure(update({ credentialSecret: "new", currentCredentialSecret: "old" }));
+            should.exist(first, "the first update did not fail");
+            h.order.length = 0;
+            h.runtime.nodes.setCredentialSecret.resetHistory();
+            h.settings.saves.length = 0;
+            await update({ credentialSecret: "new", currentCredentialSecret: "old" });
+            const lastSave = h.order.lastIndexOf("saveSettings");
+            lastSave.should.not.equal(-1, "the settings were not saved with the new key: " + JSON.stringify(h.order));
+            h.settings.saves[h.settings.saves.length - 1].projects.p1.credentialSecret.should.equal("new");
+            const setSecret = h.order.indexOf("setCredentialSecret");
+            const saveCredentials = h.order.indexOf("saveCredentials");
+            lastSave.should.be.below(setSecret, JSON.stringify(h.order));
+            setSecret.should.be.below(saveCredentials, JSON.stringify(h.order));
+            h.runtime.nodes.setCredentialSecret.calledOnce.should.be.true();
+            h.runtime.nodes.setCredentialSecret.firstCall.args[0].should.equal("new");
+            h.settings.store.projects.projects.p1.credentialSecret.should.equal("new");
+            h.active().credentialSecret.should.equal("new");
+        });
+    });
+
+    describe("B7-AC-9: a request that fails a check", function() {
+        it("a path outside the project together with a change of the key: invalid_request, no save, no re-encryption", async function() {
+            const err = await failure(update({ credentialSecret: "new", currentCredentialSecret: "old", files: { flow: "../x" } }));
+            should.exist(err, "the update did not fail");
+            err.should.be.instanceof(Error);
+            err.should.have.property("code", "invalid_request");
+            h.settings.saves.should.have.length(0);
+            reencrypted().should.be.false();
+            h.order.should.eql([]);
+            h.active().credentialSecret.should.equal("old");
+        });
+    });
+
+    describe("B7-AC-8: valid requests keep their effects", function() {
+        it("a new key with the current key: the settings are saved, then the credentials are re-encrypted and saved", async function() {
+            await update({ credentialSecret: "new", currentCredentialSecret: "old" });
+            h.order.should.eql(["saveSettings", "setCredentialSecret", "exportCredentials", "saveCredentials"]);
+            h.runtime.nodes.loadFlows.called.should.be.false();
+        });
+
+        it("a reset of a key that is not valid: the credentials are cleared, re-encrypted, saved and the flows are reloaded", async function() {
+            h.markKeyInvalid();
+            await update({ credentialSecret: "new", resetCredentialSecret: true });
+            h.order.should.eql(["saveSettings", "clearCredentials", "setCredentialSecret", "exportCredentials", "saveCredentials", "stopFlows", "loadFlows"]);
+        });
+
+        it("a change of the description: no re-encryption and no reload", async function() {
+            await update({ description: "new text" });
+            reencrypted().should.be.false();
+            h.runtime.nodes.loadFlows.called.should.be.false();
+        });
+
+        it("another flow file: the flows are reloaded", async function() {
+            await update({ files: { flow: "other.json" } });
+            h.order.filter(event => event === "stopFlows" || event === "loadFlows").should.eql(["stopFlows", "loadFlows"]);
+        });
     });
 });

@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
+ *   #63: the audit events of the install of a module do not contain the credentials of the install URL or of a module given as a URL
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -167,6 +168,131 @@ describe("runtime-api/nodes", function() {
                 err.should.have.property('status',404);
                 done();
             }).catch(done);
+        });
+    });
+
+    describe("addModule: audit of the install (#63, B2-AC-5)", function() {
+        var audit;
+        var installModule;
+        var getModuleInfo;
+        var URL = "https://user:s3cret@host/x.tgz";
+        var MASKED = "https://***@host/x.tgz";
+
+        beforeEach(function() {
+            audit = sinon.stub();
+            installModule = sinon.stub();
+            getModuleInfo = sinon.stub().returns(null);
+            var log = mockLog();
+            log.audit = audit;
+            nodes.init({
+                log: log,
+                settings: { available: function() { return true; } },
+                nodes: { installModule: installModule, getModuleInfo: getModuleInfo }
+            });
+        });
+
+        function events() {
+            return audit.args.map(a => a[0]);
+        }
+        function installEvents() {
+            return events().filter(e => e.event === "nodes.install");
+        }
+        function fail(opts) {
+            return nodes.addModule(opts).then(() => { throw new Error("should have failed"); }, err => err);
+        }
+        function assertMasked() {
+            var all = installEvents();
+            all.length.should.be.above(0);
+            JSON.stringify(all).should.not.containEql("s3cret");
+        }
+
+        it("success: the url is masked", async function() {
+            installModule.resolves({ id: "x" });
+            await nodes.addModule({ module: "x", url: URL });
+            assertMasked();
+            installEvents().should.have.length(1);
+            installEvents()[0].should.have.property("module", "x");
+            installEvents()[0].should.have.property("url", MASKED);
+        });
+
+        it("success: a module given as a URL is masked", async function() {
+            installModule.resolves({ id: "x" });
+            await nodes.addModule({ module: "https://user:s3cret@host/x.tgz" });
+            assertMasked();
+            installEvents()[0].should.have.property("module", MASKED);
+        });
+
+        it("404: the url and the module are masked", async function() {
+            var e = new Error("Module not found");
+            e.code = 404;
+            installModule.rejects(e);
+            await fail({ module: "x", url: URL });
+            assertMasked();
+            installEvents()[0].should.have.property("error", "not_found");
+            installEvents()[0].should.have.property("url", MASKED);
+            await fail({ module: "https://user:s3cret@host/x.tgz" });
+            assertMasked();
+        });
+
+        it("an error with a code: the url and the module are masked", async function() {
+            var e = new Error("failed");
+            e.code = "x";
+            installModule.rejects(e);
+            await fail({ module: "x", url: URL });
+            await fail({ module: "https://user:s3cret@host/x.tgz" });
+            assertMasked();
+            installEvents()[0].should.have.property("error", "x");
+            installEvents()[0].should.have.property("url", MASKED);
+        });
+
+        it("an error without a code: the url and the module are masked (and the message of the error is as it was)", async function() {
+            installModule.rejects(new Error("plain failure"));
+            await fail({ module: "x", url: URL });
+            await fail({ module: "https://user:s3cret@host/x.tgz" });
+            assertMasked();
+            installEvents()[0].should.have.property("error", "unexpected_error");
+            installEvents()[0].should.have.property("message", "Error: plain failure");
+            installEvents()[0].should.have.property("url", MASKED);
+        });
+
+        it("the literal password is masked also when it appears outside the URL form", async function() {
+            installModule.rejects(new Error("plain failure"));
+            await fail({ module: "x", url: "https://user:p%40ss1@host/x.tgz" });
+            JSON.stringify(installEvents()).should.not.containEql("p%40ss1");
+            JSON.stringify(installEvents()).should.not.containEql("p@ss1");
+        });
+
+        it("module_already_loaded: the module is masked", async function() {
+            getModuleInfo.returns({ user: true, version: "1.0.0" });
+            var err = await fail({ module: "https://user:s3cret@host/x.tgz" });
+            err.should.have.property("code", "module_already_loaded");
+            assertMasked();
+            installEvents()[0].should.have.property("error", "module_already_loaded");
+            installEvents()[0].should.have.property("module", MASKED);
+        });
+
+        it("a tarball together with a module and a url (invalid request): the module and the url are masked", async function() {
+            var err = await fail({ tarball: { file: "a.tgz", buffer: Buffer.from("x") }, module: "https://user:s3cret@host/x.tgz", url: URL });
+            err.should.have.property("code", "invalid_request");
+            assertMasked();
+        });
+
+        it("a tarball without a url: the events are unchanged", async function() {
+            installModule.resolves({ id: "x" });
+            await nodes.addModule({ tarball: { file: "a.tgz", buffer: Buffer.from("x") } });
+            installEvents().should.eql([{ event: "nodes.install", tarball: "a.tgz", module: "x" }]);
+            audit.resetHistory();
+            var e = new Error("bad tarball");
+            e.code = "invalid_module";
+            installModule.rejects(e);
+            await fail({ tarball: { file: "a.tgz", buffer: Buffer.from("x") } });
+            installEvents().should.eql([{ event: "nodes.install", module: undefined, version: undefined, url: undefined, error: "invalid_module" }]);
+        });
+
+        it("a url without credentials and a plain module name are unchanged", async function() {
+            installModule.resolves({ id: "x" });
+            await nodes.addModule({ module: "x", version: "1.0.0", url: "https://host/x.tgz" });
+            installEvents().should.eql([{ event: "nodes.install", module: "x", version: "1.0.0", url: "https://host/x.tgz" }]);
         });
     });
 

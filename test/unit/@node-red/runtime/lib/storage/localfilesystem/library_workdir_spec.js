@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #54: new test file - library_spec.js works in a directory of its own, so that two runs of it on one machine
  *   (and a run next to other files) do not touch each other's files (flaky tests)
+ *   #63: the spec has a timeout of its own (30000 ms) and stops the child mocha in afterEach when it is still running
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -29,10 +30,18 @@ const ROOT = path.resolve(__dirname, "../../../../../../..");
 const MOCHA = require.resolve("mocha/bin/mocha.js");
 
 describe("storage/localfilesystem/library_spec working directory (#54)", function() {
+    // the child is a whole mocha run: more than the default of 3000 ms on a loaded machine
+    this.timeout(30000);
+    let child;
     const sharedDir = path.join(__dirname, ".testUserHome");
     const marker = path.join(sharedDir, "marker");
 
     afterEach(function() {
+        // a test that ended early (a failed assertion, a timeout) does not leave the child mocha running
+        if (child && child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+        }
+        child = undefined;
         fs.removeSync(sharedDir);
     });
 
@@ -40,7 +49,7 @@ describe("storage/localfilesystem/library_spec working directory (#54)", functio
     // own; resolves with its result code and its output
     function runLibrarySpec() {
         return new Promise(function(resolve, reject) {
-            const child = spawn(process.execPath, [MOCHA, path.join(__dirname, "library_spec.js"), "--grep", "storage/localfilesystem/library should"], { cwd: ROOT });
+            child = spawn(process.execPath, [MOCHA, path.join(__dirname, "library_spec.js"), "--grep", "storage/localfilesystem/library should"], { cwd: ROOT });
             let output = "";
             child.stdout.on("data", function(data) { output += data });
             child.stderr.on("data", function(data) { output += data });

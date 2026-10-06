@@ -609,6 +609,75 @@ Fixes
    name has more than 8 opening brackets `[` (every `[` counts, also one that is not closed; for example
    `a[b][c][d][e][f][g][h][i][j]`) is answered with 413; a name with at most 8 is accepted as before. Both
    limits check only the names of text fields, not the names of file parts
+ - Fix (#63): Editor: a link or a "Review" button from the remote catalog of modules is made only for an absolute
+   `http:` or `https:` address (`RED.errors.httpUrl`). A relative address (`docs/x`, `/x`, `?q=1`, `#a`,
+   `//example.org/x`) was resolved against the address of the editor and gave a link into the editor itself; now it
+   gives no link and no button
+ - Fix (#63): Editor: `RED.utils.renderMarkdown` escapes the text (as `RED.utils.sanitize`: `& < > " '`) when the
+   markdown library cannot render it; it returned the text as it was, and the callers put it into HTML. A value
+   that is not a string is returned unchanged, as before
+ - Fix (#63): the install of a module hides the credentials of the install URL (`https://user:password@host/x.tgz`)
+   in its log lines: the `trace` line of the npm command, the warnings and infos of the install (also the error
+   output of npm) and the `event-log` show the URL as `https://***@host/x.tgz`. The user info, the password and
+   their URI-decoded forms (at least 4 characters) are also hidden as literal text, as npm can print them outside
+   the URL form; they are passed to `exec.run` as its literal secrets. The same applies to a module name given as a
+   URL with credentials, and to the `url`, `module` and `message` of the `nodes.install` audit events. A URL without
+   credentials and the bare user of an `ssh` URL are logged as before. The error of a `preInstall`/`postInstall` hook
+   is masked the same way, and an npm argument with a credential that a hook adds (`--//registry/:_authToken=…`,
+   `_auth=`, `_password=`) shows its value as `***` in the trace, the `event-log` and the warning with the npm output;
+   npm gets it unchanged
+ - Tests only (#63): the secrets of a project reach `exec.run`, `getRemotes()` hides an old ambiguous remote
+   password, a long output line is cut at a white space (`exec.js` comment of the branch that keeps the masked text);
+   the drain spec stops its instances per describe and asserts the close of the socket after 503, the project switch
+   does not run `preDeploy`/`postDeploy`, a `preDeploy` handler added during a deployment, the child of the library
+   working-directory spec has its own timeout; the reload spec asserts the `reload.read-failed` lines, shares one
+   helper and compares the reread result; the token exchange logs; a failed shutdown with an unusual value; the
+   jQuery stand-in of the editor tests records more HTML sinks; `http in`: one response on a keep-alive connection
+   when another layer answered first, the boundary of a text body at the maximum string length without the opt-in,
+   and the size limits of the body parsers from a case table shared with the Admin API. Comments only (no change of
+   behaviour): `httpDrain.js`, `flows/pipeline.js` (the moment the `preDeploy` handlers are read) and `21-httpin.js`
+ - Fix (#63): reload from storage (`deploy.reload.watch: true`, `onExhausted: "keepReady"`): when the comparison of
+   the credentials fails in the reread under the deploy lock, the `reload` condition of the instance state reports
+   the revision the reread read, not the older one of step 2. A failed read of storage still reports the revision of
+   step 2
+ - Fix (#63): the exchange of a code for a token (generic auth strategy) answers once: when the answer with the token
+   fails after its headers were sent, the error is logged as before and no second answer (400) is attempted
+ - Fix (#63): command line `red.js`: when `RED.start()` rejects with a value the log cannot write (a `Symbol`),
+   `Failed to start server:` is written once; the value is printed by the console fallback
+ - Fix (#63): Admin API: the JSON and urlencoded parsers get the maximum string length of Node.js as their limit
+   when `apiMaxLength` gives a larger size (by the size rules of `body-parser`), the same rule as the parsers of
+   `http in` since #48; any other `apiMaxLength` is passed to them unchanged, and the default stays 5 MB. A larger
+   body takes the existing error path (413). The parsers read the body before authentication, as in upstream
+ - Fix (#63): `RED.hooks` (runtime and editor): a handler that throws a falsy value synchronously (`undefined`,
+   `null`, `false`, `0`, `-0`, `0n`, `NaN`, `""`) ends the chain with the error of #61 (`Hook handler rejected without an
+   error: <value>`); before, depending on the value, the chain went on without the later handlers, stopped without an
+   error or ended with `Error("null")`. For `onSend`, `preRoute`, `preDeliver` and `onReceive` the message is then not
+   delivered and the node reports the error. A handler step ends once: the first of its outcomes (return value,
+   promise outcome, `done`, synchronous throw) counts and a later one is ignored (the runtime logs it at debug level),
+   so `trigger` settles once and `done` is called once. The editor copy of `RED.hooks` gets the behaviour of #61 (a
+   rejection without a value ends the chain; it called the same handler again without end) and of #76 (a value that
+   cannot be printed gives `Error("(the value cannot be printed)")`)
+ - Fix (#63): `RED.hooks.add` writes one warning (runtime: `warn` log with the place of the registration; editor:
+   `console.warn`) when a handler declares no parameters: such a handler is called with `(payload, done)` and must call
+   `done`, otherwise the chain does not end - the behaviour is unchanged, as in upstream. `preDeploy` and `postDeploy`
+   handlers are called as `fn(event)` and get no warning
+ - Fix (#63): the library list does not show a file whose name ends with `.$$$` (the working file of a write, left
+   after a failed rename), and saving a library entry with such a name is refused with 403 `forbidden`; a `flows`
+   entry gets `.json` first, as before
+ - Fix (#63): `PUT /projects/:id` (the update of a project: description, summary, version, dependencies, the key,
+   the files, the git user and remotes) checks every field before it changes anything. A field of a wrong type
+   (for example a description that is not a text, dependencies that are not an object of texts, a key that is a
+   number or `true`, `resetCredentialSecret` that is not a boolean), a package file whose name does not end with
+   `package.json`, a file outside the project or credentials for a remote that does not exist are answered with 400
+   `invalid_request` whose message names the field only (never the value); before, some of them answered 200, some
+   400 with a JavaScript message or with the value, after a part of the request had been applied (for example the
+   key). A failed save of `README.md` or `package.json`, of the settings or of an added or removed remote now answers
+   400 `{"code":"unexpected_error","message":"Saving the project failed"}` instead of 200, with a warning in the log
+   (the file, `Saving the settings failed`, or the code of the git error); the settings are restored and the project
+   is loaded again from disk, so `GET /projects/:id` shows what was saved, no commit is made and the credentials are
+   not re-encrypted. The credentials given with a remote whose add failed are not kept in the credentials cache. The
+   same request can be sent again. A project without `package.json` keeps its answer. The
+   editor sends only valid values; a client that sent other types gets 400 now
 
 Features
 
