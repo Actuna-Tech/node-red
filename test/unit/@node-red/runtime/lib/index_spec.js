@@ -32,6 +32,8 @@
  *   #40: the drain of the HTTP requests is mounted on the httpNode app only with
  *   deploy.drainHttpNodeRequests.enabled, after the hold and before rawBodyCapture; RED.stop answers
  *   the requests that are still open
+ *   #71: startupTimeout - the limit of runtime.start(); a step that completes after it is ignored and released;
+ *   phase B: races, the guard of every step, hostile values, failing releases
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -1271,6 +1273,1224 @@ describe("runtime", function() {
             await runtime.start();
             warnings("preShutdown-not-called").called.should.be.false();
             warnings("preReload-not-called").called.should.be.false();
+        });
+    });
+
+    describe("startupTimeout (#71)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const health = NR_TEST_UTILS.require("@node-red/runtime/lib/health");
+        const telemetry = NR_TEST_UTILS.require("@node-red/runtime/lib/telemetry");
+        const library = NR_TEST_UTILS.require("@node-red/runtime/lib/library");
+        const multiplayer = NR_TEST_UTILS.require("@node-red/runtime/lib/multiplayer");
+        const plugins = NR_TEST_UTILS.require("@node-red/runtime/lib/plugins");
+        const reloadWatcher = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/reload");
+        const events = util.events;
+        // captured before a fake clock is installed: a bound for the clean-up that does not depend on the clock
+        const realSetTimeout = setTimeout;
+        const realClearTimeout = clearTimeout;
+
+        const LATE_STEP = "runtime.startup-step-late";
+        const LATE_FAILED = "runtime.startup-step-late-failed";
+        const TIMEOUT_KEY = "runtime.startup-timeout";
+        const INVALID_KEY = "runtime.invalid-startup-timeout";
+        const NOT_PRINTABLE = "(the value cannot be printed)";
+        const MAX_TIMER = 2147483647;
+
+        let stubs;
+        let cleanups;
+        let clock;
+        let stateEvents;
+
+        // replaces a function of a module with a stub (a spy without `fn`); everything is restored in afterEach
+        function fake(obj, name, fn) {
+            if (obj[name] && obj[name].restore) {
+                obj[name].restore();
+            }
+            const s = fn ? sinon.stub(obj, name).callsFake(fn) : sinon.spy(obj, name);
+            stubs.push(s);
+            return s;
+        }
+        // the text of log._ names the key and the parameters, so a message is told from another one
+        function text(key, params) {
+            let p = "";
+            try {
+                p = params === undefined ? "" : "|" + JSON.stringify(params);
+            } catch (err) { /* a parameter that cannot be printed */ }
+            return key + p;
+        }
+        function mockLog(metrics) {
+            fake(log, "log", function() {});
+            fake(log, "warn", function() {});
+            fake(log, "info", function() {});
+            fake(log, "trace", function() {});
+            fake(log, "error", function() {});
+            fake(log, "metric", function() { return !!metrics });
+            fake(log, "_", text);
+            fake(i18n, "registerMessageCatalog", function() { return Promise.resolve() });
+        }
+        function deferred() {
+            let resolve, reject;
+            const promise = new Promise(function(a, b) { resolve = a; reject = b });
+            return {promise: promise, resolve: resolve, reject: reject};
+        }
+        function track(promise) {
+            const t = {settled: false, rejected: false};
+            promise.then(function(value) {
+                t.settled = true;
+                t.value = value;
+            }, function(err) {
+                t.settled = true;
+                t.rejected = true;
+                t.error = err;
+            });
+            return t;
+        }
+        function init(extra) {
+            const userSettings = Object.assign({testSettings: true, httpAdminRoot: "/"}, extra);
+            runtime.init(userSettings);
+            return userSettings;
+        }
+        // the microtasks, a turn of the real event loop, then the microtasks again
+        async function flush() {
+            await clock.tickAsync(0);
+            await new Promise(function(resolve) { setImmediate(resolve) });
+            await clock.tickAsync(0);
+        }
+        function recordUnhandled() {
+            const seen = [];
+            const listener = function(reason) { seen.push(reason) };
+            process.on("unhandledRejection", listener);
+            cleanups.push(function() { process.removeListener("unhandledRejection", listener) });
+            return seen;
+        }
+        function stateNames() {
+            return stateEvents.map(function(i) { return i.state });
+        }
+        function callsOf(stub, key) {
+            return stub.getCalls().filter(function(c) { return c.args[0] === key });
+        }
+        function textOf(key) {
+            const calls = callsOf(log._, key);
+            calls.length.should.be.above(0, "log._ was not called with " + key);
+            return calls[0].returnValue;
+        }
+        function warnedWith(key) {
+            const t = textOf(key);
+            return log.warn.withArgs(t).callCount;
+        }
+        // The plugin of the coordination of a test: start and resign are driven by the test
+        function testPlugin(options) {
+            options = options || {};
+            const startGate = deferred();
+            const resignGate = deferred();
+            if (!options.hangingResign) {
+                resignGate.resolve();
+            }
+            const plugin = {
+                id: "test-coord",
+                type: coordination.PLUGIN_TYPE,
+                startGate: startGate,
+                resignGate: resignGate,
+                start: sinon.spy(function() { return startGate.promise }),
+                stop: sinon.spy(function() { return Promise.resolve() }),
+                resign: sinon.spy(function() { return resignGate.promise }),
+                isLeader: sinon.spy(function() { return true }),
+                onLeaderChange: sinon.spy(function() { return function() {} }),
+                claim: sinon.spy(function() { return Promise.resolve(null) })
+            };
+            // the real coordination finds the plugin of the test
+            fake(plugins, "getPlugin", function(id) { return id === "test-coord" ? plugin : undefined });
+            fake(plugins, "getPluginsByType", function() { return [] });
+            coordination.start.restore();
+            coordination.info.restore();
+            cleanups.push(function() { resignGate.resolve(); startGate.resolve() });
+            return plugin;
+        }
+        const REAL_COORDINATION = {coordination: {plugin: "test-coord"}};
+
+        // a stop that never finishes (a hanging link of the coordination) does not hang the clean-up
+        async function stopBounded() {
+            let timer;
+            await Promise.race([
+                Promise.resolve().then(function() { return runtime.stop() }).catch(function() {}),
+                new Promise(function(resolve) { timer = realSetTimeout(resolve, 1000) })
+            ]);
+            realClearTimeout(timer);
+        }
+        async function resetRuntime() {
+            // the runtime keeps `started` and a chain of the coordination across init(): a stop brings it to the rest
+            init({});
+            await stopBounded();
+        }
+
+        beforeEach(async function() {
+            stubs = [];
+            cleanups = [];
+            fake(process, "exit", function() {});
+            mockLog(false);
+            fake(storage, "init", function() { return Promise.resolve() });
+            fake(storage, "getSettings", function() { return Promise.resolve({}) });
+            fake(storage, "saveSettings", function() { return Promise.resolve() });
+            fake(storage, "hasWatchFlows", function() { return false });
+            fake(storage, "watchFlows", function() { return Promise.resolve(function() {}) });
+            fake(redNodes, "init", function() {});
+            fake(redNodes, "load", function() { return Promise.resolve() });
+            fake(redNodes, "cleanModuleList", function() {});
+            fake(redNodes, "getNodeList", function() { return [] });
+            fake(redNodes, "loadContextsPlugin", function() { return Promise.resolve() });
+            fake(redNodes, "loadFlows", function() { return Promise.resolve() });
+            fake(redNodes, "startFlows", function() { return Promise.resolve({errors: []}) });
+            fake(redNodes, "stopFlows", function() { return Promise.resolve() });
+            fake(redNodes, "closeContextsPlugin", function() { return Promise.resolve() });
+            fake(health, "start", function() { return Promise.resolve() });
+            fake(health, "stop", function() { return Promise.resolve() });
+            fake(telemetry, "init", function() { return Promise.resolve() });
+            fake(library, "init", function() { return Promise.resolve() });
+            fake(multiplayer, "init", function() { return Promise.resolve() });
+            fake(settings, "load");
+            fake(coordination, "info", function() { return {plugin: "local", local: true} });
+            fake(coordination, "start", function() { return Promise.resolve() });
+            fake(coordination, "resign");
+            fake(coordination, "stop");
+            fake(reloadWatcher, "init");
+            await resetRuntime();
+            instanceState.reset();
+            stubs.forEach(function(s) { s.resetHistory && s.resetHistory() });
+            stateEvents = [];
+            const onState = function(info) { stateEvents.push(info) };
+            events.on("instance:state", onState);
+            cleanups.push(function() { events.removeListener("instance:state", onState) });
+            clock = sinon.useFakeTimers({toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"]});
+        });
+        afterEach(async function() {
+            cleanups.forEach(function(c) { c() });
+            // the runtime to the rest (`started`, the interval of the metrics), while the stubs still answer
+            await stopBounded();
+            // removes the accessors that settings.init() defined for the keys of this test
+            settings.reset();
+            clock.restore();
+            stubs.slice().reverse().forEach(function(s) { s.restore() });
+            await coordination.stop();
+            instanceState.reset();
+        });
+
+        // The steps of runtime.start() (S1-S12 of the spec): how a step is made to hang and what must not run after it
+        const STEPS = [
+            { step: "i18n", hang: function(d) { fake(i18n, "registerMessageCatalog", function() { return d.promise }) }, next: function() { return [health.start] } },
+            { step: "health", hang: function(d) { fake(health, "start", function() { return d.promise }) }, next: function() { return [storage.init] } },
+            { step: "storage", hang: function(d) { fake(storage, "init", function() { return d.promise }) }, next: function() { return [settings.load] } },
+            { step: "settings", hang: function(d) { fake(settings, "load", function() { return d.promise }) }, next: function() { return [telemetry.init] } },
+            { step: "telemetry", hang: function(d) { fake(telemetry, "init", function() { return d.promise }) }, next: function() { return [library.init] } },
+            { step: "library", hang: function(d) { fake(library, "init", function() { return d.promise }) }, next: function() { return [multiplayer.init] } },
+            { step: "multiplayer", hang: function(d) { fake(multiplayer, "init", function() { return d.promise }) }, next: function() { return [storage.saveSettings, redNodes.load] } },
+            { step: "instanceId", hang: function(d) { fake(storage, "saveSettings", function() { return d.promise }) }, next: function() { return [redNodes.load] } },
+            { step: "nodes", hang: function(d) { fake(redNodes, "load", function() { return d.promise }) }, next: function() { return [redNodes.loadContextsPlugin] } },
+            { step: "context", hang: function(d) { fake(redNodes, "loadContextsPlugin", function() { return d.promise }) }, next: function() { return [coordination.start] } },
+            { step: "coordination", hang: function(d) { fake(coordination, "start", function() { return d.promise }) }, next: function() { return [reloadWatcher.init, redNodes.loadFlows] } },
+            {
+                step: "reloadWatch",
+                config: { deploy: { reload: { watch: true } } },
+                setup: function() { fake(storage, "hasWatchFlows", function() { return true }) },
+                hang: function(d) { fake(storage, "watchFlows", function() { return d.promise }) },
+                resolveWith: function() { return reloadWatchUnwatch },
+                next: function() { return [redNodes.loadFlows, redNodes.startFlows] }
+            }
+        ];
+        let reloadWatchUnwatch;
+
+        // starts the runtime with `startupTimeout: 1000` and the step of the row hanging
+        function startHung(row, extra) {
+            const d = deferred();
+            reloadWatchUnwatch = sinon.spy(function() { return Promise.resolve() });
+            if (row.setup) {
+                row.setup();
+            }
+            row.hang(d);
+            init(Object.assign({startupTimeout: 1000}, row.config, extra));
+            const outcome = track(runtime.start());
+            return {d: d, outcome: outcome};
+        }
+        function resolveLate(row, d) {
+            d.resolve(row.resolveWith ? row.resolveWith() : undefined);
+        }
+
+        describe("the limit", function() {
+            it("AC-1: coordination.start that never settles: pending at 999 ms, startup_timeout at 1000 ms with the step, the state failed", async function() {
+                fake(coordination, "start", function() { return new Promise(function() {}) });
+                init({startupTimeout: 1000});
+                const outcome = track(runtime.start());
+                await clock.tickAsync(999);
+                outcome.settled.should.be.false();
+                instanceState.get().state.should.equal("starting");
+                await clock.tickAsync(1);
+                outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                const err = outcome.error;
+                err.should.have.property("code", "startup_timeout");
+                err.should.have.property("step", "coordination");
+                err.should.have.property("timeout", 1000);
+                log._.calledWith(TIMEOUT_KEY, {timeout: 1000, step: "coordination"}).should.be.true();
+                err.message.should.equal(textOf(TIMEOUT_KEY));
+                instanceState.get().should.containEql({state: "failed", reason: "startup-error"});
+                instanceState.get().errors[0].should.have.property("code", "startup_timeout");
+                stateNames().should.eql(["starting", "failed"]);
+                process.exit.called.should.be.false();
+            });
+
+            describe("AC-2: every step of the start can be the one that the limit names", function() {
+                STEPS.forEach(function(row) {
+                    it("AC-2: " + row.step + " hangs: startup_timeout with step " + row.step + ", the next step is not called", async function() {
+                        const hung = startHung(row);
+                        await clock.tickAsync(1000);
+                        hung.outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                        hung.outcome.error.should.have.property("code", "startup_timeout");
+                        hung.outcome.error.should.have.property("step", row.step);
+                        hung.outcome.error.should.have.property("timeout", 1000);
+                        row.next().forEach(function(fn) {
+                            fn.called.should.be.false();
+                        });
+                    });
+                });
+            });
+
+            it("AC-6: all the steps finish before the limit: start() resolves, no startup_timeout, the timer of the limit is gone", async function() {
+                init({startupTimeout: 1000});
+                const base = clock.countTimers();
+                const started = runtime.start();
+                clock.countTimers().should.equal(base + 1, "the timer of the limit is created synchronously in start()");
+                await started;
+                clock.countTimers().should.equal(base);
+                await clock.tickAsync(10000);
+                callsOf(log._, TIMEOUT_KEY).should.have.length(0);
+                instanceState.get().state.should.not.equal("failed");
+                clock.countTimers().should.equal(base);
+            });
+
+            it("AC-6 (X2): a step that finishes at 999 ms wins over the limit of 1000 ms", async function() {
+                fake(coordination, "start", function() { return new Promise(function(resolve) { setTimeout(resolve, 999) }) });
+                init({startupTimeout: 1000});
+                const base = clock.countTimers();
+                const outcome = track(runtime.start());
+                clock.countTimers().should.equal(base + 1, "the timer of the limit is created synchronously in start()");
+                await clock.tickAsync(999);
+                await clock.tickAsync(1);
+                outcome.settled.should.be.true();
+                outcome.rejected.should.be.false();
+                callsOf(log._, TIMEOUT_KEY).should.have.length(0);
+                instanceState.get().state.should.not.equal("failed");
+                clock.countTimers().should.equal(base);
+            });
+
+            it("AC-7: the limit does not cover the load of the flows: start() resolves, the state stays starting", async function() {
+                fake(redNodes, "loadFlows", function() { return new Promise(function() {}) });
+                init({startupTimeout: 1000});
+                const base = clock.countTimers();
+                const started = runtime.start();
+                clock.countTimers().should.equal(base + 1, "the timer of the limit is created synchronously in start()");
+                await started;
+                await clock.tickAsync(10000);
+                instanceState.get().state.should.equal("starting");
+                callsOf(log._, TIMEOUT_KEY).should.have.length(0);
+                clock.countTimers().should.equal(base);
+            });
+
+            describe("AC-10: the boundaries of the value", function() {
+                [
+                    { value: 1, pending: 0, rejected: 1 },
+                    { value: 1500.5, pending: 1499, rejected: 2 },
+                    { value: MAX_TIMER, pending: MAX_TIMER - 1, rejected: 1 }
+                ].forEach(function(c) {
+                    it("AC-10: startupTimeout " + c.value + ": pending at " + c.pending + " ms, rejected with startup_timeout " + c.rejected + " ms later", async function() {
+                        fake(coordination, "start", function() { return new Promise(function() {}) });
+                        init({startupTimeout: c.value});
+                        const outcome = track(runtime.start());
+                        await clock.tickAsync(c.pending);
+                        outcome.settled.should.be.false();
+                        await clock.tickAsync(c.rejected);
+                        outcome.rejected.should.be.true("start() was not rejected at " + (c.pending + c.rejected) + " ms");
+                        outcome.error.should.have.property("code", "startup_timeout");
+                    });
+                });
+            });
+
+            it("AC-12: a step that fails before the limit wins: the error of the step, the limit does nothing afterwards", async function() {
+                fake(storage, "init", function() {
+                    return new Promise(function(resolve, reject) {
+                        setTimeout(function() { reject(new Error("no storage")) }, 500);
+                    });
+                });
+                init({startupTimeout: 1000});
+                const base = clock.countTimers();
+                const outcome = track(runtime.start());
+                clock.countTimers().should.equal(base + 1, "the timer of the limit is created synchronously in start()");
+                await clock.tickAsync(500);
+                await clock.tickAsync(1000);
+                outcome.rejected.should.be.true();
+                outcome.error.message.should.equal("no storage");
+                should.not.exist(outcome.error.code);
+                instanceState.get().should.containEql({state: "failed", reason: "startup-error"});
+                instanceState.get().errors[0].message.should.equal("no storage");
+                const eventCount = stateEvents.length;
+                await clock.tickAsync(1000);
+                callsOf(log._, TIMEOUT_KEY).should.have.length(0);
+                instanceState.get().errors[0].message.should.equal("no storage");
+                stateEvents.should.have.length(eventCount);
+                clock.countTimers().should.equal(base);
+            });
+        });
+
+        describe("the setting is off or invalid", function() {
+            it("AC-8: without the key and with undefined there is no limit, no timer and no warning (re-init in one test)", async function() {
+                for (const extra of [{}, {startupTimeout: undefined}]) {
+                    instanceState.reset();
+                    log._.resetHistory();
+                    fake(coordination, "start", function() { return new Promise(function() {}) });
+                    init(extra);
+                    const base = clock.countTimers();
+                    const outcome = track(runtime.start());
+                    clock.countTimers().should.equal(base, "a timer was created without the setting");
+                    await clock.tickAsync(MAX_TIMER);
+                    outcome.settled.should.be.false();
+                    instanceState.get().state.should.equal("starting");
+                    callsOf(log._, INVALID_KEY).should.have.length(0);
+                    callsOf(log._, TIMEOUT_KEY).should.have.length(0);
+                }
+            });
+
+            describe("AC-9: an invalid value gives one warning and no limit", function() {
+                const values = [
+                    { name: "null", make: function() { return null } },
+                    { name: "0", make: function() { return 0 } },
+                    { name: "-1", make: function() { return -1 } },
+                    { name: "NaN", make: function() { return NaN } },
+                    { name: "Infinity", make: function() { return Infinity } },
+                    { name: "-Infinity", make: function() { return -Infinity } },
+                    { name: "2147483648", make: function() { return 2147483648 } },
+                    { name: "1e12", make: function() { return 1e12 } },
+                    { name: "\"60000\"", make: function() { return "60000" } },
+                    { name: "\"abc\"", make: function() { return "abc" } },
+                    { name: "true", make: function() { return true } },
+                    { name: "{}", make: function() { return {} } },
+                    { name: "[]", make: function() { return [] } },
+                    { name: "[1000]", make: function() { return [1000] } },
+                    { name: "new Number(1000)", make: function() { return new Number(1000) } },
+                    { name: "1000n", make: function() { return 1000n } },
+                    { name: "Symbol(\"x\")", make: function() { return Symbol("x") } },
+                    { name: "() => 1", make: function() { return () => 1 } },
+                    { name: "Object.create(null)", make: function() { return Object.create(null) }, unprintable: true },
+                    { name: "a Proxy whose get trap throws", make: function() { return new Proxy({}, { get: function() { throw new Error("get trap") } }) }, unprintable: true }
+                ];
+                values.forEach(function(v) {
+                    it("AC-9: " + v.name, async function() {
+                        fake(coordination, "start", function() { return new Promise(function() {}) });
+                        const value = v.make();
+                        const expected = v.unprintable ? NOT_PRINTABLE : String(value);
+                        let outcome;
+                        (function() {
+                            init({startupTimeout: value});
+                            outcome = track(runtime.start());
+                        }).should.not.throw();
+                        await clock.tickAsync(MAX_TIMER);
+                        outcome.settled.should.be.false();
+                        instanceState.get().state.should.equal("starting");
+                        const warnings = callsOf(log._, INVALID_KEY);
+                        warnings.should.have.length(1);
+                        warnings[0].args[1].should.eql({value: expected});
+                        log.warn.withArgs(warnings[0].returnValue).callCount.should.equal(1);
+                        callsOf(log._, TIMEOUT_KEY).should.have.length(0);
+                    });
+                });
+            });
+        });
+
+        describe("AC-3: a step that completes after the limit is ignored", function() {
+            STEPS.forEach(function(row) {
+                it("AC-3: " + row.step + " completes late: nothing runs after it, the state and the errors are not touched, one warning", async function() {
+                    const hung = startHung(row);
+                    await clock.tickAsync(1000);
+                    hung.outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                    const errorsBefore = instanceState.get().errors;
+                    resolveLate(row, hung.d);
+                    await clock.tickAsync(60000);
+                    await flush();
+                    row.next().forEach(function(fn) {
+                        fn.called.should.be.false();
+                    });
+                    redNodes.loadFlows.called.should.be.false();
+                    redNodes.startFlows.called.should.be.false();
+                    runtime._.isStarted().should.be.false();
+                    instanceState.get().should.containEql({state: "failed", reason: "startup-error"});
+                    instanceState.get().errors.should.eql([{code: "startup_timeout", message: textOf(TIMEOUT_KEY)}]);
+                    instanceState.get().errors.should.eql(errorsBefore);
+                    stateNames().should.eql(["starting", "failed"]);
+                    log._.calledWith(LATE_STEP, {step: row.step}).should.be.true();
+                    warnedWith(LATE_STEP).should.equal(1);
+                    hung.outcome.error.should.have.property("code", "startup_timeout");
+                });
+            });
+
+            it("AC-3 (instanceId): no interval of the metrics and no welcome banner", async function() {
+                fake(log, "metric", function() { return true });
+                const hung = startHung(STEPS.filter(function(r) { return r.step === "instanceId" })[0]);
+                await clock.tickAsync(1000);
+                hung.outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                const base = clock.countTimers();
+                hung.d.resolve();
+                await flush();
+                clock.countTimers().should.equal(base, "a timer was created after the limit");
+                await clock.tickAsync(60000);
+                log.log.getCalls().filter(function(c) {
+                    return c.args[0] && /^runtime\.memory\./.test(c.args[0].event);
+                }).should.have.length(0);
+                callsOf(log._, "runtime.welcome").should.have.length(0);
+            });
+
+            it("AC-3 (nodes, no auto-install): a missing module does not clean the module list", async function() {
+                fake(redNodes, "getNodeList", function(cb) {
+                    return [{module: "m", enabled: true, loaded: false, types: ["t"]}].filter(cb);
+                });
+                const hung = startHung(STEPS.filter(function(r) { return r.step === "nodes" })[0]);
+                await clock.tickAsync(1000);
+                hung.outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                hung.d.resolve();
+                await flush();
+                redNodes.cleanModuleList.called.should.be.false();
+            });
+
+            it("AC-3 (nodes, autoInstall): no install of a missing module and no timer of a new attempt", async function() {
+                fake(redNodes, "getNodeList", function(cb) {
+                    return [{module: "m", enabled: true, loaded: false, types: ["t"]}].filter(cb);
+                });
+                const installModule = fake(redNodes, "installModule", function() { return Promise.reject(new Error("no network")) });
+                const hung = startHung(STEPS.filter(function(r) { return r.step === "nodes" })[0], {externalModules: {autoInstall: true}});
+                await clock.tickAsync(1000);
+                hung.outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                const base = clock.countTimers();
+                hung.d.resolve();
+                await flush();
+                installModule.called.should.be.false();
+                clock.countTimers().should.equal(base, "a timer of a new attempt was created after the limit");
+            });
+
+            it("AC-3 (nodes, readOnlyUserDir): the block of the disabled features is not logged", async function() {
+                const hung = startHung(STEPS.filter(function(r) { return r.step === "nodes" })[0], {readOnlyUserDir: true});
+                await clock.tickAsync(1000);
+                hung.outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                hung.d.resolve();
+                await flush();
+                log._.getCalls().filter(function(c) { return /^readonly-userdir\./.test(c.args[0]) }).should.have.length(0);
+            });
+
+            it("AC-3 (coordination): no reloadWatcher.init and no warning about a generated instanceId", async function() {
+                fake(coordination, "info", function() { return {plugin: "cluster", local: false} });
+                const hung = startHung(STEPS.filter(function(r) { return r.step === "coordination" })[0]);
+                await clock.tickAsync(1000);
+                hung.outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                hung.d.resolve();
+                await flush();
+                reloadWatcher.init.called.should.be.false();
+                callsOf(log._, "coordination.instance-id-generated").should.have.length(0);
+            });
+        });
+
+        describe("AC-4: the resources of a step that completes late are released", function() {
+            it("AC-4 (coordination): resign and stop once, resign before stop; a later runtime.stop() does not repeat them", async function() {
+                const row = STEPS.filter(function(r) { return r.step === "coordination" })[0];
+                const hung = startHung(row);
+                await clock.tickAsync(1000);
+                hung.outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                hung.d.resolve();
+                await clock.tickAsync(0);
+                coordination.resign.calledOnce.should.be.true();
+                coordination.stop.calledOnce.should.be.true();
+                sinon.assert.callOrder(coordination.resign, coordination.stop);
+                await runtime.stop();
+                await flush();
+                coordination.resign.callCount.should.equal(2, "the stop of the runtime calls resign once, as before");
+                coordination.stop.callCount.should.equal(2, "the stop of the runtime calls stop once, as before");
+            });
+
+            it("AC-4 (coordination, a plugin): the plugin that starts late gets stop() once, also after runtime.stop()", async function() {
+                const plugin = testPlugin();
+                init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
+                const outcome = track(runtime.start());
+                await clock.tickAsync(1000);
+                outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                outcome.error.should.have.property("step", "coordination");
+                plugin.startGate.resolve();
+                await clock.tickAsync(0);
+                await flush();
+                plugin.resign.calledOnce.should.be.true();
+                plugin.stop.calledOnce.should.be.true();
+                sinon.assert.callOrder(plugin.resign, plugin.stop);
+                coordination.isLeader().should.be.false();
+                await clock.tickAsync(0);
+                await runtime.stop();
+                plugin.stop.calledOnce.should.be.true("a second plugin.stop()");
+                plugin.resign.calledOnce.should.be.true("a second plugin.resign()");
+            });
+
+            it("AC-4 (coordination): a stop that rejects is a warning with the step, no unhandled rejection", async function() {
+                const unhandled = recordUnhandled();
+                fake(coordination, "stop", function() { return Promise.reject(new Error("stop boom")) });
+                const hung = startHung(STEPS.filter(function(r) { return r.step === "coordination" })[0]);
+                await clock.tickAsync(1000);
+                hung.outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                hung.d.resolve();
+                await flush();
+                const failed = callsOf(log._, LATE_FAILED);
+                failed.should.have.length(1);
+                failed[0].args[1].should.have.property("step", "coordination");
+                failed[0].args[1].message.should.match(/stop boom/);
+                warnedWith(LATE_FAILED).should.equal(1);
+                unhandled.should.eql([]);
+            });
+
+            it("AC-4 (health): health.stop() is called once", async function() {
+                const hung = startHung(STEPS.filter(function(r) { return r.step === "health" })[0]);
+                await clock.tickAsync(1000);
+                hung.outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                health.stop.called.should.be.false();
+                hung.d.resolve();
+                await flush();
+                health.stop.calledOnce.should.be.true();
+            });
+
+            it("AC-4 (reloadWatch): the observer that registers late is unregistered once, a later runtime.stop() does not repeat it", async function() {
+                const row = STEPS.filter(function(r) { return r.step === "reloadWatch" })[0];
+                const hung = startHung(row);
+                await clock.tickAsync(1000);
+                hung.outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                hung.d.resolve(reloadWatchUnwatch);
+                await flush();
+                reloadWatchUnwatch.calledOnce.should.be.true();
+                await runtime.stop();
+                reloadWatchUnwatch.calledOnce.should.be.true("a second unwatch");
+            });
+        });
+
+        describe("the coordination chain (D8)", function() {
+            it("AC-4b: runtime.stop() during the release of a late coordination does not call resign or stop a second time", async function() {
+                const unhandled = recordUnhandled();
+                const plugin = testPlugin({hangingResign: true});
+                init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
+                const outcome = track(runtime.start());
+                await clock.tickAsync(1000);
+                outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                plugin.startGate.resolve();
+                await clock.tickAsync(0);
+                plugin.resign.calledOnce.should.be.true("the release did not call plugin.resign");
+                const stopped = track(runtime.stop("SIGTERM"));
+                await clock.tickAsync(0);
+                await flush();
+                plugin.resign.calledOnce.should.be.true("a second plugin.resign()");
+                plugin.stop.called.should.be.false("plugin.stop() before the resign was done");
+                plugin.resignGate.resolve();
+                await flush();
+                stopped.settled.should.be.true();
+                stopped.rejected.should.be.false();
+                plugin.resign.callCount.should.equal(1);
+                plugin.stop.callCount.should.equal(1);
+                sinon.assert.callOrder(plugin.resign, plugin.stop);
+                coordination.isLeader().should.be.false();
+                instanceState.get().should.containEql({state: "stopped", reason: "SIGTERM"});
+                unhandled.should.eql([]);
+            });
+
+            it("AC-11: runtime.stop() during a start that hangs: start() rejects at the limit, the state stays stopped, a late coordination is released", async function() {
+                const unhandled = recordUnhandled();
+                const plugin = testPlugin();
+                init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
+                const outcome = track(runtime.start());
+                await clock.tickAsync(100);
+                await runtime.stop("SIGTERM");
+                await clock.tickAsync(900);
+                outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                outcome.error.should.have.property("code", "startup_timeout");
+                instanceState.get().should.containEql({state: "stopped", reason: "SIGTERM"});
+                plugin.startGate.resolve();
+                await clock.tickAsync(0);
+                await flush();
+                redNodes.loadFlows.called.should.be.false();
+                runtime._.isStarted().should.be.false();
+                plugin.resign.callCount.should.equal(1);
+                plugin.stop.callCount.should.equal(1);
+                sinon.assert.callOrder(plugin.resign, plugin.stop);
+                coordination.isLeader().should.be.false();
+                unhandled.should.eql([]);
+            });
+
+            it("AC-11 (a stub of coordination.start): runtime.stop() at 100 ms, the limit at 1000 ms: start() rejects, the state is stopped", async function() {
+                fake(coordination, "start", function() { return new Promise(function() {}) });
+                init({startupTimeout: 1000});
+                const outcome = track(runtime.start());
+                await clock.tickAsync(100);
+                await runtime.stop("SIGTERM");
+                await clock.tickAsync(900);
+                outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                outcome.error.should.have.property("code", "startup_timeout");
+                instanceState.get().should.containEql({state: "stopped", reason: "SIGTERM"});
+            });
+        });
+
+        describe("AC-5: a step that fails after the limit", function() {
+            const LATE_VALUES = [
+                { name: "an Error", make: function() { return new Error("late") } },
+                { name: "undefined", make: function() { return undefined } },
+                { name: "null", make: function() { return null } },
+                { name: "a Proxy whose get throws", make: function() { return new Proxy({}, { get: function() { throw new Error("proxy get") } }) } },
+                { name: "an object whose message getter throws", make: function() { return { get message() { throw new Error("message getter") } } } }
+            ];
+            ["coordination", "storage"].forEach(function(stepName) {
+                LATE_VALUES.forEach(function(v) {
+                    it("AC-5: " + stepName + " rejects late with " + v.name + ": a warning, no unhandled rejection, the errors are not replaced", async function() {
+                        const unhandled = recordUnhandled();
+                        const row = STEPS.filter(function(r) { return r.step === stepName })[0];
+                        const hung = startHung(row);
+                        await clock.tickAsync(1000);
+                        hung.outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
+                        hung.d.reject(v.make());
+                        await clock.tickAsync(60000);
+                        await flush();
+                        unhandled.should.eql([]);
+                        const failed = callsOf(log._, LATE_FAILED);
+                        failed.should.have.length(1);
+                        failed[0].args[1].should.have.property("step", stepName);
+                        failed[0].args[1].message.should.be.a.String();
+                        instanceState.get().should.containEql({state: "failed", reason: "startup-error"});
+                        instanceState.get().errors.should.eql([{code: "startup_timeout", message: textOf(TIMEOUT_KEY)}]);
+                        stateNames().should.eql(["starting", "failed"]);
+                    });
+                });
+            });
+        });
+
+        // Phase B: attempts to break the limit - races, the guard of every step, odd values, failing releases
+        describe("phase B (#71)", function() {
+            function row(name) {
+                return STEPS.filter(function(r) { return r.step === name })[0];
+            }
+            // clears the state between two starts of one test (the history of the stubs and the events too)
+            async function restart() {
+                await resetRuntime();
+                instanceState.reset();
+                stubs.forEach(function(s) { s.resetHistory && s.resetHistory() });
+                stateEvents.length = 0;
+            }
+            function hostileProxy() {
+                const trap = function() { throw new Error("trap") };
+                return new Proxy({}, { get: trap, has: trap, getPrototypeOf: trap, ownKeys: trap, getOwnPropertyDescriptor: trap });
+            }
+            function failsWith(outcome, step) {
+                outcome.rejected.should.be.true("start() was not rejected");
+                outcome.error.should.have.property("code", "startup_timeout");
+                outcome.error.should.have.property("step", step);
+            }
+
+            describe("races", function() {
+                it("a step that completes in the same millisecond as the limit: the limit was created first and wins, the step is late", async function() {
+                    fake(coordination, "start", function() { return new Promise(function(resolve) { setTimeout(resolve, 1000) }) });
+                    init({startupTimeout: 1000});
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(1000);
+                    await flush();
+                    failsWith(outcome, "coordination");
+                    redNodes.loadFlows.called.should.be.false();
+                    runtime._.isStarted().should.be.false();
+                    log._.calledWith(LATE_STEP, {step: "coordination"}).should.be.true();
+                    stateNames().should.eql(["starting", "failed"]);
+                });
+
+                it("a step that fails in the same millisecond as the limit: startup_timeout stays, the failure is a late warning", async function() {
+                    const unhandled = recordUnhandled();
+                    fake(coordination, "start", function() {
+                        return new Promise(function(resolve, reject) { setTimeout(function() { reject(new Error("same ms")) }, 1000) });
+                    });
+                    init({startupTimeout: 1000});
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(1000);
+                    await flush();
+                    failsWith(outcome, "coordination");
+                    callsOf(log._, LATE_FAILED).should.have.length(1);
+                    instanceState.get().errors.should.eql([{code: "startup_timeout", message: textOf(TIMEOUT_KEY)}]);
+                    unhandled.should.eql([]);
+                });
+
+                it("a step that fails 1 ms before the limit: the error of the step, the object is the one the step threw", async function() {
+                    const thrown = new Error("1 ms before");
+                    fake(coordination, "start", function() {
+                        return new Promise(function(resolve, reject) { setTimeout(function() { reject(thrown) }, 999) });
+                    });
+                    init({startupTimeout: 1000});
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(1000);
+                    outcome.rejected.should.be.true();
+                    outcome.error.should.equal(thrown);
+                    callsOf(log._, TIMEOUT_KEY).should.have.length(0);
+                    callsOf(log._, LATE_FAILED).should.have.length(0);
+                });
+
+                it("runtime.stop() called at the exact limit: start() rejects startup_timeout, the state is stopped with the reason of the stop", async function() {
+                    fake(coordination, "start", function() { return new Promise(function() {}) });
+                    init({startupTimeout: 1000});
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(999);
+                    const stopped = track(runtime.stop("SIGTERM"));
+                    await clock.tickAsync(1);
+                    await flush();
+                    failsWith(outcome, "coordination");
+                    stopped.settled.should.be.true();
+                    stopped.rejected.should.be.false();
+                    instanceState.get().should.containEql({state: "stopped", reason: "SIGTERM"});
+                });
+
+                it("two concurrent runtime.stop() during the release of a late coordination: plugin.resign and plugin.stop once each", async function() {
+                    const unhandled = recordUnhandled();
+                    const plugin = testPlugin({hangingResign: true});
+                    init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(1000);
+                    failsWith(outcome, "coordination");
+                    plugin.startGate.resolve();
+                    await clock.tickAsync(0);
+                    plugin.resign.calledOnce.should.be.true();
+                    const first = track(runtime.stop("SIGTERM"));
+                    const second = track(runtime.stop("SIGTERM"));
+                    await flush();
+                    first.settled.should.be.false();
+                    second.settled.should.be.false();
+                    plugin.resignGate.resolve();
+                    await flush();
+                    first.settled.should.be.true();
+                    second.settled.should.be.true();
+                    plugin.resign.callCount.should.equal(1);
+                    plugin.stop.callCount.should.equal(1);
+                    coordination.isLeader().should.be.false();
+                    unhandled.should.eql([]);
+                });
+
+                [
+                    { name: "without startupTimeout (feature off)", extra: {} },
+                    { name: "with startupTimeout", extra: {startupTimeout: 1000} }
+                ].forEach(function(v) {
+                    it("runtime.stop() during a coordination.start that never settles does not wait for it, " + v.name, async function() {
+                        const plugin = testPlugin();
+                        init(Object.assign({}, v.extra, REAL_COORDINATION));
+                        track(runtime.start());
+                        await clock.tickAsync(10);
+                        const stopped = track(runtime.stop("SIGTERM"));
+                        await flush();
+                        stopped.settled.should.be.true("stop() waits for the start");
+                        stopped.rejected.should.be.false();
+                        plugin.start.calledOnce.should.be.true();
+                        plugin.resign.called.should.be.false();
+                        plugin.stop.called.should.be.false();
+                        instanceState.get().should.containEql({state: "stopped", reason: "SIGTERM"});
+                    });
+                });
+
+                it("a hanging release does not block the stop of the next runtime: init() resets the chain (X3)", async function() {
+                    const plugin = testPlugin({hangingResign: true});
+                    init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(1000);
+                    failsWith(outcome, "coordination");
+                    plugin.startGate.resolve();
+                    await clock.tickAsync(0);
+                    plugin.resign.calledOnce.should.be.true();
+                    // the plugin of the first runtime never answers (the coordination is one module); the second runtime
+                    // does not call it again and must not wait for the hanging link of the chain of the first one
+                    fake(coordination, "resign", function() { return Promise.resolve() });
+                    init({});
+                    const stopped = track(runtime.stop());
+                    await flush();
+                    stopped.settled.should.be.true("the stop of the next runtime waits for the hanging link of the previous one");
+                });
+
+                it("a limit that fires while the start waits for the observer of storage names reloadWatch", async function() {
+                    const hung = startHung(row("reloadWatch"));
+                    await clock.tickAsync(1000);
+                    failsWith(hung.outcome, "reloadWatch");
+                });
+            });
+
+            describe("the guard after every step leaves nothing behind", function() {
+                // an environment in which every sync fragment after a step has a visible effect
+                function hostile(withReadOnly) {
+                    fake(log, "metric", function() { return true });
+                    fake(redNodes, "getNodeList", function(cb) {
+                        return [{module: "m", enabled: true, loaded: false, types: ["t"]}].filter(cb);
+                    });
+                    fake(redNodes, "installModule", function() { return Promise.reject(new Error("no network")) });
+                    fake(coordination, "info", function() { return {plugin: "cluster", local: false} });
+                    return withReadOnly ? {readOnlyUserDir: true} : {externalModules: {autoInstall: true}};
+                }
+                function snapshot() {
+                    return {
+                        logCalls: log._.callCount,
+                        warn: log.warn.callCount,
+                        info: log.info.callCount,
+                        logLog: log.log.callCount,
+                        timers: clock.countTimers(),
+                        cleanModuleList: redNodes.cleanModuleList.callCount,
+                        installModule: redNodes.installModule.callCount,
+                        reloadInit: reloadWatcher.init.callCount,
+                        loadFlows: redNodes.loadFlows.callCount,
+                        startFlows: redNodes.startFlows.callCount,
+                        saveSettings: storage.saveSettings.callCount,
+                        events: stateEvents.length
+                    };
+                }
+                [false, true].forEach(function(withReadOnly) {
+                    STEPS.forEach(function(r) {
+                        it("after " + r.step + " completed late (" + (withReadOnly ? "readOnlyUserDir, clean module list" : "metrics, auto-install, cluster") + "): the only effect is the late warning" + (r.step === "coordination" || r.step === "health" || r.step === "reloadWatch" ? " and the release" : ""), async function() {
+                            const unhandled = recordUnhandled();
+                            const config = hostile(withReadOnly);
+                            const hung = startHung(r, config);
+                            await clock.tickAsync(1000);
+                            failsWith(hung.outcome, r.step);
+                            const before = snapshot();
+                            const keysBefore = log._.getCalls().length;
+                            resolveLate(r, hung.d);
+                            await flush();
+                            const after = snapshot();
+                            // the register of the observer logs its own line when it completes: that is the step, not a follow-up
+                            const expectedKeys = r.step === "reloadWatch" ? [LATE_STEP, "reload.watching"].sort() : [LATE_STEP];
+                            log._.getCalls().slice(keysBefore).map(function(c) { return c.args[0] }).sort().should.eql(expectedKeys, "log._ was called for something else than the late warning");
+                            (after.warn - before.warn).should.equal(1);
+                            (after.info - before.info).should.equal(r.step === "reloadWatch" ? 1 : 0);
+                            after.logLog.should.equal(before.logLog);
+                            after.timers.should.equal(before.timers);
+                            after.cleanModuleList.should.equal(before.cleanModuleList);
+                            after.installModule.should.equal(before.installModule);
+                            after.reloadInit.should.equal(before.reloadInit);
+                            after.loadFlows.should.equal(0);
+                            after.startFlows.should.equal(0);
+                            after.saveSettings.should.equal(before.saveSettings);
+                            after.events.should.equal(before.events);
+                            runtime._.isStarted().should.be.false();
+                            unhandled.should.eql([]);
+                        });
+                    });
+                });
+            });
+
+            describe("late failures with hostile values, every step", function() {
+                const HOSTILE = [
+                    { name: "a Proxy that throws on every trap", make: hostileProxy },
+                    { name: "an object whose toString throws and without a message", make: function() { return { toString: function() { throw new Error("toString") } } } },
+                    { name: "a Symbol", make: function() { return Symbol("late") } },
+                    { name: "a function whose toString throws", make: function() { const f = function() {}; f.toString = function() { throw new Error("toString") }; return f } },
+                    { name: "an object whose message is a Symbol", make: function() { return { message: Symbol("m") } } },
+                    { name: "Object.create(null)", make: function() { return Object.create(null) } }
+                ];
+                STEPS.forEach(function(r) {
+                    HOSTILE.forEach(function(v) {
+                        it(r.step + " rejects late with " + v.name + ": one warning, no unhandled rejection, the state is untouched", async function() {
+                            const unhandled = recordUnhandled();
+                            const hung = startHung(r);
+                            await clock.tickAsync(1000);
+                            failsWith(hung.outcome, r.step);
+                            hung.d.reject(v.make());
+                            await clock.tickAsync(60000);
+                            await flush();
+                            unhandled.should.eql([]);
+                            const failed = callsOf(log._, LATE_FAILED);
+                            if (r.step === "instanceId" && failed.length === 0) {
+                                // a failed save of the generated id is only a warning of resolveInstanceId (#3): the step completes
+                                callsOf(log._, LATE_STEP).should.have.length(1);
+                            } else {
+                                failed.should.have.length(1);
+                                failed[0].args[1].step.should.equal(r.step);
+                                failed[0].args[1].message.should.be.a.String();
+                                warnedWith(LATE_FAILED).should.equal(1);
+                            }
+                            instanceState.get().errors.should.eql([{code: "startup_timeout", message: textOf(TIMEOUT_KEY)}]);
+                            stateNames().should.eql(["starting", "failed"]);
+                            redNodes.loadFlows.called.should.be.false();
+                        });
+                    });
+                });
+            });
+
+            describe("failing releases", function() {
+                it("a plugin whose resign throws synchronously: the real coordination logs it, the plugin is still stopped once", async function() {
+                    const unhandled = recordUnhandled();
+                    const plugin = testPlugin();
+                    plugin.resign = sinon.spy(function() { throw new Error("sync resign") });
+                    init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(1000);
+                    failsWith(outcome, "coordination");
+                    plugin.startGate.resolve();
+                    await flush();
+                    plugin.resign.calledOnce.should.be.true();
+                    plugin.stop.calledOnce.should.be.true();
+                    coordination.isLeader().should.be.false();
+                    unhandled.should.eql([]);
+                });
+
+                // The real coordination rejects when the plugin rejects with a value without toString (its catch calls
+                // err.toString(), see issue #75): the release must still stop the plugin (I-4, I-12)
+                [
+                    { name: "undefined", make: function() { return Promise.reject(undefined) } },
+                    { name: "null", make: function() { return Promise.reject(null) } }
+                ].forEach(function(v) {
+                    it("a plugin whose resign rejects with " + v.name + ": the late release still stops the plugin once, one late-failed warning, no unhandled rejection", async function() {
+                        const unhandled = recordUnhandled();
+                        const plugin = testPlugin();
+                        plugin.resign = sinon.spy(v.make);
+                        init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
+                        const outcome = track(runtime.start());
+                        await clock.tickAsync(1000);
+                        failsWith(outcome, "coordination");
+                        plugin.startGate.resolve();
+                        await flush();
+                        plugin.resign.calledOnce.should.be.true();
+                        plugin.stop.calledOnce.should.be.true("the plugin was not stopped after a rejected resign");
+                        coordination.isLeader().should.be.false();
+                        const failed = callsOf(log._, LATE_FAILED);
+                        failed.should.have.length(1);
+                        failed[0].args[1].step.should.equal("coordination");
+                        warnedWith(LATE_FAILED).should.equal(1);
+                        unhandled.should.eql([]);
+                        // a stop of the runtime afterwards does not call the plugin again
+                        await runtime.stop();
+                        plugin.stop.calledOnce.should.be.true();
+                    });
+                });
+
+                it("coordination.resign rejecting with an Error: the late release still calls coordination.stop once, the first error is logged once", async function() {
+                    const unhandled = recordUnhandled();
+                    fake(coordination, "resign", function() { return Promise.reject(new Error("resign rejects")) });
+                    const hung = startHung(row("coordination"));
+                    await clock.tickAsync(1000);
+                    failsWith(hung.outcome, "coordination");
+                    hung.d.resolve();
+                    await flush();
+                    coordination.resign.calledOnce.should.be.true();
+                    coordination.stop.calledOnce.should.be.true("coordination.stop was skipped after a rejected resign");
+                    const failed = callsOf(log._, LATE_FAILED);
+                    failed.should.have.length(1);
+                    failed[0].args[1].step.should.equal("coordination");
+                    failed[0].args[1].message.should.match(/resign rejects/);
+                    unhandled.should.eql([]);
+                });
+
+                [
+                    { name: "rejects", make: function() { return Promise.reject(new Error("stop rejects")) } },
+                    { name: "throws synchronously", make: function() { throw new Error("stop throws") } }
+                ].forEach(function(v) {
+                    it("a plugin whose stop " + v.name + ": no unhandled rejection, the coordination is not the leader, stop() of the runtime afterwards does not call the plugin again", async function() {
+                        const unhandled = recordUnhandled();
+                        const plugin = testPlugin();
+                        plugin.stop = sinon.spy(v.make);
+                        init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
+                        const outcome = track(runtime.start());
+                        await clock.tickAsync(1000);
+                        failsWith(outcome, "coordination");
+                        plugin.startGate.resolve();
+                        await flush();
+                        plugin.stop.calledOnce.should.be.true();
+                        coordination.isLeader().should.be.false();
+                        await runtime.stop();
+                        plugin.stop.calledOnce.should.be.true();
+                        plugin.resign.calledOnce.should.be.true();
+                        unhandled.should.eql([]);
+                    });
+                });
+
+                [
+                    { name: "rejects", make: function() { return Promise.reject(new Error("release boom")) } },
+                    { name: "throws synchronously", make: function() { throw new Error("release boom") } }
+                ].forEach(function(v) {
+                    ["health.stop", "coordination.resign", "reloadWatcher.stop"].forEach(function(which) {
+                        it(which + " " + v.name + " in the release: one late-failed warning with the step, no unhandled rejection", async function() {
+                            const unhandled = recordUnhandled();
+                            const stepName = which === "health.stop" ? "health" : which === "reloadWatcher.stop" ? "reloadWatch" : "coordination";
+                            const target = which === "health.stop" ? health : which === "reloadWatcher.stop" ? reloadWatcher : coordination;
+                            const method = which.split(".")[1];
+                            const hung = startHung(row(stepName));
+                            fake(target, method, v.make);
+                            await clock.tickAsync(1000);
+                            failsWith(hung.outcome, stepName);
+                            resolveLate(row(stepName), hung.d);
+                            await flush();
+                            const failed = callsOf(log._, LATE_FAILED);
+                            failed.should.have.length(1);
+                            failed[0].args[1].step.should.equal(stepName);
+                            failed[0].args[1].message.should.match(/release boom/);
+                            unhandled.should.eql([]);
+                            instanceState.get().errors.should.eql([{code: "startup_timeout", message: textOf(TIMEOUT_KEY)}]);
+                        });
+                    });
+                });
+            });
+
+            describe("values of the setting", function() {
+                [
+                    { name: "-0", make: function() { return -0 }, printed: "0" },
+                    { name: "Number.MAX_SAFE_INTEGER", make: function() { return Number.MAX_SAFE_INTEGER }, printed: "9007199254740991" },
+                    { name: "2147483647.5", make: function() { return 2147483647.5 }, printed: "2147483647.5" },
+                    { name: "an empty string", make: function() { return "" }, printed: "" },
+                    { name: "new String(\"5\")", make: function() { return new String("5") }, printed: "5" },
+                    { name: "a Proxy that throws on every trap", make: hostileProxy, printed: NOT_PRINTABLE },
+                    { name: "an object whose toString throws", make: function() { return { toString: function() { throw new Error("x") } } }, printed: NOT_PRINTABLE },
+                    { name: "an object whose toString returns an object", make: function() { return { toString: function() { return {} }, valueOf: function() { return {} } } }, printed: NOT_PRINTABLE }
+                ].forEach(function(v) {
+                    it("invalid " + v.name + ": one warning with the printed value, no limit, no timer", async function() {
+                        fake(coordination, "start", function() { return new Promise(function() {}) });
+                        const value = v.make();
+                        init({startupTimeout: value});
+                        const base = clock.countTimers();
+                        const outcome = track(runtime.start());
+                        clock.countTimers().should.equal(base);
+                        await clock.tickAsync(MAX_TIMER);
+                        outcome.settled.should.be.false();
+                        const warnings = callsOf(log._, INVALID_KEY);
+                        warnings.should.have.length(1);
+                        warnings[0].args[1].should.eql({value: v.printed});
+                    });
+                });
+
+                [0.5, 1e-9].forEach(function(value) {
+                    it("valid " + value + " (below 1 ms): the limit fires after 1 ms and names the step", async function() {
+                        fake(coordination, "start", function() { return new Promise(function() {}) });
+                        init({startupTimeout: value});
+                        const outcome = track(runtime.start());
+                        await clock.tickAsync(1);
+                        outcome.rejected.should.be.true();
+                        outcome.error.should.have.property("code", "startup_timeout");
+                        outcome.error.should.have.property("timeout", value);
+                    });
+                });
+
+                it("the setting is read per start(): a second init() without it removes the limit", async function() {
+                    fake(coordination, "start", function() { return new Promise(function() {}) });
+                    init({startupTimeout: 1000});
+                    const first = track(runtime.start());
+                    await clock.tickAsync(1000);
+                    first.rejected.should.be.true();
+                    await restart();
+                    init({});
+                    const base = clock.countTimers();
+                    const second = track(runtime.start());
+                    clock.countTimers().should.equal(base);
+                    await clock.tickAsync(MAX_TIMER);
+                    second.settled.should.be.false();
+                });
+            });
+
+            describe("repeated init() and start() in one process", function() {
+                it("five failed starts one after another: every one names its step and no timer is left", async function() {
+                    const base = clock.countTimers();
+                    for (let i = 0; i < 5; i++) {
+                        await restart();
+                        fake(coordination, "start", function() { return new Promise(function() {}) });
+                        init({startupTimeout: 100 + i});
+                        const outcome = track(runtime.start());
+                        await clock.tickAsync(100 + i);
+                        failsWith(outcome, "coordination");
+                        outcome.error.should.have.property("timeout", 100 + i);
+                        clock.countTimers().should.equal(base);
+                        instanceState.get().should.containEql({state: "failed", reason: "startup-error"});
+                    }
+                });
+
+                it("five successful starts one after another: no timer is left, no warning", async function() {
+                    const base = clock.countTimers();
+                    for (let i = 0; i < 5; i++) {
+                        await restart();
+                        init({startupTimeout: 1000});
+                        await runtime.start();
+                        clock.countTimers().should.equal(base);
+                        await clock.tickAsync(5000);
+                        instanceState.get().state.should.not.equal("failed");
+                    }
+                    callsOf(log._, TIMEOUT_KEY).should.have.length(0);
+                });
+
+                it("a failed start with the limit, then a start without it in the same process: the second is not limited", async function() {
+                    fake(coordination, "start", function() { return new Promise(function() {}) });
+                    init({startupTimeout: 500});
+                    const first = track(runtime.start());
+                    await clock.tickAsync(500);
+                    failsWith(first, "coordination");
+                    await restart();
+                    let release;
+                    fake(coordination, "start", function() { return new Promise(function(resolve) { release = resolve }) });
+                    init({});
+                    const second = track(runtime.start());
+                    await clock.tickAsync(100000);
+                    second.settled.should.be.false();
+                    release();
+                    await flush();
+                    second.settled.should.be.true();
+                    second.rejected.should.be.false();
+                });
+            });
+
+            describe("the setting off is identical to a start without the code path", function() {
+                async function observe(extra, mutate) {
+                    await restart();
+                    if (mutate) {
+                        mutate();
+                    }
+                    init(extra);
+                    const base = clock.countTimers();
+                    const outcome = track(runtime.start());
+                    const timersAfterCall = clock.countTimers();
+                    await clock.tickAsync(0);
+                    await flush();
+                    return {
+                        settled: outcome.settled,
+                        rejected: outcome.rejected,
+                        error: outcome.error,
+                        states: stateEvents.map(function(i) { return i.state + "/" + i.reason }),
+                        keys: log._.getCalls().map(function(c) { return c.args[0] }),
+                        warn: log.warn.callCount,
+                        calls: [redNodes.loadFlows.callCount, redNodes.startFlows.callCount, storage.init.callCount, health.start.callCount],
+                        timers: timersAfterCall - base,
+                        started: runtime._.isStarted()
+                    };
+                }
+                it("a successful start: the same events, logs, calls and no timer for no key, undefined and an invalid key (except its warning)", async function() {
+                    const none = await observe({});
+                    const undef = await observe({startupTimeout: undefined});
+                    const invalid = await observe({startupTimeout: "x"});
+                    none.settled.should.be.true();
+                    none.timers.should.equal(0);
+                    undef.should.eql(none);
+                    invalid.timers.should.equal(0);
+                    invalid.keys.filter(function(k) { return k !== INVALID_KEY }).should.eql(none.keys);
+                    invalid.keys.filter(function(k) { return k === INVALID_KEY }).should.have.length(1);
+                    ["states", "calls", "started", "rejected"].forEach(function(k) { invalid[k].should.eql(none[k]) });
+                });
+                it("a start that fails in a step: the same error object and events with and without a limit that does not fire", async function() {
+                    const thrown = new Error("no storage");
+                    const make = function() { fake(storage, "init", function() { return Promise.reject(thrown) }) };
+                    const off = await observe({}, make);
+                    const on = await observe({startupTimeout: 100000}, make);
+                    off.rejected.should.be.true();
+                    on.rejected.should.be.true();
+                    off.error.should.equal(thrown);
+                    on.error.should.equal(thrown);
+                    on.states.should.eql(off.states);
+                    on.keys.should.eql(off.keys);
+                    on.calls.should.eql(off.calls);
+                    off.timers.should.equal(0);
+                });
+                it("a start that never finishes: no limit, no failure, however long the clock runs", async function() {
+                    fake(coordination, "start", function() { return new Promise(function() {}) });
+                    init({});
+                    const base = clock.countTimers();
+                    const outcome = track(runtime.start());
+                    clock.countTimers().should.equal(base);
+                    await clock.tickAsync(MAX_TIMER);
+                    await clock.tickAsync(MAX_TIMER);
+                    outcome.settled.should.be.false();
+                    stateNames().should.eql(["starting"]);
+                });
+            });
         });
     });
 });

@@ -79,6 +79,22 @@
    hook is still not called). Deployments from the editor or the Admin API are not delayed. Needs
    `health.enabled: true`; an invalid value or a missing `enabled` logs a warning and uses no grace
    (#8, #1)
+ - New setting `startupTimeout` (ms, off by default, the behaviour is unchanged without it): the limit of
+   `runtime.start()` - the start of the storage, the settings, the nodes, the context, the coordination plugin and
+   the observer of storage, not the load and start of the flows that follow it. A start that does not complete
+   in time fails with an error `startup_timeout` (fields `step` - the step it was waiting for - and `timeout`); the
+   instance is `failed` / `startup-error`. In the command line this is a failed start of #67: the runtime is
+   stopped (at most 5000 ms) and the process exits with 1 - also when the hanging step held no handle (before: exit
+   0 without a log) or held one (before: a process without a listening server). In an embedding application
+   `RED.start()` rejects with that error and the library never calls `process.exit`. A step that completes after
+   the limit is ignored and logged as a warning (nothing after it runs, the flows are not loaded); a coordination
+   plugin that starts late is resigned and stopped at once (stopped also when the resign fails), a late own server of the probes and a late observer
+   of storage are stopped. A step that fails after the limit is only a warning. An invalid value (not a number of
+   ms > 0 and <= 2147483647, for example the string of an environment variable) logs one warning and sets no
+   limit. The calls of `resign()` and `stop()` of the coordination are made one after the other (a stop of the
+   runtime waits for the release of a late coordination). Recommended value in `FORK.md` §2: `120000`; the budget
+   of the Kubernetes `startupProbe` must be longer than `startupTimeout` + 5 s + the time to load the flows (#71,
+   R-51)
  - New setting `hooks: { "preReload.<label>": fn, "preShutdown.<label>": fn }` registers the
    `preReload` and `preShutdown` hooks from `settings.js` when the runtime is initialised -
    before the plugins are loaded and before the flows start (not set by default: no hooks,
