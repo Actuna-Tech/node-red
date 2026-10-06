@@ -25,6 +25,8 @@
  *   no message and no 500 for a request that the drain answered, "http response" drops a late response,
  *   no change of the routes with the setting off
  *   #54: acceptance tests of the 413 test for a connection that is reset after the answer of the server (flaky tests)
+ *   #48: acceptance tests of the answer 413 for a text body above the maximum string length, of the limits given to
+ *   the JSON and urlencoded parsers, and of a response that another layer already sent
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1255,6 +1257,557 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             });
             ["ECONNRESET", "EPIPE"].should.containEql(err.code);
             record.entries.should.have.length(0);
+        });
+    });
+
+    // #48: a text body above the maximum string length of Node.js, the limits given to the JSON and
+    // urlencoded parsers, and a response that another layer already sent
+    describe("text body above the maximum string length (#48)", function() {
+        const path = require("path");
+        const MAX = require("buffer").constants.MAX_STRING_LENGTH;
+        // a status line of a correct answer is there within this time; a request that is not
+        // answered is closed by the client after it
+        const ANSWER_BOUND = 1000;
+        const KIB = Buffer.alloc(1024, 0x61);
+        // the unit of a size text, built from parts
+        const GB = "g" + "b";
+        // the event name of a stray error, built from parts
+        const STRAY_EVENT = ["un", "caught", "Exception"].join("");
+
+        function delay(ms) {
+            return new Promise(function(resolve) { setTimeout(resolve, ms) });
+        }
+
+        // the value of `promise`, or `fallback` after `ms`
+        function within(promise, ms, fallback) {
+            let timer;
+            return Promise.race([promise, new Promise(function(resolve) { timer = setTimeout(resolve, ms, fallback) })]).then(function(value) {
+                clearTimeout(timer);
+                return value;
+            });
+        }
+
+        // One request, bounded in time. Resolves with {settled: true, statusCode, headers, body} when
+        // the answer is complete, {settled: true, error} when the connection fails before it, and
+        // {settled: false} when there is no status line after `bound` ms (the request is closed by the
+        // client then). chunks: the body, written at once; options.end false leaves the request open
+        // after the chunks (a declared length above the bytes that are sent).
+        function exchange(method, urlPath, headers, chunks, options) {
+            const end = !options || options.end !== false;
+            const bound = (options && options.bound) || ANSWER_BOUND;
+            return new Promise(function(resolve) {
+                let done = false;
+                let timer;
+                function finish(result) {
+                    if (done) { return }
+                    done = true;
+                    clearTimeout(timer);
+                    req.destroy();
+                    resolve(result);
+                }
+                const req = http.request({ host: "127.0.0.1", port: server.address().port, method: method, path: urlPath, agent: false, headers: headers }, function(res) {
+                    const parts = [];
+                    res.on("data", function(chunk) { parts.push(chunk) });
+                    const complete = function() {
+                        finish({ settled: true, statusCode: res.statusCode, headers: res.headers, body: Buffer.concat(parts).toString() });
+                    };
+                    res.on("end", complete);
+                    res.on("close", complete);
+                });
+                req.on("error", function(err) { finish({ settled: true, error: err.code || err.message }) });
+                timer = setTimeout(function() { finish({ settled: false }) }, bound);
+                chunks.forEach(function(chunk) { req.write(chunk) });
+                if (end) { req.end() }
+            });
+        }
+
+        // A request that the test ends or closes itself: client.first resolves with the status code of the
+        // first answer; the request stays open
+        function openRequest(method, urlPath, headers, chunks) {
+            const client = { statuses: [], errors: [] };
+            client.first = new Promise(function(resolve) { client.resolveFirst = resolve });
+            client.req = http.request({ host: "127.0.0.1", port: server.address().port, method: method, path: urlPath, agent: false, headers: headers }, function(res) {
+                client.statuses.push(res.statusCode);
+                res.resume();
+                client.resolveFirst(res.statusCode);
+            });
+            client.req.on("error", function(err) { client.errors.push(err.code || err.message) });
+            chunks.forEach(function(chunk) { client.req.write(chunk) });
+            return client;
+        }
+
+        // Collects the stray errors of the test run while a test runs: the listeners of the runner are
+        // taken off and put back by restore()
+        function collectStrays() {
+            const saved = process.listeners(STRAY_EVENT);
+            const seen = [];
+            process.removeAllListeners(STRAY_EVENT);
+            const handler = function(err) { seen.push(err && (err.code || err.message)) };
+            process.on(STRAY_EVENT, handler);
+            return {
+                seen: seen,
+                restore: function() {
+                    process.removeListener(STRAY_EVENT, handler);
+                    saved.forEach(function(listener) { process.on(STRAY_EVENT, listener) });
+                }
+            };
+        }
+
+        function declared(extra) {
+            return Object.assign({ "Content-Length": String(MAX + 1) }, extra);
+        }
+
+        // The text types of the input table (the second entry: the headers of the request, the third:
+        // the body that is sent, 1 KiB of ASCII by default)
+        const TEXT_TYPES = [
+            ["no Content-Type", {}],
+            ["text/plain", { "Content-Type": "text/plain" }],
+            ["text/plain; charset=utf-8", { "Content-Type": "text/plain; charset=utf-8" }],
+            ["text/csv", { "Content-Type": "text/csv" }],
+            ["text/xml", { "Content-Type": "text/xml" }],
+            ["application/xml", { "Content-Type": "application/xml" }],
+            ["application/atom+xml", { "Content-Type": "application/atom+xml" }],
+            ["application/x-ndjson", { "Content-Type": "application/x-ndjson" }],
+            ["application/vnd.api+json", { "Content-Type": "application/vnd.api+json" }],
+            ["text/plain with Content-Encoding gzip", { "Content-Type": "text/plain", "Content-Encoding": "gzip" }],
+            ["multibyte text/plain; charset=utf-8", { "Content-Type": "text/plain; charset=utf-8" }, Buffer.from("zażółć gęślą jaźń ".repeat(60))]
+        ];
+
+        // The first answers of all the text types, sent together: {label: status code, or a text when
+        // there is no status line}
+        async function statusPerTextType(method, urlPath, extraHeaders) {
+            const results = await Promise.all(TEXT_TYPES.map(function(type) {
+                return exchange(method, urlPath, declared(Object.assign({}, type[1], extraHeaders)), [type[2] || KIB], { end: false });
+            }));
+            const summary = {};
+            TEXT_TYPES.forEach(function(type, i) {
+                summary[type[0]] = results[i].settled ? (results[i].statusCode || results[i].error) : "no status line within " + ANSWER_BOUND + " ms";
+            });
+            return { summary: summary, results: results };
+        }
+
+        const ALL_413 = {};
+        TEXT_TYPES.forEach(function(type) { ALL_413[type[0]] = 413 });
+
+        function checkAnswer413(result) {
+            result.statusCode.should.equal(413);
+            result.headers["content-type"].should.equal("text/plain; charset=utf-8");
+            result.headers["content-length"].should.equal("17");
+            result.headers.connection.should.equal("close");
+            result.body.should.equal("Payload Too Large");
+        }
+
+        describe("AC-1: a text body above the maximum string length is answered with 413", function() {
+            [
+                ["POST", { method: "post" }],
+                ["PUT", { method: "put" }],
+                ["PATCH", { method: "patch" }],
+                ["DELETE", { method: "delete" }]
+            ].forEach(function(route) {
+                it("AC-1: " + route[0] + ", every text type, the declared length is above the maximum", async function() {
+                    await load([["a", Object.assign({ skipBodyParsing: false }, route[1])]]);
+                    const outcome = await statusPerTextType(route[1].method.toUpperCase(), "/hook");
+                    outcome.summary.should.eql(ALL_413);
+                    outcome.results.forEach(checkAnswer413);
+                    received.should.have.length(0);
+                });
+            });
+        });
+
+        it("AC-2: the next request to the route is served after a 413", async function() {
+            await load([["a", { skipBodyParsing: false }]]);
+            const refused = await exchange("POST", "/hook", declared({ "Content-Type": "text/plain" }), [KIB], { end: false });
+            refused.should.have.property("statusCode", 413);
+            const text = "b".repeat(100);
+            const served = await exchange("POST", "/hook", { "Content-Type": "text/plain" }, [Buffer.from(text)]);
+            served.should.have.property("statusCode", 200);
+            received.should.have.length(1);
+            received[0].msg.payload.should.equal(text);
+        });
+
+        describe("AC-3: small bodies keep their payload type", function() {
+            const SMALL = "small body éä {a}";
+            const TEXT_PAYLOAD = [
+                ["no Content-Type", {}],
+                ["text/plain", { "Content-Type": "text/plain" }],
+                ["application/xml", { "Content-Type": "application/xml" }],
+                ["application/x-ndjson", { "Content-Type": "application/x-ndjson" }]
+            ];
+            const BUFFER_PAYLOAD = ["application/octet-stream", "application/cbor", "application/x-protobuf", "image/png", "multipart/form-data; boundary=xx"];
+
+            TEXT_PAYLOAD.forEach(function(entry) {
+                it("AC-3: a string payload for " + entry[0], async function() {
+                    await load([["a", { skipBodyParsing: false }]]);
+                    const res = await exchange("POST", "/hook", entry[1], [Buffer.from(SMALL)]);
+                    res.should.have.property("statusCode", 200);
+                    received.should.have.length(1);
+                    received[0].msg.payload.should.equal(SMALL);
+                });
+            });
+
+            BUFFER_PAYLOAD.forEach(function(type) {
+                it("AC-3: a Buffer payload for " + type, async function() {
+                    await load([["a", { skipBodyParsing: false }]]);
+                    const bytes = Buffer.from([0, 1, 2, 250, 251, 252, 0x61, 0x62]);
+                    const res = await exchange("POST", "/hook", { "Content-Type": type }, [bytes]);
+                    res.should.have.property("statusCode", 200);
+                    received.should.have.length(1);
+                    Buffer.isBuffer(received[0].msg.payload).should.be.true();
+                    received[0].msg.payload.equals(bytes).should.be.true();
+                });
+            });
+
+            it("AC-3: an object payload for JSON and for urlencoded", async function() {
+                await load([["a", { skipBodyParsing: false }]]);
+                (await exchange("POST", "/hook", { "Content-Type": "application/json" }, [Buffer.from('{"a": 1}')])).should.have.property("statusCode", 200);
+                (await exchange("POST", "/hook", { "Content-Type": "application/x-www-form-urlencoded" }, [Buffer.from("a=1&b=2")])).should.have.property("statusCode", 200);
+                received.should.have.length(2);
+                received[0].msg.payload.should.eql({ a: 1 });
+                received[1].msg.payload.should.eql({ a: "1", b: "2" });
+            });
+        });
+
+        // Opt-in tests with bodies at the boundary of the maximum string length: they need a large
+        // test run and are run on purpose
+        describe("AC-4, AC-5 (opt-in: NODE_RED_TEST_LARGE_BODY=1)", function() {
+            const OPTED_IN = process.env.NODE_RED_TEST_LARGE_BODY === "1";
+            const MIB = 1024 * 1024;
+
+            it("AC-4 (opt-in: NODE_RED_TEST_LARGE_BODY=1): a chunked text body above the maximum string length is answered with one 413 and the next request is served", async function() {
+                if (!OPTED_IN) { return this.skip() }
+                this.timeout(300000);
+                await load([["a", { skipBodyParsing: false }]]);
+                const record = servedRecord();
+                server.on("request", function(req, res) {
+                    res.on("finish", function() {
+                        record.add({ statusCode: res.statusCode, connection: res.getHeader("connection") });
+                    });
+                });
+                const chunk = Buffer.alloc(MIB, 0x61);
+                const chunks = [];
+                for (let sent = 0; sent < MAX + 64 * MIB; sent += MIB) { chunks.push(chunk) }
+                const answer = await request413("/hook", { "Content-Type": "text/plain", "Transfer-Encoding": "chunked" }, chunks, record);
+                answer.statusCode.should.equal(413);
+                answer.connection.should.equal("close");
+                await record.next();
+                record.entries.should.eql([{ statusCode: 413, connection: "close" }]);
+                received.should.have.length(0);
+                const served = await exchange("POST", "/hook", { "Content-Type": "text/plain" }, [Buffer.from("small")], { bound: 10000 });
+                served.should.have.property("statusCode", 200);
+            });
+
+            it("AC-5 (opt-in: NODE_RED_TEST_LARGE_BODY=1): a text body of exactly the maximum string length is accepted", async function() {
+                if (!OPTED_IN) { return this.skip() }
+                this.timeout(300000);
+                await load([["a", { skipBodyParsing: false }]]);
+                const chunk = Buffer.alloc(MIB, 0x61);
+                const chunks = [];
+                let left = MAX;
+                for (; left >= MIB; left -= MIB) { chunks.push(chunk) }
+                if (left > 0) { chunks.push(Buffer.alloc(left, 0x61)) }
+                const res = await exchange("POST", "/hook", { "Content-Type": "text/plain", "Content-Length": String(MAX) }, chunks, { bound: 280000 });
+                res.should.have.property("statusCode", 200);
+                received.should.have.length(1);
+                received[0].msg.payload.length.should.equal(MAX);
+            });
+        });
+
+        describe("AC-6: binary bodies keep no limit", function() {
+            it("AC-6a: application/octet-stream and image/png with a declared length above the maximum get no status line within 200 ms on a plain route, and the next request is served", async function() {
+                await load([["a", { skipBodyParsing: false }]]);
+                const outcome = {};
+                for (const type of ["application/octet-stream", "image/png"]) {
+                    const res = await exchange("POST", "/hook", declared({ "Content-Type": type }), [KIB], { end: false, bound: 200 });
+                    outcome[type] = res.settled;
+                }
+                outcome.should.eql({ "application/octet-stream": false, "image/png": false });
+                received.should.have.length(0);
+                const served = await exchange("POST", "/hook", { "Content-Type": "application/octet-stream" }, [KIB]);
+                served.should.have.property("statusCode", 200);
+                received.should.have.length(1);
+                received[0].msg.payload.equals(KIB).should.be.true();
+            });
+        });
+
+        describe("AC-7: the limit given to the JSON and urlencoded parsers", function() {
+            const bytesModule = require(require.resolve("bytes", { paths: [path.dirname(require.resolve("body-parser"))] }));
+
+            // The limits that the node passes to bodyParser.json and bodyParser.urlencoded when it starts;
+            // the parsers are stand-ins that let every request pass
+            async function limitsFor(apiMaxLength, given) {
+                const parsers = require("body-parser");
+                const names = ["json", "urlencoded"];
+                const saved = {};
+                const limits = { json: [], urlencoded: [] };
+                names.forEach(function(name) {
+                    saved[name] = Object.getOwnPropertyDescriptor(parsers, name);
+                    Object.defineProperty(parsers, name, {
+                        configurable: true,
+                        enumerable: true,
+                        value: function(options) {
+                            // the helper of the tests builds parsers for its own admin app: only the calls
+                            // that come from the node count
+                            if (new Error().stack.indexOf("21-httpin.js") !== -1) {
+                                limits[name].push(options && options.limit);
+                            }
+                            return function(req, res, next) { next() };
+                        }
+                    });
+                });
+                try {
+                    await load([["a", { skipBodyParsing: false }]], given ? { apiMaxLength: apiMaxLength } : {});
+                } finally {
+                    names.forEach(function(name) { Object.defineProperty(parsers, name, saved[name]) });
+                }
+                return limits;
+            }
+
+            function label(value) {
+                return typeof value === "string" ? JSON.stringify(value) : typeof value + " " + String(value);
+            }
+
+            function checkLimits(limits, expected) {
+                limits.json.should.have.length(1);
+                limits.urlencoded.should.have.length(1);
+                should(limits.json[0]).equal(expected);
+                should(limits.urlencoded[0]).equal(expected);
+            }
+
+            [
+                "1" + GB, 1e9, Infinity, "+1" + GB, "600000000abc"
+            ].forEach(function(value) {
+                it("AC-7a: apiMaxLength " + label(value) + " gives both parsers the maximum string length as the limit", async function() {
+                    checkLimits(await limitsFor(value, true), MAX);
+                });
+            });
+
+            [
+                ["5mb", "5mb"], [undefined, "5mb"], ["+5mb", "+5mb"], ["1e9", "1e9"], [-1, -1], [-Infinity, -Infinity]
+            ].forEach(function(entry) {
+                it("AC-7a: apiMaxLength " + label(entry[0]) + " gives both parsers " + label(entry[1]) + " as the limit, unchanged", async function() {
+                    checkLimits(await limitsFor(entry[0], entry[0] !== undefined), entry[1]);
+                });
+            });
+
+            // R2-03: the limit follows the rules of the bytes module for these inputs, also at the
+            // boundary of the maximum string length
+            [
+                "1" + GB, 1e9, Infinity, "+1" + GB, "600000000abc", " 600000000", "1" + GB + " ", "1 " + GB.toUpperCase(),
+                "1\t" + GB, "0x40000000", "1.5pb", 1e400, 10n, {}, true, "5mb", "+5mb", "1e9", -1, -Infinity, "abc",
+                "1tb", "0.5" + GB, "512mb", "511mb", MAX, MAX + 1, MAX + "b", (MAX + 1) + "b", String(MAX), String(MAX + 1)
+            ].forEach(function(value) {
+                it("AC-7 R2-03: apiMaxLength " + label(value) + " gives the limit that the rules of the bytes module give", async function() {
+                    const parsed = bytesModule.parse(value);
+                    const expected = (typeof parsed === "number" && parsed > MAX) ? MAX : value;
+                    checkLimits(await limitsFor(value, true), expected);
+                });
+            });
+
+            [
+                ["application/json", Buffer.from('{"abc":12}'), Buffer.from('{"a":"' + "x".repeat(1100))],
+                ["application/x-www-form-urlencoded", Buffer.from("abcd=1234"), Buffer.from("a=" + "x".repeat(1100))]
+            ].forEach(function(entry) {
+                it("AC-7b: " + entry[0] + " with a declared length above the maximum gets no message, and the next request is served", async function() {
+                    await load([["a", { skipBodyParsing: false }]], { apiMaxLength: "1" + GB });
+                    const strays = collectStrays();
+                    try {
+                        const client = openRequest("POST", "/hook", declared({ "Content-Type": entry[0] }), [entry[2].slice(0, 1024)]);
+                        await delay(200);
+                        received.should.have.length(0);
+                        client.req.destroy();
+                        await delay(100);
+                        strays.seen.should.eql([]);
+                    } finally {
+                        strays.restore();
+                    }
+                    const served = await exchange("POST", "/hook", { "Content-Type": entry[0] }, [entry[1]]);
+                    served.should.have.property("statusCode", 200);
+                    received.should.have.length(1);
+                });
+            });
+
+            it("AC-7c: a fully framed JSON body of 2 KiB above apiMaxLength 1kb gets 500", async function() {
+                await load([["a", { skipBodyParsing: false }]], { apiMaxLength: "1kb" });
+                const body = Buffer.from(JSON.stringify({ a: "x".repeat(2048) }));
+                const res = await exchange("POST", "/hook", { "Content-Type": "application/json", "Content-Length": String(body.length) }, [body]);
+                res.should.have.property("statusCode", 500);
+                received.should.have.length(0);
+            });
+        });
+
+        it("AC-8: the 413 carries the CORS headers, on a literal path and on a path with a parameter", async function() {
+            await load([["a", { skipBodyParsing: false }], ["b", { url: "/p/:id", skipBodyParsing: false }]], { httpNodeCors: { origin: "*" } });
+            const origin = { Origin: "http://example.test" };
+            const seen = {};
+            const paths = ["/hook", "/p/1"];
+            const results = await Promise.all(paths.map(function(urlPath) {
+                return exchange("POST", urlPath, declared(Object.assign({ "Content-Type": "text/plain" }, origin)), [KIB], { end: false });
+            }));
+            paths.forEach(function(urlPath, i) {
+                const res = results[i];
+                seen[urlPath] = res.settled ? [res.statusCode, res.headers["access-control-allow-origin"]] : "no status line";
+            });
+            seen.should.eql({ "/hook": [413, "*"], "/p/1": [413, "*"] });
+        });
+
+        describe("AC-9: a response that another layer sent before the limit was hit", function() {
+            // answers 503 with Connection: close, and calls next() as the layers of a held request do
+            function answerAndContinue(req, res, next) {
+                if (req.headers["x-answer-first"]) {
+                    res.statusCode = 503;
+                    res.setHeader("Connection", "close");
+                    res.end("busy");
+                }
+                next();
+            }
+
+            // sends the request, then waits for the closing of both sides
+            async function singleAnswer(urlPath, headers) {
+                const strays = collectStrays();
+                try {
+                    const res = await exchange("POST", urlPath, declared(Object.assign({ "x-answer-first": "1" }, headers)), [Buffer.alloc(1024, 0x61)].concat([]), { end: false });
+                    await delay(150);
+                    return { res: res, strays: strays.seen.slice() };
+                } finally {
+                    strays.restore();
+                }
+            }
+
+            function checkSingle(outcome) {
+                outcome.res.should.have.property("statusCode", 503);
+                outcome.res.body.should.equal("busy");
+                outcome.strays.should.eql([]);
+            }
+
+            it("AC-9a: httpNodeMiddleware answers first, a node without options, text/plain with a declared length above the maximum", async function() {
+                await load([["a", { skipBodyParsing: false }]], { httpNodeMiddleware: answerAndContinue });
+                checkSingle(await singleAnswer("/hook", { "Content-Type": "text/plain" }));
+                const served = await exchange("POST", "/hook", { "Content-Type": "text/plain" }, [Buffer.from("b".repeat(100))]);
+                served.should.have.property("statusCode", 200);
+                received.should.have.length(1);
+            });
+
+            it("AC-9b: httpNodeMiddleware answers first, a Do not parse node on a path with a parameter, a declared 2 KiB above apiMaxLength 1kb", async function() {
+                await load([["a", { url: "/p/:id" }]], { apiMaxLength: "1kb", httpNodeMiddleware: answerAndContinue });
+                const strays = collectStrays();
+                let outcome;
+                try {
+                    const res = await exchange("POST", "/p/1", { "x-answer-first": "1", "Content-Type": "application/octet-stream", "Content-Length": "2048" }, [KIB], { end: false });
+                    await delay(150);
+                    outcome = { res: res, strays: strays.seen.slice() };
+                } finally {
+                    strays.restore();
+                }
+                checkSingle(outcome);
+                const served = await exchange("POST", "/p/1", { "Content-Type": "application/octet-stream" }, [Buffer.alloc(500, 0x61)]);
+                served.should.have.property("statusCode", 200);
+                received.should.have.length(1);
+            });
+
+            it("AC-9b: the same with a declared length above the bound of the discarded part of a refused body", async function() {
+                await load([["a", { url: "/p/:id" }]], { apiMaxLength: "1kb", httpNodeMiddleware: answerAndContinue });
+                const strays = collectStrays();
+                let outcome;
+                try {
+                    const res = await exchange("POST", "/p/1", { "x-answer-first": "1", "Content-Type": "application/octet-stream", "Content-Length": String(70 * 1024 * 1024) }, [KIB], { end: false });
+                    await delay(150);
+                    outcome = { res: res, strays: strays.seen.slice() };
+                } finally {
+                    strays.restore();
+                }
+                checkSingle(outcome);
+                const served = await exchange("POST", "/p/1", { "Content-Type": "application/octet-stream" }, [Buffer.alloc(500, 0x61)]);
+                served.should.have.property("statusCode", 200);
+                received.should.have.length(1);
+            });
+
+            it("AC-9c: a layer in front of the capture answers first, a Do not parse node, a declared 2 KiB above apiMaxLength 1kb, with CORS set", async function() {
+                holdLike = answerAndContinue;
+                await load([["a"]], { apiMaxLength: "1kb", httpNodeCors: { origin: "*" } });
+                const strays = collectStrays();
+                let outcome;
+                try {
+                    const res = await exchange("POST", "/hook", { "x-answer-first": "1", Origin: "http://example.test", "Content-Type": "application/octet-stream", "Content-Length": "2048" }, [KIB], { end: false });
+                    await delay(150);
+                    outcome = { res: res, strays: strays.seen.slice() };
+                } finally {
+                    strays.restore();
+                }
+                checkSingle(outcome);
+                const served = await exchange("POST", "/hook", { "Content-Type": "application/octet-stream" }, [Buffer.alloc(500, 0x61)]);
+                served.should.have.property("statusCode", 200);
+                received.should.have.length(1);
+            });
+        });
+
+        it("AC-10: a 413 writes no log line", async function() {
+            await load([["a", { skipBodyParsing: false }]]);
+            const before = helper.log().args.length;
+            const res = await exchange("POST", "/hook", declared({ "Content-Type": "text/plain" }), [KIB], { end: false });
+            res.should.have.property("statusCode", 413);
+            await delay(100);
+            helper.log().args.slice(before).should.eql([]);
+        });
+
+        describe("AC-11: a response that another layer sent while the rest of the body is discarded", function() {
+            // The middleware keeps `res` of the requests that carry the marker header; the test answers it
+            // with 503 and Connection: close once the limit is hit, as the drain does, and then the client
+            // ends the request or closes it
+            async function answeredWhileDiscarding(headers, chunks, closing) {
+                const kept = [];
+                await load([["a", { url: "/p/:id" }]], {
+                    apiMaxLength: "1kb",
+                    httpNodeMiddleware: function(req, res, next) {
+                        if (req.headers["x-keep"]) { kept.push(res) }
+                        next();
+                    }
+                });
+                const strays = collectStrays();
+                try {
+                    const client = openRequest("POST", "/p/1", Object.assign({ "x-keep": "1", "Content-Type": "application/octet-stream" }, headers), chunks);
+                    for (let i = 0; i < 200 && kept.length === 0; i++) { await delay(5) }
+                    kept.should.have.length(1);
+                    await delay(50);
+                    kept[0].statusCode = 503;
+                    kept[0].setHeader("Connection", "close");
+                    kept[0].end("busy");
+                    const status = await within(client.first, ANSWER_BOUND, "no status line");
+                    if (closing === "ends") {
+                        client.req.end();
+                    } else if (closing === "destroys") {
+                        client.req.destroy();
+                    } else if (closing === "closed by the server") {
+                        kept[0].req.destroy();
+                    } else {
+                        kept[0].req.destroy(new Error("failed"));
+                    }
+                    await delay(150);
+                    return { status: status, statuses: client.statuses.slice(), strays: strays.seen.slice() };
+                } finally {
+                    strays.restore();
+                }
+            }
+
+            [
+                ["ends", "the client ends the request"],
+                ["destroys", "the client destroys the request"],
+                ["closed by the server", "the request is closed on the server side"],
+                ["fails", "the request fails with an error on the server side"]
+            ].forEach(function(closing) {
+                it("AC-11a: a declared 4 KiB body that is sent in part, " + closing[1] + " after the 503", async function() {
+                    const outcome = await answeredWhileDiscarding({ "Content-Length": "4096" }, [KIB], closing[0]);
+                    outcome.should.eql({ status: 503, statuses: [503], strays: [] });
+                    const served = await exchange("POST", "/p/1", { "Content-Type": "application/octet-stream" }, [Buffer.alloc(500, 0x61)]);
+                    served.should.have.property("statusCode", 200);
+                });
+
+                it("AC-11b: a chunked body that passes 1 KiB, " + closing[1] + " after the 503", async function() {
+                    const outcome = await answeredWhileDiscarding({ "Transfer-Encoding": "chunked" }, [Buffer.alloc(600, 0x61), Buffer.alloc(600, 0x61)], closing[0]);
+                    outcome.should.eql({ status: 503, statuses: [503], strays: [] });
+                    const served = await exchange("POST", "/p/1", { "Content-Type": "application/octet-stream" }, [Buffer.alloc(500, 0x61)]);
+                    served.should.have.property("statusCode", 200);
+                });
+            });
         });
     });
 
