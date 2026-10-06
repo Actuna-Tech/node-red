@@ -34,6 +34,9 @@
  *   the requests that are still open
  *   #71: startupTimeout - the limit of runtime.start(); a step that completes after it is ignored and released;
  *   phase B: races, the guard of every step, hostile values, failing releases
+ *   #76: a save of the generated instanceId that rejects with a value without text is only a warning
+ *   #75: a rejection of the coordination plugin with a value without text is one warning of the coordination,
+ *   runtime.stop() and the late release finish
  *   #73: a stop during the start abandons the start attempt (startup_stopped); three #71 tests that pinned the
  *   old behaviour of a stop during a start that hangs are changed on purpose (AC-5, AC-7 of #73)
  *   #73 phase B: a stop at every step and boundary, with and without the limit, the drain, hostile reasons, repeated cycles, installs
@@ -1075,6 +1078,24 @@ describe("runtime", function() {
             redNodes.loadFlows.called.should.be.true();
         });
 
+        [
+            {name: "undefined", make: function() { return undefined }, printed: "undefined"},
+            {name: "null", make: function() { return null }, printed: "null"},
+            {name: "Object.create(null)", make: function() { return Object.create(null) }, printed: "(the value cannot be printed)"}
+        ].forEach(function(v) {
+            it("AC-19 (#76): a save that rejects with " + v.name + " logs a warning, keeps the generated id and does not fail the start", async function() {
+                saveSettings.callsFake(function() {return Promise.reject(v.make())});
+                const userSettings = {testSettings: true, httpAdminRoot:"/"};
+                runtime.init(userSettings);
+                await runtime.start();
+                userSettings.instanceId.should.match(GENERATED);
+                settings.get("instanceId").should.equal(userSettings.instanceId);
+                log._.calledWithMatch("runtime.instance-id-save-failed", {message: v.printed}).should.be.true();
+                log.warn.called.should.be.true();
+                redNodes.loadFlows.called.should.be.true();
+            });
+        });
+
         it("waits for the save before the start continues", async function() {
             let finishSave;
             saveSettings.callsFake(function() {return new Promise(resolve => { finishSave = resolve })});
@@ -1380,6 +1401,19 @@ describe("runtime", function() {
             const calls = callsOf(log._, key);
             calls.length.should.be.above(0, "log._ was not called with " + key);
             return calls[0].returnValue;
+        }
+        // after the test the plugin stops quietly: a plugin that rejects must not fail the clean-up of an unfixed runtime
+        function quietAtCleanup(plugin) {
+            cleanups.push(function() {
+                plugin.resign = function() { return Promise.resolve() };
+                plugin.stop = function() { return Promise.resolve() };
+            });
+        }
+        // the `error` parameters of the warnings of the coordination facade with this key (each one was passed to log.warn)
+        function coordinationWarnings(key) {
+            return callsOf(log._, "coordination." + key).filter(function(c) {
+                return log.warn.withArgs(c.returnValue).callCount > 0;
+            }).map(function(c) { return c.args[1].error });
         }
         function warnedWith(key) {
             const t = textOf(key);
@@ -2267,15 +2301,16 @@ describe("runtime", function() {
                     unhandled.should.eql([]);
                 });
 
-                // The real coordination rejects when the plugin rejects with a value without toString (its catch calls
-                // err.toString(), see issue #75): the release must still stop the plugin (I-4, I-12)
+                // Since #75 the real coordination logs a rejection of the plugin with a value without toString
+                // as one coordination.resign-failed warning and does not reject; the release still stops the plugin (I-4, I-12)
                 [
-                    { name: "undefined", make: function() { return Promise.reject(undefined) } },
-                    { name: "null", make: function() { return Promise.reject(null) } }
+                    { name: "undefined", make: function() { return Promise.reject(undefined) }, printed: "undefined" },
+                    { name: "null", make: function() { return Promise.reject(null) }, printed: "null" }
                 ].forEach(function(v) {
-                    it("a plugin whose resign rejects with " + v.name + ": the late release still stops the plugin once, one late-failed warning, no unhandled rejection", async function() {
+                    it("AC-13: a plugin whose resign rejects with " + v.name + ": the late release still stops the plugin once, one resign-failed warning and no late-failed warning, no unhandled rejection", async function() {
                         const unhandled = recordUnhandled();
                         const plugin = testPlugin();
+                        quietAtCleanup(plugin);
                         plugin.resign = sinon.spy(v.make);
                         init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
                         const outcome = track(runtime.start());
@@ -2286,14 +2321,76 @@ describe("runtime", function() {
                         plugin.resign.calledOnce.should.be.true();
                         plugin.stop.calledOnce.should.be.true("the plugin was not stopped after a rejected resign");
                         coordination.isLeader().should.be.false();
-                        const failed = callsOf(log._, LATE_FAILED);
-                        failed.should.have.length(1);
-                        failed[0].args[1].step.should.equal("coordination");
-                        warnedWith(LATE_FAILED).should.equal(1);
+                        callsOf(log._, LATE_FAILED).length.should.equal(0, "late-failed warnings");
+                        coordinationWarnings("resign-failed").should.eql([v.printed]);
                         unhandled.should.eql([]);
                         // a stop of the runtime afterwards does not call the plugin again
                         await runtime.stop();
                         plugin.stop.calledOnce.should.be.true();
+                    });
+
+                    it("AC-12: a plugin whose stop rejects with " + v.name + " (late release): the plugin is stopped once, one stop-failed warning and no late-failed warning, no unhandled rejection", async function() {
+                        const unhandled = recordUnhandled();
+                        const plugin = testPlugin();
+                        quietAtCleanup(plugin);
+                        plugin.stop = sinon.spy(v.make);
+                        init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
+                        const outcome = track(runtime.start());
+                        await clock.tickAsync(1000);
+                        failsWith(outcome, "coordination");
+                        plugin.startGate.resolve();
+                        await flush();
+                        plugin.resign.calledOnce.should.be.true();
+                        plugin.stop.calledOnce.should.be.true();
+                        coordination.isLeader().should.be.false();
+                        coordinationWarnings("stop-failed").should.eql([v.printed]);
+                        callsOf(log._, LATE_FAILED).length.should.equal(0, "late-failed warnings");
+                        unhandled.should.eql([]);
+                        await runtime.stop();
+                        plugin.stop.calledOnce.should.be.true("a second plugin.stop() after runtime.stop()");
+                    });
+
+                    it("AC-10: runtime.stop() with a plugin whose resign rejects with " + v.name + ": every step of the stop runs, the state is stopped", async function() {
+                        const unhandled = recordUnhandled();
+                        const plugin = testPlugin();
+                        quietAtCleanup(plugin);
+                        plugin.startGate.resolve();
+                        plugin.resign = sinon.spy(v.make);
+                        init(REAL_COORDINATION);
+                        await runtime.start();
+                        await flush();
+                        await runtime.stop("SIGTERM");
+                        await flush();
+                        redNodes.stopFlows.calledOnce.should.be.true("the flows were not stopped");
+                        plugin.resign.calledOnce.should.be.true();
+                        plugin.stop.calledOnce.should.be.true("the plugin was not stopped");
+                        redNodes.closeContextsPlugin.calledOnce.should.be.true("the context was not closed");
+                        health.stop.calledOnce.should.be.true("the health server was not stopped");
+                        coordination.isLeader().should.be.false();
+                        instanceState.get().state.should.equal("stopped");
+                        coordinationWarnings("resign-failed").should.eql([v.printed]);
+                        unhandled.should.eql([]);
+                    });
+
+                    it("AC-11: runtime.stop() with a plugin whose stop rejects with " + v.name + ": every step of the stop runs, the state is stopped", async function() {
+                        const unhandled = recordUnhandled();
+                        const plugin = testPlugin();
+                        quietAtCleanup(plugin);
+                        plugin.startGate.resolve();
+                        plugin.stop = sinon.spy(v.make);
+                        init(REAL_COORDINATION);
+                        await runtime.start();
+                        await flush();
+                        await runtime.stop("SIGTERM");
+                        await flush();
+                        redNodes.stopFlows.calledOnce.should.be.true();
+                        plugin.stop.calledOnce.should.be.true();
+                        redNodes.closeContextsPlugin.calledOnce.should.be.true("the context was not closed");
+                        health.stop.calledOnce.should.be.true("the health server was not stopped");
+                        coordination.isLeader().should.be.false();
+                        instanceState.get().state.should.equal("stopped");
+                        coordinationWarnings("stop-failed").should.eql([v.printed]);
+                        unhandled.should.eql([]);
                     });
                 });
 

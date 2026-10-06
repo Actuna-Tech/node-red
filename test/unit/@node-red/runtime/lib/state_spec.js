@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   E-02: tests of the instance state module
  *   #1 (R-47): tests of the condition `reload`
+ *   #76: a listener of the state that throws a value without text or that cannot be printed
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -443,6 +444,40 @@ describe("runtime/state (E-02)", function() {
             seen.should.eql(["starting"]);
             warn.calledOnce.should.be.true();
             state.get().state.should.equal("starting");
+        });
+
+        function throwingMessage() {
+            const err = new Error("x");
+            Object.defineProperty(err, "message", {get: function() { throw new Error("getter of message") }});
+            return err;
+        }
+
+        [
+            {name: "Object.create(null)", make: function() { return Object.create(null) }, text: "instance state listener failed: (the value cannot be printed)"},
+            {name: "Symbol(\"x\")", make: function() { return Symbol("x") }, text: "instance state listener failed: Symbol(x)"},
+            {name: "an Error with a throwing getter of message", make: throwingMessage, text: "instance state listener failed: (the value cannot be printed)"},
+            {name: "Error(\"x\") (regression)", make: function() { return new Error("x") }, text: "instance state listener failed: x"},
+            {name: "undefined (regression)", make: function() { return undefined }, text: "instance state listener failed: undefined"},
+            {name: "null (regression)", make: function() { return null }, text: "instance state listener failed: null"}
+        ].forEach(function(v) {
+            it("AC-20 (#76): a listener that throws " + v.name + ": one warning, the other listeners are notified, the event is emitted, the transition does not throw", function() {
+                const warn = sinon.stub(log, "warn");
+                const seen = [];
+                state.onChange(function() { throw v.make() });
+                state.onChange(info => seen.push(info.state));
+                try {
+                    state.markStarting();
+                } catch (err) {
+                    let printed;
+                    try { printed = String(err) } catch (e) { printed = "(the value cannot be printed)" }
+                    throw new Error("markStarting() threw: " + printed);
+                }
+                seen.should.eql(["starting"]);
+                emitted.should.have.length(1);
+                warn.calledOnce.should.be.true();
+                warn.firstCall.args[0].should.equal(v.text);
+                state.get().state.should.equal("starting");
+            });
         });
 
         it("get() returns a copy", function() {

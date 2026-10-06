@@ -21,6 +21,8 @@
  *   limits for a handler that does not finish; the postDeploy hook (step 11): classifyStart, the event, the
  *   parallel calls, a failure only in the log, the limit of 10 unfinished calls; a result that cannot be read
  *   (a getter that throws, a revoked Proxy) is a failure and never an unhandled rejection (S-C1)
+ *   #76: the report of a failed postDeploy call (getters of message and stack that throw, a Proxy that throws on
+ *   instanceof) does not throw
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1028,5 +1030,116 @@ describe("flows/deployHooks", function() {
                 logged.error.push(m);
             });
         }
+    });
+
+    describe("an error of the postDeploy call that cannot be printed (#76)", function() {
+        let unhandled;
+        let onUnhandled;
+        let uncaught;
+        let savedUncaught;
+        let onUncaught;
+        const flush = () => new Promise(resolve => setImmediate(resolve));
+        const facts = () => ({ rev: "r", type: "full", source: "api", operation: "setFlows", flowId: null, user: null, start: { status: "pending" } });
+
+        beforeEach(function() {
+            unhandled = [];
+            onUnhandled = reason => unhandled.push(reason);
+            process.on("unhandledRejection", onUnhandled);
+            // an exception that nobody catches must not end the test run: it is recorded, mocha's own listeners are put back afterwards
+            uncaught = [];
+            savedUncaught = process.listeners("uncaughtException");
+            process.removeAllListeners("uncaughtException");
+            onUncaught = err => uncaught.push(err);
+            process.on("uncaughtException", onUncaught);
+        });
+        afterEach(function() {
+            process.removeListener("unhandledRejection", onUnhandled);
+            process.removeListener("uncaughtException", onUncaught);
+            savedUncaught.forEach(listener => process.on("uncaughtException", listener));
+        });
+
+        function throwingMessageAndStack() {
+            const error = new Error("boom");
+            Object.defineProperty(error, "message", { get: function() { throw new Error("message getter") } });
+            Object.defineProperty(error, "stack", { get: function() { throw new Error("stack getter") } });
+            return error;
+        }
+        // the debug lines of the call (hooks.add logs one when the handler is registered)
+        function debugLines() {
+            return logged.debug.filter(m => m.indexOf("Adding hook") !== 0);
+        }
+        function paramsOf(line) {
+            return JSON.parse(line.slice(line.indexOf("{")).replace(/\]$/, ""));
+        }
+
+        // hooks.handlers() cannot be replaced (not configurable), so the synchronous part of the call fails
+        // the way a call can fail: the facts of the start are turned into the event with JSON, and toJSON throws
+        function notifyWith(thrown) {
+            hooks.add("postDeploy.a", () => {});
+            const start = { toJSON: function() { throw thrown() } };
+            deployHooks.notifyPostDeploy(Object.assign(facts(), { start: start }));
+        }
+
+        it("AC-30 (a): the synchronous part of the call throws an Error whose message and stack getters throw: one warning with 'no message', the debug line 'no stack', no uncaught exception", async function() {
+            notifyWith(throwingMessageAndStack);
+            await flush();
+            await flush();
+            uncaught.map(String).should.eql([], "an exception left the callback of setImmediate");
+            logged.warn.should.have.length(1);
+            logged.warn[0].should.containEql("deploy.post-hook-failed");
+            paramsOf(logged.warn[0]).message.should.equal("no message");
+            debugLines().should.eql(["no stack"]);
+            unhandled.should.eql([]);
+        });
+
+        [
+            { name: "undefined (regression)", make: () => undefined, message: "no message", stack: "no stack" },
+            { name: "null (regression)", make: () => null, message: "no message", stack: "no stack" },
+            { name: "Error(\"boom\") (regression)", make: () => new Error("boom"), message: "boom", stack: null }
+        ].forEach(function(v) {
+            it("AC-30 (a): the synchronous part of the call throws " + v.name + ": the same warning as before", async function() {
+                notifyWith(v.make);
+                await flush();
+                await flush();
+                uncaught.map(String).should.eql([]);
+                logged.warn.should.have.length(1);
+                paramsOf(logged.warn[0]).message.should.equal(v.message);
+                debugLines().should.have.length(1);
+                if (v.stack) {
+                    debugLines()[0].should.equal(v.stack);
+                } else {
+                    debugLines()[0].should.startWith("Error: boom");
+                }
+            });
+        });
+
+        it("AC-30 (b): a handler passes to done a Proxy that throws an Error with a throwing getter of message on instanceof: one warning with 'no message', no unhandled rejection", async function() {
+            const thrown = new Error("x");
+            Object.defineProperty(thrown, "message", { get: function() { throw new Error("message getter") } });
+            const proxy = new Proxy({}, { getPrototypeOf: function() { throw thrown } });
+            hooks.add("postDeploy.a", (event, done) => done(proxy));
+            deployHooks.notifyPostDeploy(facts());
+            await flush();
+            await flush();
+            uncaught.map(String).should.eql([]);
+            unhandled.should.eql([]);
+            logged.warn.should.have.length(1, "the failure of the handler was not reported");
+            logged.warn[0].should.containEql("deploy.post-hook-failed");
+            logged.warn[0].should.containEql('"id":"postDeploy.a"');
+            paramsOf(logged.warn[0]).message.should.equal("no message");
+        });
+
+        it("AC-30 (b): a handler rejects with an Error whose message getter throws (regression): one warning with 'no message'", async function() {
+            const error = new Error("x");
+            Object.defineProperty(error, "message", { get: function() { throw new Error("message getter") } });
+            hooks.add("postDeploy.a", () => Promise.reject(error));
+            deployHooks.notifyPostDeploy(facts());
+            await flush();
+            await flush();
+            uncaught.map(String).should.eql([]);
+            unhandled.should.eql([]);
+            logged.warn.should.have.length(1);
+            paramsOf(logged.warn[0]).message.should.equal("no message");
+        });
     });
 });

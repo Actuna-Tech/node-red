@@ -305,6 +305,45 @@ Fixes
    (`coordination.instance-id-generated`). The generated id is not made safe against instances that
    start at the same time (the storages have no compare-and-set; a re-read after the save would not
    help), so only an explicit id is a solution for a cluster
+ - Fix (#75): the coordination of instances logs an error of the coordination plugin or of a leadership listener
+   with any value - also `undefined` (`reject()` without an argument), `null`, an object without a prototype or a
+   value whose `toString` throws - as one warning, instead of throwing while it logs the error. Before, such a
+   value made `resign()` and `stop()` of the coordination reject: `RED.stop()` skipped the stop of the flows, the
+   answer to the open HTTP requests, the stop of the plugin and the save of the context, the leadership stayed
+   taken, and the command line exited with 1 (`Shutdown failed`); a listener that threw such a value skipped the
+   next listeners and left the event of the plugin (an instance that took over the leadership did not tell its
+   nodes). Now `resign()` and `stop()` never reject because of it, the listeners are all called, and `stop()` always
+   ends stopped (`isLeader()` is `false`, a next `start()` starts the plugin again), also when the unsubscribe
+   function returned by `onLeaderChange` of the plugin throws (one more `coordination.stop-failed` warning). A value
+   that cannot be printed gives the text `(the value cannot be printed)`. The text of every value that was printed
+   before, every `Error` included, is the same. After a SIGTERM with a plugin whose `resign()` rejects with
+   `undefined` the command line now exits with 0, as with an `Error`. The late release of a coordination plugin
+   that started after `startupTimeout` (#71) logs such a rejection as `coordination.resign-failed` /
+   `coordination.stop-failed` instead of `runtime.startup-step-late-failed`. The defect was released in
+   `5.0.7-actuna.1`. Tests: `coordination/index_spec.js`, `index_spec.js`, `startup-failure_spec.js`
+ - Fix (#76): the other extensions of the fork log an error with any value (also `undefined`, `null` or a value
+   that cannot be converted to a string) without throwing, and the operation goes on as it does for an `Error`:
+   a failed save of the generated `instanceId` with `undefined` or `null` is only a warning and the start goes on
+   (before, the start failed); an instance state listener that throws no longer skips the other listeners and the
+   `instance:state` event; a held HTTP request that cannot be released no longer leaves the other held requests
+   waiting; a `preShutdown` or `preReload` hook that rejects with such a value is logged and the stop or the reload
+   goes on at once (before, it waited for `shutdownTimeout` or `preReloadTimeout`); the observer of storage
+   (`deploy.reload.watch`) logs such errors of its stop, of a read of storage (the retry is still scheduled), of the
+   slots of `deploy.reload.concurrency` and of a whole cycle, without an unhandled rejection (also when the `code`
+   of the error in the debug line of a failed comparison of the credentials cannot be read); the `postDeploy` hooks
+   log an error whose `message` or `stack` getter throws as `no message` / `no stack`; the drain of the HTTP
+   requests (`deploy.drainHttpNodeRequests`) logs a failure whose `code` cannot be read with the code `unknown`
+   and goes on (the other requests are answered, the wait ends). In `RED.hooks.trigger` (promise form) a handler
+   that rejects with a value that `new Error(value)` cannot convert, that breaks `instanceof` (a Proxy whose
+   `getPrototypeOf` throws) or that cannot take the hook id (`err.hook`) now rejects with an `Error` with the message
+   `(the value cannot be printed)` and the hook id; before, the promise never settled. A value that converts gives
+   the same message as before and an `Error` is passed on as the same object. The texts of the log are the same for
+   every value that was printed before (every `Error`), except that a concatenated debug or warning text of an
+   object or `Error` without a `message` and with its own `valueOf` is now its string form. The texts come from one
+   internal module of the runtime (`printable.js`), not a part of `RED.util`. The state listeners, the `preShutdown`
+   hook and the observer of storage were released in `5.0.7-actuna.1` with this defect. Tests: `printable_spec.js`,
+   `index_spec.js`, `state_spec.js`, `httpHold_spec.js`, `health_shutdown_spec.js`, `flows/reload_spec.js`,
+   `flows/deployHooks_spec.js`, `httpDrain_spec.js`, `util/lib/hooks_spec.js`
 
 Documentation
 
