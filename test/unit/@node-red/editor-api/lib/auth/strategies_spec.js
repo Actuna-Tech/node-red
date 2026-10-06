@@ -13,6 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+/*
+ * Modified by Actuna Sp. z o.o.:
+ *   #68: tests of a failed save of the sessions in the bearer strategy and in the password
+ *   token exchange (a failed save is logged, the answer is a general error, no token is issued)
+ * This notice is required by section 4(b) of the Apache License 2.0.
+ */
 
 var should = require("should");
 var sinon = require('sinon');
@@ -23,6 +29,8 @@ var strategies = NR_TEST_UTILS.require("@node-red/editor-api/lib/auth/strategies
 var Users = NR_TEST_UTILS.require("@node-red/editor-api/lib/auth/users");
 var Tokens = NR_TEST_UTILS.require("@node-red/editor-api/lib/auth/tokens");
 var Clients = NR_TEST_UTILS.require("@node-red/editor-api/lib/auth/clients");
+var { log: utilLog } = NR_TEST_UTILS.require("@node-red/util");
+var { settle, flush, trackRejections } = require("nr-test-utils/fault-injection");
 
 describe("api/auth/strategies", function() {
     describe("Password Token Exchange", function() {
@@ -339,5 +347,74 @@ describe("api/auth/strategies", function() {
             });
         });
 
+    });
+});
+
+describe("api/auth/strategies - a failed save of the sessions (#68)", function() {
+    var sandbox;
+    var tracker;
+    var warn;
+    var audit;
+
+    beforeEach(function() {
+        sandbox = sinon.createSandbox();
+        tracker = trackRejections();
+        warn = sandbox.stub(utilLog, "warn");
+        audit = sandbox.stub(utilLog, "audit");
+    });
+    afterEach(function() {
+        sandbox.restore();
+    });
+
+    function storageError() {
+        var err = new Error("ENOSPC: no space left on device, write '/tmp/userdir/.sessions.json'");
+        err.code = "ENOSPC";
+        return err;
+    }
+    function callbackRecorder() {
+        var calls = [];
+        var finished = new Promise(function(resolve) {
+            calls.finished = resolve;
+        });
+        var callback = function() {
+            calls.push(Array.prototype.slice.call(arguments));
+            calls.finished();
+        };
+        return { calls: calls, callback: callback, finished: finished };
+    }
+
+    it("AC-Q1c (S11): the bearer strategy answers as for a bad token when the sessions cannot be saved", async function() {
+        sandbox.stub(Tokens, "get").callsFake(function() { return tracker.reject(storageError()) });
+        var recorder = callbackRecorder();
+        strategies.bearerStrategy("token-68", recorder.callback);
+        var result = await settle(recorder.finished, 500);
+        result.state.should.equal("resolved", "the bearer strategy did not answer (" + result.state + ")");
+        await flush();
+        recorder.calls.should.have.length(1);
+        recorder.calls[0].should.eql([null, false]);
+        warn.called.should.be.true();
+        tracker.dropped().should.have.length(0);
+    });
+
+    it("AC-Q1d (S12): the password exchange answers with a general failure, issues no token and writes no audit entry of a sign-in", async function() {
+        sandbox.stub(Users, "authenticate").callsFake(function() {
+            return Promise.resolve({ username: "user68d", permissions: "*" });
+        });
+        sandbox.stub(Tokens, "create").callsFake(function() { return tracker.reject(storageError()) });
+        var recorder = callbackRecorder();
+        strategies.passwordTokenExchange({ id: "node-red-admin" }, "user68d", "pw", "*", recorder.callback);
+        var result = await settle(recorder.finished, 500);
+        result.state.should.equal("resolved", "the exchange did not answer (" + result.state + ")");
+        await flush();
+        recorder.calls.should.have.length(1);
+        var args = recorder.calls[0];
+        args[0].should.be.instanceof(Error);
+        args[0].should.have.property("message", "unexpected_error");
+        args[0].should.not.have.property("code");
+        (args[0].stack || "").should.not.containEql("/tmp/userdir");
+        should(args[1]).not.be.ok();
+        audit.args.some(function(a) { return a[0] && a[0].event === "auth.login" }).should.be.false();
+        warn.called.should.be.true();
+        tracker.dropped().should.have.length(0);
     });
 });

@@ -16,6 +16,9 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-02: tests of publicRoute() and of the needsPermission() marker
+ *   #68: tests of a failed save of the sessions in the token request, the revoke request,
+ *   the exchange of the code and the generic strategy (a failed save is logged and answered
+ *   with a general error)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -30,6 +33,12 @@ var auth = NR_TEST_UTILS.require("@node-red/editor-api/lib/auth");
 var Users = NR_TEST_UTILS.require("@node-red/editor-api/lib/auth/users");
 var Tokens = NR_TEST_UTILS.require("@node-red/editor-api/lib/auth/tokens");
 var Permissions = NR_TEST_UTILS.require("@node-red/editor-api/lib/auth/permissions");
+var { log: utilLog } = NR_TEST_UTILS.require("@node-red/util");
+var http = require("http");
+var request = require("nr-test-utils/supertest");
+var express = require("express");
+var bodyParser = require("body-parser");
+var { settle, flush, trackRejections } = require("nr-test-utils/fault-injection");
 
 describe("api/auth/index",function() {
 
@@ -231,6 +240,195 @@ describe("api/auth/index",function() {
             auth.init({});
             auth.needsPermission("foo")[ADMIN_ROUTE_AUTH].should.equal("permission");
             auth.needsPermission("")[ADMIN_ROUTE_AUTH].should.equal("permission");
+        });
+    });
+});
+
+describe("api/auth/index - a failed save of the sessions (#68)", function() {
+    var sandbox;
+    var tracker;
+    var warn;
+    var audit;
+    var servers;
+
+    beforeEach(function() {
+        sandbox = sinon.createSandbox();
+        tracker = trackRejections();
+        warn = sandbox.stub(utilLog, "warn");
+        audit = sandbox.stub(utilLog, "audit");
+        sandbox.stub(utilLog, "error");
+        servers = [];
+        auth.init({}, {});
+    });
+    afterEach(function() {
+        // a request that got no answer must not keep its server open
+        servers.forEach(function(server) {
+            server.closeAllConnections();
+            if (server.listening) {
+                server.close();
+            }
+        });
+        sandbox.restore();
+        // back to the state before the sessions storage was set
+        Tokens.init({});
+    });
+
+    var PATH_TEXT = "/tmp/userdir/.sessions.json";
+    function storageError() {
+        var err = new Error("ENOSPC: no space left on device, write '" + PATH_TEXT + "'");
+        err.code = "ENOSPC";
+        return err;
+    }
+    function createApp(setup) {
+        var app = express();
+        app.use(bodyParser.json());
+        app.use(bodyParser.urlencoded({ extended: true }));
+        app.use(passport.initialize());
+        setup(app);
+        var server = http.createServer(app);
+        servers.push(server);
+        return server;
+    }
+    // A request without an answer must be an assertion failure, not a timeout of the test
+    async function send(req) {
+        var result = await settle(req, 1000);
+        if (result.state === "timeout") {
+            req.abort();
+        }
+        result.state.should.equal("resolved", "the request got no answer (" + result.state + ")");
+        return result.value;
+    }
+    function auditedEvents() {
+        return audit.args.map(function(args) { return args[0] && args[0].event });
+    }
+
+    it("AC-Q1d (S12): POST /auth/token with a password gives 500 without a token and without the path", async function() {
+        sandbox.stub(Users, "authenticate").callsFake(function() {
+            return Promise.resolve({ username: "user68i", permissions: "*" });
+        });
+        sandbox.stub(Tokens, "create").callsFake(function() { return tracker.reject(storageError()) });
+        var app = createApp(function(app) {
+            app.post("/auth/token", auth.ensureClientSecret, auth.authenticateClient, auth.getToken, auth.errorHandler);
+        });
+        var res = await send(request(app).post("/auth/token").type("form").send({
+            client_id: "node-red-admin", grant_type: "password", scope: "*", username: "user68i", password: "pw"
+        }));
+        res.status.should.equal(500);
+        res.text.should.not.containEql("access_token");
+        res.text.should.not.containEql(PATH_TEXT);
+        res.text.should.not.containEql("ENOSPC");
+        res.body.should.eql({ error: "server_error", error_description: "unexpected_error" });
+        auditedEvents().should.not.containEql("auth.login");
+        warn.called.should.be.true();
+        tracker.dropped().should.have.length(0);
+    });
+
+    it("AC-Q1e (S13): POST /auth/revoke gives the general 400 answer without details and without the audit entry of a sign-out", async function() {
+        sandbox.stub(Tokens, "revoke").callsFake(function() { return tracker.reject(storageError()) });
+        var app = createApp(function(app) {
+            app.post("/auth/revoke", auth.revoke);
+        });
+        var res = await send(request(app).post("/auth/revoke").send({ token: "token-68" }));
+        res.status.should.equal(400);
+        res.body.should.eql({ error: "unexpected_error" });
+        res.text.should.not.containEql(PATH_TEXT);
+        warn.called.should.be.true();
+        auditedEvents().should.not.containEql("auth.login.revoke");
+        tracker.dropped().should.have.length(0);
+    });
+
+    it("AC-Q1h (S18): POST /auth/token with a code gives 400 unexpected_error and logs the original error", async function() {
+        sandbox.stub(Tokens, "exchangeCodeForToken").callsFake(function() { return tracker.reject(storageError()) });
+        var app = createApp(function(app) {
+            app.post("/auth/token", auth.exchangeCodeForToken);
+        });
+        var res = await send(request(app).post("/auth/token").send({ code: "code-68" }));
+        res.status.should.equal(400);
+        res.body.should.eql({ error: "unexpected_error" });
+        res.text.should.not.containEql(PATH_TEXT);
+        warn.args.some(function(args) { return args.join(" ").indexOf(PATH_TEXT) !== -1 }).should.be.true();
+        tracker.dropped().should.have.length(0);
+    });
+    it("AC-Q1h (S18): POST /auth/token with a wrong code gives the same 400 body", async function() {
+        await Tokens.init({}, {
+            getSessions: function() { return Promise.resolve({}) },
+            saveSessions: function() { return Promise.resolve() }
+        });
+        var app = createApp(function(app) {
+            app.post("/auth/token", auth.exchangeCodeForToken);
+        });
+        var res = await send(request(app).post("/auth/token").send({ code: "wrong-code-68" }));
+        res.status.should.equal(400);
+        res.body.should.eql({ error: "unexpected_error" });
+    });
+
+    describe("completeVerify of the generic strategy", function() {
+        var passportStrategyName = "strategy68";
+        var verify;
+        beforeEach(function() {
+            class FakeStrategy extends passport.Strategy {
+                constructor(options, verifyFunction) {
+                    super();
+                    this.name = passportStrategyName;
+                    verify = verifyFunction;
+                }
+                authenticate() {}
+            }
+            auth.init({ adminAuth: { type: "strategy", strategy: {} }, httpAdminRoot: "/" }, {});
+            var adminApp = { use: function() {}, get: function() {}, post: function() {} };
+            auth.genericStrategy(adminApp, { name: passportStrategyName, strategy: FakeStrategy, options: {} });
+        });
+        afterEach(function() {
+            passport.unuse(passportStrategyName);
+            // the authentication settings of the module must not stay on for the other test files
+            auth.init({}, {});
+        });
+
+        function callbackRecorder() {
+            var calls = [];
+            var finished = new Promise(function(resolve) { calls.finished = resolve });
+            return {
+                calls: calls,
+                finished: finished,
+                callback: function() {
+                    calls.push(Array.prototype.slice.call(arguments));
+                    calls.finished();
+                }
+            };
+        }
+
+        it("S14 (guard of the current behaviour): a saved token is passed on in the user", async function() {
+            var user = { username: "user68f", permissions: "*" };
+            var tokens = { exchangeCode: "code" };
+            sandbox.stub(Users, "authenticate").callsFake(function() { return Promise.resolve(user) });
+            sandbox.stub(Tokens, "create").callsFake(function() { return Promise.resolve(tokens) });
+            var recorder = callbackRecorder();
+            verify("profile68", recorder.callback);
+            var result = await settle(recorder.finished, 500);
+            result.state.should.equal("resolved");
+            recorder.calls.should.have.length(1);
+            should.not.exist(recorder.calls[0][0]);
+            recorder.calls[0][1].should.equal(user);
+            user.tokens.should.equal(tokens);
+        });
+        it("AC-Q1f (S14): a failed save gives one general error and the user gets no tokens", async function() {
+            var user = { username: "user68g", permissions: "*" };
+            sandbox.stub(Users, "authenticate").callsFake(function() { return Promise.resolve(user) });
+            sandbox.stub(Tokens, "create").callsFake(function() { return tracker.reject(storageError()) });
+            var recorder = callbackRecorder();
+            verify("profile68", recorder.callback);
+            var result = await settle(recorder.finished, 500);
+            result.state.should.equal("resolved", "the verification did not answer (" + result.state + ")");
+            await flush();
+            recorder.calls.should.have.length(1);
+            var err = recorder.calls[0][0];
+            err.should.be.instanceof(Error);
+            err.should.have.property("message", "unexpected_error");
+            err.should.not.have.property("code");
+            should.not.exist(user.tokens);
+            warn.called.should.be.true();
+            auditedEvents().should.not.containEql("auth.login");
+            tracker.dropped().should.have.length(0);
         });
     });
 });
