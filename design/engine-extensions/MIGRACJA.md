@@ -381,7 +381,7 @@ zewnętrznych rejestrujących trasy na `RED.httpNode`. Przy `deploy.drainHttpNod
 | Wtyczka koordynacji | nowy typ wtyczki `node-red-coordination` (lider, zajęcie zadania); wybór tylko jawnie w `coordination.plugin`; `inject` z `singleInstance`: cron – zajęcie klucza `<id>:<czas>` (dokładnie raz), interwał – lider (D-14); węzeł na instancji niebędącej liderem pokazuje status „standby”; `mqtt in` z `singleInstance` – osobny pakiet (R-21); `start` tylko łączy z koordynatorem i nie czeka na przywództwo; przy `startupTimeout` (#71) start wtyczki, który rozwiąże się po limicie albo po zatrzymaniu (#73), jest od razu zakończony wywołaniami `resign()` i `stop()` (`stop()` także wtedy, gdy `resign()` się nie powiedzie), a start, który nigdy się nie rozstrzygnie, nie może zostać zwolniony – wtyczka powinna mieć własne limity połączenia | Z-10 |
 | Hooki | `preDeploy` (tylko walidacja: 400 `deploy_rejected` + `reason`, 503 `deploy_hook_failed`, 503 `deploy_hook_timeout`; §4.3), `postDeploy` (source `api`/`internal`/`storage`, asynchronicznie), `preReload` (bez weta), `preShutdown` (z `reason`); brak hooków wdrożenia przy starcie procesu i operacjach Projektów (R-15, R-20, R-23, R-50); **`preDeploy` i `postDeploy` rejestruje się tylko przez `RED.hooks.add`** (wtyczka, węzeł); `preReload` i `preShutdown` także z ustawienia `hooks` w `settings.js` (rejestracja przy `init`, #7) | Z-06, Z-09, Z-08 |
 | Trasy administracyjne bloczków | przy `httpAdminNodeRoutes: "authenticated"` trasa bez uprawnienia wymaga sesji; publiczne – `RED.auth.publicRoute()` | Z-02 |
-| Trasy HTTP bloczków | `node.registerHttpRoute(method, path, ...handlers)` – automatyczne zdejmowanie przy zamknięciu | Z-07 |
+| Trasy HTTP bloczków | `node.registerHttpRoute(method, path, ...handlers)` → zamrożony uchwyt `{method, path, remove()}`; runtime zdejmuje trasę sam przy każdym zatrzymaniu węzła (wdrożenie, usunięcie, zatrzymanie flow, `RED.stop`) – bez własnego `close` i bez `_router`; `remove()` zdejmuje wcześniej; zob. §5.3 (#11, R-53) | Z-07 |
 | Dodatki edytora (15 obecnych) | przeniesienie na API z Z-12.01…Z-12.14 (bez selektorów DOM); kolejność pakietów Z-12c → a → b → d → e; przestarzałe API – min. jedna wersja minor z ostrzeżeniem (R-24) | Z-12 |
 | Logowanie (12.01) | **wariant A**: skrypty logowania przez `editorTheme.page.scripts` lub wtyczkę motywu (bez zmian serwera); dodatkowe pola/kroki – hook edytora `loginPost` z własną trasą pluginu (R-25) | Z-12 |
 | Kod jednorazowy (12.02) | kod wydaje własna strategia `adminAuth`/plugin; rdzeń przyjmuje `#code=<kod>&next=<hash>`; przechowywanie tokena: `editorTheme.auth.tokenStorage` – `"local"` (domyślnie, `localStorage`) lub `"session"` (`sessionStorage`) (R-26, R-33) | Z-12 |
@@ -464,6 +464,54 @@ watchFlows(callback)
   przeładowanie w P-02 – „Przeładuj flow” (R-12).
 - Słownik terminów zatwierdza Zamawiający; dodatki edytora i dokumentacja produktu powinny używać tych samych terminów.
 - Automatyczny wybór języka `pl`; test zgodności kluczy pl↔en-US w `npm test`.
+
+### 5.3 Trasy HTTP węzłów: `node.registerHttpRoute` (Z-07, #11, R-53)
+
+Dotyczy węzłów spoza rdzenia, które rejestrują trasy na `RED.httpNode`. Trasy dodane po staremu działają jak dotąd (nie są
+zdejmowane automatycznie); przejście jest zalecane, bo prywatny `_router` znika w Express 5.
+
+**Przed:**
+
+```js
+function MyNode(n) {
+    RED.nodes.createNode(this, n);
+    const node = this;
+    const handler = function(req, res) { /* ... */ };
+    RED.httpNode.post(n.path, handler);
+    node.on("close", function() {
+        // własne zdejmowanie po prywatnym stosie routera
+        const stack = RED.httpNode._router.stack;
+        for (let i = stack.length - 1; i >= 0; i--) {
+            if (stack[i].route && stack[i].route.stack.some(l => l.handle === handler)) {
+                stack.splice(i, 1);
+            }
+        }
+    });
+}
+```
+
+**Po:**
+
+```js
+function MyNode(n) {
+    RED.nodes.createNode(this, n);
+    // ... reszta konstruktora; trasa na końcu
+    this.registerHttpRoute("post", n.path, function(req, res) { /* ... */ });
+}
+```
+
+- **Zdejmowanie:** usuń własny `splice` z `close` – runtime zdejmuje trasy instancji na początku `close` (przed callbackami `close`)
+  i przy zatrzymaniu węzła przez flow, także gdy węzeł nadpisuje `close`. `remove()` z uchwytu zdejmuje trasę wcześniej (idempotentne,
+  działa bez `this`).
+- **Rejestruj na końcu konstruktora:** konstruktor, który rzuci po rejestracji, zostawia trasę do restartu (węzeł nie powstaje, runtime
+  go nie zamyka).
+- **Argumenty:** metoda `get|post|put|patch|delete|options|head|all` (dowolna wielkość liter); ścieżka – string albo `RegExp`, bez
+  zmian dla Express; handlery – funkcje albo tablice funkcji (także handler błędu o 4 argumentach). Inaczej `TypeError` i nic nie jest
+  dodane. Rejestracja po rozpoczęciu zamykania węzła jest pomijana z jednym ostrzeżeniem (`httpRoutes.after-close`).
+- **Czego API nie dodaje:** `httpNodeMiddleware`, CORS, parsowania cookies i ciała – przekaż je sam w `handlers` (jak `http in`).
+  `httpNodeAuth` obowiązuje (ta sama aplikacja).
+- **Drenaż (#40, §4.7):** opcjonalnie oznacz handler kończący żądanie `handler[Symbol.for("node-red.httpNode.drain")] = true` – jak dotąd.
+- **Zgodność:** sprawdź `typeof node.registerHttpRoute === "function"`, jeśli węzeł ma działać także na runtime bez tego API.
 
 ## 6. Kod korzystający z łatek załącznika A
 
