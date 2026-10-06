@@ -31,6 +31,7 @@
  *   node, upload, routes without parsing, JSON and urlencoded, CORS, what the editor settings carry, node warnings)
  *   #48: acceptance tests of the cap of 1000 parts of an upload (with the setting httpInMaxBodySize or the field of the
  *   node) and of the limit of 100 for a number in brackets in the name of a multipart field (413 on every upload route)
+ *   #48: acceptance tests of the limit of 8 for the nesting depth of the name of a multipart field (413 on every upload route)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -3387,6 +3388,147 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
                 const res = await exchange("POST", "/hook", { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": String(body.length) }, [body], { bound: 5000 });
                 res.should.have.property("statusCode", 200);
                 JSON.parse(JSON.stringify(received[0].msg.payload)).should.eql({ a: { 5000: "v" } });
+            });
+        });
+
+        // The depth of a field name (the number of "[" in it) is limited to 8 on every upload route (#48, REV-001)
+        describe("REV-001: the nesting depth of a field name", function() {
+            const KEYS8 = "a[b][c][d][e][f][g][h][i]";
+            const KEYS9 = KEYS8 + "[j]";
+            const MIXED8 = "data[items][0][options][1][value][x][y][z]";
+            const MIXED9 = MIXED8 + "[w]";
+            const INDEXES8 = "n[0][0][0][0][0][0][0][0]";
+            const INDEXES9 = INDEXES8 + "[0]";
+            const CONFIGS = [
+                ["no limit", UPLOAD, {}],
+                ["the setting", UPLOAD, { [SETTING]: "50mb" }],
+                ["the field of the node only", Object.assign({ maxBodySize: "100mb" }, UPLOAD), {}]
+            ];
+            function roundTrip(value) { return JSON.parse(JSON.stringify(value)) }
+
+            CONFIGS.forEach(function(config) {
+                it("REV-001: " + config[0] + ", depth 8 (keys): 200 and the exact payload", async function() {
+                    await load([["a", config[1]]], config[2]);
+                    markLog();
+                    expectAccepted(await sendParts([fieldPart(KEYS8, "v")]));
+                    roundTrip(received[0].msg.payload).should.eql({ a: { b: { c: { d: { e: { f: { g: { h: { i: "v" } } } } } } } } });
+                    noLogSinceMark();
+                });
+
+                it("REV-001: " + config[0] + ", depth 9 (keys): 413, no message, no log", async function() {
+                    await load([["a", config[1]]], config[2]);
+                    markLog();
+                    expectTooLarge(await sendParts([fieldPart(KEYS9, "v")]));
+                    received.should.have.length(0);
+                    noLogSinceMark();
+                });
+
+                it("REV-001: " + config[0] + ", depth 9 (keys) in a chunked body: 413, then the next request is served", async function() {
+                    await load([["a", config[1]]], config[2]);
+                    expectTooLarge(await sendParts([fieldPart(KEYS9, "v")], { chunked: true }));
+                    received.should.have.length(0);
+                    expectAccepted(await sendParts([fieldPart(KEYS8, "v")], { chunked: true }));
+                });
+            });
+
+            it("REV-001: a name that mixes indexes and keys, depth 8: 200 and the exact payload", async function() {
+                await load([["a", UPLOAD]], {});
+                expectAccepted(await sendParts([fieldPart(MIXED8, "v")]));
+                roundTrip(received[0].msg.payload).should.eql({ data: { items: [{ options: [null, { value: { x: { y: { z: "v" } } } }] }] } });
+            });
+
+            it("REV-001: a name that mixes indexes and keys, one more level (depth 9): 413, no message, no log", async function() {
+                await load([["a", UPLOAD]], {});
+                markLog();
+                expectTooLarge(await sendParts([fieldPart(MIXED9, "v")]));
+                received.should.have.length(0);
+                noLogSinceMark();
+            });
+
+            it("REV-001: only indexes, depth 8: 200 and nested arrays; depth 9: 413", async function() {
+                await load([["a", UPLOAD]], {});
+                expectAccepted(await sendParts([fieldPart(INDEXES8, "v")]));
+                roundTrip(received[0].msg.payload).should.eql({ n: [[[[[[[["v"]]]]]]]] });
+                received.length = 0;
+                expectTooLarge(await sendParts([fieldPart(INDEXES9, "v")]));
+                received.should.have.length(0);
+            });
+
+            it("REV-001: the depth of a name in a body with other valid fields: the deep name decides, wherever it stands", async function() {
+                await load([["a", UPLOAD]], {});
+                expectTooLarge(await sendParts([fieldPart("x", "1"), fieldPart(KEYS9, "v"), fieldPart("y", "2")]));
+                expectTooLarge(await sendParts([fieldPart(KEYS9, "v"), fieldPart("x", "1")]));
+                expectTooLarge(await sendParts([fieldPart("x", "1"), fieldPart("y[1]", "2"), fieldPart(KEYS9, "v")]));
+                received.should.have.length(0);
+            });
+
+            it("REV-001: the 413 carries the CORS headers, with and without a size limit", async function() {
+                await load([["a", UPLOAD]], { httpNodeCors: { origin: "*" } });
+                let res = await sendParts([fieldPart(KEYS9, "v")], { headers: ORIGIN });
+                expectTooLarge(res);
+                res.headers["access-control-allow-origin"].should.equal("*");
+                await stopServerOf();
+                await load([["a", Object.assign({ maxBodySize: "100mb" }, UPLOAD)]], { httpNodeCors: { origin: "*" } });
+                res = await sendParts([fieldPart(KEYS9, "v")], { headers: ORIGIN });
+                expectTooLarge(res);
+                res.headers["access-control-allow-origin"].should.equal("*");
+                received.should.have.length(0);
+            });
+
+            it("REV-001: exactly one answer reaches the client, no stray error", async function() {
+                await load([["a", UPLOAD]], {});
+                (await everyAnswer([fieldPart(KEYS9, "v")])).should.eql({ statuses: [413], strays: [] });
+                received.should.have.length(0);
+            });
+
+            it("REV-001: a response that another layer already sent stays the only one (202), no message, no log", async function() {
+                await load([["a", UPLOAD]], { httpNodeMiddleware: function(req, res, next) { res.status(202).end(); next() } });
+                markLog();
+                (await everyAnswer([fieldPart(KEYS9, "v")])).should.eql({ statuses: [202], strays: [] });
+                received.should.have.length(0);
+                noLogSinceMark();
+            });
+
+            it("REV-001: the rest of the body is read before the answer: a deep name first, 2 MB after it: 413 within the bound", async function() {
+                await load([["a", UPLOAD]], {});
+                const parts = [fieldPart(KEYS9, "v")].concat(files(22, 100 * 1024));
+                const started = Date.now();
+                expectTooLarge(await sendParts(parts, { bound: 10000 }));
+                (Date.now() - started).should.be.below(10000);
+                received.should.have.length(0);
+                expectAccepted(await sendParts([fieldPart("a[1]", "v")]));
+            });
+
+            it("REV-001: names without brackets are not affected, however long a dotted name is", async function() {
+                await load([["a", UPLOAD]], {});
+                const dotted = "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p";
+                expectAccepted(await sendParts([fieldPart(dotted, "v"), fieldPart("plain", "w")]));
+                roundTrip(received[0].msg.payload).should.eql({ [dotted]: "v", plain: "w" });
+            });
+
+            it("REV-001: a file part with a deep name is not checked (as with a number above 100)", async function() {
+                await load([["a", UPLOAD]], {});
+                expectAccepted(await sendParts([filePart(KEYS9, "data")]), 1);
+                received[0].msg.req.files[0].fieldname.should.equal(KEYS9);
+            });
+
+            it("REV-001: urlencoded and JSON bodies with a deep name are not changed (200)", async function() {
+                await load([["a", UPLOAD]], {});
+                const form = Buffer.from(KEYS9 + "=v");
+                let res = await exchange("POST", "/hook", { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": String(form.length) }, [form], { bound: 5000 });
+                res.should.have.property("statusCode", 200);
+                const json = Buffer.from(JSON.stringify({ [KEYS9]: "v" }));
+                res = await exchange("POST", "/hook", { "Content-Type": "application/json", "Content-Length": String(json.length) }, [json], { bound: 5000 });
+                res.should.have.property("statusCode", 200);
+                received.should.have.length(2);
+            });
+
+            it("REV-001: the other limits stay: 1001 parts with the setting still get 413, a[100] is accepted, a[101] gets 413", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                expectTooLarge(await sendParts(files(CAP + 1, 1)));
+                expectTooLarge(await sendParts([fieldPart("a[101]", "v")]));
+                received.should.have.length(0);
+                expectAccepted(await sendParts([fieldPart("a[100]", "v")]));
             });
         });
     });
