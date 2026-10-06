@@ -528,6 +528,17 @@ Fixes
    with a truthy value, a handler with two arguments and a synchronous `return` or `throw` behave as before. A
    handler that was removed while its promise was pending and then rejects without a value now ends the chain too
    (it used to move to the next handler)
+ - Fix (#48, part 1 of 2): `http in`: a text body above the maximum string length of Node.js is answered with 413
+   `Payload Too Large` and does not reach the flow. A text body is one read as a string: no `Content-Type`,
+   `text/*`, XML and the `application/*` types other than `octet-stream`, `cbor` and `x-protobuf`. The answer is
+   the one of the size limit of #16, with the CORS headers of `httpNodeCors`, and writes no log line. The limit counts
+   bytes, so a multibyte text above it in bytes is answered with 413 too. A binary body read by a node without "Do
+   not parse request body" keeps no limit, as before. The JSON and urlencoded parsers get the maximum string length
+   as their limit when `apiMaxLength` gives a larger size (by the size rules of `body-parser`); a larger body takes
+   their existing error path, and any other `apiMaxLength` is passed to them unchanged. A 413 is no longer written
+   to a request that another layer (`httpNodeMiddleware`, the hold or the drain of the requests) already answered.
+   The change does not limit the size of the accepted bodies; a limit in front of Node-RED (a proxy) does. No new
+   setting
 
 Features
 
