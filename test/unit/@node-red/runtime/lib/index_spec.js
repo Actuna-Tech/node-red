@@ -2229,6 +2229,53 @@ describe("runtime", function() {
                     unhandled.should.eql([]);
                 });
 
+                // The real coordination rejects when the plugin rejects with a value without toString (its catch calls
+                // err.toString(), see issue #75): the release must still stop the plugin (I-4, I-12)
+                [
+                    { name: "undefined", make: function() { return Promise.reject(undefined) } },
+                    { name: "null", make: function() { return Promise.reject(null) } }
+                ].forEach(function(v) {
+                    it("a plugin whose resign rejects with " + v.name + ": the late release still stops the plugin once, one late-failed warning, no unhandled rejection", async function() {
+                        const unhandled = recordUnhandled();
+                        const plugin = testPlugin();
+                        plugin.resign = sinon.spy(v.make);
+                        init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
+                        const outcome = track(runtime.start());
+                        await clock.tickAsync(1000);
+                        failsWith(outcome, "coordination");
+                        plugin.startGate.resolve();
+                        await flush();
+                        plugin.resign.calledOnce.should.be.true();
+                        plugin.stop.calledOnce.should.be.true("the plugin was not stopped after a rejected resign");
+                        coordination.isLeader().should.be.false();
+                        const failed = callsOf(log._, LATE_FAILED);
+                        failed.should.have.length(1);
+                        failed[0].args[1].step.should.equal("coordination");
+                        warnedWith(LATE_FAILED).should.equal(1);
+                        unhandled.should.eql([]);
+                        // a stop of the runtime afterwards does not call the plugin again
+                        await runtime.stop();
+                        plugin.stop.calledOnce.should.be.true();
+                    });
+                });
+
+                it("coordination.resign rejecting with an Error: the late release still calls coordination.stop once, the first error is logged once", async function() {
+                    const unhandled = recordUnhandled();
+                    fake(coordination, "resign", function() { return Promise.reject(new Error("resign rejects")) });
+                    const hung = startHung(row("coordination"));
+                    await clock.tickAsync(1000);
+                    failsWith(hung.outcome, "coordination");
+                    hung.d.resolve();
+                    await flush();
+                    coordination.resign.calledOnce.should.be.true();
+                    coordination.stop.calledOnce.should.be.true("coordination.stop was skipped after a rejected resign");
+                    const failed = callsOf(log._, LATE_FAILED);
+                    failed.should.have.length(1);
+                    failed[0].args[1].step.should.equal("coordination");
+                    failed[0].args[1].message.should.match(/resign rejects/);
+                    unhandled.should.eql([]);
+                });
+
                 [
                     { name: "rejects", make: function() { return Promise.reject(new Error("stop rejects")) } },
                     { name: "throws synchronously", make: function() { throw new Error("stop throws") } }
