@@ -628,7 +628,11 @@ Fixes
    the drain spec stops its instances per describe and asserts the close of the socket after 503, the project switch
    does not run `preDeploy`/`postDeploy`, a `preDeploy` handler added during a deployment, the child of the library
    working-directory spec has its own timeout; the reload spec asserts the `reload.read-failed` lines, shares one
-   helper and compares the reread result; the token exchange logs; a failed shutdown with an unusual value
+   helper and compares the reread result; the token exchange logs; a failed shutdown with an unusual value; the
+   jQuery stand-in of the editor tests records more HTML sinks; `http in`: one response on a keep-alive connection
+   when another layer answered first, the boundary of a text body at the maximum string length without the opt-in,
+   and the size limits of the body parsers from a case table shared with the Admin API. Comments only (no change of
+   behaviour): `httpDrain.js`, `flows/pipeline.js` (the moment the `preDeploy` handlers are read) and `21-httpin.js`
  - Fix (#63): reload from storage (`deploy.reload.watch: true`, `onExhausted: "keepReady"`): when the comparison of
    the credentials fails in the reread under the deploy lock, the `reload` condition of the instance state reports
    the revision the reread read, not the older one of step 2. A failed read of storage still reports the revision of
