@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   E-02: RED.stop(reason) passes the reason to the runtime (R-23)
  *   Z-08: RED.health
+ *   #67: a rejected RED.start() does not end the process in the embedded mode
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -116,6 +117,26 @@ describe("red/red", function() {
             const stop = sinon.stub(runtime, "stop").resolves();
             await RED.stop();
             stop.firstCall.args.should.eql([undefined]);
+        });
+    });
+
+    describe("start (#67)", function() {
+        afterEach(function() {
+            sinon.restore();
+        });
+        it('AC-13: a rejected runtime start rejects RED.start() with the same error and does not call process.exit', async function() {
+            const failure = new Error("runtime start failed on purpose");
+            sinon.stub(runtime, "start").rejects(failure);
+            const exit = sinon.stub(process, "exit");
+            let caught;
+            try {
+                await RED.start();
+            } catch (err) {
+                caught = err;
+            }
+            exit.called.should.be.false();
+            should.exist(caught);
+            caught.should.equal(failure);
         });
     });
 
