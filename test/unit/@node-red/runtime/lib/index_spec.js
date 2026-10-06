@@ -34,6 +34,8 @@
  *   the requests that are still open
  *   #71: startupTimeout - the limit of runtime.start(); a step that completes after it is ignored and released;
  *   phase B: races, the guard of every step, hostile values, failing releases
+ *   #73: a stop during the start abandons the start attempt (startup_stopped); three #71 tests that pinned the
+ *   old behaviour of a stop during a start that hangs are changed on purpose (AC-5, AC-7 of #73)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -1291,6 +1293,10 @@ describe("runtime", function() {
 
         const LATE_STEP = "runtime.startup-step-late";
         const LATE_FAILED = "runtime.startup-step-late-failed";
+        // #73: the keys of a start that is abandoned by a stop
+        const STOPPED_KEY = "runtime.startup-stopped";
+        const AFTER_STOP = "runtime.startup-step-after-stop";
+        const AFTER_STOP_FAILED = "runtime.startup-step-after-stop-failed";
         const TIMEOUT_KEY = "runtime.startup-timeout";
         const INVALID_KEY = "runtime.invalid-startup-timeout";
         const NOT_PRINTABLE = "(the value cannot be printed)";
@@ -1896,19 +1902,23 @@ describe("runtime", function() {
                 unhandled.should.eql([]);
             });
 
-            it("AC-11: runtime.stop() during a start that hangs: start() rejects at the limit, the state stays stopped, a late coordination is released", async function() {
+            it("AC-11 (#71, changed by #73 AC-5): runtime.stop() during a start that hangs: start() rejects startup_stopped at once, the timer of the limit is gone, a late coordination is released", async function() {
                 const unhandled = recordUnhandled();
                 const plugin = testPlugin();
                 init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
+                const base = clock.countTimers();
                 const outcome = track(runtime.start());
                 await clock.tickAsync(100);
                 await runtime.stop("SIGTERM");
-                await clock.tickAsync(900);
-                outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
-                outcome.error.should.have.property("code", "startup_timeout");
+                await flush();
+                outcome.rejected.should.be.true("start() was not rejected by the stop");
+                outcome.error.should.have.property("code", "startup_stopped");
+                outcome.error.should.have.property("step", "coordination");
+                clock.countTimers().should.equal(base, "the timer of the limit is left after the stop");
+                await clock.tickAsync(5000);
+                callsOf(log._, TIMEOUT_KEY).should.have.length(0);
                 instanceState.get().should.containEql({state: "stopped", reason: "SIGTERM"});
                 plugin.startGate.resolve();
-                await clock.tickAsync(0);
                 await flush();
                 redNodes.loadFlows.called.should.be.false();
                 runtime._.isStarted().should.be.false();
@@ -1916,18 +1926,20 @@ describe("runtime", function() {
                 plugin.stop.callCount.should.equal(1);
                 sinon.assert.callOrder(plugin.resign, plugin.stop);
                 coordination.isLeader().should.be.false();
+                callsOf(log._, AFTER_STOP).should.have.length(1);
+                callsOf(log._, LATE_STEP).should.have.length(0);
                 unhandled.should.eql([]);
             });
 
-            it("AC-11 (a stub of coordination.start): runtime.stop() at 100 ms, the limit at 1000 ms: start() rejects, the state is stopped", async function() {
+            it("AC-11 (a stub of coordination.start) (#71, changed by #73 AC-5): runtime.stop() at 100 ms, the limit of 1000 ms: start() rejects startup_stopped, the state is stopped", async function() {
                 fake(coordination, "start", function() { return new Promise(function() {}) });
                 init({startupTimeout: 1000});
                 const outcome = track(runtime.start());
                 await clock.tickAsync(100);
                 await runtime.stop("SIGTERM");
                 await clock.tickAsync(900);
-                outcome.rejected.should.be.true("start() was not rejected at startupTimeout");
-                outcome.error.should.have.property("code", "startup_timeout");
+                outcome.rejected.should.be.true("start() was not rejected by the stop");
+                outcome.error.should.have.property("code", "startup_stopped");
                 instanceState.get().should.containEql({state: "stopped", reason: "SIGTERM"});
             });
         });
@@ -2029,7 +2041,30 @@ describe("runtime", function() {
                     callsOf(log._, LATE_FAILED).should.have.length(0);
                 });
 
-                it("runtime.stop() called at the exact limit: start() rejects startup_timeout, the state is stopped with the reason of the stop", async function() {
+                // #73 AC-7 (replaces "runtime.stop() called at the exact limit"): the one that is created first wins
+                it("AC-7 (a) (#73): a stop created after the limit in the same millisecond: the limit was first, startup_timeout", async function() {
+                    fake(coordination, "start", function() { return new Promise(function() {}) });
+                    init({startupTimeout: 1000});
+                    const outcome = track(runtime.start());
+                    setTimeout(function() { runtime.stop("SIGTERM") }, 1000);
+                    await clock.tickAsync(1000);
+                    await flush();
+                    failsWith(outcome, "coordination");
+                });
+
+                it("AC-7 (b) (#73): a stop created before the limit in the same millisecond: the stop was first, startup_stopped, no startup-timeout", async function() {
+                    fake(coordination, "start", function() { return new Promise(function() {}) });
+                    init({startupTimeout: 1000});
+                    setTimeout(function() { runtime.stop("SIGTERM") }, 1000);
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(1000);
+                    await flush();
+                    outcome.rejected.should.be.true("start() was not rejected");
+                    outcome.error.should.have.property("code", "startup_stopped");
+                    callsOf(log._, TIMEOUT_KEY).should.have.length(0);
+                });
+
+                it("AC-7 (c) (#73): a stop 1 ms before the limit: startup_stopped, the state is stopped with the reason of the stop, the stop resolves", async function() {
                     fake(coordination, "start", function() { return new Promise(function() {}) });
                     init({startupTimeout: 1000});
                     const outcome = track(runtime.start());
@@ -2037,7 +2072,9 @@ describe("runtime", function() {
                     const stopped = track(runtime.stop("SIGTERM"));
                     await clock.tickAsync(1);
                     await flush();
-                    failsWith(outcome, "coordination");
+                    outcome.rejected.should.be.true("start() was not rejected");
+                    outcome.error.should.have.property("code", "startup_stopped");
+                    callsOf(log._, TIMEOUT_KEY).should.have.length(0);
                     stopped.settled.should.be.true();
                     stopped.rejected.should.be.false();
                     instanceState.get().should.containEql({state: "stopped", reason: "SIGTERM"});
@@ -2489,6 +2526,727 @@ describe("runtime", function() {
                     await clock.tickAsync(MAX_TIMER);
                     outcome.settled.should.be.false();
                     stateNames().should.eql(["starting"]);
+                });
+            });
+        });
+
+        // #73: a stop during the start abandons the start attempt. AC-5 and AC-7 of the spec are the three
+        // tests of #71 above that were changed on purpose (they name "#73 AC-5" and "#73 AC-7").
+        describe("stop during start (#73)", function() {
+            function row(name) {
+                return STEPS.filter(function(r) { return r.step === name })[0];
+            }
+            // starts the runtime without a limit and with the step of the row hanging
+            function startHungNoLimit(r, extra) {
+                const d = deferred();
+                reloadWatchUnwatch = sinon.spy(function() { return Promise.resolve() });
+                if (r.setup) {
+                    r.setup();
+                }
+                r.hang(d);
+                init(Object.assign({}, r.config, extra));
+                return {d: d, outcome: track(runtime.start())};
+            }
+            // ... and stops it while the step hangs
+            async function stopWhileHung(r, extra) {
+                const hung = startHungNoLimit(r, extra);
+                await clock.tickAsync(10);
+                hung.stopped = track(runtime.stop("SIGTERM"));
+                await flush();
+                return hung;
+            }
+            function stoppedAt(outcome, step, reason) {
+                outcome.rejected.should.be.true("start() was not rejected by the stop");
+                outcome.error.should.have.property("code", "startup_stopped");
+                outcome.error.should.have.property("step", step);
+                outcome.error.should.have.property("reason", reason);
+            }
+            function never() {
+                fake(coordination, "start", function() { return new Promise(function() {}) });
+            }
+            function hostileProxy() {
+                const trap = function() { throw new Error("trap") };
+                return new Proxy({}, { get: trap, has: trap, getPrototypeOf: trap, ownKeys: trap, getOwnPropertyDescriptor: trap });
+            }
+            // a clean runtime between two starts of one test
+            async function restart() {
+                await resetRuntime();
+                instanceState.reset();
+                stubs.forEach(function(s) { s.resetHistory && s.resetHistory() });
+                stateEvents.length = 0;
+            }
+            function missingModule() {
+                fake(redNodes, "getNodeList", function(cb) {
+                    return [{module: "m", enabled: true, loaded: false, types: ["t"]}].filter(cb);
+                });
+            }
+
+            describe("AC-1: the start is abandoned, no step runs after the stop", function() {
+                it("AC-1: coordination.start never settles, no limit: start() rejects startup_stopped at once, the stop does not wait, no failed state, nothing runs", async function() {
+                    never();
+                    init({});
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(100);
+                    const stopped = track(runtime.stop("SIGTERM"));
+                    await flush();
+                    stoppedAt(outcome, "coordination", "SIGTERM");
+                    log._.calledWith(STOPPED_KEY, {step: "coordination", reason: "SIGTERM"}).should.be.true();
+                    outcome.error.message.should.equal(textOf(STOPPED_KEY));
+                    callsOf(log._, STOPPED_KEY).should.have.length(1);
+                    warnedWith(STOPPED_KEY).should.equal(1);
+                    stopped.settled.should.be.true("stop() waits for the hanging step");
+                    stopped.rejected.should.be.false();
+                    stateNames().should.eql(["starting", "stopping", "stopped"]);
+                    stateEvents[1].should.have.property("reason", "SIGTERM");
+                    stateEvents[2].should.have.property("reason", "SIGTERM");
+                    runtime._.isStarted().should.be.false();
+                    redNodes.loadFlows.called.should.be.false();
+                    redNodes.startFlows.called.should.be.false();
+                    reloadWatcher.init.called.should.be.false();
+                    process.exit.called.should.be.false();
+                    // AC-12: the promise settled once, nothing changes afterwards
+                    const error = outcome.error;
+                    const events = stateEvents.length;
+                    await flush();
+                    await clock.tickAsync(10000);
+                    outcome.error.should.equal(error);
+                    stateEvents.should.have.length(events);
+                    callsOf(log._, STOPPED_KEY).should.have.length(1);
+                });
+            });
+
+            describe("AC-2: a step that completes after the stop: nothing runs after it", function() {
+                STEPS.forEach(function(r) {
+                    it("AC-2: " + r.step + " hangs, then completes after the stop: startup_stopped with the step, nothing after it runs, one info line", async function() {
+                        const hung = await stopWhileHung(r);
+                        stoppedAt(hung.outcome, r.step, "SIGTERM");
+                        hung.stopped.settled.should.be.true();
+                        stateNames().should.eql(["starting", "stopping", "stopped"]);
+                        const eventsAtStop = stateEvents.length;
+                        resolveLate(r, hung.d);
+                        await clock.tickAsync(60000);
+                        await flush();
+                        r.next().forEach(function(fn) {
+                            fn.called.should.be.false();
+                        });
+                        redNodes.loadFlows.called.should.be.false();
+                        redNodes.startFlows.called.should.be.false();
+                        runtime._.isStarted().should.be.false();
+                        log._.calledWith(AFTER_STOP, {step: r.step}).should.be.true();
+                        log.info.withArgs(textOf(AFTER_STOP)).callCount.should.equal(1);
+                        callsOf(log._, LATE_STEP).should.have.length(0);
+                        callsOf(log._, TIMEOUT_KEY).should.have.length(0);
+                        stateEvents.should.have.length(eventsAtStop);
+                    });
+                });
+
+                it("AC-2 (instanceId): no interval of the metrics and no welcome banner", async function() {
+                    fake(log, "metric", function() { return true });
+                    const hung = await stopWhileHung(row("instanceId"));
+                    stoppedAt(hung.outcome, "instanceId", "SIGTERM");
+                    const base = clock.countTimers();
+                    hung.d.resolve();
+                    await flush();
+                    clock.countTimers().should.equal(base, "a timer was created after the stop");
+                    await clock.tickAsync(60000);
+                    log.log.getCalls().filter(function(c) {
+                        return c.args[0] && /^runtime\.memory\./.test(c.args[0].event);
+                    }).should.have.length(0);
+                    callsOf(log._, "runtime.welcome").should.have.length(0);
+                });
+
+                it("AC-2 (nodes, no auto-install): a missing module does not clean the module list", async function() {
+                    missingModule();
+                    const hung = await stopWhileHung(row("nodes"));
+                    stoppedAt(hung.outcome, "nodes", "SIGTERM");
+                    hung.d.resolve();
+                    await flush();
+                    redNodes.cleanModuleList.called.should.be.false();
+                });
+
+                it("AC-2 (nodes, autoInstall): no install of a missing module and no timer of a new attempt", async function() {
+                    missingModule();
+                    const installModule = fake(redNodes, "installModule", function() { return Promise.reject(new Error("no network")) });
+                    const hung = await stopWhileHung(row("nodes"), {externalModules: {autoInstall: true}});
+                    stoppedAt(hung.outcome, "nodes", "SIGTERM");
+                    const base = clock.countTimers();
+                    hung.d.resolve();
+                    await flush();
+                    installModule.called.should.be.false();
+                    clock.countTimers().should.equal(base, "a timer of a new attempt was created after the stop");
+                });
+
+                it("AC-2 (nodes, readOnlyUserDir): the block of the disabled features is not logged", async function() {
+                    const hung = await stopWhileHung(row("nodes"), {readOnlyUserDir: true});
+                    stoppedAt(hung.outcome, "nodes", "SIGTERM");
+                    hung.d.resolve();
+                    await flush();
+                    log._.getCalls().filter(function(c) { return /^readonly-userdir\./.test(c.args[0]) }).should.have.length(0);
+                });
+
+                it("AC-2 (coordination): no reloadWatcher.init and no warning about a generated instanceId", async function() {
+                    fake(coordination, "info", function() { return {plugin: "cluster", local: false} });
+                    const hung = await stopWhileHung(row("coordination"));
+                    stoppedAt(hung.outcome, "coordination", "SIGTERM");
+                    hung.d.resolve();
+                    await flush();
+                    reloadWatcher.init.called.should.be.false();
+                    callsOf(log._, "coordination.instance-id-generated").should.have.length(0);
+                });
+            });
+
+            describe("AC-3: the resources of a step that completes after the stop are released", function() {
+                it("AC-3 (a): a plugin that starts after the stop gets resign and stop once, resign first; a later stop does not call it again", async function() {
+                    const plugin = testPlugin();
+                    init(REAL_COORDINATION);
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(10);
+                    await runtime.stop("SIGTERM");
+                    plugin.startGate.resolve();
+                    await flush();
+                    stoppedAt(outcome, "coordination", "SIGTERM");
+                    plugin.resign.callCount.should.equal(1);
+                    plugin.stop.callCount.should.equal(1);
+                    sinon.assert.callOrder(plugin.resign, plugin.stop);
+                    coordination.isLeader().should.be.false();
+                    await runtime.stop();
+                    plugin.resign.callCount.should.equal(1);
+                    plugin.stop.callCount.should.equal(1);
+                });
+
+                it("AC-3 (b): the plugin starts while the stop is still running (stopFlows waits): resign and stop once, resign first", async function() {
+                    const plugin = testPlugin();
+                    const stopFlows = deferred();
+                    fake(redNodes, "stopFlows", function() { return stopFlows.promise });
+                    init(REAL_COORDINATION);
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(10);
+                    const stopped = track(runtime.stop("SIGTERM"));
+                    await flush();
+                    redNodes.stopFlows.called.should.be.true("the stop did not reach stopFlows");
+                    stopped.settled.should.be.false();
+                    plugin.startGate.resolve();
+                    await flush();
+                    stopFlows.resolve();
+                    await flush();
+                    stopped.settled.should.be.true();
+                    stopped.rejected.should.be.false();
+                    stoppedAt(outcome, "coordination", "SIGTERM");
+                    plugin.resign.callCount.should.equal(1);
+                    plugin.stop.callCount.should.equal(1);
+                    sinon.assert.callOrder(plugin.resign, plugin.stop);
+                    coordination.isLeader().should.be.false();
+                });
+
+                it("AC-3 (c): the own server of the probes that starts after the stop is stopped once more", async function() {
+                    const hung = await stopWhileHung(row("health"));
+                    stoppedAt(hung.outcome, "health", "SIGTERM");
+                    const before = health.stop.callCount;
+                    hung.d.resolve();
+                    await flush();
+                    health.stop.callCount.should.equal(before + 1);
+                });
+
+                it("AC-3 (d): the observer of storage that registers after the stop is unregistered once", async function() {
+                    const hung = await stopWhileHung(row("reloadWatch"));
+                    stoppedAt(hung.outcome, "reloadWatch", "SIGTERM");
+                    hung.d.resolve(reloadWatchUnwatch);
+                    await flush();
+                    reloadWatchUnwatch.calledOnce.should.be.true();
+                });
+            });
+
+            describe("AC-4: a step that fails after the stop, and a failing release", function() {
+                const LATE_VALUES = [
+                    { name: "an Error", make: function() { return new Error("late") } },
+                    { name: "undefined", make: function() { return undefined } },
+                    { name: "null", make: function() { return null } },
+                    { name: "a Proxy whose get throws", make: function() { return new Proxy({}, { get: function() { throw new Error("proxy get") } }) } },
+                    { name: "an object whose message getter throws", make: function() { return { get message() { throw new Error("message getter") } } } }
+                ];
+                ["coordination", "storage"].forEach(function(stepName) {
+                    LATE_VALUES.forEach(function(v) {
+                        it("AC-4: " + stepName + " rejects after the stop with " + v.name + ": one warning with the step, no unhandled rejection, nothing after the stop", async function() {
+                            const unhandled = recordUnhandled();
+                            const hung = await stopWhileHung(row(stepName));
+                            stoppedAt(hung.outcome, stepName, "SIGTERM");
+                            const events = stateEvents.length;
+                            hung.d.reject(v.make());
+                            await clock.tickAsync(60000);
+                            await flush();
+                            unhandled.should.eql([]);
+                            const failed = callsOf(log._, AFTER_STOP_FAILED);
+                            failed.should.have.length(1);
+                            failed[0].args[1].should.have.property("step", stepName);
+                            failed[0].args[1].message.should.be.a.String();
+                            warnedWith(AFTER_STOP_FAILED).should.equal(1);
+                            callsOf(log._, LATE_FAILED).should.have.length(0);
+                            instanceState.get().state.should.equal("stopped");
+                            stateEvents.should.have.length(events);
+                        });
+                    });
+                });
+
+                it("AC-4 (release): a plugin whose resign rejects: one after-stop-failed warning for the coordination, the plugin is stopped once, no unhandled rejection", async function() {
+                    const unhandled = recordUnhandled();
+                    const plugin = testPlugin();
+                    plugin.resign = sinon.spy(function() { return Promise.reject(new Error("r")) });
+                    init(REAL_COORDINATION);
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(10);
+                    await runtime.stop("SIGTERM");
+                    plugin.startGate.resolve();
+                    await flush();
+                    stoppedAt(outcome, "coordination", "SIGTERM");
+                    plugin.stop.callCount.should.equal(1, "the plugin was not stopped after a rejected resign");
+                    const failed = callsOf(log._, AFTER_STOP_FAILED);
+                    failed.should.have.length(1);
+                    failed[0].args[1].should.have.property("step", "coordination");
+                    failed[0].args[1].message.should.match(/r/);
+                    warnedWith(AFTER_STOP_FAILED).should.equal(1);
+                    unhandled.should.eql([]);
+                });
+            });
+
+            describe("AC-5 and AC-6: the limit of startupTimeout", function() {
+                it("AC-5: a stop before the limit: startup_stopped, the timer is gone at once, no startup_timeout later, the late coordination is released with the after-stop key", async function() {
+                    const plugin = testPlugin();
+                    init(Object.assign({startupTimeout: 1000}, REAL_COORDINATION));
+                    const base = clock.countTimers();
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(100);
+                    await runtime.stop("SIGTERM");
+                    await flush();
+                    stoppedAt(outcome, "coordination", "SIGTERM");
+                    outcome.error.should.not.have.property("code", "startup_timeout");
+                    clock.countTimers().should.equal(base);
+                    const error = outcome.error;
+                    await clock.tickAsync(5000);
+                    callsOf(log._, TIMEOUT_KEY).should.have.length(0);
+                    instanceState.get().should.containEql({state: "stopped", reason: "SIGTERM"});
+                    plugin.startGate.resolve();
+                    await flush();
+                    redNodes.loadFlows.called.should.be.false();
+                    plugin.resign.callCount.should.equal(1);
+                    plugin.stop.callCount.should.equal(1);
+                    sinon.assert.callOrder(plugin.resign, plugin.stop);
+                    coordination.isLeader().should.be.false();
+                    callsOf(log._, AFTER_STOP).should.have.length(1);
+                    callsOf(log._, LATE_STEP).should.have.length(0);
+                    // AC-12
+                    await clock.tickAsync(10000);
+                    outcome.error.should.equal(error);
+                });
+
+                it("AC-6: the limit fires first, a stop after it: the result stays startup_timeout, the late step is logged with the keys of #71, the first reason wins", async function() {
+                    const d = deferred();
+                    fake(coordination, "start", function() { return d.promise });
+                    init({startupTimeout: 1000});
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(1000);
+                    outcome.rejected.should.be.true();
+                    outcome.error.should.have.property("code", "startup_timeout");
+                    const error = outcome.error;
+                    await runtime.stop("SIGTERM");
+                    d.resolve();
+                    await flush();
+                    outcome.error.should.equal(error);
+                    outcome.error.should.have.property("code", "startup_timeout");
+                    log._.calledWith(LATE_STEP, {step: "coordination"}).should.be.true();
+                    callsOf(log._, AFTER_STOP).should.have.length(0);
+                    callsOf(log._, STOPPED_KEY).should.have.length(0);
+                    stateNames().should.eql(["starting", "failed", "stopping", "stopped"]);
+                    // AC-12
+                    await clock.tickAsync(10000);
+                    outcome.error.should.equal(error);
+                });
+            });
+
+            describe("AC-8: a shutdown with a drain (RED.health.shutdown) abandons the start at once", function() {
+                it("AC-8: the start is abandoned when the instance enters stopping, before the drain ends and before RED.stop", async function() {
+                    const unhandled = recordUnhandled();
+                    const plugin = testPlugin();
+                    cleanups.push(function() { util.hooks.clear() });
+                    init(Object.assign({
+                        shutdownTimeout: 5000,
+                        hooks: { "preShutdown.t": function() { return new Promise(function(resolve) { setTimeout(resolve, 3000) }) } }
+                    }, REAL_COORDINATION));
+                    const stopSpy = sinon.spy(function() { return runtime.stop("SIGTERM") });
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(10);
+                    const shutdown = track(runtime.health.shutdown({reason: "SIGTERM", stop: stopSpy}));
+                    await flush();
+                    stopSpy.called.should.be.false("the drain ended too early for this test");
+                    outcome.rejected.should.be.true("start() was not rejected when the shutdown began");
+                    outcome.error.should.have.property("code", "startup_stopped");
+                    outcome.error.should.have.property("reason", "SIGTERM");
+                    plugin.startGate.resolve();
+                    await flush();
+                    stopSpy.called.should.be.false();
+                    reloadWatcher.init.called.should.be.false();
+                    redNodes.loadFlows.called.should.be.false();
+                    plugin.resign.callCount.should.equal(1);
+                    plugin.stop.callCount.should.equal(1);
+                    await clock.tickAsync(3000);
+                    await flush();
+                    stopSpy.calledOnce.should.be.true();
+                    shutdown.settled.should.be.true();
+                    instanceState.get().state.should.equal("stopped");
+                    callsOf(log._, STOPPED_KEY).should.have.length(1);
+                    warnedWith(STOPPED_KEY).should.equal(1);
+                    unhandled.should.eql([]);
+                });
+            });
+
+            describe("AC-9, AC-10: stops from inside the start", function() {
+                it("AC-9: a step that stops the runtime synchronously: startup_stopped with that step, the next step does not run, the step is logged as after the stop", async function() {
+                    let stopped;
+                    fake(storage, "init", function() {
+                        stopped = track(runtime.stop("x"));
+                        return Promise.resolve();
+                    });
+                    init({});
+                    const outcome = track(runtime.start());
+                    await flush();
+                    stoppedAt(outcome, "storage", "x");
+                    settings.load.called.should.be.false();
+                    log._.calledWith(AFTER_STOP, {step: "storage"}).should.be.true();
+                    stopped.settled.should.be.true();
+                });
+
+                it("AC-10: a listener of instance:state that stops the runtime on starting: no step starts, step is null", async function() {
+                    const listener = function(info) {
+                        if (info.state === "starting") {
+                            runtime.stop("SIGTERM");
+                        }
+                    };
+                    events.on("instance:state", listener);
+                    cleanups.push(function() { events.removeListener("instance:state", listener) });
+                    init({});
+                    const outcome = track(runtime.start());
+                    await flush();
+                    outcome.rejected.should.be.true("start() was not rejected");
+                    outcome.error.should.have.property("code", "startup_stopped");
+                    should(outcome.error.step).equal(null);
+                    outcome.error.should.have.property("reason", "SIGTERM");
+                    log._.calledWith(STOPPED_KEY, {step: "-", reason: "SIGTERM"}).should.be.true();
+                    i18n.registerMessageCatalog.called.should.be.false();
+                    health.start.called.should.be.false();
+                    storage.init.called.should.be.false();
+                    instanceState.get().state.should.equal("stopped");
+                });
+            });
+
+            describe("AC-11: no gap between the guard of a step and the code that follows it", function() {
+                const MAX_N = 30;
+                function outcomeOf(outcome) {
+                    if (outcome.rejected) {
+                        outcome.error.should.have.property("code", "startup_stopped");
+                        return "A";
+                    }
+                    outcome.settled.should.be.true("start() neither resolved nor rejected");
+                    return "B";
+                }
+                function assertConsistent(kind, outcome, n) {
+                    if (kind === "A") {
+                        reloadWatcher.init.called.should.be.false("N=" + n + ": rejected, but reloadWatcher.init ran");
+                        redNodes.loadFlows.called.should.be.false("N=" + n + ": rejected, but loadFlows was called");
+                        runtime._.isStarted().should.be.false("N=" + n);
+                    } else {
+                        redNodes.loadFlows.callCount.should.equal(1, "N=" + n + ": start() resolved, but loadFlows was not called once");
+                    }
+                }
+
+                it("AC-11: the stop after N microtasks (N = 0..30): start() is rejected and nothing ran, or it resolved and loadFlows was called once - never both or neither", async function() {
+                    const seen = {};
+                    for (let n = 0; n <= MAX_N; n++) {
+                        await restart();
+                        const d = deferred();
+                        fake(coordination, "start", function() { return d.promise });
+                        init({});
+                        const outcome = track(runtime.start());
+                        await clock.tickAsync(10);
+                        d.resolve();
+                        for (let i = 0; i < n; i++) {
+                            await Promise.resolve();
+                        }
+                        runtime.stop("SIGTERM");
+                        await flush();
+                        const kind = outcomeOf(outcome);
+                        assertConsistent(kind, outcome, n);
+                        seen[kind] = (seen[kind] || 0) + 1;
+                        if (n === 0) {
+                            kind.should.equal("A", "N=0: the stop right after the step must abandon the start");
+                        }
+                        if (n === MAX_N) {
+                            kind.should.equal("B", "N=" + MAX_N + ": the start must have completed by then");
+                        }
+                    }
+                    seen.should.have.property("A");
+                    seen.should.have.property("B");
+                });
+
+                it("AC-11 (real coordination): the same with a plugin: at most one plugin operation at a time, stop once, resign once or twice and before stop, not the leader, no unhandled rejection", async function() {
+                    const unhandled = recordUnhandled();
+                    const seen = {};
+                    for (let n = 0; n <= MAX_N; n++) {
+                        await restart();
+                        if (n > 0) {
+                            // testPlugin() restores these two; they are real functions again after the first round
+                            fake(coordination, "start");
+                            fake(coordination, "info");
+                        }
+                        const plugin = testPlugin();
+                        const order = [];
+                        let running = 0;
+                        let max = 0;
+                        ["resign", "stop"].forEach(function(name) {
+                            const original = plugin[name];
+                            plugin[name] = sinon.spy(function() {
+                                order.push(name);
+                                running++;
+                                max = Math.max(max, running);
+                                return Promise.resolve(original.apply(plugin, arguments)).then(function(v) { running--; return v }, function(e) { running--; throw e });
+                            });
+                        });
+                        init(REAL_COORDINATION);
+                        const outcome = track(runtime.start());
+                        await clock.tickAsync(10);
+                        plugin.startGate.resolve();
+                        for (let i = 0; i < n; i++) {
+                            await Promise.resolve();
+                        }
+                        runtime.stop("SIGTERM");
+                        await flush();
+                        const kind = outcomeOf(outcome);
+                        assertConsistent(kind, outcome, n);
+                        seen[kind] = (seen[kind] || 0) + 1;
+                        max.should.be.belowOrEqual(1, "N=" + n + ": operations of the plugin ran at the same time");
+                        plugin.stop.callCount.should.equal(1, "N=" + n);
+                        [1, 2].should.containEql(plugin.resign.callCount, "N=" + n);
+                        if (plugin.resign.callCount === 2) {
+                            order.lastIndexOf("resign").should.be.below(order.indexOf("stop"), "N=" + n + ": a resign after the stop of the plugin");
+                        }
+                        coordination.isLeader().should.be.false("N=" + n);
+                        if (n === 0) {
+                            kind.should.equal("A", "N=0: the stop right after the step must abandon the start");
+                        }
+                        if (n === MAX_N) {
+                            kind.should.equal("B", "N=" + MAX_N + ": the start must have completed by then");
+                        }
+                    }
+                    seen.should.have.property("A");
+                    seen.should.have.property("B");
+                    unhandled.should.eql([]);
+                });
+            });
+
+            describe("AC-13, AC-14, AC-15: more than one stop, odd reasons, init()", function() {
+                it("AC-13: two stops at once: one rejection, one warning, the reason of the first stop, both stops resolve", async function() {
+                    never();
+                    init({});
+                    const outcome = track(runtime.start());
+                    await clock.tickAsync(10);
+                    const first = track(runtime.stop("SIGTERM"));
+                    const second = track(runtime.stop("SIGINT"));
+                    await flush();
+                    stoppedAt(outcome, "coordination", "SIGTERM");
+                    callsOf(log._, STOPPED_KEY).should.have.length(1);
+                    log.warn.getCalls().filter(function(c) { return typeof c.args[0] === "string" && c.args[0].indexOf(STOPPED_KEY) === 0 }).should.have.length(1);
+                    first.settled.should.be.true();
+                    second.settled.should.be.true();
+                    first.rejected.should.be.false();
+                    second.rejected.should.be.false();
+                    instanceState.get().should.containEql({state: "stopped", reason: "SIGTERM"});
+                });
+
+                [
+                    { name: "no argument", call: function() { return runtime.stop() } },
+                    { name: "an empty string", call: function() { return runtime.stop("") } },
+                    { name: "42", call: function() { return runtime.stop(42) } },
+                    { name: "{}", call: function() { return runtime.stop({}) } },
+                    { name: "null", call: function() { return runtime.stop(null) } },
+                    { name: "a Proxy whose get trap throws", call: function() { return runtime.stop(hostileProxy()) } }
+                ].forEach(function(v) {
+                    it("AC-14: the reason is " + v.name + ": nothing throws, start() rejects startup_stopped with the reason stop", async function() {
+                        never();
+                        init({});
+                        const outcome = track(runtime.start());
+                        await clock.tickAsync(10);
+                        let stopped;
+                        (function() { stopped = track(v.call()) }).should.not.throw();
+                        await flush();
+                        stoppedAt(outcome, "coordination", "stop");
+                        stopped.settled.should.be.true();
+                    });
+                });
+
+                it("AC-15: init() during the start detaches the attempt: a later stop does not reject the old start()", async function() {
+                    never();
+                    init({});
+                    const first = track(runtime.start());
+                    await clock.tickAsync(10);
+                    init({});
+                    await runtime.stop();
+                    await flush();
+                    first.settled.should.be.false("the start of the runtime before init() was rejected");
+                    callsOf(log._, STOPPED_KEY).should.have.length(0);
+                });
+            });
+
+            describe("AC-16: no new attempt to install a module after the stop", function() {
+                const AUTO = {externalModules: {autoInstall: true, autoInstallRetry: 30}};
+                const LONGEST = 30000 * 8 * 2;
+
+                it("AC-16 (R1, R6): the installs fail after the stop: no timer, no new install; a new runtime in the same process retries again", async function() {
+                    missingModule();
+                    const install = deferred();
+                    const installModule = fake(redNodes, "installModule", function() { return install.promise });
+                    init(AUTO);
+                    const base = clock.countTimers();
+                    await runtime.start();
+                    installModule.callCount.should.equal(1);
+                    await runtime.stop();
+                    install.reject(new Error("no network"));
+                    await flush();
+                    clock.countTimers().should.equal(base, "a timer of a new attempt exists after the stop");
+                    await clock.tickAsync(LONGEST);
+                    installModule.callCount.should.equal(1);
+                    // R6: the flag of the stop is reset by init()
+                    fake(redNodes, "installModule", function() { return Promise.reject(new Error("no network")) });
+                    init(AUTO);
+                    await runtime.start();
+                    await flush();
+                    redNodes.installModule.callCount.should.equal(1);
+                    await clock.tickAsync(30000);
+                    redNodes.installModule.callCount.should.equal(2, "a new runtime does not retry the installs");
+                });
+
+                it("AC-16 (R6, alone): a stop, then init() and start(): the retry of the installs works again", async function() {
+                    missingModule();
+                    fake(redNodes, "installModule", function() { return Promise.resolve({nodes: []}) });
+                    init(AUTO);
+                    await runtime.start();
+                    await runtime.stop();
+                    await restart();
+                    missingModule();
+                    fake(redNodes, "installModule", function() { return Promise.reject(new Error("no network")) });
+                    init(AUTO);
+                    await runtime.start();
+                    await flush();
+                    redNodes.installModule.callCount.should.equal(1);
+                    await clock.tickAsync(30000);
+                    redNodes.installModule.callCount.should.equal(2, "the retry is blocked by the flag of an earlier stop");
+                });
+
+                it("AC-16 (R4): a stop during the start after the installs began, the installs fail later: no timer, no new install", async function() {
+                    missingModule();
+                    const install = deferred();
+                    const installModule = fake(redNodes, "installModule", function() { return install.promise });
+                    never();
+                    init(AUTO);
+                    const base = clock.countTimers();
+                    const outcome = track(runtime.start());
+                    await flush();
+                    installModule.callCount.should.equal(1);
+                    runtime.stop();
+                    install.reject(new Error("no network"));
+                    await flush();
+                    await clock.tickAsync(240000 * 2);
+                    installModule.callCount.should.equal(1);
+                    clock.countTimers().should.equal(base);
+                    outcome.settled.should.be.true();
+                });
+
+                it("AC-16 (R2, regression): the installs failed before the stop (a timer is set): the stop clears it, no new install", async function() {
+                    missingModule();
+                    const installModule = fake(redNodes, "installModule", function() { return Promise.reject(new Error("no network")) });
+                    init(AUTO);
+                    await runtime.start();
+                    await flush();
+                    installModule.callCount.should.equal(1);
+                    await runtime.stop();
+                    await clock.tickAsync(240000 * 2);
+                    installModule.callCount.should.equal(1);
+                });
+
+                it("AC-16 (R3, regression): without a stop the install is tried again after the retry time", async function() {
+                    missingModule();
+                    const installModule = fake(redNodes, "installModule", function() { return Promise.reject(new Error("no network")) });
+                    init(AUTO);
+                    await runtime.start();
+                    await flush();
+                    installModule.callCount.should.equal(1);
+                    await clock.tickAsync(30000);
+                    installModule.callCount.should.equal(2);
+                });
+            });
+
+            describe("AC-26: start() in an instance that is stopping or stopped", function() {
+                function neverCalled() {
+                    i18n.registerMessageCatalog.called.should.be.false();
+                    health.start.called.should.be.false();
+                    storage.init.called.should.be.false();
+                    redNodes.loadFlows.called.should.be.false();
+                }
+                it("AC-26: after a stop (stopped): startup_stopped with step null and the reason of the state, no step, no event", async function() {
+                    init({});
+                    await runtime.stop("SIGTERM");
+                    instanceState.get().state.should.equal("stopped");
+                    stubs.forEach(function(s) { s.resetHistory && s.resetHistory() });
+                    stateEvents.length = 0;
+                    const outcome = track(runtime.start());
+                    await flush();
+                    outcome.rejected.should.be.true("start() was not rejected");
+                    outcome.error.should.have.property("code", "startup_stopped");
+                    should(outcome.error.step).equal(null);
+                    outcome.error.should.have.property("reason", "SIGTERM");
+                    neverCalled();
+                    stateEvents.should.have.length(0);
+                    runtime._.isStarted().should.be.false();
+                });
+
+                it("AC-26 (stopping): while the stop still runs: the same", async function() {
+                    const stopFlows = deferred();
+                    fake(redNodes, "stopFlows", function() { return stopFlows.promise });
+                    init({});
+                    const stopped = track(runtime.stop("SIGTERM"));
+                    await flush();
+                    instanceState.get().state.should.equal("stopping");
+                    stopped.settled.should.be.false();
+                    stubs.forEach(function(s) { s.resetHistory && s.resetHistory() });
+                    stateEvents.length = 0;
+                    const outcome = track(runtime.start());
+                    await flush();
+                    outcome.rejected.should.be.true("start() was not rejected");
+                    outcome.error.should.have.property("code", "startup_stopped");
+                    should(outcome.error.step).equal(null);
+                    outcome.error.should.have.property("reason", "SIGTERM");
+                    neverCalled();
+                    stateEvents.should.have.length(0);
+                    stopFlows.resolve();
+                    await flush();
+                    stopped.settled.should.be.true();
+                });
+            });
+
+            describe("AC-17: the behaviour without a stop during the start is unchanged", function() {
+                it("AC-17 (M1): a stop before start(): the state is stopped, no startup-stopped message", async function() {
+                    init({});
+                    await runtime.stop("SIGTERM");
+                    instanceState.get().should.containEql({state: "stopped", reason: "SIGTERM"});
+                    callsOf(log._, STOPPED_KEY).should.have.length(0);
+                });
+
+                it("AC-17 (M7): a stop after a completed start: start() resolved, no startup-stopped and no after-stop message, the events as before", async function() {
+                    init({});
+                    await runtime.start();
+                    await flush();
+                    await runtime.stop();
+                    callsOf(log._, STOPPED_KEY).should.have.length(0);
+                    callsOf(log._, AFTER_STOP).should.have.length(0);
+                    callsOf(log._, AFTER_STOP_FAILED).should.have.length(0);
+                    stateNames().should.eql(["starting", "stopping", "stopped"]);
                 });
             });
         });
