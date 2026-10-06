@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  *   #54: the answers of a save that fails and of a name that does not denote an entry (flaky tests)
+ *   #63: a save of a name that ends with .$$$ (the working file of a write) is answered with 403
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -344,6 +345,22 @@ describe("api/editor/library", function() {
                 res.text.should.equal('{"code":"forbidden","message":"Error"}');
                 await Promise.allSettled(writes);
                 fs.existsSync(path.join(dir, "lib", "functions")).should.be.false();
+            });
+
+            it('B6-AC-10 (#63): a save to a name that ends with .$$$ answers 403 and nothing is written', async function() {
+                const res = await request(app).post('/library/local/functions/a.js.$$$').send({text:"x", mno:"pqr"});
+                res.status.should.equal(403);
+                res.text.should.equal('{"code":"forbidden","message":"Error"}');
+                await Promise.allSettled(writes);
+                writes.should.have.length(0);
+                const libDir = path.join(dir, "lib");
+                fs.readdirSync(libDir, { recursive: true }).map(String).filter(n => /\$\$\$/.test(n)).should.eql([]);
+            });
+
+            it('B6-AC-10 (#63, unchanged): the name a.js.$$$x is a name of an entry and answers 204', async function() {
+                const res = await request(app).post('/library/local/functions/a.js.$$$x').send({text:"x"});
+                res.status.should.equal(204);
+                fs.existsSync(path.join(dir, "lib", "functions", "a.js.$$$x")).should.be.true();
             });
 
             it('AC-44: a save to a name of an entry answers 204 when the file is on disk', async function() {
