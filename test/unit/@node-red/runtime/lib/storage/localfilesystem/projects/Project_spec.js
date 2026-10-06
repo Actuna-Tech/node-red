@@ -448,6 +448,29 @@ describe("storage/localfilesystem/projects/Project - update (#63)", function() {
             Object.keys(h.active().remotes).should.eql(["origin"]);
         });
 
+        it("the credentials given for a remote whose change failed are not kept in the cache of the credentials", async function() {
+            h = await harnessModule.createHarness({ remotes: { origin: "https://host.example/a.git" } });
+            sinon.stub(h.gitTools, "addRemote").callsFake(function() {
+                const err = new Error("fatal: not valid");
+                err.code = "git_invalid_argument";
+                return Promise.reject(err);
+            });
+            const url = "https://h.example/r.git";
+            const err = await update({ git: { remotes: { o2: { url: url, username: "u", password: "secret-password-value" } } } });
+            assertConstantFailure(err);
+            // the user of this request is "_" (no user)
+            should.not.exist(h.authCache.get(h.name, url, "_"), "the credentials of the failed remote are still in the cache");
+        });
+
+        it("the credentials given for a remote that was added are kept in the cache of the credentials (unchanged)", async function() {
+            h = await harnessModule.createHarness({ remotes: { origin: "https://host.example/a.git" } });
+            const url = "https://h.example/r.git";
+            const err = await update({ git: { remotes: { o2: { url: url, username: "u", password: "p" } } } });
+            should.not.exist(err);
+            should.exist(h.authCache.get(h.name, url, "_"));
+            h.authCache.get(h.name, url, "_").should.have.property("password", "p");
+        });
+
         it("a remote that cannot be removed: the same, and the failure is not left unhandled", async function() {
             h = await harnessModule.createHarness({ remotes: { origin: "https://host.example/a.git" } });
             sinon.stub(h.gitTools, "removeRemote").callsFake(function() {

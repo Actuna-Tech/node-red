@@ -16,7 +16,8 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #63: tests that the credentials of an install URL (and of a module given as a URL) are not in the log of the
- *   installer and are passed to exec.run as literal secrets for the event-log
+ *   installer and are passed to exec.run as literal secrets for the event-log; the error of a hook and the arguments that a
+ *   hook adds to the npm command are masked in the log too
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -623,6 +624,57 @@ describe('nodes/registry/installer', function() {
                 var text = logged().join("\n");
                 text.should.not.containEql("user:abc@");
                 logged(["warn"]).join("\n").should.containEql("https://***@host.example/x.tgz failed");
+            });
+        });
+
+        describe("#63 a hook error and the arguments that a hook adds (the text of a hook is not trusted to be free of secrets)", function() {
+            const URL = "https://user:s3cret@host.example/x.tgz";
+
+            ["preInstall", "postInstall"].forEach(function(hook) {
+                it("the error of a " + hook + " hook that names the install URL is logged masked", async function() {
+                    hooks.add(hook + ".t63", function(event) {
+                        throw new Error("hook failed for " + URL + " (user:s3cret)");
+                    });
+                    var err = await install("x", null, URL);
+                    should.exist(err);
+                    logged().join("\n").should.not.containEql("s3cret");
+                    // the warning is there, with the address in its masked form
+                    logged(["warn"]).join("\n").should.containEql("https://***@host.example/x.tgz");
+                });
+            });
+
+            [
+                ["--//registry.example/:_authToken=NpmTok3nValue", "NpmTok3nValue"],
+                ["_authToken=NpmTok3nValue", "NpmTok3nValue"],
+                ["--//registry.example/:_auth=Ab12CdEfGh", "Ab12CdEfGh"],
+                ["--//registry.example/:_password=Pa55w0rdValue", "Pa55w0rdValue"]
+            ].forEach(function(entry) {
+                it("the trace of the npm arguments masks the value of " + entry[0].replace(entry[1], "<value>"), async function() {
+                    hooks.add("preInstall.t63", function(event) {
+                        event.args = event.args.concat([entry[0]]);
+                    });
+                    failNpm("npm ERR! failed");
+                    await install("x");
+                    exec.run.callCount.should.equal(1);
+                    // npm still gets the argument as the hook gave it
+                    exec.run.firstCall.args[1].should.containEql(entry[0]);
+                    var traced = logged(["trace"]).join("\n");
+                    traced.should.not.containEql(entry[1]);
+                    // the rest of the line is there
+                    traced.should.containEql("install");
+                    traced.should.containEql(entry[0].split("=")[0]);
+                });
+            });
+
+            it("the trace of arguments without a secret is unchanged", async function() {
+                hooks.add("preInstall.t63", function(event) {
+                    event.args = event.args.concat(["--registry=https://registry.example/", "--loglevel=warn"]);
+                });
+                failNpm("npm ERR! failed");
+                await install("x");
+                var traced = logged(["trace"]).join("\n");
+                traced.should.containEql("--registry=https://registry.example/");
+                traced.should.containEql("--loglevel=warn");
             });
         });
 

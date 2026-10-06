@@ -568,6 +568,43 @@ function assertOutcome(testCase, observed, form) {
     }
 }
 
+// ------------------------------------------------------------------------------------------------------------
+// A `done` of the caller that throws (the callback form): the continuation of the chain runs inside the outcome of the
+// handler, so the error comes back through the step that has ended. It is passed on as it is: `trigger` throws it,
+// `done` was called once, the handler step does not take it for a second outcome of the handler (REV-N1)
+// ------------------------------------------------------------------------------------------------------------
+const throwingDoneCases = [
+    { id: "a one-parameter handler, then the next handler", withTracer: true, handler: ctx => function(payload) { ctx.enter("A"); } },
+    { id: "a two-parameter handler that calls done() at once, then the next handler", withTracer: true, handler: ctx => function(payload, done) { ctx.enter("A"); done(); } },
+    { id: "a one-parameter handler that is the last one", withTracer: false, handler: ctx => function(payload) { ctx.enter("A"); } },
+    { id: "a two-parameter handler that calls done() at once and is the last one", withTracer: false, handler: ctx => function(payload, done) { ctx.enter("A"); done(); } },
+    { id: "a one-parameter handler that returns a value that is not false, then the next handler", withTracer: true, handler: ctx => function(payload) { ctx.enter("A"); return 5; } }
+];
+
+/**
+ * Runs a case of `throwingDoneCases` with the callback form and a `done` that throws. Resolves with what happened.
+ */
+function exerciseThrowingDone(impl, testCase) {
+    const ctx = createContext();
+    ctx.impl = impl;
+    impl.add("onSend.h0", testCase.handler(ctx));
+    if (testCase.withTracer) {
+        impl.add("onSend.tracer", function(payload) { ctx.log.push("B"); });
+    }
+    const failure = new Error("the done of the caller failed");
+    const observed = { ctx: ctx, failure: failure, doneCalls: 0, thrown: undefined, threw: false };
+    try {
+        impl.trigger("onSend", { payload: "p" }, function() {
+            observed.doneCalls++;
+            throw failure;
+        });
+    } catch (err) {
+        observed.threw = true;
+        observed.thrown = err;
+    }
+    return observed;
+}
+
 /**
  * Registers the handler of a registration case with `impl.add`; resolves with
  * `{threw}` - what `add` threw, if anything. The caller reads the warnings from its own spy.
@@ -588,6 +625,8 @@ module.exports = {
     falsyValues: falsyValues,
     falsyMessage: falsyMessage,
     cases: cases,
+    throwingDoneCases: throwingDoneCases,
+    exerciseThrowingDone: exerciseThrowingDone,
     registrations: registrations,
     settingsRegistrations: settingsRegistrations,
     exercise: exercise,

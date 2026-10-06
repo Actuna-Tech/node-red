@@ -1128,6 +1128,24 @@ describe("util/hooks - the shared case table (#63)", function() {
         });
     });
 
+    describe("a done of the caller that throws (REV-N1)", function() {
+        shared.throwingDoneCases.forEach(function(testCase) {
+            it("callback form, " + testCase.id + ": done is called once and trigger throws that error", async function() {
+                const observed = shared.exerciseThrowingDone(impl, testCase);
+                observed.threw.should.equal(true, "trigger did not throw");
+                observed.thrown.should.equal(observed.failure);
+                observed.doneCalls.should.equal(1, "the number of calls of done");
+                observed.ctx.log.should.eql(testCase.withTracer ? ["A", "B"] : ["A"]);
+                await shared.macrotask();
+                observed.doneCalls.should.equal(1);
+                unhandled.map(String).should.eql([], "an unhandled rejection");
+                if (true) {
+                    ignoredLines().should.have.length(0);
+                }
+            });
+        });
+    });
+
     describe("B6-AC-1: the warning at the registration of a handler without parameters", function() {
         shared.registrations.forEach(function(registration) {
             it(registration.id + ": " + registration.warns + " warning" + (registration.warns === 1 ? "" : "s"), function() {
