@@ -463,8 +463,12 @@ Fixes
    Any value of the rejection (`undefined`, `null`, an object whose `stack` getter throws) is logged; before,
    `undefined` and `null` caused an uncaught exception. A rejected `https` settings function now also exits
    with 1 (before: 0). Unchanged: the embedded mode (`RED.start()` rejects with the same error and the
-   library never calls `process.exit`), the `/live` probe and errors after a successful start. With a
-   supervisor that restarts on failure, a lasting configuration error now gives a restart loop
+   library never calls `process.exit`), the `/live` probe and errors of the runtime after a successful start
+   (flows, deploys, reloads). An error that `red.js` throws while it prepares the main server after a
+   successful start (for example `ERR_SOCKET_BAD_PORT` for a port out of range) is now handled as a failed
+   start as well: the same stop and exit code 1 (before: logged as `Failed to start server`, then exit 0 or a
+   process without a listening server). With a supervisor that restarts on failure, a lasting configuration
+   error now gives a restart loop
  - Tests only, no change of the product: flaky tests fixed. The HTTP tests no longer reach a foreign server
    on the same machine (supertest started the app on all interfaces but connected to `127.0.0.1`; the
    shared helper `nr-test-utils/supertest` listens on `127.0.0.1`), the `tcp request` test server hook calls

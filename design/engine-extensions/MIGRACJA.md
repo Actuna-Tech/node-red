@@ -240,8 +240,22 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   `preShutdown` i bez `health.unreadyGrace`, limit 5000 ms) i kończy się kodem 1; sygnał w trakcie tego zatrzymania
   kończy proces od razu kodem 1. Tryb osadzony bez zmian: `RED.start()` odrzuca tym samym błędem, stan to
   `failed`/`startup-error` (gdy odrzuci rejestracja Admin API, stan runtime może nie być `failed`), a własny serwer sond
-  i uchwyty runtime żyją do `RED.stop(reason)`. Biblioteka nie woła `process.exit` – o procesie decyduje kod osadzający,
-  np. `RED.start().catch(err => RED.stop("startup-error").finally(() => process.exit(1)))`. Kontrakt `/live` bez zmian.
+  i uchwyty runtime żyją do `RED.stop(reason)`. Biblioteka nie woła `process.exit` – o procesie decyduje kod osadzający.
+  Odpowiednik zachowania CLI (log błędu, zatrzymanie z limitem 5000 ms, kod 1 także przy nieudanym lub zawieszonym
+  zatrzymaniu):
+
+  ```js
+  RED.start().catch(err => {
+      console.error("Node-RED failed to start:", err);
+      const stopped = Promise.resolve()
+          .then(() => RED.stop("startup-error"))
+          .catch(stopErr => console.error("Node-RED stop failed:", stopErr));
+      const limit = new Promise(resolve => setTimeout(resolve, 5000));
+      return Promise.race([stopped, limit]).finally(() => process.exit(1));
+  });
+  ```
+
+  Kontrakt `/live` bez zmian.
 - **Odrzucone żądanie `/flow` nie emituje `deploying` (#10, U1, A24, D19):** `POST /flow`, `PUT` i `DELETE /flow/:id` sprawdzają rewizje i budują
   konfigurację przed stanem `deploying`, więc odrzucone żądanie (409, 404, `duplicate_id`, `invalid_flow_id`, 400 `global`) nie przechodzi przez
   `deploying` i z powrotem: brak zdarzeń `instance:state`, brak chwilowego 503 na `/ready` i brak chwilowego wstrzymania z #8; nie unieważnia też
