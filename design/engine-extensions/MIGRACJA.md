@@ -99,6 +99,17 @@ nowego flow tuż po wdrożeniu (wraca zachowanie 5.0.7).
 Drugi SIGTERM w trakcie drenażu zatrzymuje proces natychmiast (R-22) – nie wysyłać go z narzędzi przed upływem `shutdownTimeout`.
 Bez `shutdownTimeout` drenaż jest wyłączony (zachowanie jak dotąd), a hook `preShutdown` nie jest wywoływany (R-37).
 
+**Nieudany start (#67):** gdy `RED.start()` odrzuci (np. magazyn koordynacji albo kontekstu niedostępny przy starcie),
+`red.js` zatrzymuje runtime (najwyżej 5000 ms, bez `preShutdown`) i kończy się kodem 1, więc `restartPolicy`, systemd
+`Restart=on-failure` albo PM2 uruchamiają instancję ponownie. Przy trwałym błędzie konfiguracji (np. zła `health.path`)
+powstaje pętla restartów: `CrashLoopBackOff` w Kubernetes, `StartLimitBurst` w systemd. To zamierzony, widoczny skutek;
+przyczynę podaje log `Failed to start server:` z poprzedniego uruchomienia.
+
+**Zawieszony start:** gdy krok startu nie kończy się wcale (np. magazyn koordynacji nie odpowiada zamiast odmówić),
+proces nie kończy się sam – stan `starting` trwa, `/ready` 503, `/live` 200. Taką instancję wykrywa `startupProbe`
+na `<path>/ready` (np. `failureThreshold` × `periodSeconds` dłuższe niż najdłuższy oczekiwany start); po jej
+przekroczeniu kubelet restartuje kontener. Limit czasu startu w samym Node-RED to osobne zgłoszenie (#71).
+
 ## 4. Narzędzia Admin API (automaty, MCP, CI/CD)
 
 ### 4.1 Rewizje i konflikty (Z-04, Z-05, istniejące)
@@ -225,6 +236,26 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   lub safe mode); `loaded` – instancja tylko edycyjna (`editorOnly`).
 - **Zdarzenie `instance:state`** z treścią `{state, previous, reason}` (R-23); kod osadzający zatrzymuje runtime przez
   `RED.stop(reason)` – powód trafia do hooka `preShutdown` i logu.
+- **Nieudany start (#67):** CLI `red.js` po odrzuceniu `RED.start()` woła `RED.stop("startup-error")` (bez hooka
+  `preShutdown` i bez `health.unreadyGrace`, limit 5000 ms) i kończy się kodem 1; sygnał w trakcie tego zatrzymania
+  kończy proces od razu kodem 1. Tryb osadzony bez zmian: `RED.start()` odrzuca tym samym błędem, stan to
+  `failed`/`startup-error` (gdy odrzuci rejestracja Admin API, stan runtime może nie być `failed`), a własny serwer sond
+  i uchwyty runtime żyją do `RED.stop(reason)`. Biblioteka nie woła `process.exit` – o procesie decyduje kod osadzający.
+  Odpowiednik zachowania CLI (log błędu, zatrzymanie z limitem 5000 ms, kod 1 także przy nieudanym lub zawieszonym
+  zatrzymaniu):
+
+  ```js
+  RED.start().catch(err => {
+      console.error("Node-RED failed to start:", err);
+      const stopped = Promise.resolve()
+          .then(() => RED.stop("startup-error"))
+          .catch(stopErr => console.error("Node-RED stop failed:", stopErr));
+      const limit = new Promise(resolve => setTimeout(resolve, 5000));
+      return Promise.race([stopped, limit]).finally(() => process.exit(1));
+  });
+  ```
+
+  Kontrakt `/live` bez zmian.
 - **Odrzucone żądanie `/flow` nie emituje `deploying` (#10, U1, A24, D19):** `POST /flow`, `PUT` i `DELETE /flow/:id` sprawdzają rewizje i budują
   konfigurację przed stanem `deploying`, więc odrzucone żądanie (409, 404, `duplicate_id`, `invalid_flow_id`, 400 `global`) nie przechodzi przez
   `deploying` i z powrotem: brak zdarzeń `instance:state`, brak chwilowego 503 na `/ready` i brak chwilowego wstrzymania z #8; nie unieważnia też
