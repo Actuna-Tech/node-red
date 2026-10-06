@@ -160,7 +160,7 @@ module.exports = Object.assign(${JSON.stringify(base)}, (${options.extra || "{}"
 `;
         fs.writeFileSync(path.join(userDir, "settings.js"), source);
         fs.writeFileSync(path.join(userDir, "flows.json"), options.flows || "[]");
-        return getFreePort().then(port => {
+        return (options.port !== undefined ? Promise.resolve(options.port) : getFreePort()).then(port => {
             const child = spawn(process.execPath, [RED_JS, "-u", userDir, "-p", String(port)], {
                 stdio: options.ipc ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"]
             });
@@ -290,6 +290,8 @@ const failingStorage = Object.assign({}, localfs, { watchFlows: () => Promise.re
             { name: "a string", expr: `"text"` },
             { name: "a number", expr: "42" },
             { name: "an object whose stack getter throws", expr: `{ get stack() { throw new Error("stack getter throws") } }` },
+            // R67-1: util.inspect reads the stack of an Error, so this one needs more than the plain object above
+            { name: "an Error whose stack getter throws", expr: `(() => { const e = new Error("m"); Object.defineProperty(e, "stack", { get() { throw new Error("x") } }); return e })()` },
             { name: "a Proxy whose get throws", expr: `new Proxy({}, { get() { throw new Error("proxy get throws") } })` }
         ];
         values.forEach(v => {
@@ -298,9 +300,21 @@ const failingStorage = Object.assign({}, localfs, { watchFlows: () => Promise.re
                 const code = await exitsWithin(proc, EXIT_BOUND);
                 proc.output.should.match(/Failed to start server/);
                 proc.output.should.not.match(/Uncaught Exception/);
+                // R67-3: the planned stop happened
+                proc.output.should.match(/Stopping Node-RED \(startup-error\)/);
                 should(code).equal(1);
             });
         });
+    });
+
+    it("AC-5 (R67-2): a synchronous throw in the handler of a resolved start (uiPort out of range) ends the process with 1 after the planned stop", async function() {
+        const proc = await launch({ port: 99999 });
+        const code = await exitsWithin(proc, EXIT_BOUND);
+        proc.output.should.match(/Failed to start server/);
+        proc.output.should.match(/ERR_SOCKET_BAD_PORT/);
+        proc.output.should.match(/Stopping Node-RED \(startup-error\)/);
+        proc.output.should.not.match(/Uncaught Exception/);
+        should(code).equal(1);
     });
 
     it("AC-6: a rejected RED.stop after the failed start is logged as Shutdown failed and the exit code is 1", async function() {
