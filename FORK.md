@@ -498,6 +498,11 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 - **Edytor, `RED.utils.renderMarkdown` (#63):** gdy biblioteka markdown nie potrafi przetworzyć tekstu, wynik jest
   escapowany jak w `RED.utils.sanitize` (`& < > " '`); wcześniej był zwracany surowy tekst, który wywołujący wstawiają
   jako HTML. Wartość niebędąca tekstem jest zwracana bez zmian, jak dotąd.
+- **Admin API, limit ciała (#63):** parsery JSON i urlencoded Admin API dostają jako limit maksymalną długość napisu
+  Node.js, gdy `apiMaxLength` daje większy rozmiar (według reguł rozmiaru `body-parser`) – ta sama reguła co w
+  parserach `http in` od #48 (dwie kopie trzymane równo jedną tabelą przypadków testów); inne wartości są przekazywane
+  bez zmian, domyślnie nadal 5 MB. Większe ciało idzie istniejącą ścieżką błędu (413). Parsery Admin API czytają ciało
+  **przed uwierzytelnieniem**, jak w upstream – limit tego nie zmienia.
 
 ## 7. Testy i proces
 

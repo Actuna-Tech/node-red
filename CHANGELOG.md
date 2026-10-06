@@ -637,6 +637,10 @@ Fixes
    fails after its headers were sent, the error is logged as before and no second answer (400) is attempted
  - Fix (#63): command line `red.js`: when `RED.start()` rejects with a value the log cannot write (a `Symbol`),
    `Failed to start server:` is written once; the value is printed by the console fallback
+ - Fix (#63): Admin API: the JSON and urlencoded parsers get the maximum string length of Node.js as their limit
+   when `apiMaxLength` gives a larger size (by the size rules of `body-parser`), the same rule as the parsers of
+   `http in` since #48; any other `apiMaxLength` is passed to them unchanged, and the default stays 5 MB. A larger
+   body takes the existing error path (413). The parsers read the body before authentication, as in upstream
 
 Features
 
