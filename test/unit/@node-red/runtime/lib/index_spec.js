@@ -3230,6 +3230,43 @@ describe("runtime", function() {
                 });
             });
 
+            describe("R73-N1: a failure of loadFlows that is not a rejected promise", function() {
+                function loggedAbout(text) {
+                    return [log.error, log.warn].some(function(stub) {
+                        return stub.getCalls().some(function(c) {
+                            return c.args.some(function(a) {
+                                try { return String(a).indexOf(text) !== -1 } catch (e) { return false }
+                            });
+                        });
+                    });
+                }
+                it("R73-N1: loadFlows throws synchronously: the state is failed with storage-error, the failure is logged, no unhandled rejection", async function() {
+                    const unhandled = recordUnhandled();
+                    fake(redNodes, "loadFlows", function() { throw new Error("sync boom") });
+                    init({});
+                    track(runtime.start());
+                    await flush();
+                    await clock.tickAsync(1000);
+                    await flush();
+                    instanceState.get().should.containEql({state: "failed", reason: "storage-error"});
+                    instanceState.get().errors[0].should.have.property("message", "sync boom");
+                    loggedAbout("sync boom").should.be.true("the failure of loadFlows is not logged");
+                    redNodes.startFlows.called.should.be.false();
+                    unhandled.should.eql([]);
+                });
+
+                it("R73-N1 (control): loadFlows rejects: the same state, as before (regression)", async function() {
+                    const unhandled = recordUnhandled();
+                    fake(redNodes, "loadFlows", function() { return Promise.reject(new Error("async boom")) });
+                    init({});
+                    await runtime.start();
+                    await flush();
+                    instanceState.get().should.containEql({state: "failed", reason: "storage-error"});
+                    instanceState.get().errors[0].should.have.property("message", "async boom");
+                    unhandled.should.eql([]);
+                });
+            });
+
             describe("AC-17: the behaviour without a stop during the start is unchanged", function() {
                 it("AC-17 (M1): a stop before start(): the state is stopped, no startup-stopped message", async function() {
                     init({});

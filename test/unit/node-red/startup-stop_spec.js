@@ -262,7 +262,7 @@ require(${JSON.stringify(COORDINATION)}).start = () => {
     fs.appendFileSync(MARKER, "coord\\n");
     return new Promise(resolve => setTimeout(resolve, 1500));
 };`,
-                extra: `{ shutdownTimeout: 8000, hooks: { "preShutdown.t": () => new Promise(resolve => setTimeout(resolve, 3000)) } }`
+                extra: `{ shutdownTimeout: 8000, hooks: { "preShutdown.t": (event) => new Promise(resolve => setTimeout(resolve, 3000)) } }`
             });
             await whenCoordinationStarted(proc);
             proc.child.kill("SIGTERM");
@@ -279,7 +279,7 @@ require(${JSON.stringify(COORDINATION)}).start = () => {
         it("AC-25: the drain is cut short, exit 0, RED.stop once, the warning once, no failed-start message", async function() {
             const proc = await launch({
                 pre: HANDLE + "\n" + HANGING_COORDINATION + "\n" + COUNTING_STOP,
-                extra: `{ shutdownTimeout: 8000, hooks: { "preShutdown.t": () => new Promise(resolve => setTimeout(resolve, 6000)) } }`
+                extra: `{ shutdownTimeout: 8000, hooks: { "preShutdown.t": (event) => new Promise(resolve => setTimeout(resolve, 6000)) } }`
             });
             await whenCoordinationStarted(proc);
             proc.child.kill("SIGTERM");
