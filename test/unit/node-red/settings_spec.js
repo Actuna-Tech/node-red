@@ -2,6 +2,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   Z-14: test that the flow layout example in the settings template enables the controls
  *   #71: test that startupTimeout is not set by default in the settings template and that its example is valid
+ *   #48: test that httpInMaxBodySize is not set by default in the settings template, that it is described and that its example is valid
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
@@ -78,5 +79,58 @@ describe("node-red/settings.js template", function() {
         Number.isFinite(settings.startupTimeout).should.be.true();
         settings.startupTimeout.should.be.above(0);
         settings.startupTimeout.should.not.be.above(2147483647);
+    });
+
+    describe("httpInMaxBodySize (#48)", function() {
+        it("AC-20 (#48): does not set httpInMaxBodySize by default", function() {
+            const settings = loadSettings(source);
+            should(settings.httpInMaxBodySize).be.undefined();
+        });
+
+        it("AC-20 (#48): the Node Settings list at the head of the section names httpInMaxBodySize", function() {
+            const from = source.indexOf("Node Settings\n *  - fileWorkingDirectory");
+            from.should.be.above(0);
+            const list = source.slice(from, source.indexOf("*****/", from));
+            list.should.containEql("httpInMaxBodySize");
+        });
+
+        it("AC-21 (#48): the httpInMaxBodySize example, when uncommented, is a size that the node accepts: a number above 0, or a number with a unit", function() {
+            const settings = loadSettings(uncommentExample(source, "httpInMaxBodySize"));
+            const value = settings.httpInMaxBodySize;
+            if (typeof value === "number") {
+                Number.isFinite(value).should.be.true();
+                value.should.be.above(0);
+            } else {
+                value.should.be.a.String();
+                value.trim().should.match(/^\d+(\.\d+)?\s*(b|kb|mb|gb|tb|pb)?$/i);
+                parseFloat(value).should.be.above(0);
+            }
+        });
+
+        it("AC-50 (#48): the text of the template says that the setting is off by default, that the limit of a node can raise or lower it, that JSON and urlencoded bodies are not limited by it, and that an invalid value is ignored and only logged", function() {
+            const lines = source.split("\n");
+            // the comment of the setting: from the line that opens it to the example of the setting
+            const at = lines.findIndex(function(line) { return /^\s*\/\/\s*httpInMaxBodySize:/.test(line) });
+            should.ok(at >= 0, "the commented example of httpInMaxBodySize is not in the template");
+            let start = at;
+            while (start > 0 && at - start < 60 && !/^\s*\/\*\*/.test(lines[start])) { start -= 1 }
+            const block = lines.slice(start, at + 1).join("\n");
+            block.should.match(/default/i);
+            block.should.match(/\b(raise|raises|lower|lowers)\b/i);
+            block.should.match(/json/i);
+            block.should.match(/urlencoded|url-encoded/i);
+            block.should.match(/ignored/i);
+            block.should.match(/\blog(ged)?\b/i);
+            block.should.match(/\b413\b/);
+        });
+
+        it("AC-50 (#48): the comment of apiMaxLength tells about httpInMaxBodySize", function() {
+            const lines = source.split("\n");
+            const at = lines.findIndex(function(line) { return /^\s*\/\/\s*apiMaxLength:/.test(line) });
+            should.ok(at >= 0, "the commented example of apiMaxLength is not in the template");
+            let start = at;
+            while (start > 0 && at - start < 60 && !/^\s*\/\*\*/.test(lines[start])) { start -= 1 }
+            lines.slice(start, at + 1).join("\n").should.containEql("httpInMaxBodySize");
+        });
     });
 });
