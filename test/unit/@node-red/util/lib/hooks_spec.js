@@ -1,7 +1,12 @@
 const should = require("should");
 const NR_TEST_UTILS = require("nr-test-utils");
 
+const sinon = require("sinon");
+
 const hooks = NR_TEST_UTILS.require("@node-red/util/lib/hooks");
+const Log = NR_TEST_UTILS.require("@node-red/util/lib/log");
+// #63: the cases of the semantics of a hook chain, shared with the tests of the copy of the editor
+const shared = require("./hooks-cases");
 
 describe("util/hooks", function() {
     afterEach(function() {
@@ -1077,6 +1082,90 @@ describe("util/hooks", function() {
             const result = await rejectWith(() => boom);
             assertWrapped(result, "boom");
             (result.err === boom).should.be.true();
+        });
+    });
+});
+
+describe("util/hooks - the shared case table (#63)", function() {
+    let warn;
+    let debug;
+    let unhandled;
+    let onUnhandled;
+
+    beforeEach(function() {
+        warn = sinon.stub(Log, "warn");
+        debug = sinon.stub(Log, "debug");
+        unhandled = [];
+        onUnhandled = reason => unhandled.push(reason);
+        process.on("unhandledRejection", onUnhandled);
+    });
+    afterEach(async function() {
+        await shared.macrotask();
+        process.removeListener("unhandledRejection", onUnhandled);
+        warn.restore();
+        debug.restore();
+        hooks.clear();
+    });
+
+    const impl = { add: hooks.add, remove: hooks.remove, trigger: hooks.trigger };
+
+    // the debug lines that tell that a later outcome of a handler step was ignored (B6-AC-9)
+    function ignoredLines() {
+        return debug.args.map(args => String(args[0])).filter(line => /more than once/.test(line));
+    }
+
+    shared.cases.forEach(function(testCase) {
+        ["promise", "callback"].forEach(function(form) {
+            it(testCase.ac + ": " + testCase.id + " (" + form + " form)", async function() {
+                const observed = await shared.exercise(impl, testCase, form);
+                shared.assertOutcome(testCase, observed, form);
+                await shared.macrotask();
+                unhandled.map(String).should.eql([], "an unhandled rejection");
+                if (testCase.expect.ignored !== undefined || form === "promise" || form === "callback") {
+                    ignoredLines().should.have.length(testCase.expect.ignored || 0, "the debug lines for the ignored outcomes");
+                }
+            });
+        });
+    });
+
+    describe("B6-AC-1: the warning at the registration of a handler without parameters", function() {
+        shared.registrations.forEach(function(registration) {
+            it(registration.id + ": " + registration.warns + " warning" + (registration.warns === 1 ? "" : "s"), function() {
+                const result = shared.register(impl, registration);
+                // the runtime copy has no check of the type of the handler (as before): nothing is thrown
+                should.not.exist(result.threw);
+                warn.callCount.should.equal(registration.warns);
+                if (registration.warns === 1) {
+                    const text = String(warn.firstCall.args[0]);
+                    text.should.containEql(registration.hookId.split(".")[0]);
+                    text.should.containEql("(payload, done)");
+                    text.should.containEql("(payload)");
+                    text.should.containEql("done");
+                }
+            });
+        });
+
+        it("one warning per registration, not per run", async function() {
+            hooks.add("onSend.z", function() {});
+            warn.callCount.should.equal(1);
+            hooks.trigger("onSend", {}, function() {});
+            await shared.sleep(20);
+            warn.callCount.should.equal(1);
+        });
+
+        it("the warning names the place that registered the handler", function() {
+            hooks.add("onSend.z", function() {});
+            String(warn.firstCall.args[0]).should.containEql("hooks_spec.js");
+        });
+
+        shared.settingsRegistrations.forEach(function(registration) {
+            it(registration.id + ": " + registration.warns + " warning" + (registration.warns === 1 ? "" : "s"), function() {
+                hooks.addFromSettings({ [registration.hookId]: registration.make() });
+                warn.callCount.should.equal(registration.warns);
+                if (registration.warns === 1) {
+                    String(warn.firstCall.args[0]).should.containEql("(payload, done)");
+                }
+            });
         });
     });
 });
