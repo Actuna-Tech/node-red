@@ -574,6 +574,23 @@ Features
    above 0 logs one warning (`httpin.errors.invalid-api-max-length`) and uses 5mb. No new global setting. The field
    is shown, and validated by the editor, only with one of the two options. English help and the English and
    Polish messages (#16)
+ - `http in`: new optional setting `httpInMaxBodySize` (#48, part 2 of 2), a default size limit of the request
+   bodies of the POST, PUT, PATCH and DELETE nodes, for example `"50mb"` (the size format of "Max body size"). Off
+   by default, the behaviour is unchanged. When set, it is the limit of the raw body (instead of `apiMaxLength`),
+   of the whole body of a multipart upload, and of the text and binary bodies of the nodes without options; a
+   larger body is answered with 413 `Payload Too Large` (the answer of #16, with the CORS headers of
+   `httpNodeCors`, no log line) and the flow does not run. "Max body size" of a node raises or lowers it for that
+   node; a raise logs one warning of the node (`httpin.errors.max-body-size-above-default`). With the setting the
+   field is shown, and validated, for every node of those methods; GET never uses it. The JSON and urlencoded
+   bodies are not limited by it (their limit stays `apiMaxLength`). A value above the maximum string length of
+   Node.js applies and logs one warning (`httpin.errors.large-max-body-size-setting`); the same for "Max body size"
+   of a node (`httpin.errors.large-max-body-size`), also without the setting. An invalid value (not a size above
+   0, or one that cannot be read) is ignored with one warning (`httpin.errors.invalid-max-body-size-setting`) and
+   the bodies then have no default limit (fail-open, check the log after a change). The setting is read once at
+   start. `GET /settings` carries only `httpInMaxBodySizeEnabled: true` when the setting is valid (never its value;
+   without it nothing changes). On an upload route a body that is not multipart is not read, as before. The
+   limit applies to one request, not to the sum of the bodies received at the same time. Settings template,
+   English help, English and Polish messages
 
 #### Unreleased: Engine extensions
 
