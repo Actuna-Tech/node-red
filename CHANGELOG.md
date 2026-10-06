@@ -88,7 +88,7 @@
    0 without a log) or held one (before: a process without a listening server). In an embedding application
    `RED.start()` rejects with that error and the library never calls `process.exit`. A step that completes after
    the limit is ignored and logged as a warning (nothing after it runs, the flows are not loaded); a coordination
-   plugin that starts late is resigned and stopped at once, a late own server of the probes and a late observer
+   plugin that starts late is resigned and stopped at once (stopped also when the resign fails), a late own server of the probes and a late observer
    of storage are stopped. A step that fails after the limit is only a warning. An invalid value (not a number of
    ms > 0 and <= 2147483647, for example the string of an environment variable) logs one warning and sets no
    limit. The calls of `resign()` and `stop()` of the coordination are made one after the other (a stop of the
