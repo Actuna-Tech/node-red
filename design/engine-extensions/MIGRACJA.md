@@ -210,8 +210,8 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   albo przy restarcie procesu; zalecenie dla konsumentów: walidować zapisy (`type !== "reload" && type !== "load"` – oba typy niosą treść z magazynu). **D26:** przy `reload` z Projektami błąd
   `credentials_load_failed` pojawia się **po** hooku (poświadczenia ładuje krok 3a); odrzucenie przez hook go przesłania – klient dostaje `deploy_rejected`.
   **Błąd odczytu magazynu:** dla `reload` i dla `load` przy zarejestrowanym `preDeploy` występuje przed stanem `deploying` (krok 2), więc bez przejścia `instance:state`;
-  dla `load` bez handlera – wewnątrz `deploying`, jak w 5.0.7.
-- **Moment rejestracji:** to, czy handler `preDeploy` jest zarejestrowany, jest czytane **raz na wdrożenie**, pod blokadą, przed krokiem 2 – handler dodany lub usunięty w trakcie wdrożenia działa od następnego.
+  dla `load` bez handlera – wewnątrz `deploying`, jak przed #10.
+- **Moment rejestracji:** raz na wdrożenie, pod blokadą, przed krokiem 2, czytane jest tylko, czy jakikolwiek handler `preDeploy` jest zarejestrowany: bez handlera wdrożenie idzie starą ścieżką także wtedy, gdy handler zostanie dodany w trakcie; listę handlerów krok 3 bierze w chwili wywołania (handler dodany przed krokiem 3 jest wywołany, usunięty - nie).
 - **Ograniczenia (SEC-105):** hook nie jest granicą bezpieczeństwa – omijają go Z-09 (zapis do wspólnego magazynu), operacje Projektów, start procesu
   i kod w procesie (np. `RED.hooks.remove`; ta sama możliwość pozwala też podmienić `RED.hooks.has`).
 - **Ponowne wejście (SEC-104):** z `preDeploy` i `postDeploy` nie wolno wdrażać. Wdrożenie z `preDeploy` czeka na blokadę trzymaną przez własne

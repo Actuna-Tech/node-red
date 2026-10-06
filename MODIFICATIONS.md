@@ -9,6 +9,7 @@ that it has been changed.
   (template below), placed after the project licence header.
 - Files that cannot hold a comment (JSON) or have no project licence header
   are listed in this file with a description of the changes.
+- YAML files (`.github/workflows/*.yml`) have no licence header and carry the notice in the file as `#` comments.
 
 This file, `AGENTS.md` and the `design/` directory belong to the fork only.
 Branches prepared for a contribution to the Node-RED project contain neither
