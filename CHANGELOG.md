@@ -609,6 +609,13 @@ Fixes
    name has more than 8 opening brackets `[` (every `[` counts, also one that is not closed; for example
    `a[b][c][d][e][f][g][h][i][j]`) is answered with 413; a name with at most 8 is accepted as before. Both
    limits check only the names of text fields, not the names of file parts
+ - Fix (#63): Editor: a link or a "Review" button from the remote catalog of modules is made only for an absolute
+   `http:` or `https:` address (`RED.errors.httpUrl`). A relative address (`docs/x`, `/x`, `?q=1`, `#a`,
+   `//example.org/x`) was resolved against the address of the editor and gave a link into the editor itself; now it
+   gives no link and no button
+ - Fix (#63): Editor: `RED.utils.renderMarkdown` escapes the text (as `RED.utils.sanitize`: `& < > " '`) when the
+   markdown library cannot render it; it returned the text as it was, and the callers put it into HTML. A value
+   that is not a string is returned unchanged, as before
 
 Features
 
