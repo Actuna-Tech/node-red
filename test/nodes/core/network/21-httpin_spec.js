@@ -32,7 +32,9 @@
  *   #48: acceptance tests of the cap of 1000 parts of an upload (with the setting httpInMaxBodySize or the field of the
  *   node) and of the limit of 100 for a number in brackets in the name of a multipart field (413 on every upload route)
  *   #48: acceptance tests of the limit of 8 for the nesting depth of the name of a multipart field (413 on every upload route)
- *   #63: the R2-03 list of the limits of the JSON and urlencoded parsers is the shared table of the Admin API parsers
+ *   #63: the R2-03 list of the limits of the JSON and urlencoded parsers is the shared table of the Admin API parsers;
+ *   a response that another layer sent on a keep-alive connection (the two guards of sendTooLarge together); the
+ *   boundary of the text body without the opt-in (the exact maximum is not refused, one more is)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1693,6 +1695,31 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             });
         });
 
+        // #63 (B8-AC-3): the boundary of the text body without the opt-in of AC-5
+        describe("B8-AC-3 (#63): the exact maximum of a text body is not refused, one more is", function() {
+            it("B8-AC-3: Content-Length of the maximum and 1 KiB sent: no answer within 200 ms; after the client aborts, the next request is answered by the flow", async function() {
+                await load([["a", { skipBodyParsing: false, url: "/t" }]]);
+                const res = await exchange("POST", "/t", { "Content-Type": "text/plain", "Content-Length": String(MAX) }, [KIB], { end: false, bound: 200 });
+                // the node waits for the rest of the body: nothing is refused
+                res.settled.should.equal(false);
+                // exchange() has destroyed the request: the client aborted
+                const served = await exchange("POST", "/t", { "Content-Type": "text/plain" }, [Buffer.from("next request")]);
+                served.should.have.property("statusCode", 200);
+                received.length.should.be.above(0);
+                received[received.length - 1].msg.payload.should.equal("next request");
+            });
+
+            it("B8-AC-3: Content-Length above the maximum by one and 1 KiB sent: 413 within 200 ms, without the body", async function() {
+                await load([["a", { skipBodyParsing: false, url: "/t" }]]);
+                const res = await exchange("POST", "/t", { "Content-Type": "text/plain", "Content-Length": String(MAX + 1) }, [KIB], { end: false, bound: 200 });
+                res.settled.should.equal(true);
+                res.should.have.property("statusCode", 413);
+                received.should.have.length(0);
+                const served = await exchange("POST", "/t", { "Content-Type": "text/plain" }, [Buffer.from("next request")]);
+                served.should.have.property("statusCode", 200);
+            });
+        });
+
         it("AC-8: the 413 carries the CORS headers, on a literal path and on a path with a parameter", async function() {
             await load([["a", { skipBodyParsing: false }], ["b", { url: "/p/:id", skipBodyParsing: false }]], { httpNodeCors: { origin: "*" } });
             const origin = { Origin: "http://example.test" };
@@ -1743,6 +1770,65 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
                 const served = await exchange("POST", "/hook", { "Content-Type": "text/plain" }, [Buffer.from("b".repeat(100))]);
                 served.should.have.property("statusCode", 200);
                 received.should.have.length(1);
+            });
+
+            // #63 (B8-AC-2): this test pins the outcome of the two guards of sendTooLarge together - the one at the start
+            // (`responseSent` before anything is read) and the one inside `answer()`: the start guard has no outcome of its
+            // own, because after a response written by another layer `answer()` returns at the second guard and the
+            // body that is not read is dropped by Node.js after the response ended
+            it("B8-AC-2: another layer answered 200 first, a chunked body of 8 KiB above the limit of 1 KiB of the node, on a keep-alive connection: one answer, no 413, the next request on the same socket is served", async function() {
+                const middleware = function(req, res, next) {
+                    if (req.headers["x-answer-first"]) {
+                        res.statusCode = 200;
+                        res.setHeader("Content-Type", "text/plain");
+                        res.end("mw");
+                    }
+                    next();
+                };
+                // the node parses the body (a text body is read by the route, after the middleware) and has a limit of 1 KiB:
+                // the limit of a node is applied to the bodies of the route with the httpInMaxBodySize setting
+                await load([["a", { skipBodyParsing: false, maxBodySize: "1kb" }]], { httpInMaxBodySize: "1kb", httpNodeMiddleware: middleware });
+                const strays = collectStrays();
+                const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+                function send(headers, chunks, chunked) {
+                    return new Promise(function(resolve, reject) {
+                        const answers = [];
+                        const req = http.request({ host: "127.0.0.1", port: server.address().port, method: "POST", path: "/hook", agent: agent, headers: headers }, function(res) {
+                            const parts = [];
+                            res.on("data", function(c) { parts.push(c) });
+                            res.on("end", function() {
+                                answers.push({ statusCode: res.statusCode, connection: res.headers.connection, body: Buffer.concat(parts).toString() });
+                                resolve({ answers: answers, reused: req.reusedSocket, socket: req.socket });
+                            });
+                        });
+                        req.on("error", reject);
+                        const timer = setTimeout(function() { req.destroy(); reject(new Error("no answer within 2000 ms")); }, 2000);
+                        req.on("close", function() { clearTimeout(timer); });
+                        chunks.forEach(function(c) { req.write(c); });
+                        req.end();
+                    });
+                }
+                try {
+                    const first = await send({ "Content-Type": "text/plain", "Transfer-Encoding": "chunked", "x-answer-first": "1" }, [Buffer.alloc(4096, 0x61), Buffer.alloc(4096, 0x61)]);
+                    first.answers.should.have.length(1);
+                    first.answers[0].statusCode.should.equal(200);
+                    first.answers[0].body.should.equal("mw");
+                    // http in added no Connection: close
+                    should.not.exist(first.answers[0].connection && /close/i.test(first.answers[0].connection) ? first.answers[0].connection : undefined);
+                    await delay(100);
+                    const second = await send({ "Content-Type": "text/plain" }, [Buffer.from("small")]);
+                    second.answers[0].statusCode.should.equal(200);
+                    // the same socket served the second request
+                    second.reused.should.equal(true);
+                    received.should.have.length(1);
+                    received[0].msg.payload.should.equal("small");
+                    const logged = JSON.stringify(helper.log().args);
+                    logged.should.not.match(/ERR_HTTP_HEADERS_SENT|Cannot set headers/);
+                    strays.seen.should.eql([]);
+                } finally {
+                    agent.destroy();
+                    strays.restore();
+                }
             });
 
             it("AC-9b: httpNodeMiddleware answers first, a Do not parse node on a path with a parameter, a declared 2 KiB above apiMaxLength 1kb", async function() {
