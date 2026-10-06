@@ -55,6 +55,14 @@ const COORDINATION = path.join(PACKAGES, "@node-red/runtime/lib/coordination");
 
 const EXIT_BOUND = 10000;
 
+// The limits of the tests below are far above the time the start needs to reach the coordination (about
+// 0.5 s on a quiet machine, 1 s under nyc, much more on a loaded CI runner), because the limit counts from the
+// call of runtime.start(): a limit that fires while the node palette still loads would name another step.
+// LIMIT is for the tests that expect the step "coordination"; the start of a successful start must also
+// finish within SUCCESS_LIMIT.
+const LIMIT = 4000;
+const SUCCESS_LIMIT = 6000;
+
 function getFreePort() {
     return new Promise((resolve, reject) => {
         const srv = net.createServer();
@@ -220,7 +228,7 @@ RED.events.on("instance:state", s => { last = s });
 RED.init({
     userDir: ${JSON.stringify(dir)},
     flowFile: "flows.json",
-    startupTimeout: 500,
+    startupTimeout: ${LIMIT},
     disableEditor: true,
     logging: { console: { level: "off" } }
 });
@@ -245,25 +253,25 @@ RED.start().then(
 
     describe("AC-14, AC-15, AC-16: the limit ends the process with 1", function() {
         it("AC-14: a coordination that never starts and keeps a handle: exit 1 after the limit and the ordered stop", async function() {
-            const proc = await launch({ pre: HANDLE + "\n" + HANGING_COORDINATION, extra: `{ startupTimeout: 1500 }` });
-            const code = await exitsWithin(proc, 1500 + EXIT_BOUND);
+            const proc = await launch({ pre: HANDLE + "\n" + HANGING_COORDINATION, extra: `{ startupTimeout: ${LIMIT} }` });
+            const code = await exitsWithin(proc, LIMIT + EXIT_BOUND);
             const elapsed = Date.now() - proc.startedAt;
             proc.output.should.match(/Failed to start server/);
-            proc.output.should.match(/did not complete within startupTimeout \(1500 ms\)/);
+            proc.output.should.match(new RegExp("did not complete within startupTimeout \\(" + LIMIT + " ms\\)"));
             proc.output.should.match(/waiting for: coordination/);
             proc.output.should.match(/Stopping Node-RED \(startup-error\)/);
             proc.output.should.not.match(/Uncaught Exception/);
             should(code).equal(1);
-            elapsed.should.be.aboveOrEqual(1500);
+            elapsed.should.be.aboveOrEqual(LIMIT);
         });
 
         [
-            { name: "without probes", extra: `{ startupTimeout: 1500 }` },
-            { name: "with the probes on the main server (health.enabled)", extra: `{ startupTimeout: 1500, health: { enabled: true } }` }
+            { name: "without probes", extra: `{ startupTimeout: ${LIMIT} }` },
+            { name: "with the probes on the main server (health.enabled)", extra: `{ startupTimeout: ${LIMIT}, health: { enabled: true } }` }
         ].forEach(v => {
             it("AC-15: a coordination that never starts and keeps no handle, " + v.name + ": exit 1, not 0", async function() {
                 const proc = await launch({ pre: HANGING_COORDINATION, extra: v.extra });
-                const code = await exitsWithin(proc, 1500 + EXIT_BOUND);
+                const code = await exitsWithin(proc, LIMIT + EXIT_BOUND);
                 proc.output.should.match(/Failed to start server/);
                 should(code).equal(1);
             });
@@ -273,14 +281,14 @@ RED.start().then(
             const healthPort = await getFreePort();
             const proc = await launch({
                 pre: HANGING_COORDINATION,
-                extra: `{ startupTimeout: 3000, health: { enabled: true, port: ${healthPort}, host: "127.0.0.1" } }`
+                extra: `{ startupTimeout: ${LIMIT + 2000}, health: { enabled: true, port: ${healthPort}, host: "127.0.0.1" } }`
             });
             await whenCoordinationStarted(proc);
             const probes = "http://127.0.0.1:" + healthPort + "/health";
             (await status(probes + "/live")).should.equal(200);
             (await status(probes + "/ready")).should.equal(503);
             (await refused(proc.port)).should.be.true();
-            const code = await exitsWithin(proc, 3000 + EXIT_BOUND);
+            const code = await exitsWithin(proc, LIMIT + 2000 + EXIT_BOUND);
             proc.output.should.match(/Failed to start server/);
             should(code).equal(1);
             (await refused(healthPort)).should.be.true();
@@ -313,12 +321,12 @@ RED.start().then(
         it("AC-18: a signal before the limit decides about the exit (0), the limit that fires during that stop does not stop a second time", async function() {
             const proc = await launch({
                 pre: HANDLE + "\n" + HANGING_COORDINATION + `
-require(${JSON.stringify(RED_LIB)}).stop = function() { fs.appendFileSync(MARKER, "stop\\n"); return new Promise(resolve => setTimeout(resolve, 3000)) };`,
-                extra: `{ startupTimeout: 2000 }`
+require(${JSON.stringify(RED_LIB)}).stop = function() { fs.appendFileSync(MARKER, "stop\\n"); return new Promise(resolve => setTimeout(resolve, ${LIMIT + 2000})) };`,
+                extra: `{ startupTimeout: ${LIMIT} }`
             });
             await whenCoordinationStarted(proc);
             proc.child.kill("SIGTERM");
-            const code = await exitsWithin(proc, 2000 + EXIT_BOUND);
+            const code = await exitsWithin(proc, LIMIT + 2000 + EXIT_BOUND);
             should(code).equal(0);
             lines(proc.marker).filter(l => l === "stop").should.have.length(1);
             proc.output.should.match(/Failed to start server/);
@@ -338,30 +346,32 @@ require(${JSON.stringify(RED_LIB)}).stop = function() { fs.appendFileSync(MARKER
     it("AC-20: a coordination that completes after the limit is ignored: exit 1, the warning, the flows do not start", async function() {
         const proc = await launch({
             pre: `
-require(${JSON.stringify(COORDINATION)}).start = () => { fs.appendFileSync(MARKER, "coord\\n"); return new Promise(resolve => setTimeout(resolve, 1500)) };
+require(${JSON.stringify(COORDINATION)}).start = () => { fs.appendFileSync(MARKER, "coord\\n"); return new Promise(resolve => setTimeout(resolve, ${LIMIT + 1000})) };
 const RED = require(${JSON.stringify(RED_LIB)});
 const originalStop = RED.stop;
 RED.stop = function() {
     fs.appendFileSync(MARKER, "stop\\n");
-    return new Promise(resolve => setTimeout(resolve, 2000)).then(() => originalStop.apply(this, arguments));
+    return new Promise(resolve => setTimeout(resolve, ${LIMIT})).then(() => originalStop.apply(this, arguments));
 };`,
-            extra: `{ startupTimeout: 1000 }`
+            extra: `{ startupTimeout: ${LIMIT} }`
         });
-        const code = await exitsWithin(proc, 1000 + EXIT_BOUND);
+        const code = await exitsWithin(proc, LIMIT + LIMIT + EXIT_BOUND);
         should(code).equal(1);
         proc.output.should.match(/The start step coordination completed after startupTimeout - ignored/);
         proc.output.should.not.match(/Starting flows/);
     });
 
-    it("AC-21: a successful start with startupTimeout is unchanged: ready, the process lives on past twice the limit, SIGTERM ends it with 0 (regression)", async function() {
+    it("AC-21: a successful start with startupTimeout is unchanged: ready, the process lives on past the limit, SIGTERM ends it with 0 (regression)", async function() {
         const healthPort = await getFreePort();
         const proc = await launch({
-            extra: `{ startupTimeout: 2000, health: { enabled: true, port: ${healthPort}, host: "127.0.0.1" } }`
+            extra: `{ startupTimeout: ${SUCCESS_LIMIT}, health: { enabled: true, port: ${healthPort}, host: "127.0.0.1" } }`
         });
         const probes = "http://127.0.0.1:" + healthPort + "/health";
         await waitFor(async () => (await status(probes + "/ready")) === 200, 30000, "not ready; output:\n" + proc.output);
-        await sleep(4000);
+        // past the limit, counted from the start of the process (the start of the runtime is later, so a margin)
+        await sleep(Math.max(0, SUCCESS_LIMIT + 1500 - (Date.now() - proc.startedAt)));
         alive(proc).should.be.true();
+        (await status(probes + "/ready")).should.equal(200);
         proc.output.should.not.match(/startupTimeout/);
         proc.output.should.not.match(/Failed to start/);
         proc.child.kill("SIGTERM");
