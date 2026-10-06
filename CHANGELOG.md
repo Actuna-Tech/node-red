@@ -606,8 +606,9 @@ Fixes
    body size". Numbers 0 to 100 (`a[100]`) give an array as before; names without such a number (`a[]`,
    `a[101]x`, `a[1e2]`) and the field names of files are unchanged, and so are URL-encoded forms. A form that
    numbers more than 101 rows in its field names now gets 413. In the same way (always), a multipart field whose
-   name has more than 8 levels of brackets (for example `a[b][c][d][e][f][g][h][i][j]`) is answered with 413;
-   8 levels are accepted as before. Both limits check only the names of text fields, not the names of file parts
+   name has more than 8 opening brackets `[` (every `[` counts, also one that is not closed; for example
+   `a[b][c][d][e][f][g][h][i][j]`) is answered with 413; a name with at most 8 is accepted as before. Both
+   limits check only the names of text fields, not the names of file parts
 
 Features
 
