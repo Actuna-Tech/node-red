@@ -433,6 +433,26 @@ Fixes
    the write and a failed write was not reported; now a failed write answers 400 `unexpected_error` and the
    editor shows the save failed; a name that does not denote an entry is refused (403); on a very slow disk the
    request waits
+ - Fix (#68): a robustness fix for write errors: a failed write of the file content is reported and the
+   existing file is kept; a failed save of the settings or the sessions is logged. A failed write of the content
+   of a file of the local file storage (for example `ENOSPC` or `EIO`) rejects the save with the error of the
+   write; the target is kept and the temporary file of the call (`<file>.$$$`) removed. Before, the save
+   resolved and the file was left empty or cut short. Content that is not a string rejects with a `TypeError`
+   and the next save of the same file works. This covers the flows, the credentials, the settings, the
+   sessions, the library and the files of a project. Unchanged: a failed fsync is only a warning and a failed
+   rename keeps the temporary file. A failed save of the settings or the sessions is logged as a warning
+   (`Saving the settings failed`, `Saving the sessions failed`) and the operation that asked for it carries on
+   as after a saved file: the telemetry choice, the state of the flows (`POST /flows/state`), the node list,
+   the installed modules and the expiry of the sessions. A session whose save was rejected is not kept.
+   Behaviour change of the Admin API, answers of errors only: `POST /auth/token` with a password answers 500
+   `{"error":"server_error","error_description":"unexpected_error"}` without a token when the session cannot
+   be created; `POST /auth/revoke` answers 400 `{"error":"unexpected_error"}` when the session cannot be
+   removed (before, both requests got no answer); `POST /auth/token` with an exchange code answers every error
+   with 400 `{"error":"unexpected_error"}`, also a wrong or expired code (before: `{"error":"Error: Invalid
+   exchange code"}` or the text of another error); a request with a bearer token answers 401 when the sessions
+   cannot be read, and with an expired token also when the save of the sessions fails. The original error is
+   only logged. With an external strategy (`adminAuth.type: "strategy"`) a session that cannot be created gives
+   the general message `unexpected_error` in the redirect
  - Tests only, no change of the product: flaky tests fixed. The HTTP tests no longer reach a foreign server
    on the same machine (supertest started the app on all interfaces but connected to `127.0.0.1`; the
    shared helper `nr-test-utils/supertest` listens on `127.0.0.1`), the `tcp request` test server hook calls
