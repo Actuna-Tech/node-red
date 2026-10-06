@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #19: the test server hook calls done exactly once, retries on a taken port and answers with one ACK per connection, whatever the split of the chunks (flaky tests)
  *   #41: the test server listens on a port assigned by the system (port 0), no fixed port
+ *   #54: acceptance tests of the "sit" mode with an answer that arrives in two chunks; the "time" test of the latest message has a server that answers once (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -99,30 +100,63 @@ describe('TCP Request Node', function() {
         });
     }
 
-    function testTCPMany(flow, values, result, done) {
+    // The payload check depends on the mode of the node (#54):
+    // - "sit" without "newline" has no frames: the node passes on one message per chunk of the answer, and how
+    //   the answer is split into chunks depends on the timing of the sockets. The payloads are joined and
+    //   compared with the whole expected answer; the other properties (the topic) are checked on every message.
+    // - every other mode ("time", "char", "count", "sit" with "newline") passes on whole frames: the first
+    //   message must equal the whole expected result, payload included.
+    // onMessage(msg), when given, is called for every message that the helper takes.
+    function testTCPMany(flow, values, result, done, onMessage) {
         helper.load(tcpinNode, flow, () => {
             const n1 = helper.getNode("n1");
             const n2 = helper.getNode("n2");
-            n2.on("input", msg => {
-                try {
-                    if (typeof result === 'object') {
-                        if (flow[0].ret === "string") {
-                            msg.should.have.properties(Object.assign({}, result, {payload: result.payload}));
-                        } else {
-                            msg.should.have.properties(Object.assign({}, result, {payload: Buffer.from(result.payload)}));
-                        }
-                    } else {
-                        if (flow[0].ret === "string") {
-                            msg.should.have.property('payload', result);
-                        } else {
-                            msg.should.have.property('payload', Buffer.from(result));
-                        }
+            const asString = flow[0].ret === "string";
+            const expected = (typeof result === 'object') ? result : {payload: result};
+            const wanted = asString ? expected.payload : Buffer.from(expected.payload);
+            const unframed = flow[0].out === "sit" && !flow[0].newline;
+            if (!unframed) {
+                n2.on("input", msg => {
+                    if (onMessage) {
+                        onMessage(msg);
                     }
-                    done();
-                } catch(err) {
-                    done(err);
-                }
-            });
+                    try {
+                        msg.should.have.properties(Object.assign({}, expected, {payload: wanted}));
+                        done();
+                    } catch(err) {
+                        done(err);
+                    }
+                });
+            } else {
+                const others = Object.assign({}, expected);
+                delete others.payload;
+                const chunks = [];
+                let finished = false;
+                n2.on("input", msg => {
+                    if (finished) {
+                        return;
+                    }
+                    if (onMessage) {
+                        onMessage(msg);
+                    }
+                    try {
+                        msg.should.have.properties(others);
+                        chunks.push(msg.payload);
+                        const joined = asString ? chunks.join('') : Buffer.concat(chunks);
+                        if (joined.length < wanted.length) {
+                            // not all of the answer yet: what came must be the start of it
+                            should(joined).eql(wanted.slice(0, joined.length));
+                            return;
+                        }
+                        should(joined).eql(wanted);
+                        finished = true;
+                        done();
+                    } catch(err) {
+                        finished = true;
+                        done(err);
+                    }
+                });
+            }
             values.forEach(value => {
                 n1.receive(typeof value === 'object' ? value : {payload: value});
             });
@@ -357,21 +391,201 @@ describe('TCP Request Node', function() {
         });
 
         it('should only retain the latest message', function(done) {
-            var flow = [{id:"n1", type:"tcp request", server:"localhost", port:port, out:"time", splitc: "0", wires:[["n2"]] },
-                        {id:"n2", type:"helper"}];
-            testTCPMany(flow, [{
-                payload: 'f',
-                topic: 'bar'
-            }, {
-                payload: 'o',
-                topic: 'baz'
-            }, {
-                payload: 'o',
-                topic: 'quux'
-            }], {
-                payload: 'ACK:foo',
-                topic: 'quux'
-            }, done);
+            // The "time" mode passes on what has arrived in the first splitc ms and closes the connection, so the
+            // answer must come in one chunk: this server answers once, when all three messages have arrived
+            var once = stoppable(net.createServer(function(c) {
+                var got = "";
+                c.on('data', function(data) {
+                    got += data.toString();
+                    if (got.length === 3) {
+                        c.write("ACK:" + got);
+                    }
+                });
+                c.on('error', function() { c.destroy() });
+            }));
+            once.once('error', done);
+            once.listen(0, "127.0.0.1", function() {
+                once.removeAllListeners('error');
+                var flow = [{id:"n1", type:"tcp request", server:"localhost", port:once.address().port, out:"time", splitc: "0", wires:[["n2"]] },
+                            {id:"n2", type:"helper"}];
+                testTCPMany(flow, [{
+                    payload: 'f',
+                    topic: 'bar'
+                }, {
+                    payload: 'o',
+                    topic: 'baz'
+                }, {
+                    payload: 'o',
+                    topic: 'quux'
+                }], {
+                    payload: 'ACK:foo',
+                    topic: 'quux'
+                }, function(err) { once.stop(function() { done(err) }) });
+            });
+        });
+    });
+    // #54: the answer of a connection arrives in more than one chunk
+    describe('the answer arrives in two chunks (#54)', function () {
+        // How long AC-5 waits after the second message to see that no third one comes
+        const QUIET = 100;
+        let splitServer = undefined;
+        let splitPort = undefined;
+        // release(): the test has taken a message of the current connection, so the server may write the next
+        // part of the answer
+        let release = function() {};
+        // the onMessage of testTCPMany: every message taken lets the server write the next part
+        function releaseNext() {
+            release();
+        }
+
+        // A server that answers a connection in separate writes, with "ACK:" once at the start.
+        // surplus: the answer gets one more character at its end.
+        // The first write holds the "ACK:" and the first `firstLength` bytes of what the server
+        // receives; whatever follows (in the same chunk or in the next ones) goes in writes of its own.
+        // Each write after the first one waits for a release() from the test, so the client has passed on
+        // the previous part as a message of its own before the next part is written.
+        function listenSplit(firstLength, surplus, done) {
+            const candidate = stoppable(net.createServer(function(c) {
+                c.setNoDelay(true);
+                let acknowledged = false;
+                const queue = [];
+                // the writes allowed now: the first one, then one more for every release()
+                let allowed = 1;
+                function pump() {
+                    while (allowed > 0 && queue.length > 0) {
+                        allowed -= 1;
+                        c.write(queue.shift());
+                    }
+                }
+                release = function() {
+                    allowed += 1;
+                    pump();
+                };
+                function enqueue(text) {
+                    if (text.length === 0) {
+                        return;
+                    }
+                    queue.push(text);
+                    pump();
+                }
+                c.on('data', function(data) {
+                    let text = data.toString();
+                    if (!acknowledged) {
+                        acknowledged = true;
+                        enqueue("ACK:" + text.slice(0, firstLength));
+                        text = text.slice(firstLength);
+                    }
+                    enqueue(text + (surplus ? "X" : ""));
+                });
+                c.on('error', function() { c.destroy() });
+            }));
+            candidate.once('error', done);
+            candidate.listen(0, "127.0.0.1", function() {
+                candidate.removeAllListeners('error');
+                splitServer = candidate;
+                splitPort = candidate.address().port;
+                done();
+            });
+        }
+
+        function stopSplitServer(done) {
+            splitServer.stop(done);
+        }
+
+        // The messages of a connection in "sit" mode are one per chunk; the payloads joined are compared
+        function sitFlow(extra) {
+            return [Object.assign({id:"n1", type:"tcp request", server:"localhost", port:splitPort, out:"sit", wires:[["n2"]] }, extra),
+                    {id:"n2", type:"helper"}];
+        }
+
+        describe('with a first chunk of 3 bytes', function () {
+            before(function(done) { listenSplit(3, false, done) });
+            after(function(done) { stopSplitServer(done) });
+
+            it('AC-1: should send & receive, then keep connection, and not split return strings', function(done) {
+                testTCPMany(sitFlow({ret:"string", newline:""}), [{
+                    payload: "foo",
+                    topic: 'boo'
+                }, {
+                    payload: "bar<A>\nfoo",
+                    topic: 'boo'
+                }], {
+                    payload: "ACK:foobar<A>\nfoo",
+                    topic: 'boo'
+                }, done, releaseNext);
+            });
+
+            it('AC-2: should limit the queue size', function (done) {
+                RED.settings.tcpMsgQueueSize = 10;
+                const msgs = new Array(RED.settings.tcpMsgQueueSize + 1).fill('x');
+                const expected = msgs.slice(0, -1);
+                testTCPMany(sitFlow({splitc: "5"}), msgs, "ACK:" + expected.join(''), done, releaseNext);
+            });
+
+            it('AC-3: should send & receive, then keep connection', function(done) {
+                testTCPMany(sitFlow({splitc: "5"}), [{
+                    payload: "foo",
+                    topic: 'bar'
+                }, {
+                    payload: "bar",
+                    topic: 'bar'
+                }, {
+                    payload: "baz",
+                    topic: 'bar'
+                }], {
+                    payload: "ACK:foobarbaz",
+                    topic: 'bar'
+                }, done, releaseNext);
+            });
+
+            it('AC-5: the node passes on one message per chunk it receives', function(done) {
+                const flow = sitFlow({ret:"string", newline:""});
+                const seen = [];
+                helper.load(tcpinNode, flow, function() {
+                    const n1 = helper.getNode("n1");
+                    const n2 = helper.getNode("n2");
+                    n2.on("input", function(msg) {
+                        seen.push(msg.payload);
+                        release();
+                        if (seen.length === 2) {
+                            // nothing more arrives after the second one
+                            setTimeout(function() {
+                                try {
+                                    seen.should.eql(["ACK:foo", "bar<A>\nfoo"]);
+                                    done();
+                                } catch(err) {
+                                    done(err);
+                                }
+                            }, QUIET);
+                        }
+                    });
+                    n1.receive({payload: "foo", topic: 'boo'});
+                    n1.receive({payload: "bar<A>\nfoo", topic: 'boo'});
+                });
+            });
+        });
+
+        describe('with a server that adds a character to the answer', function () {
+            before(function(done) { listenSplit(2, true, done) });
+            after(function(done) { stopSplitServer(done) });
+
+            it('AC-6: data beyond the expected answer fails the comparison, not the time limit', function(done) {
+                testTCPMany(sitFlow({ret:"string", newline:""}), [{
+                    payload: "foo",
+                    topic: 'boo'
+                }], {
+                    payload: "ACK:foo",
+                    topic: 'boo'
+                }, function(err) {
+                    try {
+                        should.exist(err);
+                        err.name.should.equal("AssertionError");
+                        done();
+                    } catch(e) {
+                        done(e);
+                    }
+                }, releaseNext);
+            });
         });
     });
 });

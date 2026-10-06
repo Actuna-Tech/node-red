@@ -27,6 +27,8 @@
  *   #41: after a failed check the test waits for the pollers to end
  *   Z-06 (#10): a reload from storage calls the postDeploy hook with source "storage" and not preDeploy (the test plugin
  *   of deploy-hooks_spec.js)
+ *   #54: the hold test with a slow route in the old flows, so that a request is always in progress at the stop, with the
+ *   drain of the HTTP requests on (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -328,10 +330,12 @@ module.exports = Object.assign(${JSON.stringify({
 
     // Sends GET /stable all the time (two sequential pollers) during a reload of the
     // flows written to the shared file; returns the statuses in the order of the answers
-    async function reloadUnderLoad(deploy) {
+    // flowsFor(statusCode): the flows of the window (#54: the hold test takes the ones with a slow /stable)
+    async function reloadUnderLoad(deploy, flowsFor) {
+        flowsFor = flowsFor || windowFlows;
         const shared = tempDir("nr-reload-hold-");
         const flowFile = path.join(shared, "flows.json");
-        fs.writeFileSync(flowFile, JSON.stringify(windowFlows("200")));
+        fs.writeFileSync(flowFile, JSON.stringify(flowsFor("200")));
         const inst = await startInstance(flowFile, deploy);
         await waitFor(async () => (await status(inst.ready)) === 200, 30000, "not ready");
         (await status(inst.base + "/stable")).should.equal(200);
@@ -348,7 +352,7 @@ module.exports = Object.assign(${JSON.stringify({
             // A request in progress: the drain waits for it, the reload starts when it completes
             const turn = request("GET", inst.base + "/turn");
             await new Promise(r => setTimeout(r, 300));
-            fs.writeFileSync(flowFile + ".tmp", JSON.stringify(windowFlows("202")));
+            fs.writeFileSync(flowFile + ".tmp", JSON.stringify(flowsFor("202")));
             fs.renameSync(flowFile + ".tmp", flowFile);
             (await turn).status.should.equal(200);
             // the new flows answer 202 on /stable once started
@@ -367,7 +371,13 @@ module.exports = Object.assign(${JSON.stringify({
     }
 
     it("with deploy.holdHttpNodeRequests a request in the stop->start window gets the answer of the new flows, never 404 (#8)", async function() {
-        const statuses = await reloadUnderLoad({ holdHttpNodeRequests: { enabled: true, timeout: 15000 } });
+        // #54: with the drain on and a slow /stable in the old flows, so that a request of the pollers is always
+        // in progress at the stop (without the drain such a request gets no answer, as documented, and without
+        // a slow route whether there is one depends on the timing); the configuration that FORK.md recommends
+        const statuses = await reloadUnderLoad({
+            holdHttpNodeRequests: { enabled: true, timeout: 15000 },
+            drainHttpNodeRequests: { enabled: true }
+        }, function(statusCode) { return slowWindowFlows(statusCode, statusCode === "200") });
         if (statuses.indexOf(-1) !== -1) {
             throw new Error("a request got no answer within 30 s (held too long): " + JSON.stringify(statuses));
         }
@@ -378,6 +388,73 @@ module.exports = Object.assign(${JSON.stringify({
         statuses.should.containEql(202);
         // once the new flows answer, the old ones never do again
         statuses.slice(statuses.indexOf(202)).should.not.containEql(200);
+    });
+
+    // #54: /stable of the old flows answers after 700 ms (a "delay" node), so a request of the pollers is always in
+    // progress when the old flows stop
+    function slowWindowFlows(statusCode, slow) {
+        const delay = { type: "delay", pauseType: "delay", timeout: "700", timeoutUnits: "milliseconds", rate: "1", nbRateUnits: "1",
+            rateUnits: "second", randomFirst: "1", randomLast: "5", randomUnits: "seconds", drop: false, outputs: 1 };
+        return [{ id: "tW", type: "tab", label: "W" }]
+            .concat(routeNodes("tW", "/stable", slow ? delay : undefined).map(n => n.type === "http response" ? Object.assign(n, { statusCode: statusCode }) : n))
+            .concat(routeNodes("tT", "/turn", { type: "hold-turn", delay: 1000 }).map(n => Object.assign(n, { z: "tW" })))
+            .concat([{ id: "slow", type: "slow-close", z: "tW", closeDelay: 1500, wires: [] }]);
+    }
+
+    // Like reloadUnderLoad, with the slow /stable in the old flows; returns the answers with the time each
+    // request was sent
+    async function reloadUnderSlowLoad(deploy) {
+        const shared = tempDir("nr-reload-slow-");
+        const flowFile = path.join(shared, "flows.json");
+        fs.writeFileSync(flowFile, JSON.stringify(slowWindowFlows("200", true)));
+        const inst = await startInstance(flowFile, deploy);
+        await waitFor(async () => (await status(inst.ready)) === 200, 30000, "not ready");
+        (await status(inst.base + "/stable")).should.equal(200);
+
+        const answers = [];
+        let polling = true;
+        const pollers = [0, 1].map(() => (async () => {
+            while (polling) {
+                const sentAt = Date.now();
+                answers.push({ sentAt: sentAt, status: await status(inst.base + "/stable") });
+                await new Promise(r => setTimeout(r, 10));
+            }
+        })());
+        try {
+            const turn = request("GET", inst.base + "/turn");
+            await new Promise(r => setTimeout(r, 300));
+            fs.writeFileSync(flowFile + ".tmp", JSON.stringify(slowWindowFlows("202", false)));
+            fs.renameSync(flowFile + ".tmp", flowFile);
+            (await turn).status.should.equal(200);
+            await waitFor(async () => answers.some(a => a.status === 202), 20000, "the new flows did not answer");
+            await new Promise(r => setTimeout(r, 300));
+            polling = false;
+            await Promise.all(pollers);
+            should(inst.child.exitCode).be.null();
+            return answers;
+        } finally {
+            polling = false;
+            await stopPollers(pollers, [inst]);
+        }
+    }
+
+    it("AC-39: with the drain of the HTTP requests on, a request in progress at the stop is answered and none is lost, held or refused (#8)", async function() {
+        const answers = await reloadUnderSlowLoad({
+            holdHttpNodeRequests: { enabled: true, timeout: 15000 },
+            drainHttpNodeRequests: { enabled: true }
+        });
+        const statuses = answers.map(a => a.status);
+        if (statuses.indexOf(-1) !== -1) {
+            throw new Error("a request got no answer within 30 s: " + JSON.stringify(statuses));
+        }
+        statuses.should.not.containEql(404);
+        statuses.should.not.containEql(503);
+        statuses.should.not.containEql(0);
+        statuses.should.containEql(200);
+        statuses.should.containEql(202);
+        // no request that was sent after the first one the new flows answered is answered by the old flows
+        const firstNew = Math.min.apply(null, answers.filter(a => a.status === 202).map(a => a.sentAt));
+        answers.filter(a => a.sentAt > firstNew).map(a => a.status).should.not.containEql(200);
     });
 
     it("control: without the setting the same window gives 404 (#8)", async function() {

@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-11: saving an entry in the read-only user directory - 400 read_only_user_dir
+ *   #54: a failed write of an entry is answered with status 400 and no message
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -181,5 +182,43 @@ describe("runtime-api/library", function() {
             }).catch(done)
         })
     })
+
+    describe("saveEntry, a failed write (#54)", function() {
+        let audited;
+        let warned;
+        const failure = new Error("EACCES: permission denied, open '/data/lib/functions/RO/b.js.$$$'");
+        failure.code = "EACCES";
+
+        before(function() {
+            audited = [];
+            warned = [];
+            library.init({
+                log: {
+                    warn: function(message) { warned.push(message) },
+                    audit: function(event) { audited.push(event) },
+                    _: function(key, options) { return key + " " + JSON.stringify(options) }
+                },
+                library: {
+                    saveEntry: function() {
+                        var p = Promise.reject(failure);
+                        p.catch(()=>{});
+                        return p;
+                    }
+                }
+            });
+        });
+
+        it("AC-31: rejects with status 400 and no message, the path stays in the log and the audit", async function() {
+            const err = await library.saveEntry({library: "local", type: "functions", path: "RO/b.js", meta: {}, body: "x"}).should.be.rejected();
+            err.should.have.property("status", 400);
+            err.message.should.equal("");
+            err.should.not.have.property("code");
+            JSON.stringify(err).should.not.containEql("/data/lib");
+            warned.join("\n").should.containEql("RO/b.js");
+            audited.should.have.length(1);
+            audited[0].should.have.properties({event: "library.set", type: "functions", path: "RO/b.js", error: "unexpected_error"});
+            audited[0].message.should.containEql("EACCES");
+        });
+    });
 
 });

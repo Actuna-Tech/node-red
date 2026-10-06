@@ -429,6 +429,10 @@ Fixes
    itself (before: only with `deploy.holdHttpNodeRequests`), also when a `httpNodeMiddleware` sets
    `req.skipRawBodyParser` (the example of the settings template; the flag means "skip the parser", not "body
    read"). Behaviour change (#16)
+ - Fix (#54): saving a library entry waits until the file is written; before, the Admin API answered 204 before
+   the write and a failed write was not reported; now a failed write answers 400 `unexpected_error` and the
+   editor shows the save failed; a name that does not denote an entry is refused (403); on a very slow disk the
+   request waits
  - Tests only, no change of the product: flaky tests fixed. The HTTP tests no longer reach a foreign server
    on the same machine (supertest started the app on all interfaces but connected to `127.0.0.1`; the
    shared helper `nr-test-utils/supertest` listens on `127.0.0.1`), the `tcp request` test server hook calls
@@ -444,6 +448,16 @@ Fixes
    (127.0.0.1) instead of `helper.request()`; the helper reports an explicit error for a TLS server, a URL
    given as text and http2; the macOS event of the `watch` test is explained (node-watch replays the
    events of the preparation of the test); the reload test waits for its pollers after a failed check
+ - Tests only, no change of the product: more flaky tests fixed (#54). `tcp request` (mode `sit`): the answer is
+   compared as a whole, in however many chunks it arrives; `tcp in`: the test client reports a failed connection
+   to its own test, and the flow is loaded again on another port when the port found for the node was taken in
+   the meantime; `udp in`: the same retry on a taken port; `http in` (413 for a body of 64 MB): a connection
+   that the server resets after its answer is accepted when the server wrote exactly one 413 with
+   `Connection: close`; `editor-client/nodes`: the clean-up of a test clears the timers of `nodes.js` before it
+   removes `RED`; `watch` (polling): the test moves the time of the file on once per poll interval, so it no
+   longer depends on the order of the first poll and the write; `reload-shared-flows` (#8): the test runs with
+   the drain on and a slow route in the old flows, so a request is always in progress at the stop; the library
+   tests no longer wait 50 ms after a save and use a directory of their own for each test
  - CI only, no change of the product: the test workflow uses `actions/checkout` and `actions/setup-node` v7
    (Node 24) and runs every Node version to its own result (`fail-fast: false`); the suite was checked on
    Ubuntu 26.04, which `ubuntu-latest` becomes from 2026-10-19. The release workflow of upstream runs only in

@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-11: the file storage with a read-only user directory
+ *   #54: an entry saved to the library is on disk when the save resolves (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -169,8 +170,14 @@ describe("storage/localfilesystem with readOnlyUserDir (Z-11)", function() {
             await localfilesystem.saveSessions({ a: 1 });
             fs.existsSync(path.join(userDir, ".sessions.json")).should.be.true();
             await localfilesystem.saveLibraryEntry("flows", "test", {}, "[]");
-            await new Promise(r => setTimeout(r, 50));
             fs.existsSync(path.join(userDir, "lib", "flows", "test.json")).should.be.true();
+        });
+
+        it("AC-25: a saved library entry is on disk as soon as the save resolves", async function() {
+            await localfilesystem.init(settings({ readOnlyUserDir: false }), mockRuntime);
+            await localfilesystem.saveLibraryEntry("flows", "test", {}, "[]");
+            fs.readFileSync(path.join(userDir, "lib", "flows", "test.json"), "utf8").should.equal("[]");
+            fs.readdirSync(path.join(userDir, "lib", "flows")).filter(n => n.endsWith(".$$$")).should.eql([]);
         });
     });
 });

@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #41: no fixed ports - the test server listens on a port assigned by the system and the port of
  *   the "tcp in" server is a free port found before the node starts (nr-test-utils/free-port) (two test runs on one machine do not collide)
+ *   #54: acceptance tests of the errors of the test client (reset, refused) and of a port that is taken before the node starts (flaky tests)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -36,13 +37,16 @@ describe('TCP in Node', function() {
     // the port of the test server (the "tcp in" node in the client mode): assigned by the system
     var server_port = undefined;
     var reply_data = undefined;
+    // where the free ports come from (#54: a test can offer ports that are taken)
+    var nextPort = getFreePort;
 
     // The "tcp in" server listens on all interfaces and the port is in the configuration of
     // the node, so it is found before the node starts: a port that is free also on the
     // loopback addresses, where a foreign server (a dev tool on 127.0.0.1) could answer
     // instead of the node.
     beforeEach(function(done) {
-        getFreePort().then(function(freePort) {
+        nextPort = getFreePort;
+        nextPort().then(function(freePort) {
             port = freePort;
             startServer(done);
         }, done);
@@ -80,44 +84,120 @@ describe('TCP in Node', function() {
         server.stop(done);
     }
 
-    function send(wdata) {
+    // onError(err) (#54): called with the error of the connection (a reset, a refused connection)
+    function send(wdata, onError) {
         var opt = {port:port, host:"localhost"};
         var client = net.createConnection(opt, function() {
             client.write(wdata[0], function() {
                 client.end();
                 if(wdata.length > 1) {
-                    send(wdata.slice(1));
+                    send(wdata.slice(1), onError);
                 }
             });
         });
+        if (onError) {
+            client.on("error", onError);
+        }
     }
 
     function eql(v0, v1) {
         return((v0 === v1) || ((typeof v0) === 'object' && v0.equals(v1)));
     }
 
+    // Why a port cannot be used, for the message of a failed retry: the error that the node logged (the test
+    // runtime logs the message key only, without the error) and the code that a listen of the test on the same
+    // port gets, like the node on all interfaces (EADDRINUSE when the port is taken)
+    function listenOutcome(port) {
+        return new Promise(function(resolve) {
+            const probe = net.createServer();
+            probe.once("error", function(err) { resolve(err.code || String(err)) });
+            probe.listen(port, function() { probe.close(function() { resolve("no error") }) });
+        });
+    }
+
+    // The port of a "tcp in" server is found before the node starts, so another program can take it in
+    // between (#54). The node reports that as "cannot-listen" (the only way a listen fails here is a port in
+    // use) and logs once it listens: the flow is loaded again on the next port until the node listens,
+    // for 10 ports in all. ready() is called once the node listens, fail(err) when no port was free.
+    var LISTEN_PORTS = 10;
+    function loadListening(flow, ready, fail, attempt) {
+        attempt = attempt || 1;
+        helper.load(tcpinNode, flow, function() {
+            var n1 = helper.getNode("n1");
+            var settled = false;
+            n1.on("call:log", function() {
+                if (!settled) {
+                    settled = true;
+                    ready();
+                }
+            });
+            n1.on("call:error", function(call) {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                if (attempt >= LISTEN_PORTS) {
+                    const logged = JSON.stringify(String(call.args[0]));
+                    listenOutcome(port).then(function(outcome) {
+                        fail(new Error("tcp in did not listen on any of " + LISTEN_PORTS + " ports, the last one was " + port +
+                            ": the node logged " + logged + ", a listen of the test on that port gets " + outcome));
+                    });
+                    return;
+                }
+                Promise.resolve(helper.unload()).then(nextPort).then(function(freePort) {
+                    port = freePort;
+                    flow[0].port = port;
+                    loadListening(flow, ready, fail, attempt + 1);
+                }).catch(fail);
+            });
+        });
+    }
+
     function testTCP(flow, wdata, rdata, is_server, done) {
         if(is_server) {
             reply_data = wdata;
         }
-        helper.load(tcpinNode, flow, function() {
+        // an error of the connection or a message that does not fit ends this test once; what comes
+        // after that is of no interest to it
+        var finished = false;
+        function finish(err) {
+            if (!finished) {
+                finished = true;
+                done(err);
+            }
+        }
+        function receive() {
             var n2 = helper.getNode("n2");
             var rcount = 0;
             n2.on("input", function(msg) {
-                if(eql(msg.payload, rdata[rcount])) {
-                    rcount++;
+                if (finished) {
+                    return;
                 }
-                else {
-                    should.fail();
+                try {
+                    if(eql(msg.payload, rdata[rcount])) {
+                        rcount++;
+                    }
+                    else {
+                        should.fail();
+                    }
+                } catch(err) {
+                    finish(err);
+                    return;
                 }
                 if(rcount === rdata.length) {
-                    done();
+                    finish();
                 }
             });
-            if(!is_server) {
-                send(wdata);
-            }
-        });
+        }
+        if(is_server) {
+            helper.load(tcpinNode, flow, receive);
+        }
+        else {
+            loadListening(flow, function() {
+                receive();
+                send(wdata, finish);
+            }, finish);
+        }
     }
 
     function testTCP0(flow, wdata, rdata, done) {
@@ -250,6 +330,166 @@ describe('TCP in Node', function() {
         var flow = [{id:"n1", type:"tcp in", server:"client", host:"localhost", port:server_port, datamode:"single", datatype:"base64", newline:"", topic:"", base64:false, wires:[["n2"]] },
                     {id:"n2", type:"helper"}];
         testTCP1(flow, ["foo"], [Buffer("foo").toString('base64')], done);
+    });
+
+    // #54: a failed connection of the test client and a port that is taken before the node starts
+    describe('errors of the test client and a taken port (#54)', function() {
+        let cleanups;
+
+        beforeEach(function() {
+            cleanups = [];
+        });
+
+        afterEach(async function() {
+            for (const cleanup of cleanups.reverse()) {
+                await cleanup();
+            }
+        });
+
+        // The test servers listen on a port of nr-test-utils/free-port, not on port 0: on macOS listen(0) on all
+        // interfaces can get a port that a foreign listener holds on 127.0.0.1, which the client would reach instead.
+        // Another program can take the port between the search and the listen (EADDRINUSE): the server then
+        // listens on another free port, for SERVER_PORTS ports in all.
+        const SERVER_PORTS = 10;
+        function listen(srv, host, attempt) {
+            attempt = attempt || 1;
+            return getFreePort().then(function(freePort) {
+                return new Promise(function(resolve, reject) {
+                    srv.once("error", reject);
+                    const args = host ? [freePort, host] : [freePort];
+                    srv.listen.apply(srv, args.concat([function() {
+                        srv.removeListener("error", reject);
+                        cleanups.push(function() { return new Promise(function(r) { srv.close(function() { r() }) }) });
+                        resolve(srv.address().port);
+                    }]));
+                });
+            }).catch(function(err) {
+                if (err.code === "EADDRINUSE" && attempt < SERVER_PORTS) {
+                    return listen(srv, host, attempt + 1);
+                }
+                throw err;
+            });
+        }
+
+        function turns(count) {
+            return new Promise(function(resolve) {
+                (function next(n) { n === 0 ? resolve() : setImmediate(next, n - 1) })(count);
+            });
+        }
+
+        function text(err) {
+            return [err.message].concat((err.errors || []).map(function(e) { return e.message })).join(" ");
+        }
+
+        it('AC-7: a connection reset by the server before the messages arrive is reported to the test', function(done) {
+            // reset once the data of the client has arrived: a reset on accept reaches a client that has already
+            // written and closed as EPIPE as well as ECONNRESET
+            const resetter = net.createServer(function(sock) {
+                sock.on("error", function() {});
+                sock.once("data", function() { sock.resetAndDestroy() });
+            });
+            listen(resetter).then(function(resetPort) {
+                port = resetPort;
+                send(["foo"], function(err) {
+                    try {
+                        err.should.have.property("code", "ECONNRESET");
+                        done();
+                    } catch(e) {
+                        done(e);
+                    }
+                });
+            }, done);
+        });
+
+        it('AC-8: a reset that arrives after the test has finished is not reported', async function() {
+            const sockets = [];
+            const quiet = net.createServer(function(sock) {
+                sockets.push(sock);
+                sock.on("error", function() {});
+                sock.resume();
+            });
+            port = await listen(quiet);
+            // errors for a test that has finished are of no interest to it (the callback only records them)
+            const late = [];
+            send(["foo"], function(err) { late.push(err) });
+            // a connection on the loopback takes some tens of turns; a bound keeps a missing connection from
+            // spinning on after the test
+            for (let n = 0; sockets.length === 0; n++) {
+                if (n >= 20000) {
+                    throw new Error("the quiet server got no connection within 20000 turns of the event loop");
+                }
+                await turns(1);
+            }
+            const closed = new Promise(function(resolve) { sockets[0].once("close", resolve) });
+            // the test is over here; the server resets the connection of the client
+            sockets[0].resetAndDestroy();
+            await closed;
+            await turns(5);
+        });
+
+        it('AC-9: a refused connection is reported to the test with the port', function(done) {
+            getFreePort().then(function(closedPort) {
+                port = closedPort;
+                send(["foo"], function(err) {
+                    try {
+                        err.should.have.property("code", "ECONNREFUSED");
+                        text(err).should.containEql(String(closedPort));
+                        done();
+                    } catch(e) {
+                        done(e);
+                    }
+                });
+            }, done);
+        });
+
+        // Holds a port on all interfaces, like a server that took it after the search for a free port
+        async function holdPort() {
+            const holder = net.createServer(function(sock) { sock.on("error", function() {}); sock.resume() });
+            return listen(holder);
+        }
+
+        function offer(ports) {
+            const handedOut = [];
+            nextPort = function() {
+                const next = ports[Math.min(handedOut.length, ports.length - 1)];
+                handedOut.push(next);
+                return Promise.resolve(next);
+            };
+            return handedOut;
+        }
+
+        it('AC-15: a port that is taken before the node starts is replaced by another one', async function() {
+            const taken = await holdPort();
+            const free = await getFreePort();
+            const handedOut = offer([taken, free]);
+            port = await nextPort();
+            port.should.equal(taken);
+            const flow = [{id:"n1", type:"tcp in", server:"server", host:"localhost", port:port, datamode:"stream", datatype:"buffer", newline:"", topic:"", base64:false, wires:[["n2"]] },
+                          {id:"n2", type:"helper"}];
+            await new Promise(function(resolve, reject) {
+                testTCP0(flow, ["foo"], [Buffer("foo")], function(err) { err ? reject(err) : resolve() });
+            });
+            handedOut.should.eql([taken, free]);
+            port.should.equal(free);
+        });
+
+        it('AC-16: when every port is taken the test fails with the last port, before the time limit', async function() {
+            const takenPorts = [];
+            for (let i = 0; i < 12; i++) {
+                takenPorts.push(await holdPort());
+            }
+            const handedOut = offer(takenPorts);
+            port = await nextPort();
+            const flow = [{id:"n1", type:"tcp in", server:"server", host:"localhost", port:port, datamode:"stream", datatype:"buffer", newline:"", topic:"", base64:false, wires:[["n2"]] },
+                          {id:"n2", type:"helper"}];
+            const err = await new Promise(function(resolve) {
+                testTCP0(flow, ["foo"], [Buffer("foo")], function(err) { resolve(err) });
+            });
+            should.exist(err);
+            handedOut.should.have.length(10);
+            text(err).should.containEql("EADDRINUSE");
+            text(err).should.containEql(String(handedOut[handedOut.length - 1]));
+        });
     });
 
 });
