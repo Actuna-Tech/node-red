@@ -29,6 +29,8 @@
  *   the JSON and urlencoded parsers, and of a response that another layer already sent
  *   #48: acceptance tests of the optional default size limit httpInMaxBodySize (formats, invalid values, the limit of the
  *   node, upload, routes without parsing, JSON and urlencoded, CORS, what the editor settings carry, node warnings)
+ *   #48: acceptance tests of the cap of 1000 parts of an upload (with the setting httpInMaxBodySize or the field of the
+ *   node) and of the limit of 100 for a number in brackets in the name of a multipart field (413 on every upload route)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -2686,6 +2688,705 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
                     outcome.should.eql({ status: 503, statuses: [503], strays: [] });
                     (await answer("/hook", OCTET, 500)).should.equal(200);
                 });
+            });
+        });
+    });
+
+    // The part cap of an upload and the numbers in the names of its fields (#48): AC-1 ... AC-27 of
+    // local/briefs/48-parts-spec.md
+    describe("part cap of an upload and numbered field names (#48)", function() {
+        this.timeout(30000);
+        const SETTING = "httpInMaxBodySize";
+        const FLAG = "httpInMaxBodySizeEnabled";
+        const UPLOAD = { skipBodyParsing: false, upload: true };
+        const ORIGIN = { Origin: "http://example.test" };
+        const BASE_EXPORT = { httpNodeRoot: "/" };
+        const CAP = 1000;
+
+        // One part of a multipart body: a text field or a file
+        function fieldPart(name, value) {
+            return "--" + BOUNDARY + "\r\nContent-Disposition: form-data; name=\"" + name + "\"\r\n\r\n" + value + "\r\n";
+        }
+        function filePart(name, content) {
+            return "--" + BOUNDARY + "\r\nContent-Disposition: form-data; name=\"" + name + "\"; filename=\"" + (name || "x") + ".bin\"\r\nContent-Type: application/octet-stream\r\n\r\n" + content + "\r\n";
+        }
+        // A part that multer ignores (a file with an empty file name) but that the parser counts as a part
+        function ignoredPart(name) {
+            return "--" + BOUNDARY + "\r\nContent-Disposition: form-data; name=\"" + name + "\"; filename=\"\"\r\n\r\n\r\n";
+        }
+        // `count` parts: files "f<i>" of `size` bytes, or fields "f<i>"
+        function files(count, size, namer) {
+            const parts = [];
+            for (let i = 0; i < count; i++) { parts.push(filePart(namer ? namer(i) : "f" + i, "a".repeat(size === undefined ? 1 : size))) }
+            return parts;
+        }
+        function ignored(count) {
+            const parts = [];
+            for (let i = 0; i < count; i++) { parts.push(ignoredPart("f" + i)) }
+            return parts;
+        }
+        function fields(count) {
+            const parts = [];
+            for (let i = 0; i < count; i++) { parts.push(fieldPart("f" + i, "v" + i)) }
+            return parts;
+        }
+        function bodyOf(parts) {
+            return Buffer.from(parts.join("") + "--" + BOUNDARY + "--\r\n");
+        }
+
+        // One request with the parts; options: chunked, headers, path, bound (ms), raw (a Buffer instead of the parts)
+        function sendParts(parts, options) {
+            const opts = options || {};
+            const body = opts.raw || bodyOf(parts);
+            const chunks = [];
+            if (opts.chunked) {
+                for (let at = 0; at < body.length; at += 4096) { chunks.push(body.subarray(at, at + 4096)) }
+            } else {
+                chunks.push(body);
+            }
+            const headers = Object.assign({}, MULTIPART, opts.chunked ? { "Transfer-Encoding": "chunked" } : { "Content-Length": String(body.length) }, opts.headers);
+            return exchange("POST", opts.path || "/hook", headers, chunks, { bound: opts.bound || 10000 });
+        }
+
+        // the statuses of every answer to one request, and the stray errors, after the connection is quiet
+        async function everyAnswer(parts, options) {
+            const opts = options || {};
+            const body = bodyOf(parts);
+            const strays = collectStrays();
+            try {
+                const client = openRequest("POST", opts.path || "/hook", Object.assign({}, MULTIPART, { "Content-Length": String(body.length) }, opts.headers), [body]);
+                client.req.end();
+                await within(client.first, 10000, "no status line");
+                await delay(200);
+                return { statuses: client.statuses.slice(), strays: strays.seen.slice() };
+            } finally {
+                strays.restore();
+            }
+        }
+
+        // The answer is the 413 of sendTooLarge
+        function expectTooLarge(res) {
+            res.should.have.property("settled", true);
+            res.should.have.property("statusCode", 413);
+            res.body.should.equal("Payload Too Large");
+            res.headers["content-type"].should.equal("text/plain; charset=utf-8");
+        }
+
+        // `received` and the log of the node: nothing since `mark`
+        let mark;
+        function markLog() { mark = helper.log().args.length }
+        // warnings and errors (levels 30 and below) written since `mark`; the helper also writes its own events
+        function newLog() {
+            return helper.log().args.slice(mark).filter(function(args) { return args[0] && args[0].level <= 30 });
+        }
+        function noLogSinceMark() { newLog().should.eql([]) }
+
+        // loads with the node settings exported as GET /settings does
+        async function loadExporting(nodes, settings, tune) {
+            settingsExport = newSettingsExport();
+            await load(nodes, settings, tune);
+        }
+
+        // the node accepts the request and the flow gets the message
+        function expectAccepted(res, files, keys) {
+            res.should.have.property("statusCode", 200);
+            received.should.have.length(1);
+            if (files !== undefined) { received[0].msg.req.files.should.have.length(files) }
+            if (keys !== undefined) { Object.keys(received[0].msg.payload).should.have.length(keys) }
+        }
+
+        // the part cap is on: the setting (the text and the number form) or the field of the node
+        const CAPPED = [
+            ["the setting \"50mb\"", UPLOAD, { [SETTING]: "50mb" }],
+            ["the setting 52428800", UPLOAD, { [SETTING]: 52428800 }],
+            ["the field of the node \"100mb\" only", Object.assign({ maxBodySize: "100mb" }, UPLOAD), {}],
+            ["the field of the node 104857600 only", Object.assign({ maxBodySize: 104857600 }, UPLOAD), {}]
+        ];
+
+        describe("AC-1: 1000 file parts are accepted with the cap on", function() {
+            CAPPED.slice(0, 2).forEach(function(entry) {
+                it("AC-1: " + entry[0] + ", 1000 files of 1 byte: 200, one message, 1000 files", async function() {
+                    await load([["a", entry[1]]], entry[2]);
+                    markLog();
+                    expectAccepted(await sendParts(files(CAP, 1)), CAP);
+                    noLogSinceMark();
+                });
+            });
+        });
+
+        describe("AC-2: 1001 parts get 413 with the cap on", function() {
+            const VARIANTS = [
+                ["files of 1 byte", function() { return files(CAP + 1, 1) }],
+                ["empty files", function() { return files(CAP + 1, 0) }],
+                ["parts that multer ignores (an empty file name)", function() { return ignored(CAP + 1) }],
+                ["a field and 1000 parts that multer ignores", function() { return [fieldPart("first", "v")].concat(ignored(CAP)) }]
+            ];
+            VARIANTS.forEach(function(variant) {
+                it("AC-2: " + variant[0] + " with the setting: 413 Payload Too Large, text/plain, no message, no log", async function() {
+                    await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                    markLog();
+                    expectTooLarge(await sendParts(variant[1]()));
+                    received.should.have.length(0);
+                    noLogSinceMark();
+                });
+            });
+
+            it("AC-2: the boundary is exact for empty files and for the parts that multer ignores: 1000 are accepted", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                expectAccepted(await sendParts(files(CAP, 0)), CAP);
+                received.length = 0;
+                expectAccepted(await sendParts(ignored(CAP)), 0);
+            });
+
+            it("AC-2: a part with an empty field name is a multer error that is not a limit: 500 and one warning, as before (also in a body of 1001 parts)", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                markLog();
+                const res = await sendParts([filePart("", "a")].concat(files(CAP, 1)));
+                res.should.have.property("statusCode", 500);
+                received.should.have.length(0);
+                newLog().should.have.length(1);
+            });
+
+            it("AC-2: exactly one answer reaches the client, no stray error", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                (await everyAnswer(files(CAP + 1, 1))).should.eql({ statuses: [413], strays: [] });
+                received.should.have.length(0);
+            });
+        });
+
+        describe("AC-3: fields only", function() {
+            it("AC-3: 1000 fields: 200 and 1000 keys in the payload", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                markLog();
+                expectAccepted(await sendParts(fields(CAP)), 0, CAP);
+                noLogSinceMark();
+            });
+
+            it("AC-3: 1001 fields: 413, no message, no log", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                markLog();
+                expectTooLarge(await sendParts(fields(CAP + 1)));
+                received.should.have.length(0);
+                noLogSinceMark();
+            });
+        });
+
+        describe("AC-4: fields and files together", function() {
+            function mixed(nFiles, nFields) {
+                const parts = [];
+                const most = Math.max(nFiles, nFields);
+                for (let i = 0; i < most; i++) {
+                    if (i < nFiles) { parts.push(filePart("g" + i, "a")) }
+                    if (i < nFields) { parts.push(fieldPart("h" + i, "v")) }
+                }
+                return parts;
+            }
+
+            it("AC-4: 500 files and 500 fields (interleaved): 200, 500 files, 500 keys", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                expectAccepted(await sendParts(mixed(500, 500)), 500, 500);
+            });
+
+            it("AC-4: 500 files and 500 fields (files first): 200", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                expectAccepted(await sendParts(files(500, 1).concat(fields(500))), 500, 500);
+            });
+
+            it("AC-4: 501 files and 500 fields: 413, no message", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                markLog();
+                expectTooLarge(await sendParts(mixed(501, 500)));
+                received.should.have.length(0);
+                noLogSinceMark();
+            });
+
+            it("AC-4: 500 files and 501 fields: 413, no message", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                expectTooLarge(await sendParts(mixed(500, 501)));
+                received.should.have.length(0);
+            });
+        });
+
+        describe("AC-5: the field of the node alone switches the cap on", function() {
+            CAPPED.slice(2).forEach(function(entry) {
+                it("AC-5: " + entry[0] + ": 1000 parts are accepted, 1001 get 413 without a log", async function() {
+                    await load([["a", entry[1]]], entry[2]);
+                    markLog();
+                    expectAccepted(await sendParts(files(CAP, 1)), CAP);
+                    received.length = 0;
+                    expectTooLarge(await sendParts(files(CAP + 1, 1)));
+                    received.should.have.length(0);
+                    noLogSinceMark();
+                });
+            });
+        });
+
+        describe("AC-6: with neither the setting nor the field of the node the number of parts is not limited", function() {
+            it("AC-6: 1500 files of 1 byte: 200 and 1500 files", async function() {
+                await load([["a", UPLOAD]], {});
+                markLog();
+                expectAccepted(await sendParts(files(1500, 1)), 1500);
+                noLogSinceMark();
+            });
+
+            it("AC-6: 1500 fields: 200 and 1500 keys", async function() {
+                await load([["a", UPLOAD]], {});
+                expectAccepted(await sendParts(fields(1500)), 0, 1500);
+            });
+
+            it("AC-6: 1500 parts with an apiMaxLength of the runtime and no limit of the upload: still not limited", async function() {
+                await load([["a", UPLOAD]], { apiMaxLength: "1mb" });
+                expectAccepted(await sendParts(files(1500, 1)), 1500);
+            });
+        });
+
+        describe("AC-7: a limit that is not valid leaves the cap off", function() {
+            const hostile = function() { throw new Error("hostile value") };
+            const FIELDS = [
+                ["(a) the setting \"abc\"", UPLOAD, { [SETTING]: "abc" }, null],
+                ["(b) the setting 0", UPLOAD, { [SETTING]: 0 }, null],
+                ["(c) a getter of the setting that throws", UPLOAD, {}, function(settings) {
+                    Object.defineProperty(settings, SETTING, { configurable: true, enumerable: true, get: hostile });
+                }],
+                ["(d) the field of the node \"abc\"", Object.assign({ maxBodySize: "abc" }, UPLOAD), {}, null],
+                ["(e) the field of the node \"0\"", Object.assign({ maxBodySize: "0" }, UPLOAD), {}, null],
+                ["(f) the field of the node {}", Object.assign({ maxBodySize: {} }, UPLOAD), {}, null],
+                ["(g) the field of the node \"   \"", Object.assign({ maxBodySize: "   " }, UPLOAD), {}, null],
+                ["(i) the field of the node [], no setting", Object.assign({ maxBodySize: [] }, UPLOAD), {}, null],
+                ["(j) the field of the node true, no setting", Object.assign({ maxBodySize: true }, UPLOAD), {}, null]
+            ];
+            FIELDS.forEach(function(entry) {
+                it("AC-7: " + entry[0] + ": 1500 parts are accepted (the existing warning stays as it is)", async function() {
+                    await load([["a", entry[1]]], entry[2], entry[3] || undefined);
+                    expectAccepted(await sendParts(files(1500, 1)), 1500);
+                });
+            });
+
+            it("AC-7: (h) a valid setting and the field of the node \"abc\": 1001 parts get 413, 1000 are accepted", async function() {
+                await load([["a", Object.assign({ maxBodySize: "abc" }, UPLOAD)]], { [SETTING]: "50mb" });
+                expectAccepted(await sendParts(files(CAP, 1)), CAP);
+                received.length = 0;
+                expectTooLarge(await sendParts(files(CAP + 1, 1)));
+                received.should.have.length(0);
+            });
+
+            it("AC-7: a valid setting and the field of the node {}: 1001 parts get 413", async function() {
+                await load([["a", Object.assign({ maxBodySize: {} }, UPLOAD)]], { [SETTING]: "50mb" });
+                expectTooLarge(await sendParts(files(CAP + 1, 1)));
+                received.should.have.length(0);
+            });
+        });
+
+        describe("AC-8: the number of parts does not depend on the limit of the bytes", function() {
+            [
+                ["the setting \"1mb\" and the field of the node \"500mb\"", Object.assign({ maxBodySize: "500mb" }, UPLOAD), { [SETTING]: "1mb" }],
+                ["the setting \"500mb\" and the field of the node \"1mb\"", Object.assign({ maxBodySize: "1mb" }, UPLOAD), { [SETTING]: "500mb" }]
+            ].forEach(function(entry) {
+                it("AC-8: " + entry[0] + ": 1000 parts of 1 byte are accepted, 1001 get 413", async function() {
+                    await load([["a", entry[1]]], entry[2]);
+                    expectAccepted(await sendParts(files(CAP, 1)), CAP);
+                    received.length = 0;
+                    expectTooLarge(await sendParts(files(CAP + 1, 1)));
+                    received.should.have.length(0);
+                });
+            });
+        });
+
+        describe("AC-9: a chunked body (no Content-Length)", function() {
+            it("AC-9: 1001 parts: 413, no message", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                markLog();
+                expectTooLarge(await sendParts(files(CAP + 1, 1), { chunked: true }));
+                received.should.have.length(0);
+                noLogSinceMark();
+            });
+
+            it("AC-9: 1000 parts: 200 and 1000 files", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                expectAccepted(await sendParts(files(CAP, 1), { chunked: true }), CAP);
+            });
+
+            it("AC-9: 1001 fields, chunked, with the field of the node only: 413", async function() {
+                await load([["a", Object.assign({ maxBodySize: "100mb" }, UPLOAD)]], {});
+                expectTooLarge(await sendParts(fields(CAP + 1), { chunked: true }));
+                received.should.have.length(0);
+            });
+        });
+
+        describe("AC-10: a very large number of parts", function() {
+            it("AC-10: 100000 empty file parts: 413 within the bound of the test, no message", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                const one = filePart("f", "");
+                const body = Buffer.from(new Array(100000).fill(one).join("") + "--" + BOUNDARY + "--\r\n");
+                body.length.should.be.below(12 * 1024 * 1024);
+                const started = Date.now();
+                const res = await sendParts(null, { raw: body, bound: 10000 });
+                (Date.now() - started).should.be.below(10000);
+                expectTooLarge(res);
+                received.should.have.length(0);
+                // the next request is served
+                expectAccepted(await sendParts(files(3, 1)), 3);
+            });
+        });
+
+        describe("AC-11: the limit of the bytes is hit before the cap of the parts", function() {
+            it("AC-11: 20 files of 1 KiB with the setting \"10kb\": exactly one answer, 413, no message", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "10kb" });
+                (await everyAnswer(files(20, 1024))).should.eql({ statuses: [413], strays: [] });
+                received.should.have.length(0);
+            });
+        });
+
+        describe("AC-12: the 413 of the cap carries the CORS headers", function() {
+            it("AC-12: 1001 parts with an Origin header and httpNodeCors: 413 with Access-Control-Allow-Origin", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb", httpNodeCors: { origin: "*" } });
+                const res = await sendParts(files(CAP + 1, 1), { headers: ORIGIN });
+                expectTooLarge(res);
+                res.headers["access-control-allow-origin"].should.equal("*");
+                received.should.have.length(0);
+            });
+
+            it("AC-12: 1001 parts with the field of the node only, with CORS: 413 with Access-Control-Allow-Origin", async function() {
+                await load([["a", Object.assign({ maxBodySize: "100mb" }, UPLOAD)]], { httpNodeCors: { origin: "*" } });
+                const res = await sendParts(files(CAP + 1, 1), { headers: ORIGIN });
+                expectTooLarge(res);
+                res.headers["access-control-allow-origin"].should.equal("*");
+            });
+        });
+
+        describe("AC-13: a response that another layer already sent", function() {
+            function answerAndContinue(req, res, next) {
+                res.status(202).end();
+                next();
+            }
+
+            // answers when the whole body has arrived, and lets the request go on at once: the body of 1001 parts
+            // is read before the answer, so multer sees all of it
+            function answerAtEndAndContinue(req, res, next) {
+                req.on("end", function() { res.status(202).end() });
+                next();
+            }
+
+            it("AC-13: 1001 parts with the setting, the answer given when the body has arrived: one answer (202), no stray error, no message, no log", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb", httpNodeMiddleware: answerAtEndAndContinue });
+                markLog();
+                (await everyAnswer(files(CAP + 1, 1))).should.eql({ statuses: [202], strays: [] });
+                received.should.have.length(0);
+                noLogSinceMark();
+            });
+
+            it("AC-13: 1001 parts with the setting, the answer given at once: one answer (202), no stray error, no message, no log", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb", httpNodeMiddleware: answerAndContinue });
+                markLog();
+                (await everyAnswer(files(CAP + 1, 1))).should.eql({ statuses: [202], strays: [] });
+                received.should.have.length(0);
+                noLogSinceMark();
+            });
+
+            it("AC-13: the field a[101] without a setting: one answer (202), no stray error, no message, no log", async function() {
+                await load([["a", UPLOAD]], { httpNodeMiddleware: answerAndContinue });
+                markLog();
+                (await everyAnswer([fieldPart("a[101]", "v")])).should.eql({ statuses: [202], strays: [] });
+                received.should.have.length(0);
+                noLogSinceMark();
+            });
+        });
+
+        describe("AC-14: no state between requests", function() {
+            it("AC-14: after a request of 1001 parts a request of 10 parts is served with its 10 files", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                expectTooLarge(await sendParts(files(CAP + 1, 1)));
+                received.should.have.length(0);
+                expectAccepted(await sendParts(files(10, 1)), 10);
+            });
+
+            it("AC-14: two requests of 1000 parts at the same time are both accepted", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                const both = await Promise.all([sendParts(files(CAP, 1)), sendParts(files(CAP, 2))]);
+                both.map(function(res) { return res.statusCode }).should.eql([200, 200]);
+                received.should.have.length(2);
+                received.map(function(entry) { return entry.msg.req.files.length }).should.eql([CAP, CAP]);
+            });
+
+            it("AC-14: a request of 1001 parts and one of 1000 at the same time: 413 and 200", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                const both = await Promise.all([sendParts(files(CAP + 1, 1)), sendParts(files(CAP, 1))]);
+                both.map(function(res) { return res.statusCode }).should.eql([413, 200]);
+                received.should.have.length(1);
+                received[0].msg.req.files.should.have.length(CAP);
+            });
+
+            it("AC-14: after the 413 of a field a[101] the next request with a[100] is served", async function() {
+                await load([["a", UPLOAD]], {});
+                expectTooLarge(await sendParts([fieldPart("a[101]", "v")]));
+                received.should.have.length(0);
+                expectAccepted(await sendParts([fieldPart("a[100]", "v")]));
+            });
+        });
+
+        describe("AC-15: a body that is not multipart on a route of an upload", function() {
+            it("AC-15: text/plain of 5000 bytes with the setting is accepted as before", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                const res = await exchange("POST", "/hook", { "Content-Type": "text/plain", "Content-Length": "5000" }, [Buffer.alloc(5000, 0x61)], { bound: 5000 });
+                res.should.have.property("statusCode", 200);
+                received.should.have.length(1);
+            });
+        });
+
+        describe("AC-16: a route of an upload with Do not parse", function() {
+            it("AC-16: the setting, 1500 parts below the limit of the bytes: 200 and the whole body as a Buffer", async function() {
+                await load([["a", { skipBodyParsing: true, upload: true }]], { [SETTING]: "50mb" });
+                const body = bodyOf(files(1500, 1));
+                const res = await sendParts(null, { raw: body });
+                res.should.have.property("statusCode", 200);
+                received.should.have.length(1);
+                Buffer.isBuffer(received[0].msg.payload).should.be.true();
+                received[0].msg.payload.equals(body).should.be.true();
+            });
+        });
+
+        describe("AC-17: the other errors of multer are answered as before", function() {
+            it("AC-17: a text field of 1.5 MB (above the 1 MB of the parser): 500 and one warning of the node", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                markLog();
+                const res = await sendParts([fieldPart("big", "x".repeat(1536 * 1024))]);
+                res.should.have.property("statusCode", 500);
+                received.should.have.length(0);
+                newLog().should.have.length(1);
+            });
+
+            it("AC-17: a body without the closing boundary: 500 and one warning of the node", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                markLog();
+                const res = await sendParts(null, { raw: Buffer.from(fieldPart("a", "v") + "--" + BOUNDARY + "\r\nContent-Disposition: form-data; name=\"b\"\r\n\r\nunfinished") });
+                res.should.have.property("statusCode", 500);
+                received.should.have.length(0);
+                newLog().should.have.length(1);
+            });
+
+            it("AC-17: the same errors without the setting: 500 and one warning of the node", async function() {
+                await load([["a", UPLOAD]], {});
+                markLog();
+                const res = await sendParts([fieldPart("big", "x".repeat(1536 * 1024))]);
+                res.should.have.property("statusCode", 500);
+                newLog().should.have.length(1);
+            });
+        });
+
+        describe("AC-18: what GET /settings tells the editor", function() {
+            it("AC-18: with the setting only the flag is exported, nothing new", async function() {
+                await loadExporting([["a", UPLOAD]], { [SETTING]: "50mb" });
+                settingsExport.exported().should.eql(Object.assign({ [FLAG]: true }, BASE_EXPORT));
+            });
+
+            it("AC-18: without the setting nothing is exported", async function() {
+                await loadExporting([["a", UPLOAD]], {});
+                settingsExport.exported().should.eql(BASE_EXPORT);
+            });
+        });
+
+        describe("AC-20: a number up to 100 in the name of a field is accepted", function() {
+            it("AC-20: a[100]=v without any limit: 200, an array of 101 entries, the value at 100", async function() {
+                await load([["a", UPLOAD]], {});
+                markLog();
+                expectAccepted(await sendParts([fieldPart("a[100]", "v")]));
+                const a = received[0].msg.payload.a;
+                Array.isArray(a).should.be.true();
+                a.should.have.length(101);
+                a[100].should.equal("v");
+                noLogSinceMark();
+            });
+
+            it("AC-20: a[0100] (the number 100 with a leading zero) is accepted", async function() {
+                await load([["a", UPLOAD]], {});
+                expectAccepted(await sendParts([fieldPart("a[0100]", "v")]));
+            });
+
+            it("AC-20: a[100] is accepted with the setting and with the field of the node", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                expectAccepted(await sendParts([fieldPart("a[100]", "v")]));
+                await stopServerOf();
+                await load([["a", Object.assign({ maxBodySize: "100mb" }, UPLOAD)]], {});
+                received.length = 0;
+                expectAccepted(await sendParts([fieldPart("a[100]", "v")]));
+            });
+
+            it("AC-20: a[100] in a chunked body is accepted", async function() {
+                await load([["a", UPLOAD]], {});
+                expectAccepted(await sendParts([fieldPart("a[100]", "v")], { chunked: true }));
+            });
+        });
+
+        // closes the server and the nodes of the test, to load another flow in the same test
+        async function stopServerOf() {
+            server.closeAllConnections();
+            await new Promise(function(resolve) { server.close(resolve) });
+            server = null;
+            await helper.unload();
+            RED.httpNode.parent = undefined;
+        }
+
+        describe("AC-21: a number above 100 in the name of a field gets 413 without any limit", function() {
+            it("AC-21: a[101]=v: 413 Payload Too Large, no message, no log", async function() {
+                await load([["a", UPLOAD]], {});
+                markLog();
+                expectTooLarge(await sendParts([fieldPart("a[101]", "v")]));
+                received.should.have.length(0);
+                noLogSinceMark();
+            });
+
+            it("AC-21: exactly one answer reaches the client, no stray error", async function() {
+                await load([["a", UPLOAD]], {});
+                (await everyAnswer([fieldPart("a[101]", "v")])).should.eql({ statuses: [413], strays: [] });
+                received.should.have.length(0);
+            });
+
+            it("AC-21: a[101] after fields that are valid, and before them: 413", async function() {
+                await load([["a", UPLOAD]], {});
+                expectTooLarge(await sendParts([fieldPart("x", "1"), fieldPart("y[2]", "2"), fieldPart("a[101]", "v")]));
+                expectTooLarge(await sendParts([fieldPart("a[101]", "v"), fieldPart("x", "1")]));
+                received.should.have.length(0);
+            });
+
+            it("AC-21: a[101] in a chunked body: 413", async function() {
+                await load([["a", UPLOAD]], {});
+                expectTooLarge(await sendParts([fieldPart("a[101]", "v")], { chunked: true }));
+                received.should.have.length(0);
+            });
+
+            it("AC-21: the 413 carries the CORS headers", async function() {
+                await load([["a", UPLOAD]], { httpNodeCors: { origin: "*" } });
+                const res = await sendParts([fieldPart("a[101]", "v")], { headers: ORIGIN });
+                expectTooLarge(res);
+                res.headers["access-control-allow-origin"].should.equal("*");
+            });
+        });
+
+        describe("AC-22: the same with the cap on", function() {
+            it("AC-22a: with the setting, a[101]: 413, no log", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                markLog();
+                expectTooLarge(await sendParts([fieldPart("a[101]", "v")]));
+                received.should.have.length(0);
+                noLogSinceMark();
+            });
+
+            it("AC-22b: with the field of the node \"100mb\" only, a[101]: 413, no log", async function() {
+                await load([["a", Object.assign({ maxBodySize: "100mb" }, UPLOAD)]], {});
+                markLog();
+                expectTooLarge(await sendParts([fieldPart("a[101]", "v")]));
+                received.should.have.length(0);
+                noLogSinceMark();
+            });
+
+            it("AC-22: the limit of the number is 100 and not lower with the cap on: a[100] is accepted", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                expectAccepted(await sendParts([fieldPart("a[100]", "v")]));
+            });
+        });
+
+        describe("AC-23: other forms of a number above 100", function() {
+            ["a[5][101]", "a[0101]", "a[4294967294]", "a[4294967295]", "a[99999999999999999999]"].forEach(function(name) {
+                it("AC-23: the field " + name + ": 413, no message, no log", async function() {
+                    await load([["a", UPLOAD]], {});
+                    markLog();
+                    expectTooLarge(await sendParts([fieldPart(name, "v")]));
+                    received.should.have.length(0);
+                    noLogSinceMark();
+                });
+            });
+        });
+
+        describe("AC-24: names that are not a number in brackets are not changed", function() {
+            [
+                ["a[101]x", { "a[101]x": "v" }],
+                ["[5000]", { "[5000]": "v" }],
+                ["a[ 101]", { a: { " 101": "v" } }],
+                ["a[1e2]", { a: { "1e2": "v" } }],
+                ["a[-5]", { a: { "-5": "v" } }],
+                ["a[]", { a: ["v"] }],
+                ["a%5B5000%5D", { "a%5B5000%5D": "v" }],
+                ["a[0]", { a: ["v"] }],
+                ["a", { a: "v" }]
+            ].forEach(function(entry) {
+                it("AC-24: the field " + JSON.stringify(entry[0]) + " is accepted, the payload is " + JSON.stringify(entry[1]), async function() {
+                    await load([["a", UPLOAD]], {});
+                    expectAccepted(await sendParts([fieldPart(entry[0], "v")]));
+                    JSON.parse(JSON.stringify(received[0].msg.payload)).should.eql(entry[1]);
+                });
+            });
+
+            it("AC-24: a[100][b] is accepted: an array of 101 entries with the value at a[100].b", async function() {
+                await load([["a", UPLOAD]], {});
+                expectAccepted(await sendParts([fieldPart("a[100][b]", "v")]));
+                const a = received[0].msg.payload.a;
+                Array.isArray(a).should.be.true();
+                a.should.have.length(101);
+                a[100].b.should.equal("v");
+            });
+
+            it("AC-24: the names that are not checked are accepted with the cap on as well", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                expectAccepted(await sendParts([fieldPart("a[101]x", "v"), fieldPart("a[1e2]", "v")]));
+                JSON.parse(JSON.stringify(received[0].msg.payload)).should.eql({ "a[101]x": "v", a: { "1e2": "v" } });
+            });
+        });
+
+        describe("AC-25: a file part is not checked for the number in its field name", function() {
+            it("AC-25: a file part named a[99999]: 200 and req.files[0].fieldname is a[99999]", async function() {
+                await load([["a", UPLOAD]], {});
+                markLog();
+                expectAccepted(await sendParts([filePart("a[99999]", "data")]), 1);
+                received[0].msg.req.files[0].fieldname.should.equal("a[99999]");
+                noLogSinceMark();
+            });
+
+            it("AC-25: the same with the cap on", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                expectAccepted(await sendParts([filePart("a[99999]", "data")]), 1);
+                received[0].msg.req.files[0].fieldname.should.equal("a[99999]");
+            });
+        });
+
+        describe("AC-26: the rest of the body is read before the answer", function() {
+            it("AC-26: a[101] first, 2 MB of further parts after it: 413 within the bound of the test, no message", async function() {
+                await load([["a", UPLOAD]], {});
+                const parts = [fieldPart("a[101]", "v")].concat(files(22, 100 * 1024));
+                bodyOf(parts).length.should.be.above(2 * 1024 * 1024);
+                markLog();
+                const started = Date.now();
+                expectTooLarge(await sendParts(parts, { bound: 10000 }));
+                (Date.now() - started).should.be.below(10000);
+                received.should.have.length(0);
+                noLogSinceMark();
+                // the next request is served
+                expectAccepted(await sendParts([fieldPart("a[1]", "v")]));
+            });
+        });
+
+        describe("AC-27: urlencoded and JSON bodies are not changed", function() {
+            it("AC-27: urlencoded a[5000]=v: payload as before", async function() {
+                await load([["a", UPLOAD]], {});
+                const body = Buffer.from("a[5000]=v");
+                const res = await exchange("POST", "/hook", { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": String(body.length) }, [body], { bound: 5000 });
+                res.should.have.property("statusCode", 200);
+                JSON.parse(JSON.stringify(received[0].msg.payload)).should.eql({ a: { 5000: "v" } });
+            });
+
+            it("AC-27: JSON {\"a\":{\"5000\":\"v\"}}: payload as before", async function() {
+                await load([["a", UPLOAD]], {});
+                const body = Buffer.from(JSON.stringify({ a: { 5000: "v" } }));
+                const res = await exchange("POST", "/hook", { "Content-Type": "application/json", "Content-Length": String(body.length) }, [body], { bound: 5000 });
+                res.should.have.property("statusCode", 200);
+                JSON.parse(JSON.stringify(received[0].msg.payload)).should.eql({ a: { 5000: "v" } });
+            });
+
+            it("AC-27: the same with the setting on", async function() {
+                await load([["a", UPLOAD]], { [SETTING]: "50mb" });
+                const body = Buffer.from("a[5000]=v");
+                const res = await exchange("POST", "/hook", { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": String(body.length) }, [body], { bound: 5000 });
+                res.should.have.property("statusCode", 200);
+                JSON.parse(JSON.stringify(received[0].msg.payload)).should.eql({ a: { 5000: "v" } });
             });
         });
     });
