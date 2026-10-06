@@ -18,6 +18,8 @@
  *   #37: a jQuery stand-in that records what is given to the places that parse HTML ($(string), .html(),
  *   .append(string), ...) and to the places that set text, so a test can see where a text of the
  *   remote catalog, a repository or a user goes
+ *   #63: .replaceWith(s), .wrap(s), .wrapAll(s), .wrapInner(s), $.parseHTML(s) and the `html` property of
+ *   $("<x>", {html: s}) are recorded too
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
