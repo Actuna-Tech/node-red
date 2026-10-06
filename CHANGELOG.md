@@ -327,16 +327,21 @@ Fixes
    waiting; a `preShutdown` or `preReload` hook that rejects with such a value is logged and the stop or the reload
    goes on at once (before, it waited for `shutdownTimeout` or `preReloadTimeout`); the observer of storage
    (`deploy.reload.watch`) logs such errors of its stop, of a read of storage (the retry is still scheduled), of the
-   slots of `deploy.reload.concurrency` and of a whole cycle, without an unhandled rejection; the `postDeploy` hooks
-   log an error whose `message` or `stack` getter throws as `no message` / `no stack`. In `RED.hooks.trigger` (promise
-   form) a handler that rejects with a value that `new Error(value)` cannot convert now rejects with an `Error`
-   with the message `(the value cannot be printed)`; before, the promise never settled. The texts of the log are the
-   same for every value that was printed before (every `Error`), except that a concatenated debug or warning text of
-   an object without a `message` and with its own `valueOf` is now its string form. The texts come from one
+   slots of `deploy.reload.concurrency` and of a whole cycle, without an unhandled rejection (also when the `code`
+   of the error in the debug line of a failed comparison of the credentials cannot be read); the `postDeploy` hooks
+   log an error whose `message` or `stack` getter throws as `no message` / `no stack`; the drain of the HTTP
+   requests (`deploy.drainHttpNodeRequests`) logs a failure whose `code` cannot be read with the code `unknown`
+   and goes on (the other requests are answered, the wait ends). In `RED.hooks.trigger` (promise form) a handler
+   that rejects with a value that `new Error(value)` cannot convert, that breaks `instanceof` (a Proxy whose
+   `getPrototypeOf` throws) or that cannot take the hook id (`err.hook`) now rejects with an `Error` with the message
+   `(the value cannot be printed)` and the hook id; before, the promise never settled. A value that converts gives
+   the same message as before and an `Error` is passed on as the same object. The texts of the log are the same for
+   every value that was printed before (every `Error`), except that a concatenated debug or warning text of an
+   object or `Error` without a `message` and with its own `valueOf` is now its string form. The texts come from one
    internal module of the runtime (`printable.js`), not a part of `RED.util`. The state listeners, the `preShutdown`
    hook and the observer of storage were released in `5.0.7-actuna.1` with this defect. Tests: `printable_spec.js`,
    `index_spec.js`, `state_spec.js`, `httpHold_spec.js`, `health_shutdown_spec.js`, `flows/reload_spec.js`,
-   `flows/deployHooks_spec.js`
+   `flows/deployHooks_spec.js`, `httpDrain_spec.js`, `util/lib/hooks_spec.js`
 
 Documentation
 
