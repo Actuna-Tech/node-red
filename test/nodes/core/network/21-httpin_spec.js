@@ -1269,10 +1269,8 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
         // answered is closed by the client after it
         const ANSWER_BOUND = 1000;
         const KIB = Buffer.alloc(1024, 0x61);
-        // the unit of a size text, built from parts
-        const GB = "g" + "b";
-        // the event name of a stray error, built from parts
-        const STRAY_EVENT = ["un", "caught", "Exception"].join("");
+        // the event name of an error that no handler took
+        const STRAY_EVENT = "uncaughtException";
 
         function delay(ms) {
             return new Promise(function(resolve) { setTimeout(resolve, ms) });
@@ -1574,7 +1572,7 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             }
 
             [
-                "1" + GB, 1e9, Infinity, "+1" + GB, "600000000abc"
+                "1gb", 1e9, Infinity, "+1gb", "600000000abc"
             ].forEach(function(value) {
                 it("AC-7a: apiMaxLength " + label(value) + " gives both parsers the maximum string length as the limit", async function() {
                     checkLimits(await limitsFor(value, true), MAX);
@@ -1592,9 +1590,9 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             // R2-03: the limit follows the rules of the bytes module for these inputs, also at the
             // boundary of the maximum string length
             [
-                "1" + GB, 1e9, Infinity, "+1" + GB, "600000000abc", " 600000000", "1" + GB + " ", "1 " + GB.toUpperCase(),
-                "1\t" + GB, "0x40000000", "1.5pb", 1e400, 10n, {}, true, "5mb", "+5mb", "1e9", -1, -Infinity, "abc",
-                "1tb", "0.5" + GB, "512mb", "511mb", MAX, MAX + 1, MAX + "b", (MAX + 1) + "b", String(MAX), String(MAX + 1)
+                "1gb", 1e9, Infinity, "+1gb", "600000000abc", " 600000000", "1gb ", "1 GB",
+                "1\tgb", "0x40000000", "1.5pb", 1e400, 10n, {}, true, "5mb", "+5mb", "1e9", -1, -Infinity, "abc",
+                "1tb", "0.5gb", "512mb", "511mb", MAX, MAX + 1, MAX + "b", (MAX + 1) + "b", String(MAX), String(MAX + 1)
             ].forEach(function(value) {
                 it("AC-7 R2-03: apiMaxLength " + label(value) + " gives the limit that the rules of the bytes module give", async function() {
                     const parsed = bytesModule.parse(value);
@@ -1608,7 +1606,7 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
                 ["application/x-www-form-urlencoded", Buffer.from("abcd=1234"), Buffer.from("a=" + "x".repeat(1100))]
             ].forEach(function(entry) {
                 it("AC-7b: " + entry[0] + " with a declared length above the maximum gets no message, and the next request is served", async function() {
-                    await load([["a", { skipBodyParsing: false }]], { apiMaxLength: "1" + GB });
+                    await load([["a", { skipBodyParsing: false }]], { apiMaxLength: "1gb" });
                     const strays = collectStrays();
                     try {
                         const client = openRequest("POST", "/hook", declared({ "Content-Type": entry[0] }), [entry[2].slice(0, 1024)]);
