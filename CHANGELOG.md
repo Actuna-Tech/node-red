@@ -622,7 +622,9 @@ Fixes
    their URI-decoded forms (at least 4 characters) are also hidden as literal text, as npm can print them outside
    the URL form; they are passed to `exec.run` as its literal secrets. The same applies to a module name given as a
    URL with credentials, and to the `url`, `module` and `message` of the `nodes.install` audit events. A URL without
-   credentials and the bare user of an `ssh` URL are logged as before
+   credentials and the bare user of an `ssh` URL are logged as before. The error of a `preInstall`/`postInstall` hook
+   is masked the same way, and an npm argument with a credential that a hook adds (`--//registry/:_authToken=…`,
+   `_auth=`, `_password=`) shows its value as `***` in the trace and the `event-log`; npm gets it unchanged
  - Tests only (#63): the secrets of a project reach `exec.run`, `getRemotes()` hides an old ambiguous remote
    password, a long output line is cut at a white space (`exec.js` comment of the branch that keeps the masked text);
    the drain spec stops its instances per describe and asserts the close of the socket after 503, the project switch
@@ -672,7 +674,8 @@ Fixes
    400 `{"code":"unexpected_error","message":"Saving the project failed"}` instead of 200, with a warning in the log
    (the file, `Saving the settings failed`, or the code of the git error); the settings are restored and the project
    is loaded again from disk, so `GET /projects/:id` shows what was saved, no commit is made and the credentials are
-   not re-encrypted. The same request can be sent again. A project without `package.json` keeps its answer. The
+   not re-encrypted. The credentials given with a remote whose add failed are not kept in the credentials cache. The
+   same request can be sent again. A project without `package.json` keeps its answer. The
    editor sends only valid values; a client that sent other types gets 400 now
 
 Features
