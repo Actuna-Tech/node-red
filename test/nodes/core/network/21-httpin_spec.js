@@ -1485,7 +1485,7 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
                 });
                 const chunk = Buffer.alloc(MIB, 0x61);
                 const chunks = [];
-                for (let sent = 0; sent < MAX + 64 * MIB; sent += MIB) { chunks.push(chunk) }
+                for (let sent = 0; sent < MAX + 65 * MIB; sent += MIB) { chunks.push(chunk) }
                 const answer = await request413("/hook", { "Content-Type": "text/plain", "Transfer-Encoding": "chunked" }, chunks, record);
                 answer.statusCode.should.equal(413);
                 answer.connection.should.equal("close");
