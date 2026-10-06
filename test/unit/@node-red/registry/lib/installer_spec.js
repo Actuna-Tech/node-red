@@ -666,6 +666,31 @@ describe('nodes/registry/installer', function() {
                 });
             });
 
+            it("REV2-L2: the value of a token argument that a hook adds is passed to exec.run as a secret for the event-log", async function() {
+                hooks.add("preInstall.t63", function(event) {
+                    event.args = event.args.concat(["--//registry.example/:_authToken=NpmTok3nValue"]);
+                });
+                failNpm("npm ERR! failed");
+                await install("x");
+                exec.run.callCount.should.equal(1);
+                var secrets = secretsOfRun();
+                should(secrets).be.an.Array();
+                secrets.should.containEql("NpmTok3nValue");
+            });
+
+            it("REV2-L1: the output of npm that echoes the value of a token argument is logged masked", async function() {
+                hooks.add("preInstall.t63", function(event) {
+                    event.args = event.args.concat(["--//registry.example/:_authToken=NpmTok3nValue"]);
+                });
+                failNpm("npm ERR! config //registry.example/:_authToken=NpmTok3nValue rejected; token NpmTok3nValue is not valid");
+                await install("x");
+                var warned = logged(["warn"]).join("\n");
+                warned.should.not.containEql("NpmTok3nValue");
+                // the output itself is logged
+                warned.should.containEql("npm ERR!");
+                logged().join("\n").should.not.containEql("NpmTok3nValue");
+            });
+
             it("the trace of arguments without a secret is unchanged", async function() {
                 hooks.add("preInstall.t63", function(event) {
                     event.args = event.args.concat(["--registry=https://registry.example/", "--loglevel=warn"]);
