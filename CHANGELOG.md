@@ -624,7 +624,8 @@ Fixes
    URL with credentials, and to the `url`, `module` and `message` of the `nodes.install` audit events. A URL without
    credentials and the bare user of an `ssh` URL are logged as before. The error of a `preInstall`/`postInstall` hook
    is masked the same way, and an npm argument with a credential that a hook adds (`--//registry/:_authToken=…`,
-   `_auth=`, `_password=`) shows its value as `***` in the trace and the `event-log`; npm gets it unchanged
+   `_auth=`, `_password=`) shows its value as `***` in the trace, the `event-log` and the warning with the npm output;
+   npm gets it unchanged
  - Tests only (#63): the secrets of a project reach `exec.run`, `getRemotes()` hides an old ambiguous remote
    password, a long output line is cut at a white space (`exec.js` comment of the branch that keeps the masked text);
    the drain spec stops its instances per describe and asserts the close of the socket after 503, the project switch
