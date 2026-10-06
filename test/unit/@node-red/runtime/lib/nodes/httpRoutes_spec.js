@@ -369,6 +369,37 @@ describe("runtime/nodes/httpRoutes (#11)", function() {
             });
         });
 
+        describe("AC-5 (R11-L2): an array of handlers that contains itself", function() {
+            function cases() {
+                const fn = function() {};
+                const direct = [fn];
+                direct.push(direct);
+                const a = [fn];
+                const b = [a];
+                a.push(b);
+                return [["directly", direct], ["through another array", a]];
+            }
+            cases().forEach(function(c, i) {
+                it("rejects an array that contains itself " + c[0] + " with a TypeError, the stack is unchanged", async function() {
+                    const node = newNode();
+                    needApi(node);
+                    const before = stackOf(app);
+                    const arg = cases()[i][1];
+                    const result = thrownBy(function() { node.registerHttpRoute("get", "/cyclic", arg) });
+                    should.exist(result.error, "registerHttpRoute did not throw");
+                    result.error.should.be.instanceof(TypeError);
+                    result.error.message.should.match(/registerHttpRoute/);
+                    sameStack(before, app);
+                    await get("/cyclic").expect(404);
+                });
+            });
+            it("the same handler used twice in different arrays is not a cycle", async function() {
+                const fn = function(req, res, next) { next() };
+                reg(newNode(), "get", "/twice", [fn], [fn], send("twice"));
+                (await get("/twice").expect(200)).text.should.equal("twice");
+            });
+        });
+
         it("AC-6: handlers are flattened (arrays of any depth) and called in order", async function() {
             const calls = [];
             const mw1 = function(req, res, next) { calls.push("mw1"); next() };
@@ -732,6 +763,55 @@ describe("runtime/nodes/httpRoutes (#11)", function() {
                 const warns = log.warns("httpRoutes.remove-failed");
                 warns.should.have.length(1);
                 JSON.stringify(warns[0]).should.not.match(/secret-path/);
+            });
+        });
+
+        describe("a failure of handle.remove() (R11-L3, R11-L4)", function() {
+            function breakStack(router, thrown) {
+                const original = router.stack;
+                Object.defineProperty(router, "stack", { get: function() { throw thrown }, configurable: true });
+                return function restore() {
+                    Object.defineProperty(router, "stack", { value: original, writable: true, configurable: true, enumerable: true });
+                };
+            }
+
+            it("R11-L3: remove() does not throw, logs one remove-failed warning with id and type and no path", async function() {
+                const log = captureLog();
+                const A = newNode("rm-fail", "rm-type");
+                const handle = reg(A, "get", "/secret-remove-path", send("a"));
+                breakStack(app._router, new Error("boom"));
+                const result = thrownBy(function() { handle.remove() });
+                should(result.error).be.undefined();
+                const warns = log.warns("httpRoutes.remove-failed");
+                warns.should.have.length(1);
+                warns[0].id.should.equal("rm-fail");
+                warns[0].type.should.equal("rm-type");
+                JSON.stringify(warns[0]).should.not.match(/secret-remove-path/);
+            });
+
+            it("R11-L4: after a failed remove() a later close() retries and removes the route, with no second warning", async function() {
+                const log = captureLog();
+                const A = newNode("rm-retry", "rm-type");
+                const handle = reg(A, "get", "/retry", send("a"));
+                const restore = breakStack(app._router, new Error("boom"));
+                handle.remove();
+                log.warns("httpRoutes.remove-failed").should.have.length(1);
+                restore();
+                await get("/retry").expect(200);
+                await A.close();
+                await get("/retry").expect(404);
+                log.warns("httpRoutes.remove-failed").should.have.length(1);
+                log.warns().should.have.length(1);
+            });
+
+            it("R11-L4: after a failed remove() a second remove() of the handle retries too", async function() {
+                const A = newNode("rm-retry2");
+                const handle = reg(A, "get", "/retry2", send("a"));
+                const restore = breakStack(app._router, new Error("boom"));
+                handle.remove();
+                restore();
+                handle.remove();
+                await get("/retry2").expect(404);
             });
         });
 
