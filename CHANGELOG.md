@@ -641,6 +641,22 @@ Fixes
    when `apiMaxLength` gives a larger size (by the size rules of `body-parser`), the same rule as the parsers of
    `http in` since #48; any other `apiMaxLength` is passed to them unchanged, and the default stays 5 MB. A larger
    body takes the existing error path (413). The parsers read the body before authentication, as in upstream
+ - Fix (#63): `RED.hooks` (runtime and editor): a handler that throws a falsy value synchronously (`undefined`,
+   `null`, `false`, `0`, `-0`, `0n`, `NaN`, `""`) ends the chain with the error of #61 (`Hook handler rejected without an
+   error: <value>`); before, depending on the value, the chain went on without the later handlers, stopped without an
+   error or ended with `Error("null")`. For `onSend`, `preRoute`, `preDeliver` and `onReceive` the message is then not
+   delivered and the node reports the error. A handler step ends once: the first of its outcomes (return value,
+   promise outcome, `done`, synchronous throw) counts and a later one is ignored (the runtime logs it at debug level),
+   so `trigger` settles once and `done` is called once. The editor copy of `RED.hooks` gets the behaviour of #61 (a
+   rejection without a value ends the chain; it called the same handler again without end) and of #76 (a value that
+   cannot be printed gives `Error("(the value cannot be printed)")`)
+ - Fix (#63): `RED.hooks.add` writes one warning (runtime: `warn` log with the place of the registration; editor:
+   `console.warn`) when a handler declares no parameters: such a handler is called with `(payload, done)` and must call
+   `done`, otherwise the chain does not end - the behaviour is unchanged, as in upstream. `preDeploy` and `postDeploy`
+   handlers are called as `fn(event)` and get no warning
+ - Fix (#63): the library list does not show a file whose name ends with `.$$$` (the working file of a write, left
+   after a failed rename), and saving a library entry with such a name is refused with 403 `forbidden`; a `flows`
+   entry gets `.json` first, as before
 
 Features
 
