@@ -600,6 +600,12 @@ Fixes
    to a request that another layer (`httpNodeMiddleware`, the hold or the drain of the requests) already answered.
    The change does not limit the size of the accepted bodies; a limit in front of Node-RED (a proxy) does. No new
    setting
+ - Fix (#48): `http in` with "Accept file uploads": a multipart field whose name has a number in brackets above
+   100 (for example `a[101]`, also `a[5][101]`) is answered with 413 `Payload Too Large` and does not reach the
+   flow, with no log line. It applies on every upload route, also without `httpInMaxBodySize` and without "Max
+   body size". Numbers 0 to 100 (`a[100]`) give an array as before; names without such a number (`a[]`,
+   `a[101]x`, `a[1e2]`) and the field names of files are unchanged, and so are URL-encoded forms. A form that
+   numbers more than 101 rows in its field names now gets 413
 
 Features
 
@@ -656,6 +662,11 @@ Features
    without it nothing changes). On an upload route a body that is not multipart is not read, as before. The
    limit applies to one request, not to the sum of the bodies received at the same time. Settings template,
    English help, English and Polish messages
+ - `http in` with "Accept file uploads" (#48): an upload with a size limit (`httpInMaxBodySize` or "Max body
+   size" of the node) accepts at most 1000 parts in one request (fields and files together); a request with more
+   is answered with 413 `Payload Too Large`, with no log line, and the flow does not run. The number is fixed and
+   does not depend on the size limit. Without both limits the number of parts is not limited, as before. Other
+   errors of the multipart parser are answered with 500 and a warning of the node, as before
 
 #### Unreleased: Engine extensions
 
