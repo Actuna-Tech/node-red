@@ -2524,6 +2524,122 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             });
         });
 
+        describe("a value shown in a warning is shown in a safe form (#48)", function() {
+            // the form that a warning gets for a text: at most 32 characters, every character outside
+            // [0-9A-Za-z .+-] replaced by "?"
+            const FORMAT_CHARACTERS = "$t(";
+
+            // the options of the only rendering of the message `key`, with the time the load took
+            async function loadTimed(nodes, settings) {
+                const start = Date.now();
+                await load(nodes, settings);
+                (Date.now() - start).should.be.below(1000);
+            }
+
+            function shownOf(key) {
+                const calls = renderedWith(key);
+                calls.should.have.length(1);
+                return calls[0].options.value;
+            }
+
+            it("a setting with characters of the message format is shown in a safe form", async function() {
+                await loadTimed([["a", NO_OPTIONS]], { [SETTING]: "x" + FORMAT_CHARACTERS });
+                logged("httpin.errors.invalid-max-body-size-setting").should.have.length(1);
+                shownOf("httpin.errors.invalid-max-body-size-setting").should.equal("x?t?");
+                (await answer("/hook", OCTET, 1024)).should.equal(200);
+                received.should.have.length(1);
+            });
+
+            it("a limit of a node with characters of the message format, cut to 32 characters, is shown in a safe form", async function() {
+                await loadTimed([["a", Object.assign({ maxBodySize: FORMAT_CHARACTERS + "a".repeat(29) }, NO_OPTIONS)]], { [SETTING]: "1kb" });
+                logged("httpin.errors.invalid-max-body-size").should.have.length(1);
+                shownOf("httpin.errors.invalid-max-body-size").should.equal("?t?" + "a".repeat(29));
+                (await answer("/hook", OCTET, 1000)).should.equal(200);
+                (await answer("/hook", OCTET, 2048)).should.equal(413);
+            });
+
+            it("a limit of a node longer than 32 characters is cut before it is shown", async function() {
+                await loadTimed([["a", Object.assign({ maxBodySize: FORMAT_CHARACTERS + "a".repeat(100) }, NO_OPTIONS)]], { [SETTING]: "1kb" });
+                shownOf("httpin.errors.invalid-max-body-size").should.equal("?t?" + "a".repeat(29));
+            });
+
+            it("an apiMaxLength with characters of the message format is shown in a safe form on a Do not parse node", async function() {
+                // a leading number, so that the body parsers take the value and the node starts
+                await loadTimed([["a"]], { apiMaxLength: "1" + FORMAT_CHARACTERS });
+                logged("httpin.errors.invalid-api-max-length").should.have.length(1);
+                shownOf("httpin.errors.invalid-api-max-length").should.equal("1?t?");
+                (await answer("/hook", OCTET, 1024)).should.equal(200);
+                received.should.have.length(1);
+            });
+
+            it("an apiMaxLength that is the same text without a leading number: the module loads and the warning shows the safe form", async function() {
+                // the body parsers refuse such a value, so the node itself does not start: no request is sent
+                await loadTimed([["a"]], { apiMaxLength: "x" + FORMAT_CHARACTERS });
+                logged("httpin.errors.invalid-api-max-length").should.have.length(1);
+                shownOf("httpin.errors.invalid-api-max-length").should.equal("x?t?");
+            });
+
+            [
+                ["a letter with an accent", "zażółć", "za????"],
+                ["a line break and a tab", "a\nb\tc", "a?b?c"],
+                ["braces, quotes, a percent sign and a backslash", "{a}\"'%\\", "?a?????"],
+                ["the characters that are allowed", "1.5 +-Zz9", "1.5 +-Zz9"]
+            ].forEach(function(entry) {
+                it("the setting shows " + entry[0] + " in a safe form", async function() {
+                    await loadTimed([["a", NO_OPTIONS]], { [SETTING]: entry[1] + "!" });
+                    shownOf("httpin.errors.invalid-max-body-size-setting").should.equal(entry[2] + "?");
+                });
+            });
+
+            it("a number is shown as it is, any other value as its type", async function() {
+                await loadTimed([["a", NO_OPTIONS]], { [SETTING]: -5 });
+                shownOf("httpin.errors.invalid-max-body-size-setting").should.equal(-5);
+                await stop();
+                rendered.length = 0;
+                await loadTimed([["a", NO_OPTIONS]], { [SETTING]: { toString: function() { return "x$t(" } } });
+                shownOf("httpin.errors.invalid-max-body-size-setting").should.equal("object");
+            });
+        });
+
+        describe("the text limit stays within the maximum string length when a limit is above it (#48)", function() {
+            function declaredText(extra) {
+                return Object.assign({ "Content-Type": "text/plain", "Content-Length": String(MAX + 1) }, extra);
+            }
+
+            function checkRefused(res) {
+                res.should.have.property("settled", true);
+                res.should.have.property("statusCode", 413);
+                res.headers.connection.should.equal("close");
+                res.headers["content-length"].should.equal("17");
+                res.body.should.equal("Payload Too Large");
+            }
+
+            it("a setting above it: a text body that declares one byte more is answered with 413 at once and the connection is closed", async function() {
+                await load([["a", NO_OPTIONS]], { [SETTING]: "1gb" });
+                checkRefused(await exchange("POST", "/hook", declaredText(), [KIB], { end: false }));
+                received.should.have.length(0);
+                (await answer("/hook", PLAIN, 1024)).should.equal(200);
+            });
+
+            it("a limit of the node above it with a lower setting: the same", async function() {
+                await load([["a", Object.assign({ maxBodySize: "1gb" }, NO_OPTIONS)]], { [SETTING]: "1kb" });
+                checkRefused(await exchange("POST", "/hook", declaredText(), [KIB], { end: false }));
+                received.should.have.length(0);
+            });
+
+            it("a limit of the node above it with a lower setting: a text body of 2 KiB is accepted as a string and a binary body above the limit is not refused", async function() {
+                await load([["a", Object.assign({ maxBodySize: "1gb" }, NO_OPTIONS)]], { [SETTING]: "1kb" });
+                (await answer("/hook", PLAIN, 2048)).should.equal(200);
+                received[0].msg.payload.should.equal("a".repeat(2048));
+                (await answer("/hook", OCTET, 4096)).should.equal(200);
+            });
+
+            it("a setting above it, a multibyte text that declares one byte more is answered with 413", async function() {
+                await load([["a", NO_OPTIONS]], { [SETTING]: "1gb" });
+                checkRefused(await exchange("POST", "/hook", declaredText({ "Content-Type": "text/plain; charset=utf-8" }), [Buffer.from("zażółć gęślą ".repeat(80))], { end: false }));
+            });
+        });
+
         describe("AC-11 with the setting: a response that another layer sent while the rest of the body is discarded", function() {
             // The middleware keeps `res` of the requests with the marker header; the test answers it with 503 and
             // Connection: close once the limit of the setting is hit, as the drain does
