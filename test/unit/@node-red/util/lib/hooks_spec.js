@@ -997,4 +997,86 @@ describe("util/hooks", function() {
             });
         });
     });
+
+    // #76: trigger() (promise form) wraps a rejection that is not an Error with `new Error(value)`; a value that
+    // cannot be converted, or that breaks `instanceof` or the setting of `hook`, must not leave the promise unsettled
+    describe("a rejection value that cannot be wrapped (#76)", function() {
+        const NOT_PRINTABLE = "(the value cannot be printed)";
+        let unhandled;
+        let onUnhandled;
+        beforeEach(function() {
+            unhandled = [];
+            onUnhandled = reason => unhandled.push(reason);
+            process.on("unhandledRejection", onUnhandled);
+        });
+        afterEach(function() {
+            process.removeListener("unhandledRejection", onUnhandled);
+        });
+
+        // the result of the promise, or {settled: false} when it does not settle in `ms` (the wait is bounded)
+        function settle(promise, ms) {
+            let timer;
+            const bound = new Promise(resolve => { timer = setTimeout(() => resolve({ settled: false }), ms || 500) });
+            return Promise.race([
+                promise.then(value => ({ settled: true, rejected: false, value }), err => ({ settled: true, rejected: true, err })),
+                bound
+            ]).then(result => { clearTimeout(timer); return result });
+        }
+        function rejectWith(make) {
+            hooks.add("onSend.A", function(payload) { return Promise.reject(make()) });
+            return settle(hooks.trigger("onSend", {}));
+        }
+        function assertWrapped(result, message) {
+            should(result.settled).be.true("the trigger promise did not settle");
+            should(result.rejected).be.true("the trigger promise resolved instead of rejecting");
+            result.err.should.be.an.instanceOf(Error);
+            result.err.should.have.property("hook", "onSend");
+            if (message !== undefined) {
+                result.err.message.should.equal(message);
+            }
+        }
+
+        [
+            ["Object.create(null)", () => Object.create(null)],
+            ["a Symbol", () => Symbol("s")],
+            ["a Proxy that throws on every get", () => new Proxy({}, { get: function() { throw new Error("p") } })]
+        ].forEach(function(row) {
+            it("(a) " + row[0] + ": rejects with an Error '" + NOT_PRINTABLE + "' and the hook id", async function() {
+                const result = await rejectWith(row[1]);
+                assertWrapped(result, NOT_PRINTABLE);
+            });
+        });
+
+        it("(b) a Proxy whose getPrototypeOf trap throws (breaks instanceof): the promise settles with a printable Error that has the hook id", async function() {
+            const result = await rejectWith(() => new Proxy({}, { getPrototypeOf: function() { throw new Error("trap") } }));
+            assertWrapped(result);
+            result.err.message.should.be.a.String();
+            unhandled.should.eql([]);
+        });
+
+        it("(c) an Error in a Proxy whose set trap throws (breaks err.hook = hookId): the promise settles with a printable Error that has the hook id", async function() {
+            const result = await rejectWith(() => new Proxy(new Error("inner"), { set: function() { throw new Error("trap") } }));
+            assertWrapped(result);
+            result.err.message.should.be.a.String();
+            unhandled.should.eql([]);
+        });
+
+        [
+            ["\"boom\"", () => "boom", "boom"],
+            ["5", () => 5, "5"],
+            ["{a: 1}", () => ({ a: 1 }), "[object Object]"]
+        ].forEach(function(row) {
+            it("regression: " + row[0] + " is wrapped in an Error with the same message and the hook id", async function() {
+                const result = await rejectWith(row[1]);
+                assertWrapped(result, row[2]);
+            });
+        });
+
+        it("regression: a real Error is passed on as the same object with the hook id", async function() {
+            const boom = new Error("boom");
+            const result = await rejectWith(() => boom);
+            assertWrapped(result, "boom");
+            (result.err === boom).should.be.true();
+        });
+    });
 });

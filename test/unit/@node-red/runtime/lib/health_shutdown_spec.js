@@ -137,11 +137,8 @@ describe("runtime/health shutdown (Z-08, D-11)", function() {
     });
 
     [
-        // SPEC GAP: hooks.trigger() of @node-red/util wraps a rejection that is not an Error with `new Error(value)`, which
-        // throws for these two values inside the hook machinery - the promise never settles. Fixing health.js alone does
-        // not turn these two rows green; they need a change of util/lib/hooks.js too
-        {name: "Object.create(null) [gap: hooks.trigger wraps it with new Error(value)]", make: function() { return Object.create(null) }},
-        {name: "a Proxy that throws on every get [gap: hooks.trigger wraps it with new Error(value)]", make: function() { return new Proxy({}, {get: function() { throw new Error("p") }}) }},
+        {name: "Object.create(null)", make: function() { return Object.create(null) }},
+        {name: "a Proxy that throws on every get", make: function() { return new Proxy({}, {get: function() { throw new Error("p") }}) }},
         {name: "an Error with a throwing getter of message", make: function() {
             const err = new Error("x");
             Object.defineProperty(err, "message", {get: function() { throw new Error("getter of message") }});

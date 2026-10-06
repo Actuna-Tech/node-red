@@ -3438,12 +3438,36 @@ describe("flows/reload (Z-09)", function() {
             });
         });
 
+        describe("the code of a failed comparison of the credentials (L4)", function() {
+            // a storage plugin whose result has a getter `credentials` that throws makes credentialsChanged() throw this value
+            [
+                { name: "an Error whose code getter throws", make: () => Object.defineProperty(new Error("x"), "code", { get() { throw new Error("code getter") } }) },
+                { name: "a Proxy that throws on every get", make: everyGetThrows }
+            ].forEach(function(v) {
+                it("the same revision, the running credentials without a digest, the comparison fails with " + v.name + ": nothing to do, the debug line says 'error', no read-failed", async function() {
+                    const unhandled = recordUnhandled();
+                    env = createEnv({ reload: { retry: { min: 2, max: 60000, attempts: 1, onExhausted: "keepReady" } } });
+                    env.credentialsKnown = false;
+                    env.credentialsError = v.make();
+                    await env.start();
+                    env.change("A", { credentials: { $: "cipher:iv1" } });
+                    env.notify();
+                    await waitFor(() => env.getFlowsCalls >= 1, 1000, "storage was not read");
+                    await delay(30);
+                    env.applied.should.have.length(0);
+                    state.get().state.should.equal("ready");
+                    state.get().should.not.have.property("reload");
+                    warnings("reload.read-failed").should.have.length(0);
+                    warnings("reload.failed").should.have.length(0);
+                    env.logs.debug.some(m => m.indexOf("cannot be decrypted (error)") !== -1).should.be.true("the debug line of an unreadable code was not written");
+                    unhandled.should.eql([]);
+                });
+            });
+        });
+
         describe("the preReload hook that rejects (AC-29)", function() {
             [
-                // SPEC GAP: hooks.trigger() of @node-red/util wraps a rejection that is not an Error with `new Error(value)`, which
-                // throws for Object.create(null) inside the hook machinery - the promise never settles. Fixing reload.js alone
-                // does not turn this row green; it needs a change of util/lib/hooks.js too
-                { name: "Object.create(null) [gap: hooks.trigger wraps it with new Error(value)]", make: () => Object.create(null) },
+                { name: "Object.create(null)", make: () => Object.create(null) },
                 { name: "an Error with a throwing getter of message", make: throwingMessage }
             ].forEach(function(v) {
                 it("AC-29: a handler that rejects with " + v.name + ": one error log, the reload goes on at once, no timeout, no unhandled rejection", async function() {

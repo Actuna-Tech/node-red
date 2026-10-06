@@ -487,4 +487,3 @@ registry.getPluginsByType = () => [];`;
         });
     });
 });
-
