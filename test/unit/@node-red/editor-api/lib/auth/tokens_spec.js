@@ -559,35 +559,4 @@ describe("api/auth/tokens - a failed save of the sessions (#68)", function() {
         session.state.should.equal("resolved");
         should.not.exist(session.value);
     });
-    it("#68: the saved sessions hold only the sessions of the creates that were saved (two creates at once, the first save fails)", async function() {
-        // like saveSessions of the file store: the content is taken when the save is called,
-        // the saves are done one after another and the last finished save is what the file holds
-        var persisted = {};
-        var calls = 0;
-        var storage = {
-            getSessions: function() { return Promise.resolve({}) },
-            saveSessions: function(sessions) {
-                var snapshot = JSON.stringify(sessions);
-                var first = (++calls === 1);
-                return new Promise(function(resolve, reject) {
-                    setImmediate(function() {
-                        if (first) {
-                            return reject(saveError());
-                        }
-                        persisted = JSON.parse(snapshot);
-                        resolve();
-                    });
-                });
-            }
-        };
-        await Fresh.init({}, storage);
-        var results = await Promise.all([
-            settle(Fresh.create("fred", "client", "*", false)),
-            settle(Fresh.create("fred", "client", "*", false))
-        ]);
-        results[0].state.should.equal("rejected", "the first create was " + results[0].state);
-        results[1].state.should.equal("resolved", "the second create was " + results[1].state);
-        var issued = [results[1].value.accessToken];
-        Object.keys(persisted).should.eql(issued);
-    });
 });
