@@ -586,8 +586,12 @@ Features
    Node.js applies and logs one warning (`httpin.errors.large-max-body-size-setting`); the same for "Max body size"
    of a node (`httpin.errors.large-max-body-size`), also without the setting. An invalid value (not a size above
    0, or one that cannot be read) is ignored with one warning (`httpin.errors.invalid-max-body-size-setting`) and
-   the bodies then have no default limit (fail-open, check the log after a change). The setting is read once at
-   start. `GET /settings` carries only `httpInMaxBodySizeEnabled: true` when the setting is valid (never its value;
+   the limits are then the ones without the setting: the raw body keeps `apiMaxLength`, the other bodies and an
+   upload without "Max body size" have no limit (fail-open, check the log after a change). The setting is read
+   once at start. The warnings about the setting, about "Max body size" of a node and about `apiMaxLength` show the
+   value in a reduced form: a text cut to 32 characters with every character other than a letter, a digit, a
+   space, `.`, `+` or `-` shown as `?` (a value that cannot be read as `?`), a number as it is, any other value as
+   its type. `GET /settings` carries only `httpInMaxBodySizeEnabled: true` when the setting is valid (never its value;
    without it nothing changes). On an upload route a body that is not multipart is not read, as before. The
    limit applies to one request, not to the sum of the bodies received at the same time. Settings template,
    English help, English and Polish messages
