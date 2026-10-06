@@ -380,6 +380,8 @@ describe("api/auth/index - a failed save of the sessions (#68)", function() {
         });
         afterEach(function() {
             passport.unuse(passportStrategyName);
+            // the authentication settings of the module must not stay on for the other test files
+            auth.init({}, {});
         });
 
         function callbackRecorder() {
