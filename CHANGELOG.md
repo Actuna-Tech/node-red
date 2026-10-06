@@ -629,6 +629,14 @@ Fixes
    does not run `preDeploy`/`postDeploy`, a `preDeploy` handler added during a deployment, the child of the library
    working-directory spec has its own timeout; the reload spec asserts the `reload.read-failed` lines, shares one
    helper and compares the reread result; the token exchange logs; a failed shutdown with an unusual value
+ - Fix (#63): reload from storage (`deploy.reload.watch: true`, `onExhausted: "keepReady"`): when the comparison of
+   the credentials fails in the reread under the deploy lock, the `reload` condition of the instance state reports
+   the revision the reread read, not the older one of step 2. A failed read of storage still reports the revision of
+   step 2
+ - Fix (#63): the exchange of a code for a token (generic auth strategy) answers once: when the answer with the token
+   fails after its headers were sent, the error is logged as before and no second answer (400) is attempted
+ - Fix (#63): command line `red.js`: when `RED.start()` rejects with a value the log cannot write (a `Symbol`),
+   `Failed to start server:` is written once; the value is printed by the console fallback
 
 Features
 
