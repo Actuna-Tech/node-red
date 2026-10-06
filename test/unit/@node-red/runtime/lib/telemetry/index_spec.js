@@ -1,10 +1,15 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   P-03: tests of telemetry.locked
+ *   #68: tests of a failed save of the telemetry choice (enable and disable are logged and carry on)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
 const NR_TEST_UTILS = require("nr-test-utils");
+
+const sinon = require("sinon");
+const { log: utilLog } = NR_TEST_UTILS.require("@node-red/util");
+const { trackRejections, flush } = require("nr-test-utils/fault-injection");
 
 const telemetryApi = NR_TEST_UTILS.require("@node-red/runtime/lib/telemetry/index");
 
@@ -187,5 +192,61 @@ describe("telemetry", function() {
             telemetryApi.isEnabled().should.be.true()
             warnings.should.have.length(1)
         })
+    })
+})
+
+describe("telemetry - a failed save of the choice (#68)", function() {
+    let sandbox
+    let tracker
+    let debugMessages
+    let runtimeWarnings
+    let utilWarnings
+
+    beforeEach(function() {
+        sandbox = sinon.createSandbox()
+        tracker = trackRejections()
+        debugMessages = []
+        runtimeWarnings = []
+        utilWarnings = sandbox.stub(utilLog, "warn")
+    })
+    afterEach(function() {
+        telemetryApi.stop()
+        sandbox.restore()
+    })
+
+    function warnings() {
+        return runtimeWarnings.concat(utilWarnings.args.map(args => args.join(" ")))
+    }
+    function getRuntime(settings) {
+        return {
+            settings: {
+                get: key => settings[key],
+                set: () => tracker.reject(new Error("ENOSPC: no space left on device, write")),
+                available: () => true
+            },
+            log: {
+                debug: msg => { debugMessages.push(msg) },
+                warn: msg => { runtimeWarnings.push(String(msg)) },
+                _: key => key
+            }
+        }
+    }
+
+    it("AC-Q1a (S1): enable() logs the failed save and starts the schedule as after a saved choice", async function() {
+        telemetryApi.init(getRuntime({}))
+        telemetryApi.enable()
+        await flush()
+        tracker.dropped().should.have.length(0)
+        warnings().some(text => /Saving the settings failed/.test(text)).should.be.true()
+        debugMessages.some(text => /Telemetry enabled/.test(text)).should.be.true()
+    })
+    it("AC-Q1a (S2): disable() logs the failed save and stops the schedule as after a saved choice", async function() {
+        telemetryApi.init(getRuntime({ telemetry: { enabled: true } }))
+        debugMessages.some(text => /Telemetry enabled/.test(text)).should.be.true()
+        telemetryApi.disable()
+        await flush()
+        tracker.dropped().should.have.length(0)
+        warnings().some(text => /Saving the settings failed/.test(text)).should.be.true()
+        debugMessages.some(text => /Telemetry disabled/.test(text)).should.be.true()
     })
 })
