@@ -277,7 +277,9 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   krokiem. Timer `startupTimeout` jest czyszczony, więc proces osadzający kończy się sam po `RED.stop()` (limit, który
   odpalił przed zatrzymaniem, zachowuje wynik `startup_timeout`). Stan instancji: `starting` → `stopping` → `stopped`,
   bez `failed`. Krok, który skończy się po zatrzymaniu, jest ignorowany, a jego zasoby zwalniane jak po limicie.
-  `RED.start()` wywołane po `RED.stop()` odrzuca `startup_stopped` ze `step: null` bez żadnego kroku. `catch` przy
+  `RED.start()` wywołane po `RED.stop()` odrzuca `startup_stopped` ze `step: null` bez żadnego kroku. Ponowne
+  `RED.init()` po `RED.stop()` w tym samym procesie nie jest obsługiwane: pierwszy `RED.start()` po takim `RED.init()`
+  działa jak przed #73 (bez odrzucenia), kolejne – jak wyżej. `catch` przy
   `RED.start()` jest wymagany i powinien pominąć `startup_stopped` – to nie nieudany start (przykład wyżej); drugie
   `RED.stop("startup-error")` i kod 1 byłyby błędem.
 - **Odrzucone żądanie `/flow` nie emituje `deploying` (#10, U1, A24, D19):** `POST /flow`, `PUT` i `DELETE /flow/:id` sprawdzają rewizje i budują
