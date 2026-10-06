@@ -32,6 +32,7 @@
  *   #48: acceptance tests of the cap of 1000 parts of an upload (with the setting httpInMaxBodySize or the field of the
  *   node) and of the limit of 100 for a number in brackets in the name of a multipart field (413 on every upload route)
  *   #48: acceptance tests of the limit of 8 for the nesting depth of the name of a multipart field (413 on every upload route)
+ *   #63: the R2-03 list of the limits of the JSON and urlencoded parsers is the shared table of the Admin API parsers
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -41,6 +42,7 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const helper = require("node-red-node-test-helper");
 const httpInNode = require("nr-test-utils").require("@node-red/nodes/core/network/21-httpin.js");
+const limitCases = require("../../../resources/body-parser-limit-cases");
 
 describe("HTTP In node - raw body (skipBodyParsing)", function() {
     let RED;
@@ -1650,16 +1652,12 @@ describe("HTTP In node - size limit of the raw body and of an upload", function(
             });
 
             // R2-03: the limit follows the rules of the bytes module for these inputs, also at the
-            // boundary of the maximum string length
-            [
-                "1gb", 1e9, Infinity, "+1gb", "600000000abc", " 600000000", "1gb ", "1 GB",
-                "1\tgb", "0x40000000", "1.5pb", 1e400, 10n, {}, true, "5mb", "+5mb", "1e9", -1, -Infinity, "abc",
-                "1tb", "0.5gb", "512mb", "511mb", MAX, MAX + 1, MAX + "b", (MAX + 1) + "b", String(MAX), String(MAX + 1)
-            ].forEach(function(value) {
-                it("AC-7 R2-03: apiMaxLength " + label(value) + " gives the limit that the rules of the bytes module give", async function() {
-                    const parsed = bytesModule.parse(value);
-                    const expected = (typeof parsed === "number" && parsed > MAX) ? MAX : value;
-                    checkLimits(await limitsFor(value, true), expected);
+            // boundary of the maximum string length. #63 (B8-AC-4): the values and the expected limits are the
+            // shared table of test/resources/body-parser-limit-cases.js - the table that the tests of the Admin API
+            // parsers use too, so that the two copies of the rule stay equal
+            limitCases.cases.forEach(function(entry) {
+                it("AC-7 R2-03: apiMaxLength " + entry.label + " gives the limit that the rules of the bytes module give", async function() {
+                    checkLimits(await limitsFor(entry.value, entry.given), entry.expected);
                 });
             });
 
