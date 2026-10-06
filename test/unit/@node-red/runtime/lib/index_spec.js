@@ -2787,23 +2787,23 @@ describe("runtime", function() {
                     });
                 });
 
-                it("AC-4 (release): a plugin whose resign rejects: one after-stop-failed warning for the coordination, the plugin is stopped once, no unhandled rejection", async function() {
+                it("AC-4 (release): coordination.resign rejects in the release: one after-stop-failed warning for the coordination, coordination.stop is still called once, no unhandled rejection", async function() {
                     const unhandled = recordUnhandled();
-                    const plugin = testPlugin();
-                    plugin.resign = sinon.spy(function() { return Promise.reject(new Error("r")) });
-                    init(REAL_COORDINATION);
-                    const outcome = track(runtime.start());
-                    await clock.tickAsync(10);
-                    await runtime.stop("SIGTERM");
-                    plugin.startGate.resolve();
+                    // the stop of the runtime runs with the original resign; only the release of the late step meets the rejection
+                    const hung = await stopWhileHung(row("coordination"));
+                    stoppedAt(hung.outcome, "coordination", "SIGTERM");
+                    fake(coordination, "resign", function() { return Promise.reject(new Error("resign rejects")) });
+                    const stopsBefore = coordination.stop.callCount;
+                    hung.d.resolve();
                     await flush();
-                    stoppedAt(outcome, "coordination", "SIGTERM");
-                    plugin.stop.callCount.should.equal(1, "the plugin was not stopped after a rejected resign");
+                    coordination.resign.calledOnce.should.be.true();
+                    (coordination.stop.callCount - stopsBefore).should.equal(1, "coordination.stop was skipped after a rejected resign");
                     const failed = callsOf(log._, AFTER_STOP_FAILED);
                     failed.should.have.length(1);
                     failed[0].args[1].should.have.property("step", "coordination");
-                    failed[0].args[1].message.should.match(/r/);
+                    failed[0].args[1].message.should.match(/resign rejects/);
                     warnedWith(AFTER_STOP_FAILED).should.equal(1);
+                    callsOf(log._, LATE_FAILED).should.have.length(0);
                     unhandled.should.eql([]);
                 });
             });
@@ -2869,7 +2869,7 @@ describe("runtime", function() {
                     cleanups.push(function() { util.hooks.clear() });
                     init(Object.assign({
                         shutdownTimeout: 5000,
-                        hooks: { "preShutdown.t": function() { return new Promise(function(resolve) { setTimeout(resolve, 3000) }) } }
+                        hooks: { "preShutdown.t": function(event) { return new Promise(function(resolve) { setTimeout(resolve, 3000) }) } }
                     }, REAL_COORDINATION));
                     const stopSpy = sinon.spy(function() { return runtime.stop("SIGTERM") });
                     const outcome = track(runtime.start());
