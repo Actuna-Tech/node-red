@@ -657,6 +657,19 @@ Fixes
  - Fix (#63): the library list does not show a file whose name ends with `.$$$` (the working file of a write, left
    after a failed rename), and saving a library entry with such a name is refused with 403 `forbidden`; a `flows`
    entry gets `.json` first, as before
+ - Fix (#63): `PUT /projects/:id` (the update of a project: description, summary, version, dependencies, the key,
+   the files, the git user and remotes) checks every field before it changes anything. A field of a wrong type
+   (for example a description that is not a text, dependencies that are not an object of texts, a key that is a
+   number or `true`, `resetCredentialSecret` that is not a boolean), a package file whose name does not end with
+   `package.json`, a file outside the project or credentials for a remote that does not exist are answered with 400
+   `invalid_request` whose message names the field only (never the value); before, some of them answered 200, some
+   400 with a JavaScript message or with the value, after a part of the request had been applied (for example the
+   key). A failed save of `README.md` or `package.json`, of the settings or of an added or removed remote now answers
+   400 `{"code":"unexpected_error","message":"Saving the project failed"}` instead of 200, with a warning in the log
+   (the file, `Saving the settings failed`, or the code of the git error); the settings are restored and the project
+   is loaded again from disk, so `GET /projects/:id` shows what was saved, no commit is made and the credentials are
+   not re-encrypted. The same request can be sent again. A project without `package.json` keeps its answer. The
+   editor sends only valid values; a client that sent other types gets 400 now
 
 Features
 

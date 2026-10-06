@@ -527,6 +527,23 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   zmianie nazwy. Zapis wpisu o nazwie kończącej się na `.$$$` jest odrzucany **403 `forbidden`** bez komunikatu (wcześniej
   204, a plik był potem ukryty); dla typu `flows` nazwa dostaje najpierw `.json`, więc `a.$$$` zapisuje się jako `a.$$$.json`
   (bez zmian). Katalog `x.$$$` i plik `a.$$$x` są widoczne jak dotąd. Odczyt pliku `*.$$$` podanego wprost po nazwie bez zmian.
+- **`PUT /projects/:id`, aktualizacja projektu (#63):** wszystkie pola są sprawdzane **przed jakąkolwiek zmianą**:
+  typy (`description`, `summary`, `version` – tekst; `dependencies` – obiekt tekstów; `credentialSecret` – tekst, a
+  `false`/`null`/`""` są pomijane jak dotąd; `resetCredentialSecret` – wartość logiczna; `currentCredentialSecret` – tekst;
+  `files` i jego pola; `git.user`, `git.remotes`), nazwa pliku pakietu (`…package.json`), pliki wewnątrz projektu, bieżący
+  klucz (`missing_current_credential_key` jak dotąd) i dane logowania tylko dla istniejącego zdalnego. Błąd → **400
+  `invalid_request`** z komunikatem nazywającym tylko pole (bez wartości) i bez żadnej zmiany (wcześniej część pól
+  dawała 200, część 400 z tekstem błędu JavaScript albo z wartością, a klucz projektu mógł już zostać zmieniony w pamięci).
+  **Nieudany zapis** `README.md`, `package.json`, ustawień albo dodania/usunięcia zdalnego → **400
+  `{"code":"unexpected_error","message":"Saving the project failed"}`** zamiast 200, z ostrzeżeniem w logu; ustawienia i
+  projekt są przywracane i projekt jest wczytywany ponownie z dysku (pliki już zapisane zostają, zdalne są takie jak w
+  gicie), bez commita, bez przeładowania flow i bez ponownego szyfrowania poświadczeń; ponowienie tego samego żądania
+  zapisuje najpierw ustawienia z nowym kluczem, potem szyfruje poświadczenia. **Wyjątek od reguły #68** (nieudany zapis
+  ustawień – ostrzeżenie i dalej): tutaj nieudany zapis ustawień kończy żądanie błędem, bo od zapisanego klucza zależy
+  szyfrowanie poświadczeń – bez tego poświadczenia byłyby zaszyfrowane kluczem, którego nie ma na dysku. Gdy nie uda się
+  także przywrócenie ustawień (np. pierwszy zapis się udał, przywrócenie nie), ustawienia na dysku mogą mieć nowy klucz,
+  a poświadczenia stary – po restarcie projekt zgłosi klucz jako nieprawidłowy i trzeba go podać ponownie (ostrzeżenie
+  w logu to mówi). Edytor wysyła tylko poprawne wartości; klient API wysyłający inne typy dostaje teraz 400.
 
 ## 7. Testy i proces
 
