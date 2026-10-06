@@ -1,6 +1,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   Z-14: test that the flow layout example in the settings template enables the controls
+ *   #71: test that startupTimeout is not set by default in the settings template and that its example is valid
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 const should = require("should");
@@ -64,5 +65,18 @@ describe("node-red/settings.js template", function() {
     it("enables the flow layout controls when the flowLayout example is uncommented", function() {
         const settings = loadSettings(uncommentExample(source, "flowLayout"));
         settings.editorTheme.flowLayout.should.eql({ enabled: true });
+    });
+
+    it("AC-22 (#71): does not set startupTimeout by default", function() {
+        const settings = loadSettings(source);
+        should(settings.startupTimeout).be.undefined();
+    });
+
+    it("AC-22 (#71): the startupTimeout example, when uncommented, is a finite number of ms > 0 and <= 2147483647", function() {
+        const settings = loadSettings(uncommentExample(source, "startupTimeout"));
+        settings.startupTimeout.should.be.a.Number();
+        Number.isFinite(settings.startupTimeout).should.be.true();
+        settings.startupTimeout.should.be.above(0);
+        settings.startupTimeout.should.not.be.above(2147483647);
     });
 });
