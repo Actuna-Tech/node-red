@@ -616,6 +616,19 @@ Fixes
  - Fix (#63): Editor: `RED.utils.renderMarkdown` escapes the text (as `RED.utils.sanitize`: `& < > " '`) when the
    markdown library cannot render it; it returned the text as it was, and the callers put it into HTML. A value
    that is not a string is returned unchanged, as before
+ - Fix (#63): the install of a module hides the credentials of the install URL (`https://user:password@host/x.tgz`)
+   in its log lines: the `trace` line of the npm command, the warnings and infos of the install (also the error
+   output of npm) and the `event-log` show the URL as `https://***@host/x.tgz`. The user info, the password and
+   their URI-decoded forms (at least 4 characters) are also hidden as literal text, as npm can print them outside
+   the URL form; they are passed to `exec.run` as its literal secrets. The same applies to a module name given as a
+   URL with credentials, and to the `url`, `module` and `message` of the `nodes.install` audit events. A URL without
+   credentials and the bare user of an `ssh` URL are logged as before
+ - Tests only (#63): the secrets of a project reach `exec.run`, `getRemotes()` hides an old ambiguous remote
+   password, a long output line is cut at a white space (`exec.js` comment of the branch that keeps the masked text);
+   the drain spec stops its instances per describe and asserts the close of the socket after 503, the project switch
+   does not run `preDeploy`/`postDeploy`, a `preDeploy` handler added during a deployment, the child of the library
+   working-directory spec has its own timeout; the reload spec asserts the `reload.read-failed` lines, shares one
+   helper and compares the reread result; the token exchange logs; a failed shutdown with an unusual value
 
 Features
 
