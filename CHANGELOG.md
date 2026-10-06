@@ -690,8 +690,11 @@ Features
    (`httpRoutes.after-close`); a failed removal is logged (`httpRoutes.remove-failed`) and the close goes on. No setting:
    without a call nothing changes (`RED.httpNode` is the same object, a node without routes closes as before). The
    router of the app is read only by one adapter for Express 4 and 5 (`routerStack` in `runtime/lib/nodes/httpRoutes.js`).
-   The `http in` node still registers its routes as before; its move to the API follows. Tests: `httpRoutes_spec.js`,
-   `Node_spec.js`, `Flow_spec.js`, `21-httpin-routes_spec.js`
+   The `http in` node registers its routes through the API (one call per node, the same chain of handlers) and no
+   longer removes them from the router of the app itself; its HTTP behaviour is unchanged. The `@node-red/nodes` of the
+   fork therefore needs a runtime with `node.registerHttpRoute` (both are released together; there is no fallback for an
+   older runtime). Tests: `httpRoutes_spec.js`, `Node_spec.js`, `Flow_spec.js`, `21-httpin-routes_spec.js`, `21-httpin_spec.js`
+   (unchanged)
  - Hooks of the deploy pipeline `preDeploy` and `postDeploy` (#10, Z-06, R-50), registered **only** with
    `RED.hooks.add("preDeploy.<label>", fn)` / `RED.hooks.add("postDeploy.<label>", fn)` in a plugin or a node; the `hooks`
    setting of `settings.js` (#7) is unchanged and still rejects them (`invalid_hook_setting`). Without a registered handler

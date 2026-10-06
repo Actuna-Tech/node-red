@@ -751,8 +751,8 @@ Funkcja: Hooki wdrożenia
 > (`local/briefs/11-spec.md`, poza repozytorium): bez dyspozytora – każda trasa węzła jest osobną warstwą aplikacji
 > `httpNode`, runtime zdejmuje ją po tożsamości trasy przez adapter routera Express 4/5; `http in` bez ścieżki zapasowej;
 > klucz rejestru – instancja węzła, nie `id`. Specyfikacja, cele i scenariusze niżej obowiązują w zakresie niesprzecznym z R-53;
-> projekt rozwiązania (pkt 1, 4), DoD „brak `_router`” i łagodzenie `httpRoutes.list()` – nieaktualne. Stan: API w runtime
-> zrealizowane, przejście `http in` po scaleniu #48 (FORK §5, §8).
+> projekt rozwiązania (pkt 1, 4), DoD „brak `_router`” i łagodzenie `httpRoutes.list()` – nieaktualne. Stan: zrealizowane – API w runtime
+> i `http in` na API (FORK §5, §8).
 
 | Pole | Wartość |
 |---|---|

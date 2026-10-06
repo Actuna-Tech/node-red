@@ -290,7 +290,10 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   (jak dotąd przy zdejmowaniu tras `http in`).
 - **Ustawienie:** brak – API jest dodane, bez wywołania nic się nie zmienia (`RED.httpNode` to ten sam obiekt, bez nowych właściwości; węzeł
   bez tras zamyka się jak dotąd). Router aplikacji czyta przy zdejmowaniu tylko adapter `routerStack(app)` w `runtime/lib/nodes/httpRoutes.js`
-  (Express 4 `_router`, Express 5 `router`). Rdzeniowy `http in` rejestruje jeszcze trasy po staremu (`removeNodeRoutes`); przejście na API – §8.
+  (Express 4 `_router`, Express 5 `router`).
+- **`http in`:** rejestruje trasy przez to API (ten sam łańcuch handlerów, jedno wywołanie na węzeł) i nie zdejmuje ich już sam z routera
+  aplikacji; zachowanie HTTP bez zmian. **Skutek:** `@node-red/nodes` forka wymaga runtime z `node.registerHttpRoute` (pakiety są wydawane
+  razem; brak ścieżki zapasowej dla starszego runtime).
 
 ### Potok wdrożenia (E-01)
 - Wspólna blokada (`runtime/lib/flows/lock.js`) dla `POST /flows`, `/flow`, `POST /flows/state` i operacji
@@ -534,8 +537,8 @@ w stanie `stopping`, awaryjne pominięcie drenażu przez operatora, ochrona usuw
 `deploy_hook_reentrant` (po pomiarze na Node 22 i 24), `signal` przerywany przy `stopping`, `Retry-After` dla 503, `details` w edytorze (tylko z escapowaniem), krok 2a (Z-12.08) przed hookiem,
 metryka czasu hooka, ochrona hooków przed `RED.hooks.remove`. Rejestracja z `settings.js` (poza #7) wymaga nowej decyzji zgodnej z zasadą W7.
 
-**#11 (Z-07, trasy HTTP węzłów, R-53):** API `node.registerHttpRoute` w runtime zrealizowane (§5). Do zrobienia: przejście
-`http in` na API i usunięcie `removeNodeRoutes` (po scaleniu #48, które zmienia ten sam plik). Pozostałe odczyty wnętrza routera Express
+**#11 (Z-07, trasy HTTP węzłów, R-53):** zrealizowane – API `node.registerHttpRoute` w runtime, `http in` rejestruje przez nie trasy (§5).
+Pozostałe odczyty wnętrza routera Express
 przed przejściem na Express 5: `rawBodyCapture` w `http in` (R-16, osobne zadanie z osobnym ustawieniem), `httpHold.hasRoute`
 (`runtime/lib/httpHold.js`, #8), `matchesEveryPath` w `registry/lib/util.js` (Z-02); adapter `routerStack(app)` w
 `runtime/lib/nodes/httpRoutes.js` obsługuje już oba kształty (`_router` i `router`).
