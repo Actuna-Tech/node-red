@@ -42,6 +42,8 @@
  *   #51: tests of the error code of a failed comparison of the credentials in the reread
  *   under the lock (reload_failed, as in step 2; a read error of storage stays storage_error)
  *   #61: test of a preReload handler that rejects without a value
+ *   #76: the report of an error that has no text or cannot be printed (unwatch, registration, read of storage,
+ *   slots, preReload hook) does not throw
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -3192,6 +3194,286 @@ describe("flows/reload (Z-09)", function() {
             env.applied.should.have.length(1);
             env.applied[0].rev.should.equal("C");
             Date.now().should.equal(500);
+        });
+    });
+
+    // #76: the report of an error that has no text or cannot be printed must not itself throw
+    describe("an error that cannot be printed (#76)", function() {
+        const NOT_PRINTABLE = "(the value cannot be printed)";
+        let unhandledCleanups;
+        let clock;
+
+        beforeEach(function() {
+            unhandledCleanups = [];
+            clock = null;
+        });
+        afterEach(function() {
+            unhandledCleanups.forEach(c => c());
+            if (clock) {
+                clock.restore();
+                clock = null;
+            }
+        });
+
+        function recordUnhandled() {
+            const seen = [];
+            const listener = reason => seen.push(reason);
+            process.on("unhandledRejection", listener);
+            unhandledCleanups.push(() => process.removeListener("unhandledRejection", listener));
+            return seen;
+        }
+
+        // runs the work and turns any failure into an ordinary Error, so that a hostile value never reaches the runner
+        async function ok(what, work) {
+            try {
+                return await (typeof work === "function" ? work() : work);
+            } catch (err) {
+                let text;
+                try { text = String(err) } catch (e) { text = NOT_PRINTABLE }
+                throw new Error(what + " must not fail but failed with: " + text);
+            }
+        }
+
+        function throwingMessage() {
+            const err = new Error("x");
+            Object.defineProperty(err, "message", { get() { throw new Error("getter of message") } });
+            return err;
+        }
+        function everyGetThrows() {
+            return new Proxy({}, { get() { throw new Error("p") } });
+        }
+        function warnings(key) {
+            return env.logs.warn.filter(m => m.indexOf(key) === 0);
+        }
+        // the `message` parameter of a log line "<key> <json of the parameters>"
+        function messageOf(line, key) {
+            return JSON.parse(line.slice(key.length + 1)).message;
+        }
+
+        describe("the unwatch of the observer on stop (AC-23)", function() {
+            [
+                { name: "Object.create(null)", make: () => Object.create(null), text: NOT_PRINTABLE },
+                { name: "Symbol(\"x\")", make: () => Symbol("x"), text: "Symbol(x)" },
+                { name: "Error(\"u\") (regression)", make: () => new Error("u"), text: "u" },
+                { name: "undefined (regression)", make: () => undefined, text: "undefined" }
+            ].forEach(function(v) {
+                it("AC-23: an unwatch that rejects with " + v.name + ": stop resolves and the debug line names the text", async function() {
+                    const unhandled = recordUnhandled();
+                    env = createEnv();
+                    env.unwatch = sinon.spy(async function() { throw v.make() });
+                    await env.start();
+                    await ok("stop()", env.reloader.stop());
+                    env.unwatch.calledOnce.should.be.true();
+                    env.logs.debug.filter(m => m.indexOf("reload: unwatch failed") === 0).should.eql(["reload: unwatch failed: " + v.text]);
+                    await delay(10);
+                    unhandled.should.eql([]);
+                });
+            });
+        });
+
+        describe("the registration of the observer (AC-24)", function() {
+            it("AC-24: a watchFlows that rejects with Object.create(null): the start fails with the same value and one error log", async function() {
+                env = createEnv();
+                const value = Object.create(null);
+                env.storage.watchFlows = sinon.spy(async function() { throw value });
+                let caught = null;
+                let threw = false;
+                try {
+                    await env.reloader.register();
+                } catch (err) {
+                    threw = true;
+                    caught = err;
+                }
+                threw.should.be.true("register() did not reject");
+                (caught === value).should.be.true("register() rejected with another value than the original one");
+                env.logs.error.filter(m => m.indexOf("reload.watch-failed") === 0).should.eql(["reload.watch-failed " + JSON.stringify({ message: NOT_PRINTABLE })]);
+            });
+            it("AC-24: a watchFlows that rejects with Error (regression): the same error and its message in the log", async function() {
+                env = createEnv({ watchFails: true });
+                await env.reloader.register().should.be.rejectedWith("cannot watch");
+                env.logs.error.filter(m => m.indexOf("reload.watch-failed") === 0).should.eql(["reload.watch-failed " + JSON.stringify({ message: "cannot watch" })]);
+            });
+        });
+
+        describe("a read of storage that fails (AC-25, AC-26)", function() {
+            [
+                { name: "Object.create(null)", make: () => Object.create(null) },
+                { name: "an Error with a throwing getter of message", make: throwingMessage },
+                { name: "a Proxy that throws on every get", make: everyGetThrows }
+            ].forEach(function(v) {
+                it("AC-25: getFlows rejects with " + v.name + ": one read-failed warning, the retry is scheduled, no reload.failed, no unhandled rejection", async function() {
+                    const unhandled = recordUnhandled();
+                    env = createEnv({ reload: { retry: { min: 5, max: 20 } } });
+                    await env.start();
+                    let warningsAtTheRetry = null;
+                    env.storage.getFlows = async function() {
+                        env.getFlowsCalls++;
+                        if (env.getFlowsCalls === 1) {
+                            throw v.make();
+                        }
+                        // the second call is the retry: the first failure was reported by now
+                        warningsAtTheRetry = warnings("reload.read-failed").slice();
+                        return JSON.parse(JSON.stringify(env.stored));
+                    };
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => env.getFlowsCalls >= 2, 1000, "the read was not retried");
+                    await waitFor(() => env.applied.length === 1, 1000, "the reload did not happen after the retry");
+                    warningsAtTheRetry.should.have.length(1);
+                    messageOf(warningsAtTheRetry[0], "reload.read-failed").should.equal(NOT_PRINTABLE);
+                    warnings("reload.failed").should.have.length(0);
+                    unhandled.should.eql([]);
+                });
+            });
+
+            it("AC-25: a Proxy that throws on every get, the retries exhausted: the code of the condition is storage_error", async function() {
+                const unhandled = recordUnhandled();
+                env = createEnv({ reload: { retry: { min: 2, max: 60000, attempts: 1, onExhausted: "keepReady" } } });
+                await env.start();
+                env.failAlways = true;
+                env.failError = everyGetThrows();
+                env.change("B");
+                env.notify();
+                await waitFor(() => state.get().reload, 1000, "the condition reload was not set");
+                state.get().reload.should.containEql({ error: { code: "storage_error" } });
+                messageOf(warnings("reload.read-failed")[0], "reload.read-failed").should.equal(NOT_PRINTABLE);
+                unhandled.should.eql([]);
+            });
+
+            it("AC-25: Error (regression): the message is in the warning and the retry follows", async function() {
+                env = createEnv({ reload: { retry: { min: 5, max: 20 } } });
+                await env.start();
+                env.failReads = 1;
+                env.failError = new Error("storage down");
+                env.change("B");
+                env.notify();
+                await waitFor(() => env.applied.length === 1);
+                warnings("reload.read-failed").should.have.length(1);
+                messageOf(warnings("reload.read-failed")[0], "reload.read-failed").should.equal("storage down");
+            });
+
+            it("AC-26: a getFlows result whose properties throw: one warning with the text of the value, no unhandled rejection, the next notification starts a new cycle", async function() {
+                const unhandled = recordUnhandled();
+                env = createEnv({ reload: { retry: { min: 60000, max: 60000 } } });
+                await env.start();
+                const result = new Proxy({}, { get() { throw Object.create(null) } });
+                const real = env.storage.getFlows;
+                env.storage.getFlows = async function(opts) {
+                    env.getFlowsCalls++;
+                    return env.getFlowsCalls === 1 ? result : real.call(env.storage, opts);
+                };
+                env.change("B");
+                env.notify();
+                await waitFor(() => env.getFlowsCalls === 1, 1000, "storage was not read");
+                await delay(30);
+                // the failure is reported once, whatever its key is (reload.failed of the safety net or reload.read-failed)
+                const reported = warnings("reload.failed").concat(warnings("reload.read-failed"));
+                reported.should.have.length(1);
+                const key = reported[0].split(" ")[0];
+                messageOf(reported[0], key).should.equal(NOT_PRINTABLE);
+                unhandled.should.eql([]);
+                // the cycle is over: the next notification reads storage again
+                env.notify();
+                await waitFor(() => env.getFlowsCalls >= 2, 1000, "no new cycle after the failure");
+            });
+        });
+
+        describe("the slots of the reload (AC-27, AC-28)", function() {
+            it("AC-27: a claimSlot that rejects with Object.create(null): the warning names the text, the claim is tried again, no unhandled rejection", async function() {
+                const unhandled = recordUnhandled();
+                let attempts = 0;
+                env = createEnv({
+                    reload: { concurrency: 1, retry: { min: 5, max: 10 } },
+                    localCoordination: false,
+                    claimSlot: async function() {
+                        attempts++;
+                        throw Object.create(null);
+                    }
+                });
+                await env.start();
+                env.change("B");
+                env.notify();
+                await waitFor(() => attempts >= 2, 1000, "the claim was not tried again");
+                const failed = warnings("reload.slot-claim-failed");
+                failed.length.should.be.aboveOrEqual(1);
+                failed.forEach(m => m.should.equal("reload.slot-claim-failed " + JSON.stringify({ message: NOT_PRINTABLE })));
+                unhandled.should.eql([]);
+            });
+
+            [
+                { name: "Symbol(\"x\")", make: () => Symbol("x"), text: "Symbol(x)" },
+                { name: "Object.create(null)", make: () => Object.create(null), text: NOT_PRINTABLE },
+                { name: "Error(\"x\") (regression)", make: () => new Error("x"), text: "x" },
+                { name: "undefined (regression)", make: () => undefined, text: "undefined" }
+            ].forEach(function(v) {
+                it("AC-28: a slot whose renew and release reject with " + v.name + ": debug lines with the text, the reload completes, no unhandled rejection", async function() {
+                    const unhandled = recordUnhandled();
+                    clock = sinon.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+                    const claim = {
+                        key: "slot:reload:0",
+                        renew: sinon.spy(async function() { throw v.make() }),
+                        release: sinon.spy(async function() { throw v.make() })
+                    };
+                    env = createEnv({
+                        reload: { concurrency: 1 },
+                        localCoordination: false,
+                        claimSlot: async function() { return claim }
+                    });
+                    // the reload holds the slot for 25 s: the slot is renewed every 20 s
+                    hooks.add("preReload", p => new Promise(resolve => setTimeout(resolve, 25000)));
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await clock.tickAsync(30000);
+                    await new Promise(resolve => setImmediate(resolve));
+                    await clock.tickAsync(0);
+                    env.applied.should.have.length(1);
+                    claim.renew.called.should.be.true("the slot was not renewed");
+                    claim.release.calledOnce.should.be.true("the slot was not released");
+                    env.logs.debug.filter(m => m.indexOf("reload: slot renew failed") === 0).forEach(m => m.should.equal("reload: slot renew failed: " + v.text));
+                    env.logs.debug.filter(m => m.indexOf("reload: slot renew failed") === 0).should.have.length(claim.renew.callCount);
+                    env.logs.debug.filter(m => m.indexOf("reload: slot release failed") === 0).should.eql(["reload: slot release failed: " + v.text]);
+                    unhandled.should.eql([]);
+                });
+            });
+        });
+
+        describe("the preReload hook that rejects (AC-29)", function() {
+            [
+                // SPEC GAP: hooks.trigger() of @node-red/util wraps a rejection that is not an Error with `new Error(value)`, which
+                // throws for Object.create(null) inside the hook machinery - the promise never settles. Fixing reload.js alone
+                // does not turn this row green; it needs a change of util/lib/hooks.js too
+                { name: "Object.create(null) [gap: hooks.trigger wraps it with new Error(value)]", make: () => Object.create(null) },
+                { name: "an Error with a throwing getter of message", make: throwingMessage }
+            ].forEach(function(v) {
+                it("AC-29: a handler that rejects with " + v.name + ": one error log, the reload goes on at once, no timeout, no unhandled rejection", async function() {
+                    const unhandled = recordUnhandled();
+                    env = createEnv({ reload: { preReloadTimeout: 60000 } });
+                    hooks.add("preReload", p => Promise.reject(v.make()));
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => env.applied.length === 1, 1000, "the reload waited for the limit of the hook");
+                    env.logs.error.filter(m => m.indexOf("reload.hook-failed") === 0).should.eql(["reload.hook-failed " + JSON.stringify({ message: NOT_PRINTABLE })]);
+                    warnings("reload.hook-timeout").should.have.length(0);
+                    unhandled.should.eql([]);
+                });
+            });
+            [
+                { name: "Error(\"boom\")", make: () => new Error("boom"), message: "boom" },
+                { name: "undefined", make: () => undefined, message: "Hook handler rejected without an error: undefined" },
+                { name: "null", make: () => null, message: "Hook handler rejected without an error: null" }
+            ].forEach(function(v) {
+                it("AC-29: a handler that rejects with " + v.name + " (regression): the text of the error log", async function() {
+                    env = createEnv();
+                    hooks.add("preReload", p => Promise.reject(v.make()));
+                    await env.start();
+                    env.change("B");
+                    env.notify();
+                    await waitFor(() => env.applied.length === 1);
+                    env.logs.error.filter(m => m.indexOf("reload.hook-failed") === 0).should.eql(["reload.hook-failed " + JSON.stringify({ message: v.message })]);
+                });
+            });
         });
     });
 });

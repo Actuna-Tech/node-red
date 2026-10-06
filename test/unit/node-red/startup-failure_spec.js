@@ -16,6 +16,7 @@
 /*
  * Modified by Actuna Sp. z o.o.:
  *   #67: integration tests of the end of the process after a failed start (CLI)
+ *   #75: SIGTERM with a coordination plugin whose resign rejects with undefined
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -431,4 +432,59 @@ require(${JSON.stringify(RED_LIB)}).stop = function() {
             proc.output.should.not.match(/Failed to start server/);
         });
     });
+
+    describe("#75: a coordination plugin that rejects with a value without text on the stop", function() {
+        // The plugin of a cluster whose resign rejects with undefined (`reject()`) and whose stop works;
+        // the marker gets a line for every call. The plugin registry is replaced the way the other tests
+        // replace a step: red.js shares the require cache with settings.js
+        const PLUGINS = path.join(PACKAGES, "@node-red/runtime/lib/plugins");
+        function rejectingPlugin(resignExpr) {
+            return `
+const testPlugin = {
+    id: "test-coord",
+    type: "node-red-coordination",
+    start: () => Promise.resolve(),
+    resign: () => { fs.appendFileSync(MARKER, "resign\\n"); return ${resignExpr}; },
+    stop: () => { fs.appendFileSync(MARKER, "stop\\n"); return Promise.resolve(); },
+    isLeader: () => true,
+    onLeaderChange: () => function() {},
+    claim: () => Promise.resolve(null)
+};
+const registry = require(${JSON.stringify(PLUGINS)});
+registry.getPlugin = id => id === "test-coord" ? testPlugin : undefined;
+registry.getPluginsByType = () => [];`;
+        }
+
+        async function startAndSignal(resignExpr) {
+            const healthPort = await getFreePort();
+            const proc = await launch({
+                pre: rejectingPlugin(resignExpr),
+                extra: `{ coordination: { plugin: "test-coord" }, health: { enabled: true, port: ${healthPort}, host: "127.0.0.1" } }`
+            });
+            const probes = "http://127.0.0.1:" + healthPort + "/health";
+            await waitFor(async () => (await status(probes + "/ready")) === 200, 30000, "not ready; output:\n" + proc.output);
+            proc.child.kill("SIGTERM");
+            const code = await exitsWithin(proc, EXIT_BOUND);
+            return { proc, code };
+        }
+
+        it("AC-17: SIGTERM, resign rejects with undefined: the stop goes on, exit code 0, the warning names the value, no Shutdown failed", async function() {
+            const { proc, code } = await startAndSignal("Promise.reject(undefined)");
+            proc.output.should.match(/Coordination: failed to resign the leadership: undefined/);
+            proc.output.should.not.match(/Shutdown failed/);
+            proc.output.should.not.match(/Uncaught Exception/);
+            lines(proc.marker).filter(l => l === "resign").should.have.length(1);
+            lines(proc.marker).filter(l => l === "stop").should.have.length(1, "the plugin was not stopped; output:\n" + proc.output);
+            should(code).equal(0);
+        });
+
+        it("AC-17 (regression): SIGTERM, resign rejects with an Error: exit code 0, the warning has the text of the Error", async function() {
+            const { proc, code } = await startAndSignal(`Promise.reject(new Error("resign down"))`);
+            proc.output.should.match(/Coordination: failed to resign the leadership: Error: resign down/);
+            proc.output.should.not.match(/Shutdown failed/);
+            lines(proc.marker).filter(l => l === "stop").should.have.length(1);
+            should(code).equal(0);
+        });
+    });
 });
+

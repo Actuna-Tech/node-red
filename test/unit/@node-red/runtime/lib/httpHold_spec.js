@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #8: tests of the hold of the requests to the routes of the nodes while the
  *   flows restart (deploy.holdHttpNodeRequests)
+ *   #76: a next() of a held request that throws a value that cannot be printed
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -536,6 +537,46 @@ describe("runtime/httpHold (#8)", function() {
             log.warn.calledOnce.should.be.true();
             log.warn.firstCall.args[0].should.match(/httpHold.release-failed/);
             httpHold.pending().should.equal(0);
+        });
+
+        function throwingMessage() {
+            const err = new Error("x");
+            Object.defineProperty(err, "message", {get: function() { throw new Error("getter of message") }});
+            return err;
+        }
+
+        [
+            {name: "Object.create(null)", make: function() { return Object.create(null) }, printed: "(the value cannot be printed)"},
+            {name: "an Error with a throwing getter of message", make: throwingMessage, printed: "(the value cannot be printed)"},
+            {name: "Error(\"boom\") (regression)", make: function() { return new Error("boom") }, printed: "boom"}
+        ].forEach(function(v) {
+            it("AC-21 (#76): a next() that throws " + v.name + " is one warning, that request gets a 503 and the others are released", async function() {
+                await setup({ enabled: true, timeout: 5000 });
+                instanceState.begin("deploy");
+                const fakeRes = () => ({ headersSent: false, statusCode: 0, headers: {}, on() {}, removeListener() {},
+                    setHeader(k, v) { this.headers[k] = v }, end() { this.ended = true } });
+                const res1 = fakeRes();
+                const res2 = fakeRes();
+                const next1 = sinon.spy(function() { throw v.make() });
+                const next2 = sinon.spy();
+                httpHold.middleware({ method: "GET" }, res1, next1);
+                httpHold.middleware({ method: "GET" }, res2, next2);
+                httpHold.pending().should.equal(2);
+                try {
+                    instanceState.markStopping("stop");
+                } catch (err) {
+                    let printed;
+                    try { printed = String(err) } catch (e) { printed = "(the value cannot be printed)" }
+                    throw new Error("the release of the held requests threw: " + printed);
+                }
+                next1.calledOnce.should.be.true();
+                next2.calledOnce.should.be.true("the other held request was not released");
+                res1.statusCode.should.equal(503, "the failing request was not answered");
+                res1.ended.should.be.true();
+                log.warn.calledOnce.should.be.true();
+                log.warn.firstCall.args[0].should.equal("httpHold.release-failed " + JSON.stringify({ message: v.printed }));
+                httpHold.pending().should.equal(0);
+            });
         });
     });
 
