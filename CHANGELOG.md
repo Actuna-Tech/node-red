@@ -89,7 +89,9 @@
    `RED.start()` rejects with that error and the library never calls `process.exit`. A step that completes after
    the limit is ignored and logged as a warning (nothing after it runs, the flows are not loaded); a coordination
    plugin that starts late is resigned and stopped at once (stopped also when the resign fails), a late own server of the probes and a late observer
-   of storage are stopped. A step that fails after the limit is only a warning. An invalid value (not a number of
+   of storage are stopped. A step that fails after the limit is only a warning. A stop during the start
+   (`RED.stop()`, a signal) ends the attempt at once with `startup_stopped` and clears the limit (#73). An
+   invalid value (not a number of
    ms > 0 and <= 2147483647, for example the string of an environment variable) logs one warning and sets no
    limit. The calls of `resign()` and `stop()` of the coordination are made one after the other (a stop of the
    runtime waits for the release of a late coordination). Recommended value in `FORK.md` §2: `120000`; the budget
@@ -485,6 +487,26 @@ Fixes
    start as well: the same stop and exit code 1 (before: logged as `Failed to start server`, then exit 0 or a
    process without a listening server). With a supervisor that restarts on failure, a lasting configuration
    error now gives a restart loop
+ - Fix (#73): a stop during the start (`RED.stop()`, `RED.health.shutdown()`, a stop signal in the command
+   line) abandons the start as soon as the instance enters `stopping` (also during the drain of
+   `shutdownTimeout`, before `RED.stop()` is called). `RED.start()` rejects at once with an error `startup_stopped`
+   (fields `step` - the step the start was waiting for, `null` before the first one - and `reason` - the reason of
+   the stop) and the runtime logs one warning `The start was stopped (<reason>) before it completed - waiting
+   for: <step>`. Before, a step that completed after the stop finished the start in the stopped instance (the
+   flows were loaded and started, a coordination plugin that started late kept the leadership, `RED.start()`
+   resolved), and a step that never completed left `RED.start()` pending - with `startupTimeout` until the
+   limit, whose timer kept an embedding process alive. Now nothing of the start runs after the stop; a step that
+   completes later is logged as `The start step <step> completed after the stop - ignored` (info) and what it
+   holds is released as after `startupTimeout` (the coordination plugin is resigned and stopped, the own server
+   of the probes and the observer of storage are stopped); a step that fails later is one warning. The timer of
+   `startupTimeout` is cleared, so the result is never `startup_timeout` after a stop (a limit that fired before
+   the stop keeps its result). The instance state goes `starting` -> `stopping` -> `stopped`, never `failed`.
+   `RED.start()` called after `RED.stop()` rejects `startup_stopped` with `step: null` and runs no step (before:
+   it started the flows in the stopped instance). After `RED.stop()` no new attempt to install a missing module
+   (`externalModules.autoInstall`) is planned or made. In the command line a signal during the start no longer
+   logs `Failed to start server`; the exit code is unchanged (0). Embedding applications that use the recipe of
+   #67 (`RED.start().catch(...)` -> `RED.stop("startup-error")` and exit code 1) should skip `startup_stopped`:
+   it is not a failed start, the application is already stopping (see `MIGRACJA.md` §4.5)
  - Tests only, no change of the product: flaky tests fixed. The HTTP tests no longer reach a foreign server
    on the same machine (supertest started the app on all interfaces but connected to `127.0.0.1`; the
    shared helper `nr-test-utils/supertest` listens on `127.0.0.1`), the `tcp request` test server hook calls
