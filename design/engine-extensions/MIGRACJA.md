@@ -302,7 +302,7 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   emitują `instance:state` przy niezmienionym `state` (odbiorca porównuje `state`, `reason` i `since`); pole nie powstaje w `stopping`/`stopped`
   (ustawione wcześniej jest kasowane, gdy czekanie się skończy) ani przy czekaniu z sygnału zatrzymania. `/ready`, `state`, `previous`, `reason` i
   `since` bez zmian. Edytor dostaje równolegle zachowywane powiadomienie `/comms` `notification/http-drain` (`{type: "warning", text, count,
-  timeout}`; skasowanie – pusta treść). Przy wyłączonym ustawieniu sekwencja zdarzeń jak dotąd.
+  limit}` – `limit` to `timeout` drenażu w ms; pola `timeout` nie ma, bo edytor czyta je jako czas samoczynnego zamknięcia; skasowanie – pusta treść). Przy wyłączonym ustawieniu sekwencja zdarzeń jak dotąd.
 - **Sondy** (`health.enabled`, R-19, R-22): `/health/ready` → 200 w `ready` i `loaded`; 503 m.in. w `idle` (safe mode,
   zatrzymane flow), `failed`, `stopping`. Treść 503 jest **stała**: `{"status":"unavailable"}` – nie zawiera nazwy stanu
   (stan odczytywać ze zdarzenia `instance:state` / `runtime.state`, nie z sondy).
