@@ -1819,6 +1819,437 @@ describe("runtime/httpDrain (#40)", function() {
             shutdownLogs().should.eql([]);
         });
     });
+    // #82 (S-4): the condition `httpDrain` of the instance state and the retained notice of the editor, while a
+    // stop waits for the requests (the wait of beforeStop, not the wait of the shutdown)
+    describe("the condition httpDrain and the notice (S-4, #82)", function() {
+        const health = NR_TEST_UTILS.require("@node-red/runtime/lib/health");
+        const httpHold = NR_TEST_UTILS.require("@node-red/runtime/lib/httpHold");
+        const fs = require("fs");
+        let stateEvents;
+        let noticeEvents;
+        let listeners;
+
+        function listen() {
+            stateEvents = [];
+            noticeEvents = [];
+            const onState = info => stateEvents.push(info);
+            const onNotice = event => { if (event && event.id === "http-drain") { noticeEvents.push(event) } };
+            events.on("instance:state", onState);
+            events.on("runtime-event", onNotice);
+            listeners.push(() => {
+                events.removeListener("instance:state", onState);
+                events.removeListener("runtime-event", onNotice);
+            });
+        }
+        function warningOf(count) {
+            return { id: "http-drain", retain: true, payload: { type: "warning", text: "notification.warnings.http_drain", count: count, timeout: TIMEOUT } };
+        }
+        const CLEARED = { id: "http-drain", retain: false };
+
+        beforeEach(function() {
+            listeners = [];
+        });
+        afterEach(function() {
+            listeners.forEach(remove => remove());
+            httpHold.dispose();
+            health.init({});
+        });
+
+        it("AC-50: a deployment that waits for two accepted requests: one event with the condition, the state unchanged, one notification", async function() {
+            init();
+            const token = deploying();
+            accept(route(arrive("POST")));
+            accept(route(arrive("POST")));
+            listen();
+            const t0 = Date.now();
+            const promise = httpDrain.beforeStop();
+            stateEvents.should.have.length(1);
+            stateEvents[0].state.should.equal("deploying");
+            stateEvents[0].httpDrain.should.eql({ requests: 2, since: t0, deadline: t0 + TIMEOUT });
+            instanceState.get().httpDrain.should.eql({ requests: 2, since: t0, deadline: t0 + TIMEOUT });
+            instanceState.get().state.should.equal("deploying");
+            noticeEvents.should.eql([warningOf(2)]);
+            httpDrain.abortWait();
+            await promise;
+            instanceState.end(token, { errors: [] });
+        });
+        it("AC-50: the same for a window of an operation (the state ready, a stop of the flows)", async function() {
+            init();
+            accept(route(arrive("POST")));
+            accept(route(arrive("POST")));
+            accept(route(arrive("POST")));
+            listen();
+            const t0 = Date.now();
+            const promise = httpDrain.beforeStop();
+            stateEvents.should.have.length(1);
+            stateEvents[0].state.should.equal("ready");
+            stateEvents[0].httpDrain.should.eql({ requests: 3, since: t0, deadline: t0 + TIMEOUT });
+            instanceState.get().httpDrain.requests.should.equal(3);
+            noticeEvents.should.eql([warningOf(3)]);
+            httpDrain.abortWait();
+            await promise;
+        });
+        it("AC-51: no accepted open request: no event and no notification", async function() {
+            init();
+            route(arrive("POST"));
+            arrive("GET");
+            listen();
+            await httpDrain.beforeStop();
+            stateEvents.should.eql([]);
+            noticeEvents.should.eql([]);
+            should.not.exist(instanceState.get().httpDrain);
+        });
+        // every end of the wait: one event without the condition and one clearing notification
+        const ENDS = [
+            ["(a) all the requests are answered", function(r) { r.forEach(x => x.res.end("ok")) }],
+            ["(b) the timeout", function() { clock.tick(TIMEOUT) }],
+            ["(c) abortWait()", function() { httpDrain.abortWait() }],
+            ["(e) finalize()", function() { httpDrain.finalize() }],
+            ["(f) dispose()", function() { httpDrain.dispose() }],
+            ["(f) init()", function() { init() }]
+        ];
+        ENDS.forEach(function(end) {
+            it("AC-52: the wait ends by " + end[0] + ": one event without httpDrain, one clearing notification, nothing left set", async function() {
+                init();
+                const r = [accept(route(arrive("POST"))), accept(route(arrive("POST")))];
+                const promise = httpDrain.beforeStop();
+                listen();
+                end[1](r);
+                await promise;
+                stateEvents.should.have.length(1);
+                stateEvents[0].should.not.have.property("httpDrain");
+                noticeEvents.should.eql([CLEARED]);
+                noticeEvents[0].should.not.have.property("payload");
+                should.not.exist(instanceState.get().httpDrain);
+                // nothing more later
+                clock.tick(10 * TIMEOUT);
+                stateEvents.should.have.length(1);
+                noticeEvents.should.have.length(1);
+            });
+        });
+        it("AC-52: (d) a new beforeStop() ends the wait (the condition is cleared) and, as it waits too, sets the new one", async function() {
+            init();
+            accept(route(arrive("POST")));
+            const first = httpDrain.beforeStop();
+            listen();
+            clock.tick(100);
+            const second = httpDrain.beforeStop();
+            await first;
+            stateEvents.should.have.length(2);
+            stateEvents[0].should.not.have.property("httpDrain");
+            stateEvents[1].httpDrain.requests.should.equal(1);
+            stateEvents[1].httpDrain.since.should.equal(START + 100);
+            noticeEvents.should.eql([CLEARED, warningOf(1)]);
+            instanceState.get().httpDrain.since.should.equal(START + 100);
+            httpDrain.abortWait();
+            await second;
+            noticeEvents.should.eql([CLEARED, warningOf(1), CLEARED]);
+            should.not.exist(instanceState.get().httpDrain);
+        });
+        it("AC-52: a wait that is not the one of beforeStop (a second end, abortWait without a wait) sends nothing more", async function() {
+            init();
+            accept(route(arrive("POST")));
+            const promise = httpDrain.beforeStop();
+            listen();
+            httpDrain.abortWait();
+            await promise;
+            httpDrain.abortWait();
+            httpDrain.finalize();
+            httpDrain.dispose();
+            stateEvents.should.have.length(1);
+            noticeEvents.should.eql([CLEARED]);
+        });
+        it("AC-53: in the state stopping the condition is never set; one that was set before markStopping is cleared when the wait ends", async function() {
+            init();
+            const token = deploying();
+            accept(route(arrive("POST")));
+            const promise = httpDrain.beforeStop();
+            instanceState.get().httpDrain.requests.should.equal(1);
+            listen();
+            instanceState.markStopping("SIGTERM");
+            stateEvents.filter(e => e.state === "stopping").should.have.length(1);
+            httpDrain.abortWait();
+            await promise;
+            should.not.exist(instanceState.get().httpDrain);
+            noticeEvents.should.eql([CLEARED]);
+            // later waits in the final state do not set it
+            accept(route(arrive("POST")));
+            await httpDrain.beforeStop();
+            const w = httpDrain.waitForShutdown ? httpDrain.waitForShutdown(5000) : null;
+            should.not.exist(instanceState.get().httpDrain);
+            noticeEvents.should.eql([CLEARED]);
+            if (w) { w.cancel() }
+            instanceState.end(token, { errors: [] });
+        });
+        it("AC-54: the condition reload and the condition httpDrain are independent, in ready and in a pending reload that drains", async function() {
+            init();
+            accept(route(arrive("POST")));
+            instanceState.markReloadFailed({ error: "storage_error", attempts: 2, keepReady: true });
+            const reload = instanceState.get().reload;
+            const promise = httpDrain.beforeStop();
+            instanceState.get().reload.should.eql(reload);
+            instanceState.get().httpDrain.requests.should.equal(1);
+            // vice versa: the reload condition changes while the drain condition is set
+            instanceState.markReloadFailed({ error: "storage_error", attempts: 3, keepReady: true });
+            instanceState.get().httpDrain.requests.should.equal(1);
+            instanceState.clearReloadFailed();
+            instanceState.get().httpDrain.requests.should.equal(1);
+            should.not.exist(instanceState.get().reload);
+            instanceState.markReloadFailed({ error: "storage_error", attempts: 2, keepReady: true });
+            httpDrain.abortWait();
+            await promise;
+            instanceState.get().reload.should.eql(reload);
+            should.not.exist(instanceState.get().httpDrain);
+            instanceState.clearReloadFailed();
+
+            ready();
+            httpDrain.dispose();
+            init();
+            accept(route(arrive("POST")));
+            instanceState.markReloadPending();
+            instanceState.markDraining();
+            const draining = instanceState.get();
+            draining.state.should.equal("reloadPending");
+            draining.draining.should.be.true();
+            const second = httpDrain.beforeStop();
+            const during = instanceState.get();
+            during.state.should.equal("reloadPending");
+            during.draining.should.be.true();
+            during.since.should.equal(draining.since);
+            during.reason.should.equal(draining.reason);
+            during.httpDrain.requests.should.equal(1);
+            httpDrain.abortWait();
+            await second;
+            const after = instanceState.get();
+            after.draining.should.be.true();
+            should.not.exist(after.httpDrain);
+        });
+        it("AC-55: the events of the condition leave state, previous, reason, since and draining as they were (a listener that compares them does not react)", async function() {
+            init();
+            const token = deploying();
+            accept(route(arrive("POST")));
+            const before = instanceState.get();
+            listen();
+            const promise = httpDrain.beforeStop();
+            httpDrain.abortWait();
+            await promise;
+            stateEvents.should.have.length(2);
+            stateEvents.forEach(function(e) {
+                [e.state, e.previous, e.reason, e.since, e.draining].should.eql([before.state, before.previous, before.reason, before.since, before.draining]);
+            });
+            instanceState.end(token, { errors: [] });
+        });
+        it("AC-55: a request that the hold of the requests keeps is still kept while the condition is set and cleared", async function() {
+            init();
+            httpHold.init({ deploy: { holdHttpNodeRequests: { enabled: true } } });
+            const token = deploying();
+            // a request for which the app has no route yet is held
+            const req = fakeReq("GET", "/not-yet");
+            req.app = { _router: { stack: [] } };
+            req.path = "/not-yet";
+            const res = fakeRes();
+            let passed = false;
+            httpHold.middleware(req, res, function() { passed = true });
+            httpHold.pending().should.equal(1);
+            accept(route(arrive("POST")));
+            const promise = httpDrain.beforeStop();
+            httpHold.pending().should.equal(1);
+            httpDrain.abortWait();
+            await promise;
+            httpHold.pending().should.equal(1);
+            passed.should.be.false();
+            instanceState.end(token, { errors: [] });
+            passed.should.be.true();
+        });
+        function readyAnswer() {
+            const res = { headers: {}, setHeader: function(k, v) { this.headers[k] = v }, end: function(b) { this.body = b } };
+            health.handler({ method: "GET", url: "/ready" }, res);
+            return { status: res.statusCode, body: res.body };
+        }
+        it("AC-56: /ready answers during the condition as it does without it, in ready, deploying and reloading", async function() {
+            health.init({ health: { enabled: true } });
+            init();
+            // ready
+            const inReady = readyAnswer();
+            accept(route(arrive("POST")));
+            const first = httpDrain.beforeStop();
+            instanceState.get().httpDrain.should.be.ok();
+            readyAnswer().should.eql(inReady);
+            httpDrain.abortWait();
+            await first;
+            // deploying
+            const token = deploying();
+            const inDeploying = readyAnswer();
+            const second = httpDrain.beforeStop();
+            instanceState.get().httpDrain.should.be.ok();
+            readyAnswer().should.eql(inDeploying);
+            httpDrain.abortWait();
+            await second;
+            instanceState.end(token, { errors: [] });
+            // reloading
+            instanceState.markReloadPending();
+            instanceState.markDraining();
+            const reloading = instanceState.begin("reload");
+            instanceState.get().state.should.equal("reloading");
+            const inReloading = readyAnswer();
+            const third = httpDrain.beforeStop();
+            instanceState.get().httpDrain.should.be.ok();
+            readyAnswer().should.eql(inReloading);
+            httpDrain.abortWait();
+            await third;
+            instanceState.end(reloading, { errors: [] });
+            inReady.status.should.equal(200);
+            inDeploying.status.should.equal(503);
+        });
+        it("AC-57: the retained notice of the editor: sent when set, retained for a session that connects meanwhile, gone after the clear", async function() {
+            const comms = NR_TEST_UTILS.require("@node-red/runtime/lib/api/comms");
+            comms.init({ log: { trace: function() {}, debug: function() {} } });
+            init();
+            accept(route(arrive("POST")));
+            accept(route(arrive("POST")));
+            const sent = [];
+            const first = { session: "s1", user: null, send: (topic, data) => sent.push([topic, data]) };
+            await comms.addConnection({ client: first });
+            const promise = httpDrain.beforeStop();
+            sent.filter(m => m[0] === "notification/http-drain").should.eql([["notification/http-drain", warningOf(2).payload]]);
+            const late = [];
+            await comms.subscribe({ client: { session: "s2", send: (topic, data) => late.push([topic, data]) }, topic: "notification/#" });
+            late.filter(m => m[0] === "notification/http-drain").should.eql([["notification/http-drain", warningOf(2).payload]]);
+            httpDrain.abortWait();
+            await promise;
+            sent.filter(m => m[0] === "notification/http-drain")[1].should.eql(["notification/http-drain", {}]);
+            const after = [];
+            await comms.subscribe({ client: { session: "s3", send: (topic, data) => after.push([topic, data]) }, topic: "notification/#" });
+            after.filter(m => m[0] === "notification/http-drain").should.eql([]);
+            await comms.removeConnection({ client: first });
+        });
+        ["en-US", "pl"].forEach(function(lang) {
+            it("AC-57: the text of the editor " + lang + " exists and names the count and the timeout", function() {
+                const file = NR_TEST_UTILS.resolve("@node-red/editor-client/locales/" + lang + "/editor.json");
+                const catalog = JSON.parse(fs.readFileSync(file, "utf8"));
+                const text = catalog.notification && catalog.notification.warnings && catalog.notification.warnings.http_drain;
+                should.exist(text, "notification.warnings.http_drain is missing in " + lang);
+                text.should.containEql("__count__");
+                text.should.containEql("__timeout__");
+            });
+        });
+        it("AC-58: the notice has only the count and the timeout: nothing of a URL, a path or a node", async function() {
+            init();
+            const secret = accept(route(arrive("POST", "/private/path?token=abc123")));
+            secret.req.headers = { authorization: "Bearer abc123" };
+            listen();
+            const promise = httpDrain.beforeStop();
+            httpDrain.abortWait();
+            await promise;
+            noticeEvents.should.have.length(2);
+            noticeEvents[0].should.eql(warningOf(1));
+            JSON.stringify(noticeEvents.concat(stateEvents)).should.not.match(/private|token|abc123|path|Bearer/);
+        });
+        it("AC-59: listeners that throw (instance:state, runtime-event) do not change the drain: it waits, ends and answers", async function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            const late = route(arrive("POST"));
+            const boom = function() { throw new Error("listener failed") };
+            events.on("instance:state", boom);
+            events.on("runtime-event", boom);
+            const unsubscribe = instanceState.onChange(boom);
+            try {
+                let promise;
+                (function() { promise = httpDrain.beforeStop() }).should.not.throw();
+                (await settled(promise)).should.be.false();
+                clock.tick(100);
+                r.res.end("ok");
+                (await settled(promise)).should.be.true();
+                should.not.exist(instanceState.get().httpDrain);
+                httpDrain.afterStop("full");
+                late.res.statusCode.should.equal(503);
+                // the timeout ends a wait too
+                const slow = accept(route(arrive("POST")));
+                const second = httpDrain.beforeStop();
+                clock.tick(TIMEOUT);
+                (await settled(second)).should.be.true();
+                httpDrain.finalize();
+                slow.res.statusCode.should.equal(503);
+                should.not.exist(instanceState.get().httpDrain);
+            } finally {
+                events.removeListener("instance:state", boom);
+                events.removeListener("runtime-event", boom);
+                unsubscribe();
+            }
+        });
+        it("AC-60: with the drain off the events of the instance state and the notices of a deployment, a reload and a stop are as without the calls of the drain", async function() {
+            httpDrain.dispose();
+            function run(withDrain) {
+                ready();
+                listen();
+                const all = [];
+                const onNotice = e => all.push(e);
+                events.on("runtime-event", onNotice);
+                listeners.push(() => events.removeListener("runtime-event", onNotice));
+                const call = name => { if (withDrain) { httpDrain[name]("full") } };
+                call("beforeStop");
+                const token = instanceState.begin("deploy");
+                call("beforeStop");
+                call("afterStop");
+                instanceState.end(token, { errors: [] });
+                instanceState.markReloadPending();
+                instanceState.markDraining();
+                const reload = instanceState.begin("reload");
+                call("beforeStop");
+                call("afterStop");
+                instanceState.end(reload, { errors: [] });
+                const stopToken = instanceState.begin("set-state");
+                call("beforeStop");
+                call("afterStop");
+                instanceState.end(stopToken, { flowsRunning: false, reason: "set-state" });
+                call("finalize");
+                const result = { states: stateEvents.map(e => [e.state, e.previous, e.reason, e.httpDrain]), notices: all.map(e => e.id), http: noticeEvents };
+                listeners.forEach(remove => remove());
+                listeners = [];
+                return result;
+            }
+            const without = run(false);
+            const withCalls = run(true);
+            withCalls.should.eql(without);
+            withCalls.http.should.eql([]);
+            JSON.stringify(withCalls).should.not.match(/httpDrain"/);
+        });
+        it("AC-61: state.reset() clears the condition; what get() and the events give is a copy", async function() {
+            init();
+            accept(route(arrive("POST")));
+            listen();
+            const promise = httpDrain.beforeStop();
+            const copy = instanceState.get();
+            copy.httpDrain.requests = 99;
+            instanceState.get().httpDrain.requests.should.equal(1);
+            stateEvents[0].httpDrain.requests = 77;
+            instanceState.get().httpDrain.requests.should.equal(1);
+            instanceState.reset();
+            should.not.exist(instanceState.get().httpDrain);
+            httpDrain.abortWait();
+            await promise;
+        });
+        it("AC-62: a clear when nothing is set and an attempt in a final state send no notification", async function() {
+            init();
+            const token = deploying();
+            accept(route(arrive("POST")));
+            const promise = httpDrain.beforeStop();
+            listen();
+            instanceState.markStopping("SIGTERM");
+            httpDrain.abortWait();
+            await promise;
+            noticeEvents.should.eql([CLEARED]);
+            // the condition is not set: another end sends nothing
+            httpDrain.abortWait();
+            httpDrain.finalize();
+            noticeEvents.should.eql([CLEARED]);
+            // a wait in the final state does not set it and sends nothing
+            accept(route(arrive("POST")));
+            await httpDrain.beforeStop();
+            noticeEvents.should.eql([CLEARED]);
+            instanceState.end(token, { errors: [] });
+        });
+    });
 });
 
 // #82 (S-1): the same with a real Express app, a real HTTP server and real clients (no fake timers: the
