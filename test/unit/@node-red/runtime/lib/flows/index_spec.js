@@ -52,7 +52,7 @@ var events = NR_TEST_UTILS.require("@node-red/util/lib/events");
 var credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
 var typeRegistry = NR_TEST_UTILS.require("@node-red/registry")
 var Flow = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/Flow");
-const { createWorld, deferred: worldDeferred, flush: worldFlush, quiesce, fakeClock, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
+const { createWorld, deferred: worldDeferred, quiesce, until, fakeClock, watch, pastAllBounds, timerArmed, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
 
 describe('flows/index', function() {
 
@@ -2715,7 +2715,7 @@ describe('flows/index', function() {
     // #84 (S-4, S-6, S-7, D3, D4, D5, D6): the start guard and the complete stop of the flows module, with the fake flows
     describe('stopping instance: the start guard and the complete stop (#84)', function() {
         // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time
-        this.timeout(SUITE_TIMEOUT);
+        this.timeout(SUITE_TIMEOUT * 3); // a test can wait (bounded) several times: the guard is larger than their sum
         const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
         const httpDrain = NR_TEST_UTILS.require("@node-red/runtime/lib/httpDrain");
         const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
@@ -2753,6 +2753,10 @@ describe('flows/index', function() {
         function infoCount(key) {
             return keyLog.info.args.filter(a => a[0] === key).length;
         }
+        // the close of the node was requested (the gate of the node holds it)
+        function closeRequested(id, what) {
+            return until(() => world.closeCalls[id] === 1, what || ("the close of " + id + " was not requested"));
+        }
         // the module initialised, the configuration loaded, the flows not started
         async function boot(settings, config) {
             // the stub of the outer beforeEach is replaced by the world's
@@ -2773,7 +2777,7 @@ describe('flows/index', function() {
         async function bootAndStart(settings, config) {
             await boot(settings, config);
             await flows.startFlows();
-            await worldFlush();
+            // startFlows() resolved: its events were emitted before (synchronously), nothing is left to wait for
             seen.length = 0;
         }
 
@@ -2905,7 +2909,9 @@ describe('flows/index', function() {
                 seen.length = 0;
                 instanceState.markStopping("SIGTERM");
                 events.emit("type-registered", "missing");
-                await worldFlush();
+                // the late start decided to skip: the debug log is its end
+                await until(() => keyLog.debug.args.filter(a => a[0] === SKIPPED).length === 1, "the late start did not log the skip");
+                await quiesce();
                 world.created.should.eql([]);
                 seen.should.eql([]);
                 keyLog.debug.args.filter(a => a[0] === SKIPPED).should.have.length(1);
@@ -2917,9 +2923,8 @@ describe('flows/index', function() {
                 await flows.startFlows();
                 seen.length = 0;
                 events.emit("type-registered", "missing");
-                await worldFlush();
+                await until(() => seen.indexOf("runtime-state") !== -1, "the late start did not finish");
                 world.created.should.not.eql([]);
-                seen.should.containEql("runtime-state");
             });
             it('AC-27: a stub of isStopping() that returns true skips the late start', async function() {
                 await boot({}, MISSING);
@@ -2929,7 +2934,9 @@ describe('flows/index', function() {
                 const stub = sinon.stub(instanceState, "isStopping").returns(true);
                 try {
                     events.emit("type-registered", "missing");
-                    await worldFlush();
+                    // the late start decided to skip: the debug log is its end
+                    await until(() => keyLog.debug.args.filter(a => a[0] === SKIPPED).length === 1, "the late start did not log the skip");
+                    await quiesce();
                     world.created.should.eql([]);
                     seen.should.eql([]);
                 } finally {
@@ -2963,11 +2970,10 @@ describe('flows/index', function() {
                     await flows.stopFlows();
                     await flows.load(true);
                 });
-                await worldFlush();
-                world.closeCalls.b1.should.equal(1);
+                await closeRequested("b1", "the project switch did not begin to close b1");
                 instanceState.markStopping("SIGTERM");
+                // the call decided synchronously to wait for the stop in progress (the close of b1 is held by its gate)
                 const stopped = flows.stopFlows();
-                await worldFlush(10);
                 world.closeGate.b1.resolve();
                 (await settle(stopped)).state.should.equal("resolved");
                 (await settle(switching)).state.should.equal("resolved");
@@ -2983,9 +2989,10 @@ describe('flows/index', function() {
             it('AC-11: runtime stop resolves while the modules are pending; when they arrive no flow is created and started is false', async function() {
                 await boot();
                 const modules = gate();
-                checkFlowDependencies.callsFake(async function() { await modules.promise });
+                let waiting = false;
+                checkFlowDependencies.callsFake(async function() { waiting = true; await modules.promise });
                 const starting = flows.startFlows();
-                await worldFlush();
+                await until(() => waiting, "the start did not wait for its modules");
                 instanceState.markStopping("SIGTERM");
                 const stopped = flows.stopFlows();
                 // never for a module install
@@ -3003,14 +3010,22 @@ describe('flows/index', function() {
 
         describe('D4, V10, AC-12: a start that waits for a flow', function() {
             it('AC-12: runtime stop does not resolve before the flow that is starting; no further flow is started; every created flow is stopped', async function() {
+                // the bound of the wait for the flow that is starting (the default nodeCloseTimeout, 15000) is the fake clock
+                clock = fakeClock(sinon);
                 await boot({}, CONFIG3);
                 world.firstStartGate = worldDeferred();
                 const starting = flows.startFlows();
-                await worldFlush();
+                await until(() => world.starts.length === 1, "the start did not begin the first flow");
                 world.starts.should.eql(["global"]);
                 instanceState.markStopping("SIGTERM");
+                const armedBefore = clock.countTimers();
                 const stopped = flows.stopFlows();
-                (await settle(stopped, 150)).state.should.equal("timeout", "the stop did not wait for the flow that is starting");
+                const ended = watch(stopped);
+                await timerArmed(clock, armedBefore, "the stop did not wait for the flow that is starting");
+                // the stop waits for the flow until its bound: one ms before it, it still waits
+                await clock.tickAsync(14999);
+                await quiesce();
+                ended.done.should.be.false("the stop did not wait for the flow that is starting");
                 world.starts.should.eql(["global"]);
                 world.firstStartGate.resolve();
                 (await settle(stopped)).state.should.equal("resolved");
@@ -3029,7 +3044,7 @@ describe('flows/index', function() {
                 await boot({nodeCloseTimeout: 200}, CONFIG3);
                 world.startHangs.global = true;
                 const starting = flows.startFlows();
-                await worldFlush();
+                await until(() => world.starts.length === 1, "the start did not begin the first flow");
                 world.starts.should.eql(["global"]);
                 instanceState.markStopping("SIGTERM");
                 // the bound (nodeCloseTimeout 200) is the fake clock: the stop waits for it (NB-4: a lower bound; no upper
@@ -3066,12 +3081,15 @@ describe('flows/index', function() {
             it('AC-19: waits for a stop in progress (drain off) and resolves after the nodes closed', async function() {
                 await bootAndStart();
                 world.closeGate.b1 = worldDeferred();
+                clock = fakeClock(sinon);
                 const first = flows.stopFlows();
-                await worldFlush();
-                world.closeCalls.b1.should.equal(1);
+                await closeRequested("b1", "the first stop did not begin to close b1");
                 instanceState.markStopping("SIGTERM");
                 const second = flows.stopFlows();
-                (await settle(second, 150)).state.should.equal("timeout", "the stop did not wait for the stop in progress");
+                // the second stop waits for the stop in progress, whatever the bounds of the production code are
+                const ended = watch(second);
+                await pastAllBounds(clock);
+                ended.done.should.be.false("the stop did not wait for the stop in progress");
                 world.closeGate.b1.resolve();
                 (await settle(second)).state.should.equal("resolved");
                 world.closed.should.containEql("b1");
@@ -3109,21 +3127,25 @@ describe('flows/index', function() {
             it('S-6 (drain on): waits for the stop in progress (stopInProgress) and for its nodes', async function() {
                 await bootAndStart();
                 const requests = gate();
+                let waitingForRequests = false;
                 drainStubs.push(
                     sinon.stub(httpDrain, "isEnabled").returns(true),
-                    sinon.stub(httpDrain, "beforeStop").callsFake(async function() { await requests.promise }),
+                    sinon.stub(httpDrain, "beforeStop").callsFake(async function() { waitingForRequests = true; await requests.promise }),
                     sinon.stub(httpDrain, "afterStop").callsFake(function() {}),
                     sinon.stub(httpDrain, "abortWait").callsFake(function() { requests.resolve() })
                 );
                 world.closeGate.b1 = worldDeferred();
+                clock = fakeClock(sinon);
                 const first = flows.stopFlows();
-                await worldFlush();
+                await until(() => waitingForRequests, "the first stop did not wait for the requests");
                 instanceState.markStopping("SIGTERM");
                 const second = flows.stopFlows();
                 // the wait for the requests ends with the stop of RED.stop; the nodes are closing
-                await worldFlush(10);
-                world.closeCalls.b1.should.equal(1);
-                (await settle(second, 150)).state.should.equal("timeout");
+                await closeRequested("b1", "the end of the wait for the requests did not let the stop close b1");
+                // the second stop waits for the nodes that are closing, whatever the bounds of the production code are
+                const ended = watch(second);
+                await pastAllBounds(clock);
+                ended.done.should.be.false("the second stop did not wait for the nodes that are closing");
                 world.closeGate.b1.resolve();
                 (await settle(second)).state.should.equal("resolved");
                 await settle(first);
@@ -3146,7 +3168,7 @@ describe('flows/index', function() {
                 world.closeFail.b1 = new Error("close failed");
                 const first = flows.stopFlows();
                 first.catch(() => {});
-                await worldFlush();
+                await closeRequested("b1", "the first stop did not begin to close b1");
                 instanceState.markStopping("SIGTERM");
                 const second = flows.stopFlows();
                 world.closeGate.b1.resolve();
@@ -3156,13 +3178,17 @@ describe('flows/index', function() {
             it('AC-27: a stub of isStopping() that returns true makes the stop wait for the stop in progress', async function() {
                 await bootAndStart();
                 world.closeGate.b1 = worldDeferred();
+                clock = fakeClock(sinon);
                 const first = flows.stopFlows();
-                await worldFlush();
+                await closeRequested("b1", "the first stop did not begin to close b1");
                 should(typeof instanceState.isStopping).equal("function", "state.isStopping is not exported");
                 const stub = sinon.stub(instanceState, "isStopping").returns(true);
                 try {
                     const second = flows.stopFlows();
-                    (await settle(second, 150)).state.should.equal("timeout", "the stop did not react to isStopping()");
+                    // the second stop waits for the stop in progress, whatever the bounds of the production code are
+                    const ended = watch(second);
+                    await pastAllBounds(clock);
+                    ended.done.should.be.false("the stop did not react to isStopping()");
                     world.closeGate.b1.resolve();
                     (await settle(second)).state.should.equal("resolved");
                 } finally {
@@ -3202,8 +3228,7 @@ describe('flows/index', function() {
                     await bootAndStart();
                     world.closeGate.b1 = worldDeferred();
                     const deployment = flows.setFlows(clone(CONFIG).map(n => n.id === "b1" ? Object.assign({}, n, {v: 2}) : n), null, "full", false, false, null, undefined);
-                    await worldFlush();
-                    world.closeCalls.b1.should.equal(1);
+                    await closeRequested("b1", "the deployment did not begin to close b1");
                     should.doesNotThrow(() => flows.checkTypeInUse("m/n"));
                     world.closeGate.b1.resolve();
                     await deployment;
@@ -3212,7 +3237,7 @@ describe('flows/index', function() {
                     await bootAndStart();
                     world.closeGate.b1 = worldDeferred();
                     const first = flows.stopFlows();
-                    await worldFlush();
+                    await closeRequested("b1", "the first stop did not begin to close b1");
                     instanceState.markStopping("SIGTERM");
                     const second = flows.stopFlows();
                     should.doesNotThrow(() => flows.checkTypeInUse("m/n"));

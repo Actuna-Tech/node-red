@@ -1359,8 +1359,8 @@ describe("flows/pipeline", function() {
     // #84 (S-1, S-2, D1, D2, D8): once the instance is stopping or stopped no deployment changes anything
     describe("an instance that is stopping (#84)", function() {
         // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time
-        const { quiesce, SUITE_TIMEOUT, WAIT_LIMIT } = require("nr-test-utils/stop-race-world");
-        this.timeout(SUITE_TIMEOUT);
+        const { quiesce, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
+        this.timeout(SUITE_TIMEOUT * 3); // a test can wait (bounded) several times: the guard is larger than their sum
         const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
         const { hooks, log } = NR_TEST_UTILS.require("@node-red/util");
         let logStubs;
@@ -1371,7 +1371,6 @@ describe("flows/pipeline", function() {
         let runtimeLog;
         // the starts that a mock of setFlows holds the lock for: always released, also when a test fails
         let heldStarts;
-        const flush = async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)) };
         function deferred() {
             let resolve;
             const promise = new Promise(r => { resolve = r });
@@ -1430,7 +1429,7 @@ describe("flows/pipeline", function() {
                 flows.reloadFromStorage.called.should.be.false();
             }
             lock.isLocked().should.be.false();
-            await flush();
+            await quiesce();
             posts.should.have.length(0);
         }
         function goStopping(reason) {
@@ -1601,15 +1600,16 @@ describe("flows/pipeline", function() {
             ["full", "reload"].forEach(function(type) {
                 it("AC-4: a preDeploy handler that stops the instance and then accepts: " + type + " is refused, nothing saved, the request settles", async function() {
                     hooks.add("preDeploy.t84", function() { instanceState.markStopping("SIGTERM") });
-                    const outcome = await Promise.race([rejected(CALLS[type]()), new Promise(r => setTimeout(() => r("hang"), WAIT_LIMIT))]);
-                    outcome.should.not.equal("hang");
-                    assertRefused(outcome);
+                    // settle() bounds the wait with a timer that it clears: no live timer is left behind
+                    const outcome = await settle(rejected(CALLS[type]()));
+                    outcome.state.should.equal("resolved", "the deployment did not settle");
+                    assertRefused(outcome.value);
                     flows.setFlows.called.should.be.false();
                     flows.loadFlows.called.should.be.false();
                     // the credentials of a reload are loaded in step 3a, after the hook
                     flows.loadStoredCredentials.called.should.be.false();
                     lock.isLocked().should.be.false();
-                    await flush();
+                    await quiesce();
                     posts.should.have.length(0);
                     instanceState.get().state.should.equal("stopping");
                 });
@@ -1627,7 +1627,7 @@ describe("flows/pipeline", function() {
                 flows.loadFlows.called.should.be.false();
                 flows.setFlows.called.should.be.false();
                 lock.isLocked().should.be.false();
-                await flush();
+                await quiesce();
                 posts.should.have.length(0);
             });
             it("AC-4: stopping begins during the prepare step of a single-flow entry: refused, apply not called", async function() {
@@ -1657,7 +1657,7 @@ describe("flows/pipeline", function() {
                 flows.reloadFromStorage.called.should.be.false();
                 flows.loadFlows.called.should.be.false();
                 lock.isLocked().should.be.false();
-                await flush();
+                await quiesce();
                 posts.should.have.length(0);
                 instanceState.get().state.should.equal("stopping");
             });
@@ -1678,7 +1678,7 @@ describe("flows/pipeline", function() {
                     rereads.should.equal(0);
                     flows.reloadFromStorage.called.should.be.false();
                     lock.isLocked().should.be.false();
-                    await flush();
+                    await quiesce();
                     posts.should.have.length(0);
                     instanceState.get().state.should.equal(name);
                 });

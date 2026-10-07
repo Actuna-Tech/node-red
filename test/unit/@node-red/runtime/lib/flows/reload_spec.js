@@ -62,24 +62,16 @@ const state = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
 const health = NR_TEST_UTILS.require("@node-red/runtime/lib/health");
 const hooks = NR_TEST_UTILS.require("@node-red/util").hooks;
 const events = NR_TEST_UTILS.require("@node-red/util").events;
+const { until, quiesce, settle, fakeClock, deferred: worldDeferred, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// a wait for a condition (checked between the turns of the event loop): it uses the real timers captured by the helper, so
+// it works also while a test runs the production code on a fake clock; the limit only ends a hang
 function waitFor(check, timeout, message) {
-    const start = Date.now();
-    return new Promise((resolve, reject) => {
-        (function poll() {
-            if (check()) {
-                return resolve();
-            }
-            if (Date.now() - start > (timeout || 2000)) {
-                return reject(new Error(message || "timeout"));
-            }
-            setTimeout(poll, 2);
-        })();
-    });
+    return until(check, message || "timeout", timeout);
 }
 
 function deferred() {
@@ -3573,20 +3565,45 @@ describe("flows/reload (Z-09)", function() {
     });
     // #84 (S-2, AC-14, B3): the reread under the deploy lock completes after the instance started to stop
     describe("a reload that meets the stop (#84, AC-14)", function() {
-        // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time
-        const { quiesce, settle, SUITE_TIMEOUT, WAIT_LIMIT } = require("nr-test-utils/stop-race-world");
+        // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time. A test
+        // waits at most a few times (each wait is bounded by WAIT_LIMIT), so the guard is a multiple of the suite timeout
+        this.timeout(SUITE_TIMEOUT * 2);
+        // the production timers of the reloader run on a fake clock, so that a cycle that a TIMER would start (the retry
+        // after a failure, the wait of waitForOperation) is started by the test, at the time the test chooses
+        const RETRY = { min: 1000, max: 60000, attempts: 10 };
+        let clock = null;
         // the answer of the pipeline to the cycle: bounded, so that a hang is reported with its place, not as a mocha timeout
         const answered = async (spy, what) => { (await settle(spy.returnValues[0])).state.should.not.equal("timeout", what) };
-        this.timeout(SUITE_TIMEOUT);
+        // after the pipeline answered: everything chained on promises ran (quiesce), then the clock moves past every bound of
+        // the reloader (sleep(retry.min), scheduleRetry(backoff or retry.max)); a cycle that started from one of those timers
+        // reads storage and calls the preReload hook again, which the test asserts it did not
+        const pastTheTimers = async () => {
+            await quiesce();
+            clock.tick(RETRY.max);
+            await clock.tickAsync(RETRY.max);
+            await quiesce();
+        };
         const failures = () => env.logs.warn.concat(env.logs.error).filter(m => /^reload\.(read-failed|failed|still-failing|retries-exhausted|keep-ready|not-kept-ready|stale)/.test(m));
         let hook;
         beforeEach(function() {
             hook = { callCount: 0 };
             hooks.add("preReload", p => { hook.callCount++ });
+            clock = fakeClock(sinon);
+        });
+        afterEach(async function() {
+            // the reloader is stopped while its timers are still the fake ones
+            if (env) {
+                await env.reloader.stop();
+                env = null;
+            }
+            if (clock) {
+                clock.restore();
+                clock = null;
+            }
         });
 
         it("AC-14: the stop begins while the reread reads storage: nothing is stopped, started or loaded, no failure, no extra round, the state stays stopping", async function() {
-            env = createEnv({ reload: { type: "diff" } });
+            env = createEnv({ reload: { type: "diff", retry: RETRY } });
             await env.start();
             const deployed = sinon.spy(pipeline, "deploy");
             try {
@@ -3601,11 +3618,11 @@ describe("flows/reload (Z-09)", function() {
                 };
                 env.change("B");
                 env.notify({ rev: "B" });
-                await waitFor(() => env.getFlowsCalls >= 2, WAIT_LIMIT, "the reread did not run");
+                await until(() => env.getFlowsCalls >= 2, "the reread did not run");
                 // the cycle ends: the pipeline answered (skipped) and nothing chained on it is left
-                await waitFor(() => deployed.callCount === 1, WAIT_LIMIT, "the pipeline was not called");
+                await until(() => deployed.callCount === 1, "the pipeline was not called");
                 await answered(deployed, "the pipeline did not answer the cycle that ended in stopping");
-                await quiesce();
+                await pastTheTimers();
                 env.flows.reloadFromStorage.called.should.be.false();
                 env.applied.should.have.length(0);
                 env.runtime.flows.credentialsChanged.callCount.should.be.below(3);
@@ -3628,7 +3645,7 @@ describe("flows/reload (Z-09)", function() {
             { name: "diff", reload: { type: "diff" } }
         ].forEach(function(v) {
             it("AC-14: reload.js ends the cycle quietly on {skipped: 'stopping'} (" + v.name + "): one call of the pipeline, one preReload, no markReloadFailed, no failure log, no audit", async function() {
-                env = createEnv({ reload: v.reload });
+                env = createEnv({ reload: Object.assign({ retry: RETRY }, v.reload) });
                 const deploy = sinon.stub(pipeline, "deploy").callsFake(async function(opts) {
                     // the reread decides to apply; the pipeline meets the stop in step 4
                     await opts.reread();
@@ -3639,11 +3656,12 @@ describe("flows/reload (Z-09)", function() {
                     await env.start();
                     env.change("B");
                     env.notify({ rev: "B" });
-                    await waitFor(() => deploy.callCount >= 1, WAIT_LIMIT, "the pipeline was not called");
+                    await until(() => deploy.callCount >= 1, "the pipeline was not called");
                     await answered(deploy, "the pipeline did not answer the cycle");
-                    await quiesce();
+                    await pastTheTimers();
                     deploy.callCount.should.equal(1);
                     hook.callCount.should.equal(1);
+                    env.getFlowsCalls.should.equal(2, "a further cycle read storage");
                     failed.called.should.be.false();
                     failures().should.eql([]);
                     env.logs.info.filter(m => m.indexOf("reload.reloaded") === 0).should.eql([]);
@@ -3657,25 +3675,34 @@ describe("flows/reload (Z-09)", function() {
         });
 
         it("AC-28 (#84): the stop begins while the real pipeline waits for the deploy lock (reread not yet called): the cycle ends quietly, no further cycle is scheduled, nothing reloaded", async function() {
-            env = createEnv({ reload: { type: "diff" } });
+            lock.isLocked().should.be.false("the deploy lock is held by an earlier test");
+            env = createEnv({ reload: { type: "diff", retry: RETRY } });
             await env.start();
             let release;
-            const held = lock.runExclusive(() => new Promise(resolve => { release = resolve }));
+            const entered = worldDeferred();
+            const held = lock.runExclusive(() => {
+                entered.resolve();
+                return new Promise(resolve => { release = resolve });
+            });
             const deployed = sinon.spy(pipeline, "deploy");
             try {
+                (await settle(entered.promise)).state.should.equal("resolved", "the test did not take the deploy lock");
                 env.change("B");
                 env.notify({ rev: "B" });
                 // the cycle ran its preReload and its drain and now waits in pipeline.deploy for the lock: the pipeline
                 // was called and the lock is held, so it cannot go further
-                await waitFor(() => hook.callCount === 1 && deployed.callCount === 1, WAIT_LIMIT, "the cycle did not reach the pipeline");
+                await until(() => hook.callCount === 1 && deployed.callCount === 1, "the cycle did not reach the pipeline");
                 await quiesce();
                 const reads = env.getFlowsCalls;
+                // the section of the test holds nothing but its own lock: nothing registered with holdUntil() keeps the lock
+                // after the release, so the release below frees it for the pipeline at once
+                lock.sectionHeld().should.eql([], "a promise is held in the section of the test: the lock would outlive the release");
                 state.markStopping("SIGTERM");
                 release();
                 await held;
                 await answered(deployed, "the pipeline did not answer after the lock was released");
-                // a further cycle would read storage and call the preReload again
-                await quiesce();
+                // a further cycle would read storage and call the preReload again, started by the answer or by a timer
+                await pastTheTimers();
                 hook.callCount.should.equal(1);
                 env.getFlowsCalls.should.equal(reads);
                 env.flows.reloadFromStorage.called.should.be.false();
@@ -3694,11 +3721,11 @@ describe("flows/reload (Z-09)", function() {
         });
 
         it("AC-14 (off): without a stop the same cycle reloads (the skipped value is only for stopping)", async function() {
-            env = createEnv({ reload: { type: "diff" } });
+            env = createEnv({ reload: { type: "diff", retry: RETRY } });
             await env.start();
             env.change("B");
             env.notify({ rev: "B" });
-            await waitFor(() => env.applied.length === 1 && state.get().state === "ready", WAIT_LIMIT, "the reload was not applied");
+            await until(() => env.applied.length === 1 && state.get().state === "ready", "the reload was not applied");
             hook.callCount.should.equal(1);
             failures().should.eql([]);
         });

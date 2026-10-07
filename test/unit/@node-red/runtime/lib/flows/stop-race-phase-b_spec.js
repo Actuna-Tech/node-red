@@ -31,7 +31,7 @@ const should = require("should");
 const sinon = require("sinon");
 const clone = require("clone");
 const NR_TEST_UTILS = require("nr-test-utils");
-const { createWorld, deferred, flush, quiesce, until, fakeClock, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
+const { createWorld, deferred, quiesce, until, fakeClock, watch, pastAllBounds, timerArmed, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
 
 const flows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
 const apiFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/api/flows");
@@ -58,7 +58,7 @@ function config(v) {
 
 describe("flows: breaking the fix of the race between a deployment and the stop of the runtime (#84, phase B)", function() {
     // the limit of a hang, not of the speed of the machine: nothing in this suite waits for a stretch of time
-    this.timeout(SUITE_TIMEOUT);
+    this.timeout(SUITE_TIMEOUT * 3); // a test can wait (bounded) several times: the guard is larger than their sum
     let world;
     let storage;
     let saved;
@@ -75,6 +75,8 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
     let offState;
     let unhandled;
     let timers;
+    // a spy on the stop of the flows that runtime.stop() calls: the stop of the runtime reached the flows module
+    let stopFlowsSpy;
     // a fake clock for the production timers (the tests whose result depends on a time bound); restored after every test
     let clock = null;
     const listeners = [];
@@ -140,7 +142,7 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
         if (!options.noStart) {
             await flows.startFlows();
         }
-        await flush();
+        // startFlows() resolved: its events were emitted before (synchronously), nothing is left to wait for
         seen.length = 0;
         states.length = 0;
     }
@@ -173,6 +175,8 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
         stubs.push(sinon.stub(redNodes, "closeContextsPlugin").callsFake(async function() {
             contexts.push(world.closed.length);
         }));
+        stopFlowsSpy = sinon.spy(redNodes, "stopFlows");
+        stubs.push(stopFlowsSpy);
     });
 
     afterEach(async function() {
@@ -227,6 +231,21 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
     }
     function starts() {
         return world.starts.length;
+    }
+    // runtime.stop() reached the stop of the flows `times` times: what the stop does synchronously there - the decision to wait
+    // for a stop in progress or to stop - has run, and what it waits for is held by the gates of the test
+    function stopReached(times) {
+        return until(() => stopFlowsSpy.callCount >= (times || 1), "runtime.stop() did not reach the stop of the flows");
+    }
+    // the close of the node was requested (the gate of the node holds it)
+    function closeRequested(id, what) {
+        return until(() => world.closeCalls[id] === 1, what || ("the close of " + id + " was not requested"));
+    }
+    // the tests that prove "has not ended" run on a fake clock: moved past every bound of the production code, nothing but the
+    // event the test waits for could end it
+    function useClock() {
+        clock = fakeClock(sinon);
+        return clock;
     }
     function existing() {
         return ["a1", "b1"].filter(id => flows.get(id));
@@ -312,6 +331,7 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
         describe("two runtime.stop() calls racing a scoped deployment (" + mode[0] + ")", function() {
             ["nodes", "flows"].forEach(function(type) {
                 check("B-1: " + type + " deployment in its scoped stop step, two concurrent runtime.stop(): both settle, each node closed once, nothing constructed, contexts and finalize after all closes", async function() {
+                    useClock();
                     await boot();
                     if (mode[1]) {
                         enableRealDrain();
@@ -319,12 +339,15 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
                     const base = world.constructed.length;
                     world.closeGate.b1 = deferred();
                     const deployment = deploy(type, 2);
-                    await flush();
-                    world.closeCalls.b1.should.equal(1);
+                    await closeRequested("b1", "the deployment did not begin to close b1");
                     const first = stopRuntime();
                     const second = stopRuntime();
-                    (await settle(first, 120)).state.should.equal("timeout", "runtime.stop() did not wait for the close in progress");
-                    (await settle(second, 50)).state.should.equal("timeout");
+                    await stopReached(2);
+                    // both wait for the close in progress, whatever the bounds of the production code are
+                    const ended = [watch(first), watch(second)];
+                    await pastAllBounds(clock);
+                    ended[0].done.should.be.false("runtime.stop() did not wait for the close in progress");
+                    ended[1].done.should.be.false("the second runtime.stop() did not wait for the close in progress");
                     world.closeGate.b1.resolve();
                     (await settle(first)).state.should.equal("resolved");
                     (await settle(second)).state.should.equal("resolved");
@@ -345,24 +368,30 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
 
     describe("C2: the chained scoped stop of a deployment racing two stops (drain off)", function() {
         check("B-2: a second deployment is refused (503, nothing saved) while the first deployment's stop is chained behind RED.stop; two RED.stop settle; each node closed once", async function() {
+            useClock();
             await boot();
             const base = world.constructed.length;
             const cleans = [];
             stubs.push(sinon.stub(context, "clean").callsFake(async function() { cleans.push(world.closed.length) }));
             const gate = deferred();
+            let reading = false;
             storage.getFlows = async () => {
+                reading = true;
                 await gate.promise;
                 return { flows: clone(config(2)), rev: "rev-load" };
             };
             const loading = flows.load(true);
             pending.push(loading.catch(() => {}));
-            await flush();
+            await until(() => reading, "the deployment did not read the flows");
             world.closeGate.b1 = deferred();
             instanceState.markStopping("SIGTERM");
             const first = stopRuntime();
             await until(() => world.closeCalls.b1 === 1);
             gate.resolve();
-            (await settle(loading, 150)).state.should.equal("timeout", "the chained stop ran while a node was closing");
+            // the chained stop waits for the close in progress, whatever the bounds of the production code are
+            const chained = watch(loading);
+            await pastAllBounds(clock);
+            chained.done.should.be.false("the chained stop ran while a node was closing");
             // the second deployment comes while the first one is chained
             const savedBefore = saved.length;
             const revBefore = flows.getFlows().rev;
@@ -388,13 +417,15 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
         check("B-2: the chained stop with three concurrent RED.stop and a node whose close fails: all settle, nobody rejects, each node closed once", async function() {
             await boot();
             const gate = deferred();
+            let reading = false;
             storage.getFlows = async () => {
+                reading = true;
                 await gate.promise;
                 return { flows: clone(config(2)), rev: "rev-load" };
             };
             const loading = flows.load(true);
             pending.push(loading.catch(() => {}));
-            await flush();
+            await until(() => reading, "the deployment did not read the flows");
             world.closeGate.b1 = deferred();
             world.closeFail.b1 = new Error("close failed");
             instanceState.markStopping("SIGTERM");
@@ -456,7 +487,12 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
         });
         check("B-3: the hanging start is the global flow (the first one): the stop is bounded, the late nodes are closed", async function() {
             const starting = (await hungStart(120, "global")).starting;
+            // the bound (nodeCloseTimeout 120) is the fake clock
+            useClock();
+            const armedBefore = clock.countTimers();
             const stopped = stopRuntime();
+            await timerArmed(clock, armedBefore, "the stop did not wait for the start that is in progress");
+            clock.tick(120);
             (await settle(stopped)).state.should.equal("resolved");
             warnings().should.have.length(1);
             warnedFlows().should.eql(["global"]);
@@ -467,12 +503,17 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
             assertNoOrphans();
         });
         check("B-3: a deployment whose start never ends, response started with startTimeout: the stop is bounded and resolves; the deployment is answered", async function() {
+            useClock();
             await boot({ nodeCloseTimeout: 150, deploy: { response: "started", startTimeout: 5000 } });
             world.startHangs.A = true;
             const deployment = deploy("full", 2);
             const outcome = deployment.then(() => null, err => err);
             await until(() => world.starts.filter(id => id === "A").length === 2);
+            // the bound (nodeCloseTimeout 150) is the fake clock; the startTimeout (5000) is not reached
+            const armedBefore = clock.countTimers();
             const stopped = stopRuntime();
+            await timerArmed(clock, armedBefore, "the stop did not wait for the start that is in progress");
+            clock.tick(150);
             (await settle(stopped)).state.should.equal("resolved");
             world.releaseAll();
             const err = (await settle(outcome)).value;
@@ -499,7 +540,12 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
                 }
                 return second();
             };
+            // the bound (nodeCloseTimeout 120) is the fake clock
+            useClock();
+            const armedBefore = clock.countTimers();
             const stopped = stopRuntime();
+            await timerArmed(clock, armedBefore, "the stop did not wait for the start that is in progress");
+            clock.tick(120);
             (await settle(stopped)).state.should.equal("resolved");
             return { starting: starting, calls: () => calls };
         }
@@ -522,7 +568,10 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
         check("B-4: the orphan stop never settles: the start itself is not released by it, but runtime.stop() and a second stop already resolved", async function() {
             const o = await orphan(() => new Promise(() => {}));
             world.releaseAll();
-            (await settle(o.starting, 200)).state.should.equal("timeout");
+            // the start waits for the stop of the orphan flow, which never settles: not before and not after every bound
+            const ended = watch(o.starting);
+            await pastAllBounds(clock);
+            ended.done.should.be.false("the start ended although the stop of its orphan flow never settled");
             (await settle(stopRuntime())).state.should.equal("resolved");
             flows.started.should.be.false();
         });
@@ -642,6 +691,7 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
                 world.liveIds().should.eql([]);
             });
             check("B-7: the state api stop, runtime.stop() and a deployment overlapping while a node closes: all settle, the deployment is refused, each node closed once", async function() {
+                useClock();
                 await boot();
                 if (mode[1]) {
                     enableRealDrain();
@@ -649,12 +699,16 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
                 world.closeGate.b1 = deferred();
                 const state = apiFlows.setState({ state: "stop", req: {} });
                 pending.push(state.catch(() => {}));
-                await flush();
+                await closeRequested("b1", "the stop of the state api did not begin to close b1");
                 const stopped = stopRuntime();
                 const refused = await settle(deploy("full", 2));
                 refused.state.should.equal("rejected");
                 refused.err.should.have.property("code", "runtime_stopping");
-                (await settle(stopped, 120)).state.should.equal("timeout");
+                await stopReached();
+                // runtime.stop() waits for the close in progress, whatever the bounds of the production code are
+                const ended = watch(stopped);
+                await pastAllBounds(clock);
+                ended.done.should.be.false("runtime.stop() did not wait for the close in progress");
                 world.closeGate.b1.resolve();
                 (await settle(stopped)).state.should.equal("resolved");
                 (await settle(state)).state.should.equal("resolved");
@@ -690,6 +744,7 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
                 states.should.eql(["stopping", "stopped"]);
             });
             check("B-8: the project switch racing runtime.stop() while a node closes: both settle, no flow is running afterwards, each node closed once", async function() {
+                useClock();
                 await boot();
                 if (mode[1]) {
                     enableRealDrain();
@@ -701,7 +756,11 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
                 pending.push(switching.catch(() => {}));
                 await until(() => world.closeCalls.b1 === 1);
                 const stopped = stopRuntime();
-                (await settle(stopped, 120)).state.should.equal("timeout");
+                await stopReached();
+                // runtime.stop() waits for the close in progress, whatever the bounds of the production code are
+                const ended = watch(stopped);
+                await pastAllBounds(clock);
+                ended.done.should.be.false("runtime.stop() did not wait for the close in progress");
                 world.closeGate.b1.resolve();
                 (await settle(stopped)).state.should.equal("resolved");
                 (await settle(switching)).state.should.equal("resolved");
@@ -795,13 +854,18 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
                 contexts.forEach(n => n.should.equal(2));
             });
             check("B-10: three concurrent stops with a node that closes slowly: all resolve after the close, the nodes are closed once", async function() {
+                useClock();
                 await boot();
                 if (mode[1]) {
                     enableRealDrain();
                 }
                 world.closeGate.b1 = deferred();
                 const stops = [stopRuntime(), stopRuntime(), stopRuntime()];
-                (await settle(stops[2], 100)).state.should.equal("timeout");
+                await stopReached(3);
+                // all three wait for the close in progress, whatever the bounds of the production code are
+                const ended = stops.map(watch);
+                await pastAllBounds(clock);
+                ended.forEach(e => e.done.should.be.false("a runtime.stop() did not wait for the close in progress"));
                 world.closeGate.b1.resolve();
                 for (const s of stops) {
                     (await settle(s)).state.should.equal("resolved");
@@ -860,15 +924,15 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
             const clock = sinon.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
             try {
                 let resolved = false;
+                const armedBefore = clock.countTimers();
                 const stopped = stopRuntime();
                 stopped.then(() => { resolved = true });
-                await flush(5);
+                await timerArmed(clock, armedBefore, "the stop did not wait for the start that is in progress");
                 clock.tick(14999);
-                await flush(5);
+                await quiesce();
                 resolved.should.be.false("runtime.stop() resolved before the default bound");
                 clock.tick(1);
-                await flush(10);
-                resolved.should.be.true("runtime.stop() did not resolve at the default bound");
+                await until(() => resolved, "runtime.stop() did not resolve at the default bound");
                 warnings().should.have.length(1);
             } finally {
                 clock.restore();
@@ -925,7 +989,10 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
     describe("two starts in the same flow", function() {
         check("B-15: R-45, a nodes deployment starts the flow A again while the first start waits in it: one warning for the flow A", async function() {
             const BOUND = 250;
-            await boot({ nodeCloseTimeout: BOUND, deploy: { startTimeout: 100, startTimeoutReleasesLock: true } });
+            const LIMIT = 100;
+            // the limit of the lock (startTimeout) and the bound of the stop (nodeCloseTimeout) are the fake clock
+            useClock();
+            await boot({ nodeCloseTimeout: BOUND, deploy: { startTimeout: LIMIT, startTimeoutReleasesLock: true } });
             const startsOfA = () => world.starts.filter(id => id === "A").length;
             const base = startsOfA();
             const gate = deferred();
@@ -933,10 +1000,16 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
             const first = await deploy("full", 2);
             first.should.have.property("rev");
             await until(() => startsOfA() === base + 1);
-            // the second deployment changes b1 only: it calls the start of the same flow object A
+            // the second deployment changes b1 only: it calls the start of the same flow object A; it waits for the lock
+            // until the limit of the first start has passed
             const second = deploy("nodes", 3);
-            await until(() => startsOfA() === base + 2);
-            (await settle(stopRuntime())).state.should.equal("resolved");
+            clock.tick(LIMIT);
+            await until(() => startsOfA() === base + 2, "the second deployment did not start the flow A again");
+            const armedBefore = clock.countTimers();
+            const stopped = stopRuntime();
+            await timerArmed(clock, armedBefore, "the stop did not wait for the starts that are in progress");
+            clock.tick(BOUND);
+            (await settle(stopped)).state.should.equal("resolved");
             warnedFlows().should.eql(["A"], "more than one warning for the same flow");
             gate.resolve();
             await settle(second);
@@ -953,15 +1026,16 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
             world.closeGate.b1 = deferred();
             const deployment = deploy("full", 2);
             const outcome = deployment.then(() => null, err => err);
-            await flush();
+            await closeRequested("b1", "the deployment did not begin to close b1");
             const stopped = stopRuntime();
-            await flush(10);
+            await stopReached();
             world.closeGate.b1.resolve();
             (await settle(stopped)).state.should.equal("resolved");
             const err = (await settle(outcome)).value;
             should.exist(err);
             err.should.have.property("code", "deploy_start_failed");
-            await flush(10);
+            // what is chained on the answer ran (a timer that the answer should have cleared is cleared by now)
+            await quiesce();
             const left = timers.left().filter(e => /runtime\/lib\/(flows|index|state)/.test(e.stack));
             left.map(e => e.ms + "ms " + e.stack).should.eql([], "a timer is still running");
         });
@@ -1002,7 +1076,7 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
             for (let i = 0; i < 50; i++) {
                 stops.push(stopRuntime());
             }
-            await flush(10);
+            await stopReached(50);
             world.closeGate.b1.resolve();
             const outcomes = await Promise.all(stops.map(st => settle(st)));
             outcomes.forEach(o => o.state.should.equal("resolved"));
@@ -1042,9 +1116,9 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
             trackTimers();
             world.closeGate.b1 = deferred();
             const deployment = deploy("full", 2);
-            await flush();
+            await closeRequested("b1", "the deployment did not begin to close b1");
             const stopped = stopRuntime();
-            await flush(10);
+            await stopReached();
             world.closeGate.b1.resolve();
             (await settle(stopped)).state.should.equal("resolved");
             await settle(deployment);
@@ -1055,7 +1129,8 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
             const starting = (await hungStart(600000)).starting;
             trackTimers();
             const stopped = stopRuntime();
-            await flush(10);
+            // the wait of the stop for the start that is in progress is armed (a timer of waitForStartingFlow)
+            await until(() => timers.left().some(e => /waitForStartingFlow/.test(e.stack)), "the stop did not wait for the start that is in progress");
             world.releaseAll();
             (await settle(stopped)).state.should.equal("resolved");
             await settle(starting);
@@ -1077,9 +1152,10 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
             trackTimers();
             world.closeGate.b1 = deferred();
             const deployment = deploy("nodes", 2);
-            await flush();
+            // with the drain on the deployment waits for the requests (none are open), then closes b1
+            await closeRequested("b1", "the deployment did not begin to close b1");
             const stopped = stopRuntime();
-            await flush(10);
+            await stopReached();
             world.closeGate.b1.resolve();
             (await settle(stopped)).state.should.equal("resolved");
             await settle(deployment);
@@ -1118,7 +1194,7 @@ describe("flows: breaking the fix of the race between a deployment and the stop 
             saveGate = deferred();
             const deployment = deploy("full", 2);
             const outcome = deployment.then(() => null, err => err);
-            await flush();
+            await until(() => saved.length === 1, "the deployment did not save the flows");
             const stopped = stopRuntime();
             (await settle(stopped)).state.should.equal("resolved");
             // the save fails after the stop

@@ -2243,7 +2243,8 @@ describe("runtime-api/flows", function() {
     // #84 (S-1, S-3, D2, D7, D8): the answers of the runtime api for an instance that is stopping or stopped
     describe("an instance that is stopping (#84)", function() {
         // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time
-        this.timeout(require("nr-test-utils/stop-race-world").SUITE_TIMEOUT);
+        const { quiesce, until, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
+        this.timeout(SUITE_TIMEOUT * 3); // a test can wait (bounded) several times: the guard is larger than their sum
         const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
         const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
         const { hooks } = NR_TEST_UTILS.require("@node-red/util");
@@ -2251,7 +2252,6 @@ describe("runtime-api/flows", function() {
         let logStubs;
         let preCalls;
         const keyLog = () => Object.assign(mockLog(), { _: k => "[" + k + "]" });
-        const flush = async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)) };
         function setup(deploySettings, extraSettings) {
             runtime = {
                 log: keyLog(),
@@ -2372,7 +2372,7 @@ describe("runtime-api/flows", function() {
                 hooks.add("postDeploy.t84", e => posts.push(e));
                 stopping();
                 await rejected(flows.setFlows({ flows: { flows: [] }, deploymentType: "full", req: {} }));
-                await flush();
+                await quiesce();
                 preCalls.should.have.length(0);
                 posts.should.have.length(0);
             });
@@ -2436,15 +2436,22 @@ describe("runtime-api/flows", function() {
             });
             it("AC-6: a start that waits for the lock when the instance starts to stop is refused under the lock", async function() {
                 let release;
-                const holding = lock.runExclusive(() => new Promise(resolve => { release = resolve }));
+                const taken = sinon.spy(lock, "runExclusive");
+                let entered;
+                const inside = new Promise(resolve => { entered = resolve });
+                const holding = lock.runExclusive(() => new Promise(resolve => { release = resolve; entered() }));
                 try {
+                    // the test holds the lock
+                    (await settle(inside)).state.should.equal("resolved", "the test did not take the deploy lock");
                     const request = flows.setState({ state: "start" });
-                    await flush();
+                    // the request asked for the lock (held by the test): it waits for it
+                    await until(() => taken.callCount === 2, "the request did not ask for the deploy lock");
                     stopping();
                     release();
                     await holding;
                     assertRefused(await rejected(request));
                 } finally {
+                    taken.restore();
                     release();
                     await holding;
                 }

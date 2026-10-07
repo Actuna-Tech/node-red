@@ -3961,7 +3961,7 @@ describe("runtime", function() {
         const Flow = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/Flow");
         const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
         const typeRegistry = NR_TEST_UTILS.require("@node-red/registry");
-        const { createWorld, deferred, flush, quiesce, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
+        const { createWorld, deferred, quiesce, until, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
         let stubs;
         let world;
         let states;
@@ -3970,7 +3970,7 @@ describe("runtime", function() {
         // the preShutdown hook (the drain of the shutdown) ends when the test says so, not after a stretch of time
         let drainGate;
         // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time
-        this.timeout(SUITE_TIMEOUT);
+        this.timeout(SUITE_TIMEOUT * 3); // a test can wait (bounded) several times: the guard is larger than their sum
         beforeEach(function() {
             instanceState.reset();
             states = [];
@@ -4031,11 +4031,14 @@ describe("runtime", function() {
             // health.shutdown: the state is stopping at once, RED.stop only after the drain
             const stopSpy = sinon.spy(function() { return runtime.stop("SIGTERM") });
             const shutdown = runtime.health.shutdown({ reason: "SIGTERM", stop: stopSpy });
-            await flush();
-            instanceState.get().state.should.equal("stopping");
+            await until(() => instanceState.get().state === "stopping", "the shutdown did not set the state stopping");
             stopSpy.called.should.be.false("the drain ended too early for this test");
-            // the read of the flows ends in the drain: the start of the flows is reached in stopping
+            // the read of the flows ends in the drain: the start of the flows is reached in stopping (and skipped)
+            const startFlows = sinon.spy(redNodes, "startFlows");
+            stubs.push(startFlows);
             loadGate.resolve();
+            await until(() => startFlows.callCount === 1, "the start of the flows was not reached");
+            (await settle(startFlows.returnValues[0])).state.should.equal("resolved", "the start of the flows did not end");
             await quiesce();
             stopSpy.called.should.be.false("the drain ended before the test ended it");
             world.created.should.eql([], "a flow was created while the instance is stopping");

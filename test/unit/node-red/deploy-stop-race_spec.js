@@ -53,6 +53,8 @@ const RED_LIB = path.join(PACKAGES, "node-red/lib/red.js");
 const UTIL = path.join(PACKAGES, "@node-red/util");
 const EXPRESS = require.resolve("express");
 const V2 = { "Node-RED-API-Version": "v2" };
+// the info log line of a start that is skipped because the runtime is stopping (the catalogue en-US of the runtime)
+const SKIPPED = "The flows are not started: the runtime is stopping";
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -139,8 +141,9 @@ function flowsOf(v, closeWait) {
 }
 
 describe("a deployment that races the stop of the runtime (integration, #84)", function() {
-    // the limit of a hang, not of the speed of the machine
-    this.timeout(SUITE_TIMEOUT * 3);
+    // the limit of a hang, not of the speed of the machine. A test waits several times (every wait is bounded by WAIT, three
+    // times the limit of a helper), so the guard of the suite is larger than the sum of the waits of one test
+    this.timeout(SUITE_TIMEOUT * 6);
     let children = [];
     let dirs = [];
 
@@ -206,7 +209,7 @@ RED.init(server, {
     nodesDir: [${JSON.stringify(dirs.nodesDir)}],
     httpAdminRoot: "/",
     disableEditor: true,
-    logging: { console: { level: "off" } }
+    logging: { console: { level: "info" } }
 });
 // the application stops Node-RED on request and answers when RED.stop() has resolved
 app.post("/__stop", function(req, res) {
@@ -234,9 +237,9 @@ RED.start().then(function() { server.listen(${port}, "127.0.0.1") });
             fs.writeFileSync(proc.closeGate, "");
             const stop = await stopping;
             stop.status.should.equal(200);
-            // after RED.stop() resolved nothing starts. A window of time can only show an absence: it makes the test more
-            // sensitive, it never decides about a correct runtime (the length is not a requirement of speed)
-            await sleep(1500);
+            // after RED.stop() resolved nothing starts: the deployment goes on after its stop step and its start is skipped; the
+            // log line of that skip is the end of the deployment's work, so the absence is checked at a marker, not after a time
+            await waitFor(() => proc.output.indexOf(SKIPPED) !== -1, WAIT, "the start of the deployment was not skipped; output:\n" + proc.output);
             const marked = lines(proc.marker);
             marked.filter(l => /^construct .* v2$/.test(l)).should.eql([], "a node of the new revision was constructed after RED.stop() resolved; output:\n" + proc.output);
             marked.should.containEql("close m1");
@@ -261,7 +264,8 @@ RED.start().then(function() { server.listen(${port}, "127.0.0.1") });
             fs.writeFileSync(proc.closeGate, "");
             const stop = await stopping;
             stop.status.should.equal(200);
-            await sleep(1500);
+            // the log line of the skipped start is the end of the deployment's work (see above)
+            await waitFor(() => proc.output.indexOf(SKIPPED) !== -1, WAIT, "the start of the deployment was not skipped; output:\n" + proc.output);
             const marked = lines(proc.marker);
             marked.filter(l => /^construct .* v2$/.test(l)).should.eql([], "a node of the new revision was constructed after RED.stop() resolved; output:\n" + proc.output);
             marked.should.containEql("close m1");
@@ -278,7 +282,7 @@ RED.start().then(function() { server.listen(${port}, "127.0.0.1") });
             const answer = await request(proc.base, "POST", "/flows", { flows: flowsOf(3) }, Object.assign({ "Node-RED-Deployment-Type": "full" }, V2));
             answer.status.should.equal(503);
             answer.body.should.have.property("code", "runtime_stopping");
-            await sleep(500);
+            // the refusal is the answer: nothing was constructed on the way to it
             lines(proc.marker).should.eql(before);
             fs.readFileSync(path.join(proc.userDir, "flows.json"), "utf8").should.not.containEql('"v":3');
         });

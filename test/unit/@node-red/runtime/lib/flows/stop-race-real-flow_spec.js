@@ -56,7 +56,7 @@ function config() {
 
 describe("flows: the stop of the runtime against the real Flow and Subflow (#84, phase B)", function() {
     // the limit of a hang, not of the speed of the machine: nothing in this suite waits for a stretch of time
-    this.timeout(SUITE_TIMEOUT);
+    this.timeout(SUITE_TIMEOUT * 3); // a test can wait (bounded) several times: the guard is larger than their sum
     let constructed;
     // closeGate[id]: the close of the node waits until the test resolves the gate
     let closeGate;
@@ -237,7 +237,8 @@ describe("flows: the stop of the runtime against the real Flow and Subflow (#84,
         clock.tick(100);
         await until(() => closing.indexOf("a1") !== -1, "the stop did not begin to close a1 after the bound");
         gates.a2.resolve();
-        await quiesce();
+        // the start goes on and creates a2 while the close of a1 is still in progress: this is the race of the test
+        await until(() => constructed.includes("a2"), "the start did not create a2 after its gate was released");
         closeGate.a1.resolve();
         (await settle(stopped)).state.should.equal("resolved");
         (await settle(starting)).state.should.equal("resolved");
