@@ -519,7 +519,7 @@ Fixes
  - Fix (#61): a hook handler that rejects without a value ends the chain with an error. A handler with one
    argument whose promise rejected with a falsy value (`Promise.reject()`, `throw undefined` in an `async`
    function, `null`, `false`, `0`, `-0`, `0n`, `NaN` or `""`) was called again without end in a loop of
-   microtasks, so timers, I/O and HTTP stopped and the process hung (an upstream defect of 5.0.7). Now
+   microtasks, so timers, I/O and HTTP stopped and the process hung. Now
    `RED.hooks.trigger` rejects (promise form) or calls `done` (callback form) once with an `Error` with the message
    `Hook handler rejected without an error: <value>` (for an empty string the value is `""`, quotes included), the
    handler is called once and the next handlers are not called; the caller follows its existing error path
