@@ -34,6 +34,8 @@
  *   the preDeploy hook through the runtime api (the event, 400/503/503, nothing saved, audit with the reason);
  *   a reload rejected by the hook changes nothing (I12, D15, D26)
  *   #68: tests of a failed save of the flow state (setState start and stop log it and carry on)
+ *   #84: an instance that is stopping refuses the deployments (503 runtime_stopping, audit, no warning) and
+ *   POST /flows/state start; precedence over the revision, prepare and hook errors; the runtime api after the stop
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -2236,6 +2238,282 @@ describe("runtime-api/flows", function() {
             runtime.log.audit.calledWithMatch({event:"flow.update", error:"version_required"}).should.be.true();
             await outcome(flows.setFlows({flows:{flows:[1]}, apiVersion:"v2"}));
             runtime.log.audit.calledWithMatch({event:"flows.set", error:"version_required"}).should.be.true();
+        });
+    });
+    // #84 (S-1, S-3, D2, D7, D8): the answers of the runtime api for an instance that is stopping or stopped
+    describe("an instance that is stopping (#84)", function() {
+        // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time
+        const { quiesce, until, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
+        this.timeout(SUITE_TIMEOUT * 3); // a test can wait (bounded) several times: the guard is larger than their sum
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
+        const { hooks } = NR_TEST_UTILS.require("@node-red/util");
+        let runtime;
+        let logStubs;
+        let preCalls;
+        const keyLog = () => Object.assign(mockLog(), { _: k => "[" + k + "]" });
+        function setup(deploySettings, extraSettings) {
+            runtime = {
+                log: keyLog(),
+                settings: Object.assign({ deploy: deploySettings || {}, runtimeState: { enabled: true, ui: false }, set: sinon.spy(async function() {}) }, extraSettings),
+                flows: {
+                    started: true,
+                    state: () => "start",
+                    getFlows: () => ({ rev: "rev-all", flows: [] }),
+                    getFlowRevision: id => id === "t1" || id === "global" ? "rev-" + id : null,
+                    setFlows: sinon.spy(async () => "newRev"),
+                    loadFlows: sinon.spy(async () => "loadRev"),
+                    readStoredFlows: sinon.spy(async () => ({ flows: [{ id: "stored", type: "tab" }], rev: "storedRev" })),
+                    loadStoredCredentials: sinon.spy(async config => config),
+                    buildAddFlowConfig: sinon.spy(function(flow) { flow.id = "new1"; return { config: [{ id: "new1", type: "tab" }], id: "new1" } }),
+                    buildUpdateFlowConfig: sinon.spy(function(id) {
+                        if (id !== "t1" && id !== "global") {
+                            throw Object.assign(new Error(), { code: 404 });
+                        }
+                        return { config: [{ id: id, type: "tab" }], label: id };
+                    }),
+                    buildRemoveFlowConfig: sinon.spy(function(id) {
+                        if (id !== "t1") {
+                            throw Object.assign(new Error(), { code: 404 });
+                        }
+                        return { config: [], flow: { id: id } };
+                    }),
+                    addFlow: sinon.spy(async () => "new1"),
+                    updateFlow: sinon.spy(async () => ({ created: false })),
+                    removeFlow: sinon.spy(async () => {}),
+                    startFlows: sinon.spy(async () => ({ errors: [] })),
+                    stopFlows: sinon.spy(async () => {})
+                }
+            };
+            flows.init(runtime);
+            preCalls = [];
+            hooks.clear();
+            hooks.add("preDeploy.t84", function(event) { preCalls.push(event) });
+        }
+        const changed = () => ["setFlows", "loadFlows", "addFlow", "updateFlow", "removeFlow", "startFlows"].filter(fn => runtime.flows[fn].called);
+        beforeEach(function() {
+            logStubs = [sinon.stub(utilLog, "_").callsFake(k => "[" + k + "]"), sinon.stub(utilLog, "warn"), sinon.stub(utilLog, "error"), sinon.stub(utilLog, "debug")];
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({ errors: [] });
+            setup();
+        });
+        afterEach(function() {
+            logStubs.forEach(s => s.restore());
+            hooks.clear();
+            instanceState.reset();
+        });
+        async function rejected(promise) {
+            try {
+                await promise;
+            } catch (err) {
+                return err;
+            }
+            throw new Error("not rejected");
+        }
+        function assertRefused(err) {
+            err.should.have.property("code", "runtime_stopping");
+            err.should.have.property("status", 503);
+            err.message.should.equal("[api.flows.runtime-stopping]");
+        }
+        // no warning, with or without a stack (the refusal is audited only)
+        function assertNotWarned() {
+            runtime.log.warn.called.should.be.false();
+            utilLog.warn.called.should.be.false();
+        }
+        function stopping(reason) {
+            instanceState.markStopping(reason || "SIGTERM");
+        }
+
+        describe("S-1: setFlows", function() {
+            ["full", "nodes", "flows", "reload", "load"].forEach(function(type) {
+                ["v1", "v2"].forEach(function(version) {
+                    it("AC-1: " + type + " (" + version + ") is refused: 503 runtime_stopping, nothing changed, the hook not called, audit with the code, no warning", async function() {
+                        stopping();
+                        const req = { id: "request" };
+                        const err = await rejected(flows.setFlows({ flows: { flows: [{ id: "a", type: "tab" }] }, deploymentType: type, apiVersion: version, user: { username: "u" }, req: req }));
+                        assertRefused(err);
+                        changed().should.eql([]);
+                        runtime.flows.readStoredFlows.called.should.be.false();
+                        runtime.flows.loadStoredCredentials.called.should.be.false();
+                        preCalls.should.have.length(0);
+                        runtime.log.audit.calledWithMatch({ event: "flows.set", type: type, error: "runtime_stopping" }, req).should.be.true();
+                        assertNotWarned();
+                        lock.isLocked().should.be.false();
+                        instanceState.get().state.should.equal("stopping");
+                    });
+                });
+            });
+            it("AC-1: the refusal is the same with deploy.response started and deploy.requireRevision (the checks of the revision do not come first)", async function() {
+                setup({ response: "started", requireRevision: true });
+                stopping("stop");
+                assertRefused(await rejected(flows.setFlows({ flows: { flows: [{ id: "a" }] }, deploymentType: "full", apiVersion: "v2", req: {} })));
+                assertRefused(await rejected(flows.setFlows({ flows: { flows: [{ id: "a" }], rev: "wrong" }, deploymentType: "full", apiVersion: "v2", req: {} })));
+                assertRefused(await rejected(flows.setFlows({ flows: { flows: [{ id: "a" }] }, deploymentType: "full", apiVersion: "v1", req: {} })));
+                changed().should.eql([]);
+            });
+            it("AC-1: a hostile body (Proxy, throwing getters, toJSON) gets the same 503 and is not read", async function() {
+                stopping();
+                let touched = 0;
+                const trap = () => { touched++; throw new Error("read") };
+                const bodies = [
+                    new Proxy({}, { get: trap, has: trap, getOwnPropertyDescriptor: trap, ownKeys: trap }),
+                    { get flows() { touched++; throw new Error("read") }, get credentials() { touched++; throw new Error("read") }, toJSON: trap },
+                    "not an object", 42, null
+                ];
+                for (const body of bodies) {
+                    assertRefused(await rejected(flows.setFlows({ flows: body, deploymentType: "full", req: {} })));
+                }
+                touched.should.equal(0);
+                changed().should.eql([]);
+            });
+            it("AC-1: a preDeploy handler is not called and a postDeploy handler is not called", async function() {
+                const posts = [];
+                hooks.add("postDeploy.t84", e => posts.push(e));
+                stopping();
+                await rejected(flows.setFlows({ flows: { flows: [] }, deploymentType: "full", req: {} }));
+                await quiesce();
+                preCalls.should.have.length(0);
+                posts.should.have.length(0);
+            });
+        });
+
+        describe("S-1, D8: the single-flow api", function() {
+            const calls = {
+                "addFlow v1": () => flows.addFlow({ flow: { label: "x", nodes: [] }, req: {} }),
+                "addFlow v2": () => flows.addFlow({ flow: { label: "x", nodes: [] }, apiVersion: "v2", req: {} }),
+                "updateFlow v1": () => flows.updateFlow({ id: "t1", flow: { nodes: [] }, req: {} }),
+                "updateFlow v2": () => flows.updateFlow({ id: "t1", flow: { nodes: [] }, apiVersion: "v2", req: {} }),
+                "deleteFlow": () => flows.deleteFlow({ id: "t1", req: {} })
+            };
+            const AUDIT = { "addFlow": "flow.add", "updateFlow": "flow.update", "deleteFlow": "flow.remove" };
+            Object.keys(calls).forEach(function(name) {
+                it("AC-2: " + name + " is refused: 503 runtime_stopping, nothing built or changed, audit with the code", async function() {
+                    stopping();
+                    assertRefused(await rejected(calls[name]()));
+                    changed().should.eql([]);
+                    ["buildAddFlowConfig", "buildUpdateFlowConfig", "buildRemoveFlowConfig"].forEach(fn => runtime.flows[fn].called.should.be.false());
+                    preCalls.should.have.length(0);
+                    runtime.log.audit.calledWithMatch({ event: AUDIT[name.split(" ")[0]], error: "runtime_stopping" }).should.be.true();
+                    lock.isLocked().should.be.false();
+                });
+            });
+            it("AC-2: the refusal wins over a wrong rev (409), an unknown id (404), version_required, a prepare error and a rejecting preDeploy handler", async function() {
+                setup({ requireRevision: true });
+                hooks.add("preDeploy.t84reject", function() { throw Object.assign(new Error("no"), { code: "deploy_rejected", status: 400 }) });
+                stopping();
+                assertRefused(await rejected(flows.updateFlow({ id: "t1", flow: { nodes: [], rev: "wrong" }, apiVersion: "v2", req: {} })));
+                assertRefused(await rejected(flows.updateFlow({ id: "nope", flow: { nodes: [] }, req: {} })));
+                assertRefused(await rejected(flows.updateFlow({ id: "t1", flow: { nodes: [] }, req: {} })));
+                assertRefused(await rejected(flows.deleteFlow({ id: "nope", req: {} })));
+                assertRefused(await rejected(flows.deleteFlow({ id: "t1", rev: "wrong", req: {} })));
+                assertRefused(await rejected(flows.addFlow({ flow: { nodes: [], globalConfigs: [], globalRev: "wrong" }, req: {} })));
+                runtime.flows.buildUpdateFlowConfig = sinon.spy(() => { throw Object.assign(new Error("build"), { code: "duplicate_id" }) });
+                assertRefused(await rejected(flows.updateFlow({ id: "t1", flow: { nodes: [], rev: "rev-t1" }, req: {} })));
+                changed().should.eql([]);
+                runtime.log.audit.calledWithMatch({ event: "flow.update", error: "runtime_stopping" }).should.be.true();
+                runtime.log.audit.calledWithMatch({ event: "flow.remove", error: "runtime_stopping" }).should.be.true();
+            });
+        });
+
+        describe("S-3, E8-E10: POST /flows/state", function() {
+            it("AC-6: start in stopping is refused 503 runtime_stopping: runtimeFlowState not saved, nothing started, audited", async function() {
+                stopping();
+                const err = await rejected(flows.setState({ state: "start", req: {} }));
+                assertRefused(err);
+                runtime.settings.set.called.should.be.false();
+                runtime.flows.startFlows.called.should.be.false();
+                runtime.log.audit.calledWithMatch({ event: "flows.setState", state: "start", error: "runtime_stopping" }).should.be.true();
+                lock.isLocked().should.be.false();
+                instanceState.get().state.should.equal("stopping");
+            });
+            it("AC-6: start in stopped is refused the same way", async function() {
+                stopping();
+                instanceState.markStopped();
+                assertRefused(await rejected(flows.setState({ state: "start" })));
+                runtime.settings.set.called.should.be.false();
+                runtime.flows.startFlows.called.should.be.false();
+            });
+            it("AC-6: a start that waits for the lock when the instance starts to stop is refused under the lock", async function() {
+                let release;
+                const taken = sinon.spy(lock, "runExclusive");
+                let entered;
+                const inside = new Promise(resolve => { entered = resolve });
+                const holding = lock.runExclusive(() => new Promise(resolve => { release = resolve; entered() }));
+                try {
+                    // the test holds the lock
+                    (await settle(inside)).state.should.equal("resolved", "the test did not take the deploy lock");
+                    const request = flows.setState({ state: "start" });
+                    // the request asked for the lock (held by the test): it waits for it
+                    await until(() => taken.callCount === 2, "the request did not ask for the deploy lock");
+                    stopping();
+                    release();
+                    await holding;
+                    assertRefused(await rejected(request));
+                } finally {
+                    taken.restore();
+                    release();
+                    await holding;
+                }
+                runtime.settings.set.called.should.be.false();
+                runtime.flows.startFlows.called.should.be.false();
+            });
+            it("AC-6: stop in stopping is answered 200 {state: stop} as before and saves the state", async function() {
+                let flowsState = "start";
+                runtime.flows.state = () => flowsState;
+                runtime.flows.stopFlows = sinon.spy(async () => { flowsState = "stop" });
+                stopping();
+                const result = await flows.setState({ state: "stop", req: {} });
+                result.should.eql({ state: "stop" });
+                runtime.flows.stopFlows.calledOnce.should.be.true();
+                runtime.settings.set.calledWith("runtimeFlowState", "stop").should.be.true();
+            });
+            it("AC-6: an invalid value is 400 invalid_run_state, a disabled runtimeState is 405, an editor-only start is 409 - before the refusal", async function() {
+                stopping();
+                (await rejected(flows.setState({ state: "x" }))).should.have.properties({ code: "invalid_run_state", status: 400 });
+                runtime.settings.runtimeState.enabled = false;
+                (await rejected(flows.setState({ state: "start" }))).should.have.properties({ code: "not_allowed", status: 405 });
+                runtime.settings.runtimeState.enabled = true;
+                runtime.settings.editorOnly = true;
+                (await rejected(flows.setState({ state: "start" }))).should.have.properties({ code: "editor_only", status: 409 });
+                runtime.flows.startFlows.called.should.be.false();
+            });
+            it("AC-6 (off): without stopping start is accepted as before", async function() {
+                const result = await flows.setState({ state: "start" });
+                result.should.have.property("state");
+                runtime.flows.startFlows.calledOnce.should.be.true();
+                runtime.settings.set.calledWith("runtimeFlowState", "start").should.be.true();
+            });
+            it("AC-27: a stub of isStopping() that returns true refuses the start while the state text is ready", async function() {
+                should(typeof instanceState.isStopping).equal("function", "state.isStopping is not exported");
+                const stub = sinon.stub(instanceState, "isStopping").returns(true);
+                try {
+                    assertRefused(await rejected(flows.setState({ state: "start" })));
+                    instanceState.get().state.should.equal("ready");
+                    runtime.flows.startFlows.called.should.be.false();
+                    assertRefused(await rejected(flows.setFlows({ flows: { flows: [] }, deploymentType: "full" })));
+                } finally {
+                    stub.restore();
+                }
+            });
+        });
+
+        describe("E7, E19, V12: after runtime.stop() resolved (the state stopped)", function() {
+            beforeEach(function() {
+                stopping("stop");
+                instanceState.markStopped();
+            });
+            it("AC-3: setFlows and addFlow reject runtime_stopping 503, with and without req; nothing saved or started", async function() {
+                for (const req of [undefined, {}]) {
+                    assertRefused(await rejected(flows.setFlows({ flows: { flows: [{ id: "a", type: "tab" }] }, deploymentType: "full", req: req })));
+                    assertRefused(await rejected(flows.setFlows({ deploymentType: "reload", req: req })));
+                    assertRefused(await rejected(flows.addFlow({ flow: { label: "x", nodes: [] }, apiVersion: "v2", req: req })));
+                    assertRefused(await rejected(flows.updateFlow({ id: "t1", flow: { nodes: [] }, req: req })));
+                    assertRefused(await rejected(flows.deleteFlow({ id: "t1", req: req })));
+                }
+                changed().should.eql([]);
+                assertNotWarned();
+            });
         });
     });
 });

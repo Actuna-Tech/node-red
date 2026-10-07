@@ -236,6 +236,18 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 ### 4.4 Pełny katalog kodów
 [ZASADY.md](ZASADY.md) §2.4. Słowo `version` w kodach oznacza **rewizję flow** (`rev`), nie wersję API.
 
+- **503 `runtime_stopping` (#84):** instancja się zatrzymuje (stan `stopping`/`stopped` – sygnał, `RED.health.shutdown()`,
+  `RED.stop()`, także w trakcie drenażu `shutdownTimeout`). Odpowiedź na każde wdrożenie (`POST /flows` wszystkich typów,
+  v1 i v2, `POST /flow`, `PUT`/`DELETE /flow/:id`) i na `POST /flows/state` `{state: "start"}`; treść `{code, message}`,
+  komunikat stały, bez `Retry-After`. **Nic nie zostało zmienione** – bezpieczne ponowienie po restarcie instancji albo
+  na innej instancji (np. przez Service w K8s). Odmowa ma pierwszeństwo przed 409/400 rewizji i 404 brakującego flow.
+  Klient Admin API, który ponawia 503 `deploy_hook_*`, może tak samo ponawiać `runtime_stopping`; nie traktować go jak
+  konfliktu rewizji. Wdrożenie, które zapisywało konfigurację, gdy zatrzymanie się zaczęło, jest zapisane i nie
+  startuje: domyślnie 200 `{rev}`, w trybie `deploy.response: "started"` 500 `deploy_start_failed` z `rev` i
+  `errors[].code: "runtime_stopping"` (nie powtarzać – zmiana wystartuje po restarcie). Hook `postDeploy` takiego
+  wdrożenia ma `start.status: "not_started"` (zatrzymanie zaczęło się przed wynikiem; `"pending"`, gdy po wyniku –
+  ostateczną prawdą jest wtedy `instance:state` `stopping`).
+
 ### 4.5 Stan instancji, sondy i zatrzymanie (E-02, Z-08, Z-15)
 
 - **Nazwy stanów są kontraktem** (R-23): `init, starting, ready, deploying, reloadPending, reloading, idle, loaded, failed,
@@ -282,6 +294,21 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   działa jak przed #73 (bez odrzucenia), kolejne – jak wyżej. `catch` przy
   `RED.start()` jest wymagany i powinien pominąć `startup_stopped` – to nie nieudany start (przykład wyżej); drugie
   `RED.stop("startup-error")` i kod 1 byłyby błędem.
+- **Wdrożenie w trakcie zatrzymania (#84):** od wejścia w stan `stopping` żadne wdrożenie, przeładowanie ani start nie
+  tworzy ani nie uruchamia flow (wdrożenia: 503 `runtime_stopping`, §4.4; start flow: jeden log `info` `The flows are not
+  started: the runtime is stopping`). `RED.stop()` rozwiązuje się dopiero, gdy wszystkie flow są zatrzymane – także flow
+  zostawione przez wdrożenie częściowe i flow uruchomione przez start, który już trwał: czeka na trwające zatrzymanie flow
+  i na flow, które starty właśnie uruchamiają (każde najwyżej `nodeCloseTimeout`, potem ostrzeżenie), nigdy na instalację
+  modułów ani blokadę wdrożeń. Węzły, które start utworzy po tym limicie, są zamykane, gdy ten start się skończy – możliwie dopiero po
+  rozwiązaniu `RED.stop()` (także po zamknięciu kontekstów); są zamykane jak przy zwykłym zatrzymaniu (`removed: false`),
+  także gdy ich flow zostało usunięte z konfiguracji. Wdrożenie, które zapisywało konfigurację, gdy zatrzymanie się zaczęło
+  (stan `stopping`, flow jeszcze działają), zatrzymuje tylko to, co zmienia (`full` – wszystko; otwarte zapytania HTTP
+  dostają wtedy 503 po zatrzymaniu flow, co kończy wcześniej czekanie zatrzymania procesu na zapytania), i niczego nie
+  uruchamia; po nim `GET /flows/state` i zdarzenie `runtime-state` mówią `stop`
+  (`deploy: true`), choć niezmienione flow obsługują jeszcze ruch do `RED.stop()` – stan instancji to już `stopping`,
+  `/ready` 503. Kod osadzający, który wołał `setFlows` po `RED.stop()`, dostaje odrzucenie `runtime_stopping`.
+  Zmiana projektu w trakcie zatrzymania nie jest odrzucana; flow przełączonego projektu startują po restarcie. Sekwencja
+  stanów bez zmian (`… → stopping → stopped`, nigdy `failed`/`ready` z powodu pominiętego startu).
 - **Odrzucone żądanie `/flow` nie emituje `deploying` (#10, U1, A24, D19):** `POST /flow`, `PUT` i `DELETE /flow/:id` sprawdzają rewizje i budują
   konfigurację przed stanem `deploying`, więc odrzucone żądanie (409, 404, `duplicate_id`, `invalid_flow_id`, 400 `global`) nie przechodzi przez
   `deploying` i z powrotem: brak zdarzeń `instance:state`, brak chwilowego 503 na `/ready` i brak chwilowego wstrzymania z #8; nie unieważnia też
@@ -563,6 +590,7 @@ Nagłówki „Modified by Actuna Sp. z o.o.” – zachowane w forku (D-19); pli
 - [ ] Konfiguracje globalne w `globalConfigs[]`, nie w `configs` (gdy używane `/flow`).
 - [ ] K8s: sondy i drenaż wg §3.3.
 - [ ] Dodatki edytora przeniesione na API Z-12 (po wdrożeniu Z-12); linki w formacie `#flow/<id>/node/<id>`; źródła osadzenia w `editorTheme.embedding.allowedOrigins` (R-28).
+- [ ] Narzędzia obsługują 503 `runtime_stopping` (#84: instancja się zatrzymuje, nic nie zmieniono – ponowienie po restarcie albo na innej instancji; w `deploy_start_failed` jako `errors[].code` – zapisane, nie powtarzać).
 - [ ] Narzędzia obsługują 503 `deploy_hook_timeout` i `deploy_hook_failed` (ponowienie później; nic nie zapisano), 403 `node_type_not_permitted`, 400 `read_only_user_dir`; `DELETE /flow/:id` z `?rev=` (R-14, R-15, R-18, R-27).
 - [ ] Monitoring stanu: nazwy stanów i zdarzenie `instance:state` wg §4.5; brak parsowania treści 503 sondy (R-22, R-23).
 - [ ] Lista `Origin` dla `/comms` i `editorTheme.embedding.allowedOrigins` ustawione na naszych instalacjach (R-06, R-35); klienty `/comms` bez założenia `auth fail` przy wyłączonym `adminAuth` (R-05).

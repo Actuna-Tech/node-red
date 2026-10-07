@@ -41,6 +41,7 @@
  *   old behaviour of a stop during a start that hangs are changed on purpose (AC-5, AC-7 of #73)
  *   #73 phase B: a stop at every step and boundary, with and without the limit, the drain, hostile reasons, repeated cycles, installs
  *   #82: the start logs the warning of a drain timeout above 300000 ms once
+ *   #84: the first start of the flows during the shutdown drain (the state stopping, RED.stop not yet called) creates no flow
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -3951,6 +3952,105 @@ describe("runtime", function() {
                     });
                 });
             });
+        });
+    });
+    // #84 (AC-16, E14): the first start of the runtime reaches the start of the flows while the instance is stopping
+    describe("the first start of the flows while the instance is stopping (#84, AC-16)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const flowsModule = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
+        const Flow = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/Flow");
+        const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
+        const typeRegistry = NR_TEST_UTILS.require("@node-red/registry");
+        const { createWorld, deferred, quiesce, until, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
+        let stubs;
+        let world;
+        let states;
+        let off;
+        let loadGate;
+        // the preShutdown hook (the drain of the shutdown) ends when the test says so, not after a stretch of time
+        let drainGate;
+        // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time
+        this.timeout(SUITE_TIMEOUT * 3); // a test can wait (bounded) several times: the guard is larger than their sum
+        beforeEach(function() {
+            instanceState.reset();
+            states = [];
+            off = instanceState.onChange(info => states.push(info.state));
+            loadGate = deferred();
+            drainGate = deferred();
+            world = createWorld(Flow, sinon);
+            stubs = [
+                sinon.stub(storage, "init").callsFake(() => Promise.resolve()),
+                sinon.stub(redNodes, "init").callsFake(() => {}),
+                sinon.stub(redNodes, "load").callsFake(() => Promise.resolve()),
+                sinon.stub(redNodes, "cleanModuleList").callsFake(() => {}),
+                sinon.stub(redNodes, "getNodeList").callsFake(() => []),
+                sinon.stub(redNodes, "loadContextsPlugin").callsFake(() => Promise.resolve()),
+                sinon.stub(redNodes, "closeContextsPlugin").callsFake(() => Promise.resolve()),
+                // the flows are read when the test lets them
+                sinon.stub(redNodes, "loadFlows").callsFake(async function() { await loadGate.promise; return flowsModule.load() }),
+                sinon.stub(typeRegistry, "get").callsFake(type => type.indexOf("missing") === -1),
+                sinon.stub(typeRegistry, "checkFlowDependencies").callsFake(async () => {}),
+                sinon.stub(credentials, "clean").callsFake(conf => { conf.forEach(n => { delete n.credentials }); return Promise.resolve() }),
+                sinon.stub(credentials, "load").callsFake(() => Promise.resolve()),
+                sinon.stub(credentials, "add").callsFake(async () => {})
+            ];
+            mockUtil();
+        });
+        afterEach(async function() {
+            loadGate.resolve();
+            drainGate.resolve();
+            world.releaseAll();
+            await quiesce();
+            off();
+            instanceState.reset();
+            util.hooks.clear();
+            try {
+                // drop whatever the test left in the flows module
+                await flowsModule.load();
+                await flowsModule.startFlows();
+                await flowsModule.stopFlows("full");
+            } finally {
+                world.restore();
+                stubs.forEach(s => s.restore());
+                unmockUtil();
+                instanceState.reset();
+            }
+        });
+
+        it("AC-16: the shutdown drain began (state stopping, RED.stop not called) while the flows are being read: no flow is created; after the stop the states are starting, stopping, stopped", async function() {
+            const quietLog = { log: sinon.stub(), debug: sinon.stub(), trace: sinon.stub(), warn: sinon.stub(), info: sinon.stub(), error: sinon.stub(), metric: sinon.stub(), audit: sinon.stub(), _: k => k };
+            flowsModule.init({ log: quietLog, settings: {}, storage: {
+                getFlows: async () => ({ flows: [{ id: "A", type: "tab" }, { id: "a1", type: "test", z: "A", wires: [] }], rev: "r1" }),
+                saveFlows: async () => "r2"
+            } });
+            runtime.init({ testSettings: true, httpAdminRoot: "/", shutdownTimeout: 120000, hooks: {
+                "preShutdown.t84": function(payload) { return drainGate.promise }
+            } });
+            await runtime.start();
+            instanceState.get().state.should.equal("starting");
+            // health.shutdown: the state is stopping at once, RED.stop only after the drain
+            const stopSpy = sinon.spy(function() { return runtime.stop("SIGTERM") });
+            const shutdown = runtime.health.shutdown({ reason: "SIGTERM", stop: stopSpy });
+            await until(() => instanceState.get().state === "stopping", "the shutdown did not set the state stopping");
+            stopSpy.called.should.be.false("the drain ended too early for this test");
+            // the read of the flows ends in the drain: the start of the flows is reached in stopping (and skipped)
+            const startFlows = sinon.spy(redNodes, "startFlows");
+            stubs.push(startFlows);
+            loadGate.resolve();
+            await until(() => startFlows.callCount === 1, "the start of the flows was not reached");
+            (await settle(startFlows.returnValues[0])).state.should.equal("resolved", "the start of the flows did not end");
+            await quiesce();
+            stopSpy.called.should.be.false("the drain ended before the test ended it");
+            world.created.should.eql([], "a flow was created while the instance is stopping");
+            world.starts.should.eql([]);
+            flowsModule.started.should.be.false();
+            flowsModule.state().should.equal("stop");
+            // the drain ends: RED.stop follows
+            drainGate.resolve();
+            (await settle(shutdown)).state.should.equal("resolved");
+            instanceState.get().state.should.equal("stopped");
+            states.should.eql(["starting", "stopping", "stopped"]);
+            world.created.should.eql([]);
         });
     });
 });
