@@ -3573,6 +3573,11 @@ describe("flows/reload (Z-09)", function() {
     });
     // #84 (S-2, AC-14, B3): the reread under the deploy lock completes after the instance started to stop
     describe("a reload that meets the stop (#84, AC-14)", function() {
+        // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time
+        const { quiesce, settle, SUITE_TIMEOUT, WAIT_LIMIT } = require("nr-test-utils/stop-race-world");
+        // the answer of the pipeline to the cycle: bounded, so that a hang is reported with its place, not as a mocha timeout
+        const answered = async (spy, what) => { (await settle(spy.returnValues[0])).state.should.not.equal("timeout", what) };
+        this.timeout(SUITE_TIMEOUT);
         const failures = () => env.logs.warn.concat(env.logs.error).filter(m => /^reload\.(read-failed|failed|still-failing|retries-exhausted|keep-ready|not-kept-ready|stale)/.test(m));
         let hook;
         beforeEach(function() {
@@ -3583,31 +3588,39 @@ describe("flows/reload (Z-09)", function() {
         it("AC-14: the stop begins while the reread reads storage: nothing is stopped, started or loaded, no failure, no extra round, the state stays stopping", async function() {
             env = createEnv({ reload: { type: "diff" } });
             await env.start();
-            const read = env.storage.getFlows;
-            env.storage.getFlows = async function(readOpts) {
-                const result = await read(readOpts);
-                if (env.getFlowsCalls === 2) {
-                    // the reread under the lock (the second read of the cycle) completes in stopping
-                    state.markStopping("SIGTERM");
-                }
-                return result;
-            };
-            env.change("B");
-            env.notify({ rev: "B" });
-            await waitFor(() => env.getFlowsCalls >= 2, 1000, "the reread did not run");
-            await delay(120);
-            env.flows.reloadFromStorage.called.should.be.false();
-            env.applied.should.have.length(0);
-            env.runtime.flows.credentialsChanged.callCount.should.be.below(3);
-            // one preReload round only, no second read
-            hook.callCount.should.equal(1);
-            env.getFlowsCalls.should.equal(2);
-            failures().should.eql([]);
-            env.logs.info.filter(m => m.indexOf("reload.reloaded") === 0).should.eql([]);
-            env.audits.filter(a => a.event === "flows.reload").should.eql([]);
-            state.get().state.should.equal("stopping");
-            state.get().should.not.have.property("reload");
-            lock.isLocked().should.be.false();
+            const deployed = sinon.spy(pipeline, "deploy");
+            try {
+                const read = env.storage.getFlows;
+                env.storage.getFlows = async function(readOpts) {
+                    const result = await read(readOpts);
+                    if (env.getFlowsCalls === 2) {
+                        // the reread under the lock (the second read of the cycle) completes in stopping
+                        state.markStopping("SIGTERM");
+                    }
+                    return result;
+                };
+                env.change("B");
+                env.notify({ rev: "B" });
+                await waitFor(() => env.getFlowsCalls >= 2, WAIT_LIMIT, "the reread did not run");
+                // the cycle ends: the pipeline answered (skipped) and nothing chained on it is left
+                await waitFor(() => deployed.callCount === 1, WAIT_LIMIT, "the pipeline was not called");
+                await answered(deployed, "the pipeline did not answer the cycle that ended in stopping");
+                await quiesce();
+                env.flows.reloadFromStorage.called.should.be.false();
+                env.applied.should.have.length(0);
+                env.runtime.flows.credentialsChanged.callCount.should.be.below(3);
+                // one preReload round only, no second read
+                hook.callCount.should.equal(1);
+                env.getFlowsCalls.should.equal(2);
+                failures().should.eql([]);
+                env.logs.info.filter(m => m.indexOf("reload.reloaded") === 0).should.eql([]);
+                env.audits.filter(a => a.event === "flows.reload").should.eql([]);
+                state.get().state.should.equal("stopping");
+                state.get().should.not.have.property("reload");
+                lock.isLocked().should.be.false();
+            } finally {
+                deployed.restore();
+            }
         });
 
         [
@@ -3626,8 +3639,9 @@ describe("flows/reload (Z-09)", function() {
                     await env.start();
                     env.change("B");
                     env.notify({ rev: "B" });
-                    await waitFor(() => deploy.callCount >= 1, 1000, "the pipeline was not called");
-                    await delay(150);
+                    await waitFor(() => deploy.callCount >= 1, WAIT_LIMIT, "the pipeline was not called");
+                    await answered(deploy, "the pipeline did not answer the cycle");
+                    await quiesce();
                     deploy.callCount.should.equal(1);
                     hook.callCount.should.equal(1);
                     failed.called.should.be.false();
@@ -3647,18 +3661,21 @@ describe("flows/reload (Z-09)", function() {
             await env.start();
             let release;
             const held = lock.runExclusive(() => new Promise(resolve => { release = resolve }));
+            const deployed = sinon.spy(pipeline, "deploy");
             try {
                 env.change("B");
                 env.notify({ rev: "B" });
-                // the cycle ran its preReload and its drain and now waits in pipeline.deploy for the lock
-                await waitFor(() => hook.callCount === 1, 1000, "the preReload did not run");
-                await delay(80);
+                // the cycle ran its preReload and its drain and now waits in pipeline.deploy for the lock: the pipeline
+                // was called and the lock is held, so it cannot go further
+                await waitFor(() => hook.callCount === 1 && deployed.callCount === 1, WAIT_LIMIT, "the cycle did not reach the pipeline");
+                await quiesce();
                 const reads = env.getFlowsCalls;
                 state.markStopping("SIGTERM");
                 release();
                 await held;
+                await answered(deployed, "the pipeline did not answer after the lock was released");
                 // a further cycle would read storage and call the preReload again
-                await delay(250);
+                await quiesce();
                 hook.callCount.should.equal(1);
                 env.getFlowsCalls.should.equal(reads);
                 env.flows.reloadFromStorage.called.should.be.false();
@@ -3669,6 +3686,7 @@ describe("flows/reload (Z-09)", function() {
                 state.get().state.should.equal("stopping");
                 lock.isLocked().should.be.false();
             } finally {
+                deployed.restore();
                 if (release) {
                     release();
                 }
@@ -3680,7 +3698,7 @@ describe("flows/reload (Z-09)", function() {
             await env.start();
             env.change("B");
             env.notify({ rev: "B" });
-            await waitFor(() => env.applied.length === 1 && state.get().state === "ready");
+            await waitFor(() => env.applied.length === 1 && state.get().state === "ready", WAIT_LIMIT, "the reload was not applied");
             hook.callCount.should.equal(1);
             failures().should.eql([]);
         });

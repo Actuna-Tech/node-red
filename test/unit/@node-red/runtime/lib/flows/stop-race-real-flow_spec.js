@@ -28,7 +28,7 @@ const should = require("should");
 const sinon = require("sinon");
 const util = require("util");
 const NR_TEST_UTILS = require("nr-test-utils");
-const { deferred, delay, flush, settle } = require("nr-test-utils/stop-race-world");
+const { deferred, quiesce, until, fakeClock, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
 
 const flows = NR_TEST_UTILS.require("@node-red/runtime/lib/flows");
 const flowUtil = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/util");
@@ -55,8 +55,15 @@ function config() {
 }
 
 describe("flows: the stop of the runtime against the real Flow and Subflow (#84, phase B)", function() {
+    // the limit of a hang, not of the speed of the machine: nothing in this suite waits for a stretch of time
+    this.timeout(SUITE_TIMEOUT);
     let constructed;
-    let closeDelay;
+    // closeGate[id]: the close of the node waits until the test resolves the gate
+    let closeGate;
+    // the ids of the nodes whose close began
+    let closing;
+    // a fake clock for the production timers (the tests whose result depends on a time bound); restored after every test
+    let clock = null;
     let closed;
     let gates;
     let stubs;
@@ -71,8 +78,9 @@ describe("flows: the stop of the runtime against the real Flow and Subflow (#84,
         const node = this;
         constructed.push(n.id);
         this.on("close", function(done) {
-            if (closeDelay[node.id]) {
-                setTimeout(function() { closed.push(node.id); done() }, closeDelay[node.id]);
+            closing.push(node.id);
+            if (closeGate[node.id]) {
+                closeGate[node.id].promise.then(function() { closed.push(node.id); done() });
             } else {
                 closed.push(node.id);
                 done();
@@ -101,7 +109,8 @@ describe("flows: the stop of the runtime against the real Flow and Subflow (#84,
 
     beforeEach(function() {
         constructed = [];
-        closeDelay = {};
+        closeGate = {};
+        closing = [];
         closed = [];
         gates = {};
         unhandled = [];
@@ -121,8 +130,13 @@ describe("flows: the stop of the runtime against the real Flow and Subflow (#84,
     });
 
     afterEach(async function() {
+        if (clock) {
+            clock.restore();
+            clock = null;
+        }
         Object.keys(gates).forEach(k => gates[k] && gates[k].resolve());
-        await delay(30);
+        Object.keys(closeGate).forEach(k => closeGate[k] && closeGate[k].resolve());
+        await quiesce();
         gates = {};
         stubs.splice(3).forEach(s => s.restore());
         try {
@@ -152,13 +166,6 @@ describe("flows: the stop of the runtime against the real Flow and Subflow (#84,
         pending.push(promise.catch(() => {}));
         return promise;
     }
-    async function until(condition, ms) {
-        const limit = Date.now() + (ms || 2000);
-        while (!condition() && Date.now() < limit) {
-            await delay(10);
-        }
-        condition().should.be.true("the condition was not reached");
-    }
     function warnings() {
         return mockLog.warn.args.filter(a => /nodes\.flows\.start-wait-timeout/.test(a[0]));
     }
@@ -167,8 +174,7 @@ describe("flows: the stop of the runtime against the real Flow and Subflow (#84,
         constructed.slice().sort().should.eql(closed.slice().sort(), "constructed and closed nodes differ");
     }
     async function assertNoUnhandled() {
-        await flush();
-        await delay(20);
+        await quiesce();
         unhandled.map(e => (e && e.message) || String(e)).should.eql([], "a promise was rejected without a handler");
     }
 
@@ -188,13 +194,23 @@ describe("flows: the stop of the runtime against the real Flow and Subflow (#84,
             const starting = flows.startFlows();
             pending.push(starting.catch(() => {}));
             await until(() => constructed.length > 0 && (held === "a2" ? constructed.some(id => /-s2$/.test(id)) : constructed.some(id => /-s1$/.test(id))));
-            const began = Date.now();
-            (await settle(stopRuntime(), 3000)).state.should.equal("resolved");
-            (Date.now() - began).should.be.aboveOrEqual(190);
+            // the bound (nodeCloseTimeout 200) is the fake clock: the stop waits for it, and not longer
+            clock = fakeClock(sinon);
+            const stopped = stopRuntime();
+            let resolved = false;
+            stopped.then(() => { resolved = true }, () => { resolved = true });
+            await quiesce();
+            clock.tick(199);
+            await quiesce();
+            resolved.should.be.false("runtime.stop() did not wait for the bound");
+            clock.tick(1);
+            (await settle(stopped)).state.should.equal("resolved");
+            clock.restore();
+            clock = null;
             warnings().should.have.length(1);
             gates[held].resolve();
-            (await settle(starting, 3000)).state.should.equal("resolved");
-            await delay(150);
+            (await settle(starting)).state.should.equal("resolved");
+            await quiesce();
             assertAllClosedOnce();
             constructed.should.containEql("a1");
             flows.started.should.be.false();
@@ -205,21 +221,27 @@ describe("flows: the stop of the runtime against the real Flow and Subflow (#84,
 
     it("B-13: the start ends while runtime.stop() is closing a slow node of the same flow: the node it creates meanwhile is closed, no node is closed twice, runtime.stop() resolves", async function() {
         await boot({ nodeCloseTimeout: 2000 });
-        // a1 is created first and closes slowly; the start hangs at a2
-        closeDelay.a1 = 300;
+        // a1 is created first and its close waits for the test; the start hangs at a2
+        closeGate.a1 = deferred();
         gates.a2 = deferred();
         const starting = flows.startFlows();
         pending.push(starting.catch(() => {}));
         await until(() => constructed.some(id => /-s2$/.test(id)));
-        // stop: the bound is the nodeCloseTimeout of the setting: use a short one through the default of the module
+        // stop: the bound is the nodeCloseTimeout of the setting (a short one), the fake clock moves it
         settings.nodeCloseTimeout = 100;
+        clock = fakeClock(sinon);
         const stopped = stopRuntime();
-        // the bound passes (100 ms): the stop of the flow A is closing a1 (300 ms); the start ends now
-        await delay(150);
+        await quiesce();
+        closing.should.eql([], "the stop closed a node before the bound of the start that is in progress");
+        // the bound passes (100 ms): the stop of the flow A is closing a1 (its close waits); the start ends now
+        clock.tick(100);
+        await until(() => closing.indexOf("a1") !== -1, "the stop did not begin to close a1 after the bound");
         gates.a2.resolve();
-        (await settle(stopped, 3000)).state.should.equal("resolved");
-        (await settle(starting, 3000)).state.should.equal("resolved");
-        await delay(400);
+        await quiesce();
+        closeGate.a1.resolve();
+        (await settle(stopped)).state.should.equal("resolved");
+        (await settle(starting)).state.should.equal("resolved");
+        await quiesce();
         assertAllClosedOnce();
         constructed.filter(id => id === "a2").should.have.length(1);
         flows.started.should.be.false();

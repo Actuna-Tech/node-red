@@ -3961,18 +3961,22 @@ describe("runtime", function() {
         const Flow = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/Flow");
         const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
         const typeRegistry = NR_TEST_UTILS.require("@node-red/registry");
-        const { createWorld, deferred, delay, flush, settle } = require("nr-test-utils/stop-race-world");
+        const { createWorld, deferred, flush, quiesce, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
         let stubs;
         let world;
         let states;
         let off;
         let loadGate;
+        // the preShutdown hook (the drain of the shutdown) ends when the test says so, not after a stretch of time
+        let drainGate;
+        // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time
+        this.timeout(SUITE_TIMEOUT);
         beforeEach(function() {
-            this.timeout(10000);
             instanceState.reset();
             states = [];
             off = instanceState.onChange(info => states.push(info.state));
             loadGate = deferred();
+            drainGate = deferred();
             world = createWorld(Flow, sinon);
             stubs = [
                 sinon.stub(storage, "init").callsFake(() => Promise.resolve()),
@@ -3994,8 +3998,9 @@ describe("runtime", function() {
         });
         afterEach(async function() {
             loadGate.resolve();
+            drainGate.resolve();
             world.releaseAll();
-            await delay(30);
+            await quiesce();
             off();
             instanceState.reset();
             util.hooks.clear();
@@ -4013,14 +4018,13 @@ describe("runtime", function() {
         });
 
         it("AC-16: the shutdown drain began (state stopping, RED.stop not called) while the flows are being read: no flow is created; after the stop the states are starting, stopping, stopped", async function() {
-            this.timeout(10000);
             const quietLog = { log: sinon.stub(), debug: sinon.stub(), trace: sinon.stub(), warn: sinon.stub(), info: sinon.stub(), error: sinon.stub(), metric: sinon.stub(), audit: sinon.stub(), _: k => k };
             flowsModule.init({ log: quietLog, settings: {}, storage: {
                 getFlows: async () => ({ flows: [{ id: "A", type: "tab" }, { id: "a1", type: "test", z: "A", wires: [] }], rev: "r1" }),
                 saveFlows: async () => "r2"
             } });
-            runtime.init({ testSettings: true, httpAdminRoot: "/", shutdownTimeout: 5000, hooks: {
-                "preShutdown.t84": function(payload) { return new Promise(function(resolve) { setTimeout(resolve, 400) }) }
+            runtime.init({ testSettings: true, httpAdminRoot: "/", shutdownTimeout: 120000, hooks: {
+                "preShutdown.t84": function(payload) { return drainGate.promise }
             } });
             await runtime.start();
             instanceState.get().state.should.equal("starting");
@@ -4032,14 +4036,15 @@ describe("runtime", function() {
             stopSpy.called.should.be.false("the drain ended too early for this test");
             // the read of the flows ends in the drain: the start of the flows is reached in stopping
             loadGate.resolve();
-            await flush(6);
-            await delay(100);
-            stopSpy.called.should.be.false();
+            await quiesce();
+            stopSpy.called.should.be.false("the drain ended before the test ended it");
             world.created.should.eql([], "a flow was created while the instance is stopping");
             world.starts.should.eql([]);
             flowsModule.started.should.be.false();
             flowsModule.state().should.equal("stop");
-            (await settle(shutdown, 4000)).state.should.equal("resolved");
+            // the drain ends: RED.stop follows
+            drainGate.resolve();
+            (await settle(shutdown)).state.should.equal("resolved");
             instanceState.get().state.should.equal("stopped");
             states.should.eql(["starting", "stopping", "stopped"]);
             world.created.should.eql([]);

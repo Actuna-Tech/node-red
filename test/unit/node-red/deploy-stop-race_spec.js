@@ -41,6 +41,11 @@ const fs = require("fs");
 const http = require("http");
 const { spawn } = require("child_process");
 const { freePort } = require("nr-test-utils/free-port");
+const { SUITE_TIMEOUT, WAIT_LIMIT } = require("nr-test-utils/stop-race-world");
+
+// The limit of a wait for an event of a child process: only for a hang, not a requirement of speed (a slow machine, a
+// container with coverage). The suite timeout is larger than it.
+const WAIT = WAIT_LIMIT * 3;
 
 const PACKAGES = path.resolve(__dirname, "../../../packages/node_modules");
 const RED_JS = path.join(PACKAGES, "node-red/red.js");
@@ -69,7 +74,7 @@ function request(base, method, urlPath, body, headers, raw) {
                 resolve({ status: res.statusCode, body: json, text, headers: res.headers });
             });
         });
-        req.setTimeout(20000, () => req.destroy(new Error("the request took more than 20 s")));
+        req.setTimeout(WAIT, () => req.destroy(new Error("the request took more than " + WAIT / 1000 + " s")));
         req.on("error", reject);
         req.end(data);
     });
@@ -90,7 +95,8 @@ async function waitFor(check, timeout, message) {
     }
 }
 
-// The marker node: `v` is the version of the configuration, `closeDelay` the time its close takes
+// The marker node: `v` is the version of the configuration, `closeDelay` the time its close takes, `closeWait` a file
+// whose existence ends its close (when it is set it replaces the time)
 const NODE_JS = `
 module.exports = function(RED) {
     const fs = require("fs");
@@ -100,28 +106,41 @@ module.exports = function(RED) {
         fs.appendFileSync(marker, "construct " + n.id + " v" + (n.v || 1) + "\\n");
         this.on("close", function(done) {
             fs.appendFileSync(marker, "close " + n.id + "\\n");
-            setTimeout(function() {
+            const finish = function() {
                 fs.appendFileSync(marker, "closed " + n.id + "\\n");
                 done();
-            }, Number(n.closeDelay) || 0);
+            };
+            if (n.closeWait) {
+                // the close ends when the test creates the file: the order of the events is the test's, not the clock's
+                (function check() {
+                    if (fs.existsSync(n.closeWait)) {
+                        finish();
+                    } else {
+                        setTimeout(check, 20);
+                    }
+                })();
+            } else {
+                setTimeout(finish, Number(n.closeDelay) || 0);
+            }
         });
     }
     RED.nodes.registerType("marker", MarkerNode);
 };
 `;
-const NODE_HTML = `<script type="text/javascript">RED.nodes.registerType("marker",{category:"function",defaults:{v:{value:1},closeDelay:{value:0}},inputs:0,outputs:0,label:"marker"});</script>`;
+const NODE_HTML = `<script type="text/javascript">RED.nodes.registerType("marker",{category:"function",defaults:{v:{value:1},closeDelay:{value:0},closeWait:{value:""}},inputs:0,outputs:0,label:"marker"});</script>`;
 
-// The flows: `v` is the version; m1 closes slowly
-function flowsOf(v) {
+// The flows: `v` is the version; m1 closes slowly (900 ms, or when the file `closeWait` exists)
+function flowsOf(v, closeWait) {
     return [
         { id: "t", type: "tab", label: "t" },
-        { id: "m1", type: "marker", z: "t", v: v, closeDelay: 900, wires: [] },
+        { id: "m1", type: "marker", z: "t", v: v, closeDelay: closeWait ? 0 : 900, closeWait: closeWait || "", wires: [] },
         { id: "m2", type: "marker", z: "t", v: v, closeDelay: 0, wires: [] }
     ];
 }
 
 describe("a deployment that races the stop of the runtime (integration, #84)", function() {
-    this.timeout(90000);
+    // the limit of a hang, not of the speed of the machine
+    this.timeout(SUITE_TIMEOUT * 3);
     let children = [];
     let dirs = [];
 
@@ -138,17 +157,19 @@ describe("a deployment that races the stop of the runtime (integration, #84)", f
         dirs = [];
     });
 
-    function prepare() {
+    function prepare(gated) {
         const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "nr-stoprace-"));
         dirs.push(userDir);
         const nodesDir = path.join(userDir, "nodes");
         fs.mkdirSync(nodesDir);
         fs.writeFileSync(path.join(nodesDir, "marker.js"), NODE_JS);
         fs.writeFileSync(path.join(nodesDir, "marker.html"), NODE_HTML);
-        fs.writeFileSync(path.join(userDir, "flows.json"), JSON.stringify(flowsOf(1)));
+        // gated: the close of m1 ends when the test creates `closeGate` (nothing else ends it)
+        const closeGate = path.join(userDir, "close-m1");
+        fs.writeFileSync(path.join(userDir, "flows.json"), JSON.stringify(flowsOf(1, gated ? closeGate : undefined)));
         const marker = path.join(userDir, "marker.log");
         fs.writeFileSync(marker, "");
-        return { userDir, nodesDir, marker };
+        return { userDir, nodesDir, marker, closeGate };
     }
     function lines(marker) {
         return fs.readFileSync(marker, "utf8").split("\n").filter(l => l);
@@ -163,13 +184,14 @@ describe("a deployment that races the stop of the runtime (integration, #84)", f
         return child;
     }
     async function waitForServer(proc) {
-        await waitFor(async () => (await request(proc.base, "GET", "/flows", undefined, V2)).status === 200, 40000, "the server did not start; output:\n" + proc.output);
-        await waitFor(() => lines(proc.marker).filter(l => l.indexOf("construct ") === 0).length >= 2, 20000, "the flows were not started; output:\n" + proc.output);
+        await waitFor(async () => (await request(proc.base, "GET", "/flows", undefined, V2)).status === 200, WAIT, "the server did not start; output:\n" + proc.output);
+        await waitFor(() => lines(proc.marker).filter(l => l.indexOf("construct ") === 0).length >= 2, WAIT, "the flows were not started; output:\n" + proc.output);
     }
 
     describe("AC-25: the embedded mode", function() {
-        async function launchEmbedded() {
-            const dirs = prepare();
+        // gated: the close of m1 waits for the test (see prepare)
+        async function launchEmbedded(gated) {
+            const dirs = prepare(gated);
             const port = await freePort();
             const script = path.join(dirs.userDir, "embedder.js");
             fs.writeFileSync(script, `
@@ -188,6 +210,7 @@ RED.init(server, {
 });
 // the application stops Node-RED on request and answers when RED.stop() has resolved
 app.post("/__stop", function(req, res) {
+    require("fs").appendFileSync(process.env.NR_MARKER, "stop-called\\n");
     RED.stop().then(function() { res.json({ stopped: true }) }, function(err) { res.status(500).json({ error: String(err) }) });
 });
 app.use("/", RED.httpAdmin);
@@ -200,14 +223,19 @@ RED.start().then(function() { server.listen(${port}, "127.0.0.1") });
         }
 
         it("AC-25: RED.stop() during the stop step of a full deployment: no node of the new revision is constructed afterwards, every old node has a close marker, the deployment answers 200", async function() {
-            const proc = await launchEmbedded();
+            const proc = await launchEmbedded(true);
             const deployment = request(proc.base, "POST", "/flows", { flows: flowsOf(2) }, Object.assign({ "Node-RED-Deployment-Type": "full" }, V2));
-            // the deployment is in its stop step: the old nodes are closing (m1 takes 900 ms)
-            await waitFor(() => lines(proc.marker).indexOf("close m1") !== -1, 10000, "the deployment did not reach its stop step; output:\n" + proc.output);
+            // the deployment is in its stop step: the old nodes are closing (the close of m1 waits for the test)
+            await waitFor(() => lines(proc.marker).indexOf("close m1") !== -1, WAIT, "the deployment did not reach its stop step; output:\n" + proc.output);
             lines(proc.marker).should.not.containEql("closed m1");
-            const stop = await request(proc.base, "POST", "/__stop");
+            // RED.stop() is called while m1 is closing; the close ends only after the call (the call is in the marker file)
+            const stopping = request(proc.base, "POST", "/__stop");
+            await waitFor(() => lines(proc.marker).indexOf("stop-called") !== -1, WAIT, "RED.stop() was not called; output:\n" + proc.output);
+            fs.writeFileSync(proc.closeGate, "");
+            const stop = await stopping;
             stop.status.should.equal(200);
-            // after RED.stop() resolved nothing starts: wait longer than the close of m1 and than any start would need
+            // after RED.stop() resolved nothing starts. A window of time can only show an absence: it makes the test more
+            // sensitive, it never decides about a correct runtime (the length is not a requirement of speed)
             await sleep(1500);
             const marked = lines(proc.marker);
             marked.filter(l => /^construct .* v2$/.test(l)).should.eql([], "a node of the new revision was constructed after RED.stop() resolved; output:\n" + proc.output);
@@ -222,13 +250,16 @@ RED.start().then(function() { server.listen(${port}, "127.0.0.1") });
         });
 
         it("AC-25: the same with a partial deployment (type nodes): the unchanged node is closed too", async function() {
-            const proc = await launchEmbedded();
+            const proc = await launchEmbedded(true);
             const changed = flowsOf(1);
             // only m1 changes: m2 is unchanged and stays running through the deployment
             changed[1].v = 2;
             const deployment = request(proc.base, "POST", "/flows", { flows: changed }, Object.assign({ "Node-RED-Deployment-Type": "nodes" }, V2));
-            await waitFor(() => lines(proc.marker).indexOf("close m1") !== -1, 10000, "the deployment did not reach its stop step; output:\n" + proc.output);
-            const stop = await request(proc.base, "POST", "/__stop");
+            await waitFor(() => lines(proc.marker).indexOf("close m1") !== -1, WAIT, "the deployment did not reach its stop step; output:\n" + proc.output);
+            const stopping = request(proc.base, "POST", "/__stop");
+            await waitFor(() => lines(proc.marker).indexOf("stop-called") !== -1, WAIT, "RED.stop() was not called; output:\n" + proc.output);
+            fs.writeFileSync(proc.closeGate, "");
+            const stop = await stopping;
             stop.status.should.equal(200);
             await sleep(1500);
             const marked = lines(proc.marker);
@@ -240,7 +271,7 @@ RED.start().then(function() { server.listen(${port}, "127.0.0.1") });
         });
 
         it("AC-25: after RED.stop() resolved a deployment through the Admin API is refused 503 runtime_stopping and constructs nothing", async function() {
-            const proc = await launchEmbedded();
+            const proc = await launchEmbedded(false);
             const stop = await request(proc.base, "POST", "/__stop");
             stop.status.should.equal(200);
             const before = lines(proc.marker);
@@ -293,7 +324,7 @@ module.exports = ${JSON.stringify({
             const proc = await launchCli();
             const initial = lines(proc.marker);
             proc.child.kill("SIGTERM");
-            await waitFor(async () => (await request(proc.probes, "GET", "/health/ready")).status === 503, 5000, "/ready did not answer 503 after SIGTERM; output:\n" + proc.output);
+            await waitFor(async () => (await request(proc.probes, "GET", "/health/ready")).status === 503, WAIT, "/ready did not answer 503 after SIGTERM; output:\n" + proc.output);
             const refused = async function(name, method, urlPath, body, headers, raw) {
                 const res = await request(proc.base, method, urlPath, body, headers, raw);
                 res.status.should.equal(503, name + ": " + res.text);
@@ -327,7 +358,7 @@ module.exports = ${JSON.stringify({
             JSON.parse(fs.readFileSync(path.join(proc.userDir, "flows.json"), "utf8")).find(n => n.id === "m1").v.should.equal(1);
             // the end of the drain: RED.stop closes the nodes, the process ends
             fs.writeFileSync(proc.release, "");
-            await waitFor(() => proc.child.exitCode !== null || proc.child.signalCode !== null, 20000, "the process did not exit; output:\n" + proc.output);
+            await waitFor(() => proc.child.exitCode !== null || proc.child.signalCode !== null, WAIT, "the process did not exit; output:\n" + proc.output);
             should(proc.child.exitCode).equal(0);
             const marked = lines(proc.marker);
             marked.filter(l => /^construct .* v2$/.test(l)).should.eql([]);

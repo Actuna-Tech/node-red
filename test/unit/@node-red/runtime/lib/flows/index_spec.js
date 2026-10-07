@@ -52,7 +52,7 @@ var events = NR_TEST_UTILS.require("@node-red/util/lib/events");
 var credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
 var typeRegistry = NR_TEST_UTILS.require("@node-red/registry")
 var Flow = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/Flow");
-const { createWorld, deferred: worldDeferred, delay: worldDelay, flush: worldFlush, settle } = require("nr-test-utils/stop-race-world");
+const { createWorld, deferred: worldDeferred, flush: worldFlush, quiesce, fakeClock, settle, SUITE_TIMEOUT } = require("nr-test-utils/stop-race-world");
 
 describe('flows/index', function() {
 
@@ -2714,6 +2714,8 @@ describe('flows/index', function() {
     });
     // #84 (S-4, S-6, S-7, D3, D4, D5, D6): the start guard and the complete stop of the flows module, with the fake flows
     describe('stopping instance: the start guard and the complete stop (#84)', function() {
+        // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time
+        this.timeout(SUITE_TIMEOUT);
         const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
         const httpDrain = NR_TEST_UTILS.require("@node-red/runtime/lib/httpDrain");
         const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
@@ -2731,6 +2733,8 @@ describe('flows/index', function() {
         let gates;
         let drainStubs;
         let listeners;
+        // a fake clock for the production timers (the tests whose result depends on a time bound); restored after every test
+        let clock = null;
         const defaultDependencies = async function(flow) {
             if (flow[0].id === "node-with-missing-modules") {
                 throw new Error("Missing module");
@@ -2790,9 +2794,13 @@ describe('flows/index', function() {
             });
         });
         afterEach(async function() {
+            if (clock) {
+                clock.restore();
+                clock = null;
+            }
             world.releaseAll();
             gates.forEach(g => g.resolve());
-            await worldDelay(30);
+            await quiesce();
             world.closeFail = {};
             world.closeGate = {};
             drainStubs.forEach(stub => stub.restore());
@@ -2959,11 +2967,11 @@ describe('flows/index', function() {
                 world.closeCalls.b1.should.equal(1);
                 instanceState.markStopping("SIGTERM");
                 const stopped = flows.stopFlows();
-                await worldDelay(30);
+                await worldFlush(10);
                 world.closeGate.b1.resolve();
                 (await settle(stopped)).state.should.equal("resolved");
                 (await settle(switching)).state.should.equal("resolved");
-                await worldDelay(100);
+                await quiesce();
                 world.created.length.should.equal(base, "the switched project was started in stopping");
                 world.liveIds().should.eql([]);
                 flows.started.should.be.false();
@@ -2981,10 +2989,10 @@ describe('flows/index', function() {
                 instanceState.markStopping("SIGTERM");
                 const stopped = flows.stopFlows();
                 // never for a module install
-                (await settle(stopped, 1000)).state.should.equal("resolved");
+                (await settle(stopped)).state.should.equal("resolved");
                 modules.resolve();
                 await settle(starting);
-                await worldDelay(100);
+                await quiesce();
                 world.created.should.eql([], "Flow.create was called after the stop");
                 seen.should.not.containEql("flows:started");
                 seen.should.not.containEql("nodes-started");
@@ -3007,7 +3015,7 @@ describe('flows/index', function() {
                 world.firstStartGate.resolve();
                 (await settle(stopped)).state.should.equal("resolved");
                 await settle(starting);
-                await worldDelay(100);
+                await quiesce();
                 world.starts.should.eql(["global"], "a further flow was started in stopping");
                 world.created.length.should.be.above(0);
                 world.liveIds().should.eql([]);
@@ -3024,14 +3032,22 @@ describe('flows/index', function() {
                 await worldFlush();
                 world.starts.should.eql(["global"]);
                 instanceState.markStopping("SIGTERM");
-                const began = Date.now();
+                // the bound (nodeCloseTimeout 200) is the fake clock: the stop waits for it (NB-4: a lower bound; no upper
+                // bound of the wall clock is a behaviour of the stop)
+                clock = fakeClock(sinon);
                 const stopped = flows.stopFlows();
-                (await settle(stopped, 150)).state.should.equal("timeout", "the stop did not wait for the flow that is starting");
-                const outcome = await settle(stopped, 1500);
+                let resolved = false;
+                stopped.then(() => { resolved = true }, () => { resolved = true });
+                await quiesce();
+                resolved.should.be.false("the stop did not wait for the flow that is starting");
+                clock.tick(199);
+                await quiesce();
+                resolved.should.be.false("the stop did not wait for the bound");
+                clock.tick(1);
+                const outcome = await settle(stopped);
                 outcome.state.should.equal("resolved");
-                const elapsed = Date.now() - began;
-                // NB-4: the lower bound only - an upper bound of the wall clock is not a behaviour of the stop
-                elapsed.should.be.aboveOrEqual(190);
+                clock.restore();
+                clock = null;
                 const warnings = keyLog.warn.args.filter(a => /nodes\.flows\.start-wait-timeout/.test(a[0]));
                 warnings.should.have.length(1);
                 warnings[0][0].should.containEql("global");
@@ -3040,7 +3056,7 @@ describe('flows/index', function() {
                 world.liveIds().should.eql([]);
                 world.releaseAll();
                 await settle(starting);
-                await worldDelay(100);
+                await quiesce();
                 world.starts.should.eql(["global"], "a further flow was started after the bound");
                 flows.started.should.be.false();
             });
@@ -3105,7 +3121,7 @@ describe('flows/index', function() {
                 instanceState.markStopping("SIGTERM");
                 const second = flows.stopFlows();
                 // the wait for the requests ends with the stop of RED.stop; the nodes are closing
-                await worldDelay(50);
+                await worldFlush(10);
                 world.closeCalls.b1.should.equal(1);
                 (await settle(second, 150)).state.should.equal("timeout");
                 world.closeGate.b1.resolve();
@@ -3119,7 +3135,7 @@ describe('flows/index', function() {
                 const held = gate();
                 const holding = lock.runExclusive(() => held.promise);
                 instanceState.markStopping("SIGTERM");
-                (await settle(flows.stopFlows(), 1000)).state.should.equal("resolved");
+                (await settle(flows.stopFlows())).state.should.equal("resolved");
                 world.liveIds().should.eql([]);
                 held.resolve();
                 await holding;
@@ -3170,7 +3186,7 @@ describe('flows/index', function() {
                 await bootAndStart();
                 world.closeGate.b1 = worldDeferred();
                 const first = flows.stopFlows();
-                (await settle(flows.stopFlows(), 500)).state.should.equal("resolved");
+                (await settle(flows.stopFlows())).state.should.equal("resolved");
                 world.closeGate.b1.resolve();
                 await first;
             });

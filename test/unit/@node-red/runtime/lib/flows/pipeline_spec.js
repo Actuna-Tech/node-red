@@ -1358,6 +1358,9 @@ describe("flows/pipeline", function() {
     });
     // #84 (S-1, S-2, D1, D2, D8): once the instance is stopping or stopped no deployment changes anything
     describe("an instance that is stopping (#84)", function() {
+        // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time
+        const { quiesce, SUITE_TIMEOUT, WAIT_LIMIT } = require("nr-test-utils/stop-race-world");
+        this.timeout(SUITE_TIMEOUT);
         const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
         const { hooks, log } = NR_TEST_UTILS.require("@node-red/util");
         let logStubs;
@@ -1559,7 +1562,7 @@ describe("flows/pipeline", function() {
                 try {
                     goStopping();
                     const request = pipeline.deploy({ type: "full", flows: { flows: [1] } });
-                    const outcome = await Promise.race([request.then(() => "resolved", err => err), new Promise(r => setTimeout(() => r("waiting"), 150))]);
+                    const outcome = await Promise.race([request.then(() => "resolved", err => err), quiesce().then(() => "waiting")]);
                     outcome.should.not.equal("waiting", "the deployment waits for the lock instead of being refused");
                     assertRefused(outcome);
                 } finally {
@@ -1582,7 +1585,7 @@ describe("flows/pipeline", function() {
                 const order = [];
                 const second = pipeline.deploy({ type: "full", flows: { flows: ["second"] } }).then(() => order.push("second:ok"), err => order.push("second:" + err.code));
                 const third = pipeline.deploy({ type: "full", flows: { flows: ["third"] } }).then(() => order.push("third:ok"), err => order.push("third:" + err.code));
-                await new Promise(r => setTimeout(r, 20));
+                await quiesce();
                 order.should.eql([]);
                 goStopping();
                 finishStart({ errors: [] });
@@ -1598,7 +1601,7 @@ describe("flows/pipeline", function() {
             ["full", "reload"].forEach(function(type) {
                 it("AC-4: a preDeploy handler that stops the instance and then accepts: " + type + " is refused, nothing saved, the request settles", async function() {
                     hooks.add("preDeploy.t84", function() { instanceState.markStopping("SIGTERM") });
-                    const outcome = await Promise.race([rejected(CALLS[type]()), new Promise(r => setTimeout(() => r("hang"), 1000))]);
+                    const outcome = await Promise.race([rejected(CALLS[type]()), new Promise(r => setTimeout(() => r("hang"), WAIT_LIMIT))]);
                     outcome.should.not.equal("hang");
                     assertRefused(outcome);
                     flows.setFlows.called.should.be.false();

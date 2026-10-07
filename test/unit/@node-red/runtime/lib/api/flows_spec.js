@@ -2242,6 +2242,8 @@ describe("runtime-api/flows", function() {
     });
     // #84 (S-1, S-3, D2, D7, D8): the answers of the runtime api for an instance that is stopping or stopped
     describe("an instance that is stopping (#84)", function() {
+        // the limit of a hang, not of the speed of the machine: nothing in this block waits for a stretch of time
+        this.timeout(require("nr-test-utils/stop-race-world").SUITE_TIMEOUT);
         const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
         const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
         const { hooks } = NR_TEST_UTILS.require("@node-red/util");
