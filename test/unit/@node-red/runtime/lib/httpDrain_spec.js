@@ -26,6 +26,7 @@
  */
 
 const should = require("should");
+const assert = require("assert");
 const sinon = require("sinon");
 const EventEmitter = require("events");
 const http = require("http");
@@ -1557,6 +1558,267 @@ describe("runtime/httpDrain (#40)", function() {
             slow.res.end.calledOnce.should.be.true();
         });
     });
+    // #82 (S-3): the wait of the shutdown (`health.shutdown`, the SIGTERM path): the requests that are
+    // waited for at the moment of the call, at most `min(timeout, budget)` ms
+    describe("waitForShutdown (S-3, #82)", function() {
+        function needApi() {
+            assert.strictEqual(typeof httpDrain.waitForShutdown, "function", "httpDrain.waitForShutdown is not defined");
+        }
+        function wait(budget) {
+            needApi();
+            const w = httpDrain.waitForShutdown(budget);
+            w.should.have.property("promise");
+            w.promise.should.be.a.Promise();
+            w.cancel.should.be.a.Function();
+            return w;
+        }
+        function infoLogs(key) {
+            return log.info.args.map(a => a[0]).filter(m => m.indexOf(key) !== -1);
+        }
+        function warnLogs(key) {
+            return log.warn.args.map(a => a[0]).filter(m => m.indexOf(key) !== -1);
+        }
+        function shutdownLogs() {
+            return infoLogs("httpDrain.shutdown-").concat(warnLogs("httpDrain.shutdown-"));
+        }
+
+        it("AC-45: a budget that is 0, negative, not a number or not finite resolves at once, without a log and without a timer", async function() {
+            init();
+            accept(route(arrive("POST")));
+            for (const budget of [0, -1, NaN, Infinity, -Infinity, "5000", undefined, null]) {
+                const w = wait(budget);
+                (await settled(w.promise)).should.equal(true, "budget " + String(budget));
+            }
+            shutdownLogs().should.eql([]);
+            clock.countTimers().should.equal(0);
+        });
+        it("AC-45: with the drain off it resolves at once, without a log", async function() {
+            httpDrain.dispose();
+            const w = wait(5000);
+            (await settled(w.promise)).should.be.true();
+            shutdownLogs().should.eql([]);
+            clock.countTimers().should.equal(0);
+        });
+        it("resolves at once, without a log, when no request is waited for", async function() {
+            init();
+            route(arrive("POST"));
+            arrive("GET");
+            const w = wait(5000);
+            (await settled(w.promise)).should.be.true();
+            shutdownLogs().should.eql([]);
+            clock.countTimers().should.equal(0);
+        });
+        it("logs the count and the limit once, waits for all the requests of the snapshot and leaves no timer", async function() {
+            init();
+            const a = accept(route(arrive("POST")));
+            const b = accept(route(arrive("POST")));
+            const w = wait(5000);
+            infoLogs("httpDrain.shutdown-waiting").should.eql(['httpDrain.shutdown-waiting {"count":2,"timeout":1000}']);
+            a.res.end("a");
+            (await settled(w.promise)).should.be.false();
+            b.res.end("b");
+            (await settled(w.promise)).should.be.true();
+            warnLogs("httpDrain.shutdown-timeout").should.eql([]);
+            clock.countTimers().should.equal(0);
+        });
+        it("the limit is the smaller of the timeout and the budget; at the limit it warns with the count of the open requests", async function() {
+            init();
+            const open = accept(route(arrive("POST")));
+            const answered = accept(route(arrive("POST")));
+            const w = wait(400);
+            infoLogs("httpDrain.shutdown-waiting").should.eql(['httpDrain.shutdown-waiting {"count":2,"timeout":400}']);
+            answered.res.end("ok");
+            clock.tick(399);
+            (await settled(w.promise)).should.be.false();
+            clock.tick(1);
+            (await settled(w.promise)).should.be.true();
+            warnLogs("httpDrain.shutdown-timeout").should.eql(['httpDrain.shutdown-timeout {"count":1}']);
+            open.res.writableEnded.should.be.false();
+            clock.countTimers().should.equal(0);
+        });
+        it("with a budget above the timeout the limit is the timeout", async function() {
+            init();
+            accept(route(arrive("POST")));
+            const w = wait(60000);
+            infoLogs("httpDrain.shutdown-waiting").should.eql(['httpDrain.shutdown-waiting {"count":1,"timeout":1000}']);
+            clock.tick(999);
+            (await settled(w.promise)).should.be.false();
+            clock.tick(1);
+            (await settled(w.promise)).should.be.true();
+            warnLogs("httpDrain.shutdown-timeout").should.have.length(1);
+        });
+        it("cancel() ends the wait at once, without a warning and without a timer; a second cancel() does nothing", async function() {
+            init();
+            accept(route(arrive("POST")));
+            const w = wait(5000);
+            (await settled(w.promise)).should.be.false();
+            w.cancel();
+            (await settled(w.promise)).should.be.true();
+            w.cancel();
+            warnLogs("httpDrain.shutdown-timeout").should.eql([]);
+            clock.countTimers().should.equal(0);
+        });
+        it("finalize() ends the wait", async function() {
+            init();
+            accept(route(arrive("POST")));
+            const w = wait(5000);
+            httpDrain.finalize();
+            (await settled(w.promise)).should.be.true();
+            clock.countTimers().should.equal(0);
+        });
+        it("dispose() ends the wait", async function() {
+            init();
+            accept(route(arrive("POST")));
+            const w = wait(5000);
+            httpDrain.dispose();
+            (await settled(w.promise)).should.be.true();
+            clock.countTimers().should.equal(0);
+        });
+        it("AC-36: a request that is not accepted and one accepted after the snapshot are not waited for", async function() {
+            init();
+            const waited = accept(route(arrive("POST")));
+            const notAccepted = route(arrive("POST"));
+            const w = wait(5000);
+            const later = accept(route(arrive("POST")));
+            infoLogs("httpDrain.shutdown-waiting").should.eql(['httpDrain.shutdown-waiting {"count":1,"timeout":1000}']);
+            waited.res.end("ok");
+            (await settled(w.promise)).should.be.true();
+            notAccepted.res.writableEnded.should.be.false();
+            later.res.writableEnded.should.be.false();
+        });
+        it("AC-36: a waited request whose client aborts ends the wait at once, without a 503", async function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            const w = wait(5000);
+            (await settled(w.promise)).should.be.false();
+            r.res.destroy();
+            (await settled(w.promise)).should.be.true();
+            r.res.statusCode.should.equal(200);
+            warnLogs("httpDrain").should.eql([]);
+        });
+        it("AC-43: a waited request whose response has ended without 'finish' no longer holds the wait: the guard sees it within 250 ms", async function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            const w = wait(5000);
+            // no window is open: the guard runs for the wait
+            clock.countTimers().should.be.above(0);
+            r.res.writableEnded = true;
+            (await settled(w.promise)).should.be.false();
+            clock.tick(250);
+            (await settled(w.promise)).should.be.true();
+            warnLogs("httpDrain.shutdown-timeout").should.eql([]);
+            clock.countTimers().should.equal(0);
+        });
+        it("a failure inside is logged as drain-failed and the promise resolves", async function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            Object.defineProperty(r.res, "writableEnded", { get: function() { throw new Error("hostile getter") } });
+            const w = wait(5000);
+            (await settled(w.promise)).should.be.true();
+            warnLogs("httpDrain.drain-failed").should.eql(['httpDrain.drain-failed {"code":"unknown"}']);
+            clock.countTimers().should.equal(0);
+        });
+        it("a failure inside the guard while it waits is logged and the wait still ends at its limit", async function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            const w = wait(5000);
+            Object.defineProperty(r.res, "writableEnded", { get: function() { throw new Error("hostile getter") } });
+            clock.tick(250);
+            warnLogs("httpDrain.drain-failed").length.should.be.above(0);
+            clock.tick(1000);
+            (await settled(w.promise)).should.be.true();
+            clock.countTimers().should.equal(0);
+        });
+        it("does not set the condition of the instance state and sends no notification (it belongs to the wait of beforeStop)", async function() {
+            init();
+            const seen = [];
+            const onState = info => seen.push(info);
+            const onEvent = e => seen.push(e);
+            events.on("instance:state", onState);
+            events.on("runtime-event", onEvent);
+            try {
+                accept(route(arrive("POST")));
+                const w = wait(5000);
+                should.not.exist(instanceState.get().httpDrain);
+                w.cancel();
+                await w.promise;
+                seen.should.eql([]);
+            } finally {
+                events.removeListener("instance:state", onState);
+                events.removeListener("runtime-event", onEvent);
+            }
+        });
+        it("is possible in the state stopping, where beforeStop does not wait", async function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            instanceState.markStopping("SIGTERM");
+            await httpDrain.beforeStop();
+            infoLogs("httpDrain.waiting").should.eql([]);
+            const w = wait(5000);
+            infoLogs("httpDrain.shutdown-waiting").should.have.length(1);
+            r.res.end("ok");
+            (await settled(w.promise)).should.be.true();
+        });
+        it("AC-40: the wait of a deployment and the wait of the shutdown are independent: abortWait() ends only the first, cancel() only the second, finalize() both", async function() {
+            init();
+            const a = accept(route(arrive("POST")));
+            const deployment = httpDrain.beforeStop();
+            const shutdown = wait(5000);
+            httpDrain.abortWait();
+            (await settled(deployment)).should.be.true();
+            (await settled(shutdown.promise)).should.equal(false, "abortWait() ended the wait of the shutdown");
+            a.res.end("ok");
+            (await settled(shutdown.promise)).should.be.true();
+
+            const b = accept(route(arrive("POST")));
+            const second = httpDrain.beforeStop();
+            const secondShutdown = wait(5000);
+            secondShutdown.cancel();
+            (await settled(secondShutdown.promise)).should.be.true();
+            (await settled(second)).should.equal(false, "cancel() ended the wait of the deployment");
+
+            const third = wait(5000);
+            httpDrain.finalize();
+            (await settled(second)).should.be.true();
+            (await settled(third.promise)).should.be.true();
+            b.res.writableEnded.should.be.true();
+        });
+        it("AC-40: the answers of the requests end both waits; the limit of the shutdown does not end the wait of the deployment", async function() {
+            init();
+            const a = accept(route(arrive("POST")));
+            const deployment = httpDrain.beforeStop();
+            const shutdown = wait(400);
+            clock.tick(400);
+            (await settled(shutdown.promise)).should.be.true();
+            (await settled(deployment)).should.equal(false, "the limit of the shutdown ended the wait of the deployment");
+            a.res.end("ok");
+            (await settled(deployment)).should.be.true();
+            warnLogs("httpDrain.shutdown-timeout").should.have.length(1);
+            warnLogs("httpDrain.timeout").should.eql([]);
+        });
+        it("AC-44: the wait of a deployment never logs the keys of the shutdown", async function() {
+            init();
+            accept(route(arrive("POST")));
+            const promise = httpDrain.beforeStop();
+            clock.tick(TIMEOUT);
+            await promise;
+            httpDrain.afterStop("full");
+            httpDrain.finalize();
+            shutdownLogs().should.eql([]);
+            warnLogs("httpDrain.timeout").should.have.length(1);
+        });
+        it("AC-39: RED.stop() directly (the state stopping, no waitForShutdown): beforeStop does not wait and finalize() answers the request", async function() {
+            init();
+            const r = accept(route(arrive("POST")));
+            instanceState.markStopping("stop");
+            await httpDrain.beforeStop();
+            httpDrain.afterStop("full");
+            httpDrain.finalize();
+            r.res.statusCode.should.equal(503);
+            body(r).code.should.equal("http_drain_outcome_unknown");
+            shutdownLogs().should.eql([]);
+        });
+    });
 });
 
 // #82 (S-1): the same with a real Express app, a real HTTP server and real clients (no fake timers: the
@@ -1665,8 +1927,12 @@ describe("runtime/httpDrain with a real Express app (S-1, #82)", function() {
         httpRoutes.register(node("r1"), "post", "/p", [accepting()]);
         app.post("/q", accepting());
         const all = [];
+        // in batches: a burst of connections above the backlog of the listener (128) is delayed by the system
         for (let i = 0; i < 200; i++) {
             all.push(client("POST", "/p"));
+            if ((i + 1) % 50 === 0) {
+                await until(() => inFlight === i + 1, (i + 1) + " requests in the handlers");
+            }
         }
         all.push(client("POST", "/q"));
         await until(() => inFlight === 201, "201 requests in the handlers");
