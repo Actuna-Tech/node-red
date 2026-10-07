@@ -542,7 +542,10 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   późno zarejestrowany typ węzła) w tym stanie nie tworzy ani nie uruchamia żadnego flow (jeden log `info` `The flows
   are not started: the runtime is stopping`); trwający start kończy się na najbliższym kroku. `RED.stop()` rozwiązuje
   się dopiero, gdy wszystkie flow są zatrzymane: czeka na trwające zatrzymanie flow i na flow, które start właśnie
-  uruchamia (najwyżej `nodeCloseTimeout`, potem jedno ostrzeżenie), nigdy na instalację modułów ani blokadę wdrożeń.
+  uruchamia (każde najwyżej `nodeCloseTimeout`, potem jedno ostrzeżenie na flow), nigdy na instalację modułów ani blokadę
+  wdrożeń. Węzły, które start utworzy po tym limicie, są zamykane, gdy ten start się skończy. Wdrożenie w okresie łaski
+  zatrzymania (stan `stopping`, flow jeszcze działają) zatrzymuje tylko to, co zmienia, i niczego nie uruchamia; pozostałe
+  flow działają do `RED.stop()`. Wdrożenie `full` w tym oknie zatrzymuje wszystkie flow i niczego nie uruchamia.
   Reload z magazynu, którego ponowny odczyt skończy się w tym stanie, niczego nie zmienia i nie jest błędem.
   **Zmiana projektu w trakcie zatrzymania nie jest odrzucana** (zmienia pliki git); flow przełączonego projektu
   uruchomią się po restarcie. Klient Admin API: 503 `runtime_stopping` oznacza „nic nie zmieniono – powtórz po

@@ -443,8 +443,11 @@ Fixes
    switch, reload, a node type registered late) creates and starts no flow while the instance is stopping - one
    info log `The flows are not started: the runtime is stopping`; a start that is running stops at its next step.
    `RED.stop()` resolves only when every flow is stopped: it waits for a stop of the flows in progress and for the
-   flow a start is starting (at most `nodeCloseTimeout`, then one warning), never for a module install or the
-   deploy lock. A reload from storage whose second read ends while the instance is stopping changes nothing and
+   flows the starts are starting (each at most `nodeCloseTimeout`, then one warning per flow), never for a module
+   install or the deploy lock; nodes that a start creates after that limit are closed when that start ends. A
+   deployment saved during the shutdown grace (state `stopping`, the flows still run) stops only what it changes and
+   starts nothing - the other flows run until `RED.stop()`; a `full` deployment in that window stops all flows and
+   starts nothing. A reload from storage whose second read ends while the instance is stopping changes nothing and
    is not a failure. A project switch during the stop is not refused; the flows of the switched project start
    after the restart. Nothing changes outside the states `stopping` and `stopped`. Tests: `stop-race_spec.js`,
    `flows/index_spec.js`, `pipeline_spec.js`, `api/flows_spec.js`, `reload_spec.js`, `state_spec.js`,

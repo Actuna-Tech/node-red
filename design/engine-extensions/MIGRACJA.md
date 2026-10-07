@@ -298,8 +298,12 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   tworzy ani nie uruchamia flow (wdrożenia: 503 `runtime_stopping`, §4.4; start flow: jeden log `info` `The flows are not
   started: the runtime is stopping`). `RED.stop()` rozwiązuje się dopiero, gdy wszystkie flow są zatrzymane – także flow
   zostawione przez wdrożenie częściowe i flow uruchomione przez start, który już trwał: czeka na trwające zatrzymanie flow
-  i na flow, które start właśnie uruchamia (najwyżej `nodeCloseTimeout`, potem ostrzeżenie), nigdy na instalację modułów
-  ani blokadę wdrożeń. Kod osadzający, który wołał `setFlows` po `RED.stop()`, dostaje odrzucenie `runtime_stopping`.
+  i na flow, które starty właśnie uruchamiają (każde najwyżej `nodeCloseTimeout`, potem ostrzeżenie), nigdy na instalację
+  modułów ani blokadę wdrożeń. Węzły, które start utworzy po tym limicie, są zamykane, gdy ten start się skończy.
+  Wdrożenie zapisane w okresie łaski zatrzymania (stan `stopping`, flow jeszcze działają) zatrzymuje tylko to, co zmienia
+  (`full` – wszystko), i niczego nie uruchamia; po nim `GET /flows/state` i zdarzenie `runtime-state` mówią `stop`
+  (`deploy: true`), choć niezmienione flow obsługują jeszcze ruch do `RED.stop()` – stan instancji to już `stopping`,
+  `/ready` 503. Kod osadzający, który wołał `setFlows` po `RED.stop()`, dostaje odrzucenie `runtime_stopping`.
   Zmiana projektu w trakcie zatrzymania nie jest odrzucana; flow przełączonego projektu startują po restarcie. Sekwencja
   stanów bez zmian (`… → stopping → stopped`, nigdy `failed`/`ready` z powodu pominiętego startu).
 - **Odrzucone żądanie `/flow` nie emituje `deploying` (#10, U1, A24, D19):** `POST /flow`, `PUT` i `DELETE /flow/:id` sprawdzają rewizje i budują
