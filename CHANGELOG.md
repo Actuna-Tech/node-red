@@ -3,8 +3,10 @@
 #### 5.0.7-actuna.2: Actuna fork release (2026-10-07)
 
 Changes since `5.0.7-actuna.1`. The versions of the packages stay `5.0.7`; the release is the git tag. New
-behaviour is off by default. The changes that are visible without a new setting, the new settings and the
-recommended configuration are listed in the upgrade note of `FORK.md` (section 9).
+behaviour is off by default. Active without a setting are, among others: the Polish editor for a browser set to `pl`
+(partial translation, Z-13) and the default 5 MB limit of the raw body of `http in` (`apiMaxLength`, #16). The changes
+that are visible without a new setting, the new settings and the recommended configuration are listed in the upgrade
+note of `FORK.md` (section 9).
 
 ##### Instances and reload
 
@@ -588,7 +590,7 @@ Fixes
  - Fix (#63): Admin API: the JSON and urlencoded parsers get the maximum string length of Node.js as their limit
    when `apiMaxLength` gives a larger size (by the size rules of `body-parser`), the same rule as the parsers of
    `http in` since #48; any other `apiMaxLength` is passed to them unchanged, and the default stays 5 MB. A larger
-   body takes the existing error path (413). The parsers read the body before authentication, as in upstream
+   body takes the existing error path (413). The parsers read the body before authentication, as before
  - Fix (#63): `RED.hooks` (runtime and editor): a handler that throws a falsy value synchronously (`undefined`,
    `null`, `false`, `0`, `-0`, `0n`, `NaN`, `""`) ends the chain with the error of #61 (`Hook handler rejected without an
    error: <value>`); before, depending on the value, the chain went on without the later handlers, stopped without an
@@ -600,7 +602,7 @@ Fixes
    cannot be printed gives `Error("(the value cannot be printed)")`)
  - Fix (#63): `RED.hooks.add` writes one warning (runtime: `warn` log with the place of the registration; editor:
    `console.warn`) when a handler declares no parameters: such a handler is called with `(payload, done)` and must call
-   `done`, otherwise the chain does not end - the behaviour is unchanged, as in upstream. `preDeploy` and `postDeploy`
+   `done`, otherwise the chain does not end - the behaviour is unchanged, as before. `preDeploy` and `postDeploy`
    handlers are called as `fn(event)` and get no warning
  - Fix (#63): the library list does not show a file whose name ends with `.$$$` (the working file of a write, left
    after a failed rename), and saving a library entry with such a name is refused with 403 `forbidden`; a `flows`
@@ -634,7 +636,7 @@ Features
    `httpNodeAuth` and the hold of the requests (`deploy.holdHttpNodeRequests`), instead of the top of the
    root app, so a request that the authentication rejects (or the hold keeps) no longer makes the runtime
    buffer its body first. It still runs before `httpNodeMiddleware` and the routes, so they find the raw
-   body in `req.body` as before, up to the highest limit of the nodes on the key (upstream had no limit): a
+   body in `req.body` as before, up to the highest limit of the nodes on the key (before, there was no limit): a
    larger body is answered with 413 (with the CORS headers) at once and nothing else on the route sees it,
    neither a middleware, nor another route, nor a node without the option. Loading the module again on the same
    app (`RED.stop()` and `RED.start()` in one process) replaces the capture instead of adding another. Do not base authorization on

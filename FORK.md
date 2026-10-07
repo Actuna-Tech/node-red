@@ -507,8 +507,8 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   głównej. `httpNodeAuth` jest zamontowany na aplikacji głównej przed `httpNode` (`red.js`), a wstrzymanie żądań (#8) jest pierwszą warstwą
   `httpNode` (montowane przy inicjalizacji runtime, przed załadowaniem węzłów), więc **nic nie jest czytane przed uwierzytelnieniem ani
   w czasie wstrzymania** (wcześniej bufor do najwyższego limitu rósł przed odmową 401). Odczyt jest **przed** `httpNodeMiddleware` i trasami,
-  więc middleware i obce trasy na tym samym kluczu nadal dostają `Buffer` w `req.body`, jak w upstream – **ale tylko do najwyższego limitu
-  węzłów `skipBodyParsing` na kluczu** (upstream nie miał limitu): ciało większe dostaje 413 od razu z przechwycenia (z nagłówkami CORS
+  więc middleware i obce trasy na tym samym kluczu nadal dostają `Buffer` w `req.body`, jak wcześniej – **ale tylko do najwyższego limitu
+  węzłów `skipBodyParsing` na kluczu** (wcześniej bez limitu): ciało większe dostaje 413 od razu z przechwycenia (z nagłówkami CORS
   węzłów) i **nic więcej** – ani middleware, ani obca trasa, ani węzeł bez `skipBodyParsing` na tym kluczu – go nie widzi (strumień jest
   już wstrzymany; reszta jest czytana i odrzucana, zob. wyżej). Klucz trasy jest względem `httpNodeRoot` (bez prefiksu). Na wspólnym
   kluczu przechwycenie czyta do najwyższego z limitów, a trasa każdego węzła sprawdza własny. Trasa węzła czyta ciało, gdy przechwycenie tego nie zrobiło (trasa
@@ -565,7 +565,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   Node.js, gdy `apiMaxLength` daje większy rozmiar (według reguł rozmiaru `body-parser`) – ta sama reguła co w
   parserach `http in` od #48 (dwie kopie trzymane równo jedną tabelą przypadków testów); inne wartości są przekazywane
   bez zmian, domyślnie nadal 5 MB. Większe ciało idzie istniejącą ścieżką błędu (413). Parsery Admin API czytają ciało
-  **przed uwierzytelnieniem**, jak w upstream – limit tego nie zmienia.
+  **przed uwierzytelnieniem**, jak wcześniej – limit tego nie zmienia.
 - **Hooki, `RED.hooks` (#63, obie kopie: runtime `util/lib/hooks.js` i edytor `editor-client/src/js/hooks.js`):**
   (1) synchroniczne `throw` wartości fałszywej (`undefined`, `null`, `false`, `0`, `-0`, `0n`, `NaN`, `""`) z handlera
   z jednym albo dwoma parametrami kończy łańcuch błędem `Hook handler rejected without an error: <wartość>` (jak #61;
@@ -581,8 +581,8 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   dostała zachowanie #61 (odrzucenie bez wartości kończy łańcuch błędem – wcześniej ten sam handler był wywoływany
   bez końca) i #76 (`Error("(the value cannot be printed)")` z `err.hook` dla `Symbol`, obiektu bez prototypu, Proxy).
   (4) **Handler bez parametrów** (`function(){}`, `() => {}`, `async () => {}`) hooka wywoływanego przez `trigger`
-  dostaje `(payload, done)` i musi wywołać `done` – inaczej łańcuch się nie kończy; **zachowanie bez zmian, jak w
-  upstream**, ale rejestracja (`RED.hooks.add`, także ustawienie `hooks`) zapisuje jedno ostrzeżenie z identyfikatorem
+  dostaje `(payload, done)` i musi wywołać `done` – inaczej łańcuch się nie kończy; **zachowanie bez zmian, jak
+  wcześniej**, ale rejestracja (`RED.hooks.add`, także ustawienie `hooks`) zapisuje jedno ostrzeżenie z identyfikatorem
   hooka (runtime: log `warn` z miejscem rejestracji; edytor: `console.warn`) – zadeklaruj `(payload)`. `preDeploy` i
   `postDeploy` są wywoływane jako `fn(event)` i nie dostają ostrzeżenia.
 - **Biblioteka, plik roboczy zapisu (#63):** lista katalogu biblioteki (`GET /library/...`) nie pokazuje plików kończących
@@ -690,7 +690,7 @@ wydaniu – sekcja „Unreleased” na początku pliku).
 | Znacznik | Data | Zakres | Weryfikacja |
 |---|---|---|---|
 | `5.0.7-actuna.1` | 2026-10-04 (znacznik; commit `4d123b041` z 2026-10-03) | priorytety 1–3 (§8) | przetestowane w Bot-Engine 2.0.1 na środowisku testowym: E2E 330/0, weryfikacja infrastruktury 7/7, instancje tenantów 22/22, scenariusze wielu instancji S1–S10 |
-| `5.0.7-actuna.2` | 2026-10-07 | 43 scalone PR; 43 zamknięte zgłoszenia (40 zrealizowanych, 3 połączone z #63) – §9.2 | pełne `npm test` (build, verify-deps, lint, coverage; testy jednostkowe i węzłów w jednym procesie) w Dockerze na Node 22 i 24: 7293 zaliczone, 59 pominiętych, 0 nieudanych. **Nie przetestowane jeszcze w Bot-Engine (E2E)** |
+| `5.0.7-actuna.2` | 2026-10-07 | 43 PR ze zmianami (+ PR wydania #87); 43 zamknięte zgłoszenia (40 zrealizowanych, 3 połączone z #63) – §9.2 | pełne `npm test` (build, verify-deps, lint, coverage; testy jednostkowe i węzłów w jednym procesie) w Dockerze na Node 22 i 24: 7293 zaliczone, 59 pominiętych, 0 nieudanych. **Nie przetestowane jeszcze w Bot-Engine (E2E)** |
 
 ### 9.2 Aktualizacja z `5.0.7-actuna.1` do `5.0.7-actuna.2` (Bot-Engine)
 
@@ -733,7 +733,7 @@ i punktu C; (4) test E2E Bot-Engine – dla `actuna.2` jeszcze niewykonany.
   czytelny komunikat z pola `message` albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”, tekst z serwera jako
   tekst (escapowany), a nie HTML. `RED.utils.sanitize` escapuje też cudzysłowy – dodatki edytora, które wstawiają wynik
   do `.text()`, zobaczą encje. Z `deploy.response: "started"` odpowiedź 500 z `rev` oznacza zapisane zmiany (edytor
-  przejmuje `rev`). Przeglądarka z językiem `pl` bez wybranego języka pokazuje edytor po polsku (tłumaczenie częściowe).
+  przejmuje `rev`). Przeglądarka z językiem `pl` bez wybranego języka pokazuje edytor po polsku (tłumaczenie częściowe, Z-13, PR #6).
 - **Przeładowanie z magazynu (przy `deploy.reload.watch: true`; #2, #17, #26, #51):** zmiana samych poświadczeń wywołuje
   przeładowanie (porównanie skrótu); flaga `credentialsChanged` w powiadomieniu `watchFlows` jest tylko wskazówką –
   **zmiana dla wtyczki magazynu**, która wymuszała nią przeładowanie. Błędy ponownego odczytu i samego przeładowania

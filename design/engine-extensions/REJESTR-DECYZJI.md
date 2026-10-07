@@ -26,11 +26,11 @@ kod `invalid_node_type` w katalogu.
 
 | ID | Temat | Źródło | Rekomendacja | Decyzja |
 |---|---|---|---|---|
-| R-04 | P-04: zgłoszenie problemu zespołowi Node-RED (prywatnie, `SECURITY.md`) mimo blokady upstream (D-04) | etap-1 p.8 | do decyzji || **nie teraz** – poprawka tylko w forku; zgłoszenie po zniesieniu blokady D-04 (ryzyko dla innych użytkowników przyjęte) (2026-10-03) |
+| R-04 | P-04: zgłoszenie do zespołu Node-RED mimo blokady D-04 | etap-1 p.8 | do decyzji || **nie teraz** – poprawka tylko w forku; zgłoszenie po zniesieniu blokady D-04 (2026-10-03) |
 | R-05 | P-04: odpowiedź `/comms` na pakiet `auth` przy wyłączonym `adminAuth` | ZAŁ-A p.5 | do decyzji || **`auth ok`** – połączenie działa dalej (zmiana względem łatki 0002) (2026-10-03) |
 | R-06 | D-07: kontrola nagłówka `Origin` dla `/comms` | etap-1 p.9 | tak, ustawienie z bezpieczną listą domyślną || **tak, opcjonalnie** – ustawienie z listą dozwolonych źródeł, domyślnie wyłączone; w naszych instalacjach włączone (2026-10-03) |
 | R-07 | Z-02: użytkownik anonimowy (`adminAuth.default`) i wartość domyślna | etap-1 p.11–12 | anonimowy jak `needsPermission("")`; domyślnie `"open"` || **jak `needsPermission("")`** – użytkownik domyślny ma dostęp jak do wbudowanych tras (2026-10-03) |
-| R-08 | Nazwa użytkownika wstawiana jako HTML w menu (`user.js:265`) | Z-12 P-10 | osobna poprawka bezpieczeństwa || **osobna poprawka teraz** (priorytet 2, poprawka błędu z testem) (2026-10-03) |
+| R-08 | Nazwa użytkownika wstawiana jako HTML w menu (`user.js:265`) | Z-12 P-10 | osobna poprawka || **osobna poprawka teraz** (priorytet 2, poprawka błędu z testem) (2026-10-03) |
 | R-09 | P-03: `NODE_RED_DISABLE_TELEMETRY` ⇒ `locked`? `locked` + `enabled: true`? | etap-1 p.7 | bez implikacji; `locked` działa w obie strony || **bez implikacji, obie strony** – `NODE_RED_DISABLE_TELEMETRY` działa jak dotąd; `telemetry.locked` blokuje zmianę `enabled` przy dowolnej wartości (2026-10-03) |
 
 ## Priorytet 2 – API
