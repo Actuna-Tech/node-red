@@ -207,7 +207,9 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
     }
 
     // The instance of Node-RED; `drain` is the setting deploy.drainHttpNodeRequests (undefined: off)
-    async function startInstance(drain) {
+    // `extra`: `shutdownTimeout` (the setting) and `delay` (ms of the delay node of /slow) (#82)
+    async function startInstance(drain, extra) {
+        extra = extra || {};
         const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "nr-drain-"));
         dirs.push(userDir);
         const port = await getFreePort();
@@ -215,14 +217,22 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
         if (drain) {
             deployment.drainHttpNodeRequests = Object.assign({ enabled: true }, drain);
         }
-        fs.writeFileSync(path.join(userDir, "flows.json"), JSON.stringify(flows({}, port)));
-        fs.writeFileSync(path.join(userDir, "settings.js"), "module.exports = " + JSON.stringify({
+        const startFlows = flows({}, port);
+        if (extra.delay) {
+            startFlows.find(n => n.id === "h").timeout = String(extra.delay);
+        }
+        fs.writeFileSync(path.join(userDir, "flows.json"), JSON.stringify(startFlows));
+        const settingsObject = {
             flowFile: "flows.json",
             disableEditor: true,
             runtimeState: { enabled: true, ui: false },
             logging: { console: { level: "debug" } },
             deploy: deployment
-        }));
+        };
+        if (extra.shutdownTimeout !== undefined) {
+            settingsObject.shutdownTimeout = extra.shutdownTimeout;
+        }
+        fs.writeFileSync(path.join(userDir, "settings.js"), "module.exports = " + JSON.stringify(settingsObject));
         const child = spawn(process.execPath, [RED_JS, "-u", userDir, "-p", String(port)], { stdio: ["ignore", "pipe", "pipe"] });
         children.push(child);
         const output = [];
@@ -470,6 +480,62 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
             // a boolean, so that a failure does not print the whole output of the child
             (inst.output().indexOf("[http in:pi] HTTP drain: a POST request answered 503 http_drain_outcome_unknown") !== -1)
                 .should.equal(true, "the debug record of the 503 does not name the node pi");
+        });
+    });
+    // #82 (S-3): a stop signal waits for the requests that are in progress, inside shutdownTimeout
+    describe("a stop signal (SIGTERM, #82)", function() {
+        let inst;
+        afterEach(function() { return stopInstance(inst) });
+
+        function exitOf(instance) {
+            return new Promise(resolve => {
+                if (instance.child.exitCode !== null || instance.child.signalCode !== null) {
+                    return resolve({ code: instance.child.exitCode, signal: instance.child.signalCode });
+                }
+                instance.child.once("exit", (code, signal) => resolve({ code, signal }));
+            });
+        }
+
+        it("AC-41: with shutdownTimeout the request that takes 1500 ms is answered by the flow, 200, and the process exits with 0 after it", async function() {
+            inst = await startInstance({ timeout: 5000 }, { shutdownTimeout: 5000, delay: 1500 });
+            const client = send(inst.url, "/slow", { waitMs: 8000 });
+            await sleep(300);
+            const signalled = Date.now();
+            const exited = exitOf(inst);
+            inst.child.kill("SIGTERM");
+            const result = await client.done;
+            result.status.should.equal(200);
+            (Date.now() - signalled).should.be.above(1000);
+            const exit = await Promise.race([exited, sleep(10000).then(() => ({ timeout: true }))]);
+            should.not.exist(exit.timeout);
+            exit.code.should.equal(0);
+        });
+        it("AC-41: without shutdownTimeout the request gets 503 http_drain_outcome_unknown, as before", async function() {
+            inst = await startInstance({ timeout: 5000 }, { delay: 1500 });
+            const client = send(inst.url, "/slow", { waitMs: 8000 });
+            await sleep(300);
+            const exited = exitOf(inst);
+            inst.child.kill("SIGTERM");
+            const result = await client.done;
+            result.status.should.equal(503);
+            result.body.code.should.equal("http_drain_outcome_unknown");
+            const exit = await Promise.race([exited, sleep(10000).then(() => ({ timeout: true }))]);
+            should.not.exist(exit.timeout);
+        });
+        it("a second signal ends the wait at once: the request gets 503 and the process exits", async function() {
+            inst = await startInstance({ timeout: 5000 }, { shutdownTimeout: 20000, delay: 4000 });
+            const client = send(inst.url, "/slow", { waitMs: 8000 });
+            await sleep(300);
+            const exited = exitOf(inst);
+            inst.child.kill("SIGTERM");
+            await sleep(500);
+            const second = Date.now();
+            inst.child.kill("SIGTERM");
+            const result = await client.done;
+            result.status.should.equal(503);
+            (Date.now() - second).should.be.below(2500);
+            const exit = await Promise.race([exited, sleep(10000).then(() => ({ timeout: true }))]);
+            should.not.exist(exit.timeout);
         });
     });
 });
