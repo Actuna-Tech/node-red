@@ -427,6 +427,28 @@ Security
 
 Fixes
 
+ - Fix (#84): a deployment, a reload or a start of the flows that races the stop of the runtime no longer starts
+   flows after the stop or leaves flows running. Once the instance is `stopping` or `stopped` (`RED.stop()`,
+   `RED.health.shutdown()`, a stop signal - also during the drain of `shutdownTimeout`):
+   every deployment (`POST /flows` of every type, v1 and v2, `POST /flow`, `PUT`/`DELETE /flow/:id`, the runtime api
+   `flows.setFlows`/`addFlow`/`updateFlow`/`deleteFlow`) and `POST /flows/state` `{state: "start"}` are refused with
+   **503** `{code: "runtime_stopping", message: "The runtime is stopping: the change was not applied"}` - nothing is
+   read, saved, stopped or started, no preDeploy or postDeploy handler is called; the refusal is audited (no
+   warning). It is checked before the deploy lock is waited for and wins over the checks of the revision (409/400),
+   a missing flow (404) and the preDeploy hook. Before: a deployment was saved and its flows started after
+   `RED.stop()` had resolved, and a partial deployment (`nodes`, `flows`, the single-flow api) left the unchanged
+   flows running. A deployment that was already saving when the stop began is saved and not started: the default
+   response is 200 `{rev}` as before (postDeploy `start.status: "not_started"`), with `deploy.response: "started"`
+   500 `deploy_start_failed` with `errors[].code: "runtime_stopping"`. A start of the flows (first start, project
+   switch, reload, a node type registered late) creates and starts no flow while the instance is stopping - one
+   info log `The flows are not started: the runtime is stopping`; a start that is running stops at its next step.
+   `RED.stop()` resolves only when every flow is stopped: it waits for a stop of the flows in progress and for the
+   flow a start is starting (at most `nodeCloseTimeout`, then one warning), never for a module install or the
+   deploy lock. A reload from storage whose second read ends while the instance is stopping changes nothing and
+   is not a failure. A project switch during the stop is not refused; the flows of the switched project start
+   after the restart. Nothing changes outside the states `stopping` and `stopped`. Tests: `stop-race_spec.js`,
+   `flows/index_spec.js`, `pipeline_spec.js`, `api/flows_spec.js`, `reload_spec.js`, `state_spec.js`,
+   `index_spec.js`, `node-red/deploy-stop-race_spec.js`
  - Refresh the user details in the editor after logging in again when the session expired
  - Do not send comms subscriptions before websocket authentication completes
  - Count the failures of the reload from storage (`deploy.reload`) until the whole cycle
