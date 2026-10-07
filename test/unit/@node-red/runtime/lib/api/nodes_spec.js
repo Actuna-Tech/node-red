@@ -17,6 +17,7 @@
  * Modified by Actuna Sp. z o.o.:
  *   #19: supertest bound to 127.0.0.1 (nr-test-utils/supertest), no crosstalk with other processes (flaky tests)
  *   #63: the audit events of the install of a module do not contain the credentials of the install URL or of a module given as a URL
+ *   #82: removing or disabling node types during a drain stop: 409 http_drain_in_progress, audited; the other errors keep their status
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -293,6 +294,98 @@ describe("runtime-api/nodes", function() {
             installModule.resolves({ id: "x" });
             await nodes.addModule({ module: "x", version: "1.0.0", url: "https://host/x.tgz" });
             installEvents().should.eql([{ event: "nodes.install", module: "x", version: "1.0.0", url: "https://host/x.tgz" }]);
+        });
+    });
+
+    describe("removal and disabling during a drain stop: 409 http_drain_in_progress (S-5, #82)", function() {
+        var audit;
+
+        function drainError() {
+            var e = new Error("constant text of the refusal");
+            e.code = "http_drain_in_progress";
+            return e;
+        }
+        function setup(nodesApi) {
+            audit = sinon.stub();
+            var log = mockLog();
+            log.audit = audit;
+            nodes.init({
+                log: log,
+                settings: { available: function() { return true; } },
+                nodes: Object.assign({
+                    getModuleInfo: function() { return { name: "m", nodes: [{ id: "m/a", enabled: true }, { id: "m/b", enabled: true }] }; },
+                    getNodeInfo: function() { return { id: "m/a", enabled: true }; }
+                }, nodesApi)
+            });
+        }
+        function auditEvents(name) {
+            return audit.args.map(function(a) { return a[0]; }).filter(function(e) { return e.event === name; });
+        }
+        function failure(promise) {
+            return promise.then(function() { throw new Error("should have failed"); }, function(err) { return err; });
+        }
+
+        it("removeModule: a refusal that the check throws has status 409 and is audited with its code", async function() {
+            setup({ uninstallModule: function() { throw drainError(); } });
+            var err = await failure(nodes.removeModule({ module: "m" }));
+            err.should.have.property("code", "http_drain_in_progress");
+            err.should.have.property("status", 409);
+            auditEvents("nodes.remove").should.have.length(1);
+            auditEvents("nodes.remove")[0].should.have.property("module", "m");
+            auditEvents("nodes.remove")[0].should.have.property("error", "http_drain_in_progress");
+        });
+        it("removeModule: a refusal that comes as a rejection has status 409 too", async function() {
+            setup({ uninstallModule: function() { return Promise.reject(drainError()); } });
+            var err = await failure(nodes.removeModule({ module: "m" }));
+            err.should.have.property("status", 409);
+            auditEvents("nodes.remove")[0].should.have.property("error", "http_drain_in_progress");
+        });
+        it("removeModule: the other errors keep 400 (thrown and rejected) and 404 stays", async function() {
+            setup({ uninstallModule: function() { throw new Error("boom"); } });
+            (await failure(nodes.removeModule({ module: "m" }))).should.have.property("status", 400);
+            setup({ uninstallModule: function() { return Promise.reject(new Error("boom")); } });
+            (await failure(nodes.removeModule({ module: "m" }))).should.have.property("status", 400);
+            var typeInUse = new Error("in use");
+            typeInUse.code = "type_in_use";
+            setup({ uninstallModule: function() { throw typeInUse; } });
+            (await failure(nodes.removeModule({ module: "m" }))).should.have.property("status", 400);
+            setup({ getModuleInfo: function() { return null; } });
+            (await failure(nodes.removeModule({ module: "m" }))).should.have.property("status", 404);
+        });
+        it("setModuleState (disable): a refusal has status 409 and is audited as nodes.module.set; no other node is disabled", async function() {
+            var disabled = [];
+            setup({ disableNode: function(id) { disabled.push(id); throw drainError(); } });
+            var err = await failure(nodes.setModuleState({ module: "m", enabled: false }));
+            err.should.have.property("code", "http_drain_in_progress");
+            err.should.have.property("status", 409);
+            auditEvents("nodes.module.set").should.have.length(1);
+            auditEvents("nodes.module.set")[0].should.have.property("error", "http_drain_in_progress");
+            auditEvents("nodes.module.set")[0].should.have.property("module", "m");
+        });
+        it("setModuleState: a refusal that comes as a rejection has status 409; another error keeps 400", async function() {
+            setup({ disableNode: function() { return Promise.reject(drainError()); } });
+            (await failure(nodes.setModuleState({ module: "m", enabled: false }))).should.have.property("status", 409);
+            setup({ disableNode: function() { return Promise.reject(new Error("boom")); } });
+            (await failure(nodes.setModuleState({ module: "m", enabled: false }))).should.have.property("status", 400);
+            setup({ disableNode: function() { throw new Error("boom"); } });
+            (await failure(nodes.setModuleState({ module: "m", enabled: false }))).should.have.property("status", 400);
+        });
+        it("setNodeSetState (disable): a refusal has status 409 and is audited as nodes.info.set", async function() {
+            setup({ disableNode: function() { throw drainError(); } });
+            var err = await failure(nodes.setNodeSetState({ id: "m/a", enabled: false }));
+            err.should.have.property("code", "http_drain_in_progress");
+            err.should.have.property("status", 409);
+            auditEvents("nodes.info.set").should.have.length(1);
+            auditEvents("nodes.info.set")[0].should.have.property("error", "http_drain_in_progress");
+            auditEvents("nodes.info.set")[0].should.have.property("id", "m/a");
+        });
+        it("setNodeSetState: a refusal that comes as a rejection has status 409; another error keeps 400", async function() {
+            setup({ disableNode: function() { return Promise.reject(drainError()); } });
+            (await failure(nodes.setNodeSetState({ id: "m/a", enabled: false }))).should.have.property("status", 409);
+            setup({ disableNode: function() { return Promise.reject(new Error("boom")); } });
+            (await failure(nodes.setNodeSetState({ id: "m/a", enabled: false }))).should.have.property("status", 400);
+            setup({ getNodeInfo: function() { return null; } });
+            (await failure(nodes.setNodeSetState({ id: "m/a", enabled: false }))).should.have.property("status", 404);
         });
     });
 
