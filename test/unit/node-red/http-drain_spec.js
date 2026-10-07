@@ -20,7 +20,9 @@
  *   of the flows), with the setting off, on with a long limit and on with a short one
  *   #63: every describe stops its own instance in its `after`; the slow-body test asserts that the client socket is
  *   closed after the 503 with `Connection: close`
- *   #82: the debug record of a drain 503 names the node of the route
+ *   #82: the debug record of a drain 503 names the node of the route; a stop signal waits for the requests in progress
+ *   inside shutdownTimeout; long-lived connections (http in with drainMode long) are not waited for and are closed when the
+ *   node stops
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -207,7 +209,8 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
     }
 
     // The instance of Node-RED; `drain` is the setting deploy.drainHttpNodeRequests (undefined: off)
-    // `extra`: `shutdownTimeout` (the setting) and `delay` (ms of the delay node of /slow) (#82)
+    // `extra`: `shutdownTimeout` (the setting), `delay` (ms of the delay node of /slow) and `flows` (a function of
+    // the port that gives the flows to start with) (#82)
     async function startInstance(drain, extra) {
         extra = extra || {};
         const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "nr-drain-"));
@@ -217,7 +220,7 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
         if (drain) {
             deployment.drainHttpNodeRequests = Object.assign({ enabled: true }, drain);
         }
-        const startFlows = flows({}, port);
+        const startFlows = extra.flows ? extra.flows(port) : flows({}, port);
         if (extra.delay) {
             startFlows.find(n => n.id === "h").timeout = String(extra.delay);
         }
@@ -536,6 +539,226 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
             (Date.now() - second).should.be.below(2500);
             const exit = await Promise.race([exited, sleep(10000).then(() => ({ timeout: true }))]);
             should.not.exist(exit.timeout);
+        });
+    });
+    // #82 (S-8): long-lived connections (an event stream) on `http in` with drainMode "long"
+    describe("http in with drainMode long (S-8, #82)", function() {
+        // The writer: starts the stream and writes a chunk every 100 ms until the response is closed. A function
+        // node clears its timers when it stops
+        const DIRECT_WRITER = "const res = msg.res._res; res.writeHead(200, {'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache'}); res.write('data: open\\n\\n'); " +
+            "const t = setInterval(() => { if (res.destroyed || res.writableEnded) { clearInterval(t); return; } res.write('data: tick\\n\\n'); }, 100); return null;";
+        // The response is kept in the context of the flow; the ticks are written by the "On Start" code of a node
+        // (so a writer that is restarted writes with its own mark)
+        const STORE = "const res = msg.res._res; res.writeHead(200, {'Content-Type': 'text/event-stream'}); res.write('data: open\\n\\n'); flow.set('stream', res); return null;";
+        function ticker(mark) {
+            return "setInterval(() => { const s = flow.get('stream'); if (s && !s.destroyed && !s.writableEnded) { s.write('data: tick-" + mark + "\\n\\n'); } }, 100);";
+        }
+        function fn(id, name, func, extra) {
+            return Object.assign({ id: id, type: "function", z: "t", name: name, func: func, outputs: 1, noerr: 0, initialize: "", finalize: "", libs: [], wires: [[]] }, extra);
+        }
+        // `v.writer` changes the writer, `v.other` an unrelated node of another flow; `kind`: "direct" (http in -> writer),
+        // "link" (http in -> link out -> link in -> writer) or "context" (a response kept in the context, a separate writer)
+        function longFlows(kind, v) {
+            v = v || {};
+            const base = [
+                { id: "t", type: "tab", label: "t" },
+                { id: "u", type: "tab", label: "u" },
+                { id: "x", type: "inject", z: "u", name: "other" + (v.other || ""), props: [], repeat: "", once: false, wires: [[]] },
+                { id: "fi", type: "http in", z: "t", url: "/fast", method: "get", wires: [["fo"]] },
+                { id: "fo", type: "http response", z: "t", statusCode: "200", wires: [] }
+            ];
+            if (kind === "direct") {
+                return base.concat([
+                    { id: "li", type: "http in", z: "t", url: "/stream", method: "get", drainMode: "long", wires: [["lw"]] },
+                    fn("lw", "writer" + (v.writer || ""), DIRECT_WRITER)
+                ]);
+            }
+            if (kind === "link") {
+                return base.concat([
+                    { id: "li", type: "http in", z: "t", url: "/stream", method: "get", drainMode: "long", wires: [["lo"]] },
+                    { id: "lo", type: "link out", z: "t", mode: "link", links: ["lin"], wires: [] },
+                    { id: "lin", type: "link in", z: "t", links: ["lo"], wires: [["lw"]] },
+                    fn("lw", "writer" + (v.writer || ""), STORE, { initialize: ticker(v.writer || "W1") })
+                ]);
+            }
+            // context: the stream is opened by one node, written by another that no wire connects to it
+            return base.concat([
+                { id: "li", type: "http in", z: "t", url: "/stream", method: "get", drainMode: "long", wires: [["ls"]] },
+                fn("ls", "store", STORE),
+                fn("lw", "writer" + (v.writer || ""), "return null;", { initialize: ticker(v.writer || "W1") })
+            ]);
+        }
+
+        const children = [];
+        let inst;
+        let streams;
+
+        function startLong(drain, extra) {
+            extra = Object.assign({}, extra);
+            return startInstance(drain, Object.assign({ flows: port => longFlows(extra.kind || "direct") }, extra));
+        }
+        function deployLong(instance, type, kind, v) {
+            return api(instance.url, "POST", "/flows", { flows: longFlows(kind, v) }, { "Node-RED-Deployment-Type": type });
+        }
+        // a stream like the one of a browser: resolves when the headers have arrived
+        function openStream(instance) {
+            return new Promise(function(resolve, reject) {
+                const s = { chunks: [], closed: false, status: null };
+                s.req = http.get(instance.url + "/stream", { agent: false }, function(res) {
+                    s.status = res.statusCode;
+                    res.on("data", d => s.chunks.push(d.toString()));
+                    res.on("error", () => {});
+                    s.closedPromise = new Promise(function(done) { res.on("close", function() { s.closed = true; done() }) });
+                    resolve(s);
+                });
+                s.req.on("error", function(err) { if (s.status === null) { reject(err) } });
+                streams.push(s);
+            });
+        }
+        async function closedWithin(s, ms) {
+            return Promise.race([s.closedPromise.then(() => true), sleep(ms).then(() => false)]);
+        }
+        function text(s) {
+            return s.chunks.join("");
+        }
+        async function growsWithin(s, ms) {
+            const before = s.chunks.length;
+            const started = Date.now();
+            while (Date.now() - started < ms) {
+                if (s.chunks.length > before) { return true }
+                await sleep(25);
+            }
+            return false;
+        }
+        // the base flows running with a new stream
+        async function fresh(instance, kind) {
+            const state = await api(instance.url, "POST", "/flows/state", { state: "start" });
+            state.status.should.equal(200);
+            (await deployLong(instance, "full", kind)).status.should.equal(200);
+            const started = Date.now();
+            for (;;) {
+                if ((await send(instance.url, "/fast").done).status === 200) { break }
+                if (Date.now() - started > 10000) { throw new Error("the flows did not start") }
+                await sleep(100);
+            }
+            const s = await openStream(instance);
+            s.status.should.equal(200);
+            (await growsWithin(s, 1500)).should.equal(true, "the stream does not get its chunks");
+            return s;
+        }
+
+        beforeEach(function() { streams = [] });
+        afterEach(async function() {
+            streams.forEach(s => { try { s.req.destroy() } catch (err) { /* closed */ } });
+            await stopInstance(inst);
+            inst = null;
+        });
+
+        // the drain on and the drain off (AC-98) behave the same way
+        [["the drain on", { timeout: 5000 }], ["the drain off (AC-98)", undefined]].forEach(function(variant) {
+            describe("with " + variant[0], function() {
+                beforeEach(async function() { inst = await startLong(variant[1], { kind: "direct" }) });
+
+                it("AC-92: a full deployment does not wait for the stream; the connection is closed when the node stops; no 503, no drain record", async function() {
+                    const stream = await fresh(inst, "direct");
+                    const mark = inst.output().length;
+                    const started = Date.now();
+                    const result = await deployLong(inst, "full", "direct", { other: "1" });
+                    result.status.should.equal(200);
+                    (Date.now() - started).should.be.below(1500);
+                    (await closedWithin(stream, 1500)).should.equal(true, "the connection was not closed");
+                    text(stream).should.not.match(/http_drain|503/);
+                    const output = inst.output().slice(mark);
+                    output.should.not.match(/Waiting for \d+ HTTP request/);
+                    output.should.not.match(/HTTP drain \(/);
+                });
+                it("AC-93: a flows deployment that changes the node wired to the http in closes the stream", async function() {
+                    const stream = await fresh(inst, "direct");
+                    const result = await deployLong(inst, "flows", "direct", { writer: "2" });
+                    result.status.should.equal(200);
+                    (await closedWithin(stream, 1500)).should.equal(true, "the connection was not closed");
+                    text(stream).should.not.match(/http_drain|503/);
+                });
+                ["flows", "nodes"].forEach(function(type) {
+                    it("AC-93: a " + type + " deployment that changes only an unrelated flow keeps the stream open and the flow goes on writing to it", async function() {
+                        const stream = await fresh(inst, "direct");
+                        const result = await deployLong(inst, type, "direct", { other: "2" });
+                        result.status.should.equal(200);
+                        (await growsWithin(stream, 1500)).should.equal(true, "no chunk reached the client after the deployment");
+                        stream.closed.should.be.false();
+                        text(stream).should.not.match(/http_drain|503/);
+                    });
+                });
+                it("AC-99 (the documented residual): a nodes deployment that changes only the writer leaves the stream open and silent, no 503", async function() {
+                    const stream = await fresh(inst, "direct");
+                    const result = await deployLong(inst, "nodes", "direct", { writer: "2" });
+                    result.status.should.equal(200);
+                    await sleep(500);
+                    stream.closed.should.equal(false, "the stream was closed by a deployment that did not change the http in");
+                    // the old writer is stopped, the new one has nothing to write: silent
+                    const count = stream.chunks.length;
+                    await sleep(500);
+                    stream.chunks.length.should.equal(count);
+                    text(stream).should.not.match(/http_drain|503/);
+                });
+            });
+        });
+
+        ["link", "context"].forEach(function(kind) {
+            describe("the writer behind " + (kind === "link" ? "link nodes" : "a response kept in the context") + " (AC-93b, the documented residual)", function() {
+                beforeEach(async function() { inst = await startLong({ timeout: 5000 }, { kind: kind }) });
+                ["flows", "nodes"].forEach(function(type) {
+                    it("a " + type + " deployment that changes the writer keeps the stream open and the new writer writes to it", async function() {
+                        const stream = await fresh(inst, kind);
+                        text(stream).should.match(/tick-W1/);
+                        const result = await deployLong(inst, type, kind, { writer: "W2" });
+                        result.status.should.equal(200);
+                        const started = Date.now();
+                        while (!/tick-W2/.test(text(stream)) && Date.now() - started < 3000) {
+                            await sleep(50);
+                        }
+                        text(stream).should.match(/tick-W2/);
+                        stream.closed.should.be.false();
+                        text(stream).should.not.match(/http_drain|503/);
+                    });
+                });
+            });
+        });
+
+        describe("a stop signal (AC-94, AC-95)", function() {
+            function exitOf(instance) {
+                return new Promise(resolve => {
+                    if (instance.child.exitCode !== null || instance.child.signalCode !== null) {
+                        return resolve({ code: instance.child.exitCode });
+                    }
+                    instance.child.once("exit", (code, signal) => resolve({ code, signal }));
+                });
+            }
+            it("AC-94: SIGTERM (RED.stop) closes the stream and answers no 503", async function() {
+                inst = await startLong({ timeout: 5000 }, { kind: "direct" });
+                const stream = await fresh(inst, "direct");
+                const exited = exitOf(inst);
+                inst.child.kill("SIGTERM");
+                (await closedWithin(stream, 4000)).should.equal(true, "the stream was not closed");
+                text(stream).should.not.match(/http_drain|503/);
+                const exit = await Promise.race([exited, sleep(8000).then(() => ({ timeout: true }))]);
+                should.not.exist(exit.timeout);
+            });
+            it("AC-95: with shutdownTimeout the SIGTERM path does not wait for the stream and the stream is closed when the flows stop", async function() {
+                inst = await startLong({ timeout: 5000 }, { kind: "direct", shutdownTimeout: 5000 });
+                const stream = await fresh(inst, "direct");
+                const mark = inst.output().length;
+                const exited = exitOf(inst);
+                const started = Date.now();
+                inst.child.kill("SIGTERM");
+                (await closedWithin(stream, 4000)).should.equal(true, "the stream was not closed");
+                (Date.now() - started).should.be.below(3000);
+                const exit = await Promise.race([exited, sleep(8000).then(() => ({ timeout: true }))]);
+                should.not.exist(exit.timeout);
+                (Date.now() - started).should.be.below(4000);
+                inst.output().slice(mark).should.not.match(/Waiting for \d+ HTTP request/);
+                text(stream).should.not.match(/http_drain|503/);
+            });
         });
     });
 });

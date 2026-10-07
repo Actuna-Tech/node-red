@@ -35,6 +35,8 @@
  *   #63: the R2-03 list of the limits of the JSON and urlencoded parsers is the shared table of the Admin API parsers;
  *   a response that another layer sent on a keep-alive connection (the two guards of sendTooLarge together); the
  *   boundary of the text body without the opt-in (the exact maximum is not refused, one more is)
+ *   #82: the option drainMode of "http in" (S-8): the default mode drain, the mode long (SSE, long-poll) that is not
+ *   waited for and not answered 503 and whose open responses are destroyed when the node stops
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -3926,6 +3928,379 @@ describe("HTTP In node - drain of the HTTP requests (#40)", function() {
             } finally {
                 server.close();
             }
+        });
+    });
+});
+
+// #82 (S-8): `http in` with drainMode "long" (SSE, long-poll): not waited for, not answered 503, its open responses are
+// destroyed when the node stops; every other value of drainMode is the mode "drain"
+describe("HTTP In node - drainMode (S-8, #82)", function() {
+    const http = require("http");
+    const fs = require("fs");
+    const sinon = require("sinon");
+    const NR_TEST_UTILS = require("nr-test-utils");
+    const httpDrain = NR_TEST_UTILS.require("@node-red/runtime/lib/httpDrain");
+    const S = httpDrain.S;
+    let RED;
+    let received;
+    let server;
+    let streams;
+
+    function wrapper(_RED) {
+        RED = _RED;
+        if (httpDrain.isEnabled()) {
+            _RED.httpNode.use(httpDrain.middleware);
+        }
+        return httpInNode(_RED);
+    }
+    // `mode` is the value of drainMode of the node "in"; `undefined`: the property is absent
+    function flow(mode, method) {
+        const inNode = { id: "in", type: "http in", url: "/stream", method: method || "get", wires: [["sink"]] };
+        if (mode !== undefined) {
+            inNode.drainMode = mode;
+        }
+        return [
+            inNode,
+            { id: "sink", type: "helper" },
+            { id: "out", type: "http response", statusCode: "200", wires: [] },
+            { id: "fast", type: "http in", url: "/fast", method: "get", wires: [["fastOut"]] },
+            { id: "fastOut", type: "http response", statusCode: "200", wires: [] }
+        ];
+    }
+    // `options.drain`: the setting of the drain (undefined: off); `options.answer`: the sink answers 200 at once;
+    // otherwise it starts an event stream and keeps it open
+    function load(nodes, options) {
+        options = options || {};
+        const settings = {};
+        if (options.drain) {
+            settings.deploy = { drainHttpNodeRequests: Object.assign({ enabled: true, timeout: 5000 }, options.drain) };
+            httpDrain.init(settings);
+        } else {
+            httpDrain.dispose();
+        }
+        helper.settings(settings);
+        return new Promise(function(resolve, reject) {
+            helper.load(wrapper, nodes, function(err) {
+                if (err) { return reject(err) }
+                received = [];
+                helper.getNode("sink").on("input", function(msg) {
+                    received.push(msg);
+                    const raw = msg.res._res;
+                    streams.push(raw);
+                    sinon.spy(raw, "destroy");
+                    if (options.answer) {
+                        raw.status(200).end("short");
+                    } else {
+                        raw.writeHead(200, { "Content-Type": "text/event-stream" });
+                        raw.write("data: first\n\n");
+                    }
+                });
+                resolve();
+            });
+        });
+    }
+    function waitFor(check, what, limit) {
+        return new Promise(function(resolve, reject) {
+            const started = Date.now();
+            (function poll() {
+                if (check()) { return resolve() }
+                if (Date.now() - started > (limit || 3000)) { return reject(new Error("timeout waiting for " + what)) }
+                setTimeout(poll, 5);
+            })();
+        });
+    }
+    function flush() {
+        return new Promise(resolve => setImmediate(resolve));
+    }
+    // whether the promise resolved within `ms` (a bounded wait: a defect does not hang the test)
+    function resolvesWithin(promise, ms) {
+        return Promise.race([promise.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), ms))]);
+    }
+    async function settled(promise) {
+        let done = false;
+        promise.then(() => { done = true });
+        await flush();
+        return done;
+    }
+    function stackOf(path) {
+        const layer = RED.httpNode._router.stack.find(l => l.route && l.route.path === path);
+        should.exist(layer);
+        return layer.route.stack;
+    }
+    // opens the stream like a client: resolves when the headers arrived
+    function openStream(path) {
+        return new Promise(function(resolve, reject) {
+            const s = { chunks: [], closed: false, status: null };
+            s.req = http.get({ host: "127.0.0.1", port: server.address().port, path: path || "/stream", agent: false }, function(res) {
+                s.status = res.statusCode;
+                s.res = res;
+                res.on("data", d => s.chunks.push(d.toString()));
+                res.on("error", () => {});
+                s.closedPromise = new Promise(function(done) {
+                    res.on("close", function() { s.closed = true; done() });
+                });
+                resolve(s);
+            });
+            s.req.on("error", function(err) { if (!s.res) { reject(err) } });
+        });
+    }
+    async function closedWithin(s, ms) {
+        return Promise.race([s.closedPromise.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), ms))]);
+    }
+    // an uncaught exception during `fn` is collected, not given to the runner
+    async function collectingUncaught(fn) {
+        const saved = process.listeners("uncaughtException");
+        process.removeAllListeners("uncaughtException");
+        const caught = [];
+        const handler = err => caught.push(err);
+        process.on("uncaughtException", handler);
+        try {
+            await fn();
+            await new Promise(resolve => setTimeout(resolve, 100));
+        } finally {
+            process.removeListener("uncaughtException", handler);
+            saved.forEach(l => process.on("uncaughtException", l));
+        }
+        return caught;
+    }
+
+    before(function(done) {
+        helper.startServer(done);
+    });
+    after(function(done) {
+        helper.stopServer(done);
+    });
+    beforeEach(async function() {
+        streams = [];
+        server = http.createServer(function(req, res) {
+            RED.httpNode(req, res, function() { res.statusCode = 404; res.end() });
+        });
+        await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    });
+    afterEach(async function() {
+        if (server.closeAllConnections) {
+            server.closeAllConnections();
+        }
+        await new Promise(resolve => server.close(resolve));
+        try {
+            await helper.unload();
+        } finally {
+            httpDrain.dispose();
+        }
+    });
+
+    describe("the mode of the node", function() {
+        [["absent", undefined], ["drain", "drain"]].forEach(function(entry) {
+            it("AC-90: drainMode " + entry[0] + ": the handler has the mark and the callback sets accepted", async function() {
+                await load(flow(entry[1]), { drain: {}, answer: true });
+                const node = helper.getNode("in");
+                node.callback[S].should.equal(true);
+                stackOf("/stream").filter(l => l.handle[S] === true).should.have.length(1);
+                await supertest(RED.httpNode).get("/stream").expect(200);
+                received[0].req[S].accepted.should.be.true();
+            });
+        });
+        [["x", "x"], ["1", 1], ["null", null], ["LONG", "LONG"], ["empty", ""], ["an object", {}]].forEach(function(entry) {
+            it("AC-91: drainMode " + entry[0] + " is the mode drain: the handler has the mark", async function() {
+                await load(flow(entry[1]), { drain: {}, answer: true });
+                helper.getNode("in").callback[S].should.equal(true);
+                stackOf("/stream").filter(l => l.handle[S] === true).should.have.length(1);
+                await supertest(RED.httpNode).get("/stream").expect(200);
+                received[0].req[S].accepted.should.be.true();
+            });
+        });
+        it("long: the handler has no mark and the callback does not set accepted; the request is not waited for", async function() {
+            await load(flow("long"), { drain: {} });
+            const node = helper.getNode("in");
+            should.not.exist(node.callback[S]);
+            stackOf("/stream").filter(l => l.handle[S] === true).should.have.length(0);
+            const stream = await openStream();
+            received[0].req[S].accepted.should.be.false();
+            const waited = httpDrain.beforeStop();
+            (await settled(waited)).should.equal(true, "beforeStop waits for a request in the mode long");
+            httpDrain.afterStop("full");
+            httpDrain.finalize();
+            await new Promise(resolve => setTimeout(resolve, 200));
+            stream.chunks.join("").should.equal("data: first\n\n");
+            stream.closed.should.equal(false, "the drain destroyed or answered the stream of the mode long");
+        });
+        it("long: the callback returns at once, without a message, when the drain answered the request", async function() {
+            await load(flow("long"), { drain: {} });
+            const node = helper.getNode("in");
+            const send = node.send;
+            send.resetHistory();
+            const entry = { accepted: false, drained: true };
+            const res = { writableEnded: false, destroyed: false, headersSent: false, destroy: sinon.spy(), once: function() {}, on: function() {} };
+            node.callback({ [S]: entry, headers: {}, body: {} }, res);
+            send.called.should.be.false();
+            entry.accepted.should.be.false();
+        });
+    });
+
+    // the mode long with the drain on and off (AC-98: no drain middleware is involved)
+    [["the drain on", { drain: {} }], ["the drain off (AC-98)", {}]].forEach(function(variant) {
+        describe("long with " + variant[0], function() {
+            it("AC-92: the stop of the node closes the open stream; no 503 is written to it", async function() {
+                await load(flow("long"), variant[1]);
+                const stream = await openStream();
+                stream.status.should.equal(200);
+                await waitFor(() => streams.length === 1, "the message");
+                const started = Date.now();
+                if (variant[1].drain) {
+                    (await resolvesWithin(httpDrain.beforeStop(), 500)).should.equal(true, "beforeStop waits for a stream in the mode long");
+                }
+                await helper.unload();
+                (await closedWithin(stream, 1500)).should.equal(true, "the stream was not closed when the node stopped");
+                (Date.now() - started).should.be.below(2000);
+                stream.chunks.join("").should.equal("data: first\n\n");
+                if (variant[1].drain) {
+                    httpDrain.afterStop("full");
+                    httpDrain.finalize();
+                }
+                stream.chunks.join("").should.not.match(/http_drain|503/);
+                streams[0].destroy.calledOnce.should.be.true();
+            });
+            it("AC-94: the stop of the runtime: the stream is closed and finalize does not answer it", async function() {
+                await load(flow("long"), variant[1]);
+                const stream = await openStream();
+                await waitFor(() => streams.length === 1, "the message");
+                if (variant[1].drain) {
+                    // RED.stop(): nothing waits, finalize() answers the requests of the marked routes only
+                    httpDrain.finalize();
+                    // the close of a response that finalize destroyed would reach the client within this time
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                    stream.closed.should.equal(false, "finalize destroyed or answered the stream of the mode long");
+                    stream.chunks.join("").should.equal("data: first\n\n");
+                }
+                await helper.unload();
+                (await closedWithin(stream, 1500)).should.equal(true, "the stream was not closed");
+                if (variant[1].drain) {
+                    httpDrain.finalize();
+                }
+                stream.chunks.join("").should.not.match(/http_drain|503/);
+            });
+            it("AC-96: a callback that runs after the close of the node destroys the response at once and sends no message", async function() {
+                await load(flow("long"), variant[1]);
+                const node = helper.getNode("in");
+                const send = node.send;
+                await node.close();
+                send.resetHistory();
+                const res = new (require("events"))();
+                Object.assign(res, { writableEnded: false, destroyed: false, headersSent: false });
+                res.destroy = sinon.spy(function() { this.destroyed = true });
+                node.callback({ headers: {}, body: {}, query: {}, method: "GET" }, res);
+                res.destroy.calledOnce.should.be.true();
+                send.called.should.be.false();
+            });
+            it("AC-97: 100 short requests answered normally; the close of the node does not touch a finished response", async function() {
+                this.timeout(20000);
+                await load(flow("long"), Object.assign({ answer: true }, variant[1]));
+                for (let i = 0; i < 100; i++) {
+                    await supertest(RED.httpNode).get("/stream").expect(200);
+                }
+                streams.should.have.length(100);
+                await helper.unload();
+                streams.filter(raw => raw.destroy.called).should.have.length(0);
+            });
+            it("AC-97: a response that is already ended or destroyed when the callback runs is never added: the close does not destroy it", async function() {
+                await load(flow("long"), variant[1]);
+                const node = helper.getNode("in");
+                const make = function(extra) {
+                    const res = new (require("events"))();
+                    Object.assign(res, { writableEnded: false, destroyed: false, headersSent: false }, extra);
+                    res.destroy = sinon.spy();
+                    return res;
+                };
+                const ended = make({ writableEnded: true, headersSent: true });
+                const destroyed = make({ destroyed: true });
+                node.callback({ headers: {}, body: {}, query: {}, method: "GET" }, ended);
+                node.callback({ headers: {}, body: {}, query: {}, method: "GET" }, destroyed);
+                await helper.unload();
+                ended.destroy.called.should.be.false();
+                destroyed.destroy.called.should.be.false();
+            });
+            it("AC-101: after the node closed the response, the old http response and a write to the response taken from the context cause no uncaught exception; later requests are served", async function() {
+                await load(flow("long"), variant[1]);
+                const stream = await openStream();
+                await waitFor(() => streams.length === 1, "the message");
+                const saved = received[0];
+                const raw = streams[0];
+                // only the node "in" stops (its response is destroyed), the rest of the flow lives
+                await helper.getNode("in").close();
+                (await closedWithin(stream, 1500)).should.equal(true, "the stream was not closed");
+                raw.destroyed.should.be.true();
+                const caught = await collectingUncaught(async function() {
+                    // (a) the http response node of the old flow
+                    helper.getNode("out").receive(saved);
+                    await flush();
+                    // (b) a function that took the response from the context: write and end on it
+                    raw.write("data: late\n\n");
+                    raw.end();
+                });
+                caught.should.eql([]);
+                (await supertest(RED.httpNode).get("/fast")).status.should.equal(200);
+            });
+        });
+    });
+
+    describe("the editor and the help (AC-100)", function() {
+        const base = NR_TEST_UTILS.resolve("@node-red/nodes");
+        const html = fs.readFileSync(base + "/core/network/21-httpin.html", "utf8");
+        const en = JSON.parse(fs.readFileSync(base + "/locales/en-US/messages.json", "utf8"));
+        const pl = JSON.parse(fs.readFileSync(base + "/locales/pl/messages.json", "utf8"));
+        const help = fs.readFileSync(base + "/locales/en-US/network/21-httpin.html", "utf8");
+
+        function pathOf(tree, text, prefix) {
+            for (const key of Object.keys(tree)) {
+                const value = tree[key];
+                if (typeof value === "string" && value === text) { return prefix + key }
+                if (value && typeof value === "object") {
+                    const found = pathOf(value, text, prefix + key + ".");
+                    if (found) { return found }
+                }
+            }
+            return null;
+        }
+        function at(tree, dotted) {
+            return dotted.split(".").reduce((node, key) => node && node[key], tree);
+        }
+
+        it("has the property drainMode with the default drain", function() {
+            /drainMode\s*:\s*\{\s*value\s*:\s*["']drain["']/.test(html).should.equal(true, "no default drainMode: drain in 21-httpin.html");
+        });
+        it("has a select drainMode with exactly the options drain and long, shown as drain for a node without the property", function() {
+            const select = /<select[^>]*id="node-input-drainMode"[^>]*>([^]*?)<\/select>/.exec(html);
+            should.exist(select, "no select with the id node-input-drainMode");
+            const values = [];
+            select[1].replace(/<option[^>]*value="([^"]*)"/g, function(all, value) { values.push(value); return all });
+            values.should.eql(["drain", "long"]);
+            /drainMode\s*===?\s*["']long["']/.test(html).should.equal(true, "the dialog does not read drainMode");
+        });
+        it("the labels of the options exist in the catalogs of en-US and pl and the select uses their keys", function() {
+            const labelKey = pathOf(en.httpin, "Long-lived connection (SSE/long-poll)", "httpin.");
+            should.exist(labelKey, "en-US: no label 'Long-lived connection (SSE/long-poll)' in httpin");
+            const waitKey = pathOf(en.httpin, "Wait for the request (drain)", "httpin.");
+            should.exist(waitKey, "en-US: no label 'Wait for the request (drain)' in httpin");
+            [labelKey, waitKey].forEach(function(key) {
+                const polish = at(pl, key);
+                should.exist(polish, "pl: no text for " + key);
+                polish.should.be.a.String();
+                polish.length.should.be.above(0);
+                polish.should.not.equal(at(en, key));
+                html.indexOf(key).should.not.equal(-1, "21-httpin.html does not use the key " + key);
+            });
+            at(pl, labelKey).should.containEql("SSE");
+        });
+        it("the help documents both modes, the residual and the heartbeat", function() {
+            const has = (re, what) => re.test(help).should.equal(true, "the help does not mention " + what);
+            has(/drainMode|Stop behaviour/, "drainMode");
+            has(/SSE|long-poll/, "SSE or long-poll");
+            has(/Long-lived connection/, "the mode Long-lived connection");
+            has(/heartbeat/i, "a heartbeat");
+            // the residual: the writer that is restarted alone (a nodes deployment, link nodes, a response kept in the context)
+            has(/link/i, "link nodes");
+            has(/context/i, "the context");
+            has(/nodes/, "the nodes deployment");
         });
     });
 });
