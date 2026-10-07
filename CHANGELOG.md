@@ -286,9 +286,8 @@ Security
    (permission `settings.read`, so also for a read-only role). With an active project the response contained the
    whole project object (`runtime/lib/api/settings.js`): the project's `credentialSecret` (the key to the encrypted
    flow credentials) and `remotes` with `user:password` of the remote URLs. It now contains the same `export()` of
-   the project as `GET /projects/:id` (no `credentialSecret`, credentials of the URLs hidden). The code is the same
-   in upstream Node-RED, so this is probably a leak inherited from it. A `Project` that is serialized by accident
-   (`JSON.stringify`) now gives its `export()` as well (#45)
+   the project as `GET /projects/:id` (no `credentialSecret`, credentials of the URLs hidden). A `Project` that is serialized by
+   accident (`JSON.stringify`) now gives its `export()` as well (#45)
  - Hide the credentials of a git URL (`https://user:pass@host`, `https://token@host`, `ssh://user:pass@host`)
    as `//***@` in the projects runtime: in the error of a git command (`message`, `stderr`, `stdout`, `value`) and so in
    the API response and the audit log, in the trace log of the command, and in the `event-log` of `exec.run` (command
@@ -765,7 +764,7 @@ Fixes
 
 No changes since `5.0.7-actuna.1`.
 
-#### 5.0.7-actuna.1: Actuna fork release (2026-10-03)
+#### 5.0.7-actuna.1: Actuna fork release (2026-10-04)
 
 The first release of the Actuna fork of Node-RED 5.0.7. The versions of the packages stay `5.0.7`; the release
 is the git tag.
