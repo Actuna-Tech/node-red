@@ -6,8 +6,8 @@ Zebrane ze wszystkich dokumentów (ANALIZA §7.1, „Pytania” w kartach etapó
 bez duplikatów, w kolejności priorytetów biznesowych ([../PRIORYTETY.md](../PRIORYTETY.md)). Przechodzimy punkt po
 punkcie; wynik każdej decyzji trafia do kolumny „Decyzja” i do dokumentów, których dotyczy.
 
-**Stan (2026-10-06):** wszystkie punkty R-01…R-53 rozstrzygnięte. R-01…R-32 naniesione na ANALIZA §7.0, ZASADY,
-MIGRACJA, PRIORYTETY i karty etapów; R-33…R-53 – doprecyzowania po propagacji (sekcja niżej).
+**Stan (2026-10-07):** wszystkie punkty R-01…R-54 rozstrzygnięte. R-01…R-32 naniesione na ANALIZA §7.0, ZASADY,
+MIGRACJA, PRIORYTETY i karty etapów; R-33…R-54 – doprecyzowania po propagacji (sekcja niżej).
 
 **Już rozstrzygnięte (nie wracamy):** D-01 baza 5.0.7 · D-02 nazwy (rewizja: utrzymane) · D-03 bez Playwright ·
 D-04 podpisy, blokada upstream · D-10 przeładowanie różnicowe · D-11 drenaż SIGTERM · D-19 nagłówki · D-20

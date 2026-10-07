@@ -2,7 +2,8 @@
 
 > Opracowała firma **Actuna Sp. z o.o.** (Wojciech Repiński), z użyciem narzędzi AI.
 > Dokument opisuje, czym ten fork różni się od Node-RED, jak go skonfigurować i jak w nim pracować.
-> Szczegóły zmian: [CHANGELOG.md](CHANGELOG.md) (sekcje „Unreleased”); pliki zmienione bez nagłówka:
+> Szczegóły zmian: [CHANGELOG.md](CHANGELOG.md) (sekcje wydań `5.0.7-actuna.N` i „Unreleased”); wydania i aktualizacja: §9;
+> pliki zmienione bez nagłówka:
 > [MODIFICATIONS.md](MODIFICATIONS.md); zasady pracy: [AGENTS.md](AGENTS.md).
 
 ## 1. Wersja bazowa i gałęzie
@@ -10,7 +11,8 @@
 | Element | Wartość |
 |---|---|
 | Wersja bazowa | Node-RED **5.0.7** (commit `cd05a9a`, decyzja D-01) |
-| `main` | jedyna gałąź; F1–F3 (kamień milowy F3) i priorytet 3 (wiele instancji) – stan `5c2608b` |
+| `main` | jedyna gałąź; wydania to znaczniki `5.0.7-actuna.N` na `main` (§9) |
+| Wersje pakietów | `5.0.7` we wszystkich `package.json` – wydanie forka identyfikuje znacznik, nie numer wersji |
 | Zgłoszenia do Node-RED | **zablokowane** (D-04): brak PR/issues/push do `node-red/node-red`; hook `design/git-hooks/pre-push` |
 
 > Wzmianki o gałęziach `claude/loving-fermat-ftfo9h` i `feature/p3-database` w `design/` są historyczne –
@@ -66,6 +68,7 @@ module.exports = {
 > a domyślny układ użytkownika jest ignorowany (flow bez własnego `layout` rysują się poziomo).
 > Przy `deploy.requireRevision: true` klienci Admin API (skrypty, MCP, CI/CD) muszą używać API v2 i wysyłać
 > rewizję – przewodnik: [design/engine-extensions/MIGRACJA.md](design/engine-extensions/MIGRACJA.md).
+> Aktualizacja z `5.0.7-actuna.1` do `5.0.7-actuna.2` (nowe ustawienia, zmiany widoczne bez ustawień, kolejność): §9.2.
 >
 > **Walidacja wdrożeń (#10):** własną walidację (np. unikalność `botId` w Bot-Engine) instaluje się jako **wtyczkę** węzłów
 > (`node-red.plugins`, `RED.hooks.add("preDeploy.<etykieta>", fn)`), a nie wpisem w `settings.js` – ustawienie `hooks` przyjmuje tylko
@@ -476,8 +479,8 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
     węzła – escapowany dwukrotnie), nie pokazują już encji. Włączenie i wyłączenie modułu pokazywało „Nie udało się
     zainstalować” z niezdefiniowaną nazwą (albo kończyło się błędem `ReferenceError`); teraz podaje właściwą czynność i
     moduł, jako błąd, a teksty są też w polskim katalogu.
-  - Nie zrobione (opcjonalne, R2 przeglądu #36): maskowanie `//user:pass@` w stderr gita – właściwe miejsce to runtime
-    (komunikat błędu jest budowany w `projects/git`, trafia do odpowiedzi API i logów), osobne zgłoszenie (#45).
+  - Maskowanie `//user:pass@` w stderr gita (opcjonalne R2 przeglądu #36) nie weszło do #37 – zrobione w runtime w #45
+    (wpis „Projekty/git (#45)” niżej).
 - `http in`, surowe ciało „Do not parse request body” (`skipBodyParsing`, #16): (1) trasa z parametrem (`/hook/:id`) lub adresowana inną
   wielkością liter (`/HOOK`) dostaje teraz `Buffer` **niezależnie od `deploy.holdHttpNodeRequests`** (wcześniej – obiekt lub tekst,
   bo `rawBodyCapture` zna tylko dosłowny klucz `METODA:url`; psuło to np. weryfikację podpisu ciała); każda trasa z tą opcją czyta
@@ -617,7 +620,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 | Testy jednostkowe | `npm test` / `npx mocha test/unit/_spec.js "test/unit/**/*_spec.js"`; 5 testów `projects/ssh` wymaga `ssh-keygen` |
 | Testy sieciowe | bez stałych portów (#41): serwer testowy słucha na porcie 0 (port przydziela system, `server.address().port`), a węzeł, który potrzebuje portu w konfiguracji, dostaje wolny port znaleziony tuż przed startem – dwa przebiegi `npm run mocha:nodes` na jednej maszynie nie zderzają się; żądania do aplikacji przez `nr-test-utils/supertest` (127.0.0.1), nie `helper.request()`; helper zgłasza błąd dla TLS, adresu tekstowego i http2. Gdy port znaleziony przed startem węzła `tcp in` (serwer) lub `udp in` został w międzyczasie zajęty, test ładuje flow ponownie na nowym porcie (do 10 prób, potem jawny błąd z portem), a gniazdo klienta testu zgłasza błąd połączenia swojemu testowi (#54). Zmiany tylko w testach, bez zmiany produktu |
 | Testy E2E | `npm run test:e2e` – Playwright **nie** jest w repozytorium (D-03): `npm i --no-save playwright`; bez niego testy są pomijane |
-| CI (GitHub Actions) | `tests.yml`: `npm test` na Node 22 i 24, `fail-fast: false` (każda wersja daje własny wynik), akcje checkout/setup-node v7 (Node 24), `package-manager-cache: false` jako zabezpieczenie (#57); `release.yml` działa tylko w `node-red/node-red` – w forku wydanie nie otwiera PR w innych repozytoriach (D-04) |
+| CI (GitHub Actions) | `tests.yml`: `npm test` na Node 22 i 24, `fail-fast: false` (każda wersja daje własny wynik), akcje checkout/setup-node v7 (Node 24), `package-manager-cache: false` jako zabezpieczenie (#57); `release.yml` działa tylko w `node-red/node-red` – w forku wydanie nie otwiera PR w innych repozytoriach (D-04). Przepływy GitHub Actions są w forku wyłączone; bramką przed scaleniem jest pełne `npm test` uruchamiane w Dockerze na Node 22 i 24 |
 | Nagłówki modyfikacji | każdy zmieniony plik: blok „Modified by Actuna Sp. z o.o.” (D-19); JSON i szablon `settings.js` – w MODIFICATIONS.md |
 | Commity | autorem jest operator AI (obecnie Wojciech Repiński), `Signed-off-by` (DCO), bez `Co-Authored-By` dla AI |
 | Zależności npm | bez nowych zależności bez zgody Zamawiającego |
@@ -627,12 +630,17 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 
 ## 8. Stan i dalsze prace
 
-**Zrealizowane (na `main`):** priorytet 1 (układ flow, FL-B-004…012), priorytet 2 (P-01…P-04, Z-01, Z-02,
-Z-04, Z-05, E-01), priorytet 3 w zakresie budżetu (E-02, Z-08, Z-09, Z-10, Z-11, Z-15). Każda faza przeszła
-niezależny przegląd; poprawki po przeglądzie priorytetu 3 zweryfikowane testami (bez drugiego przeglądu – budżet).
+**Zrealizowane (na `main`):**
+- wydanie `5.0.7-actuna.1`: priorytet 1 (układ flow, FL-B-004…012), priorytet 2 (P-01…P-04, Z-01, Z-02, Z-04, Z-05,
+  E-01), priorytet 3 w zakresie budżetu (E-02, Z-08, Z-09, Z-10, Z-11, Z-15). Każda faza przeszła niezależny przegląd;
+  poprawki po przeglądzie priorytetu 3 zweryfikowane testami (bez drugiego przeglądu – budżet);
+- wydanie `5.0.7-actuna.2`: Z-06 (#10, hooki `preDeploy`/`postDeploy` w MVP), Z-07 (#11, `node.registerHttpRoute`),
+  Z-16 (`health.unreadyGrace`), Z-13 częściowo (tłumaczenie edytora i komunikatów węzłów, pomoc 4 węzłów), wstrzymanie
+  i drenaż żądań HTTP (#8, #40, #82), limity ciał `http in` (#16, #48), start i zatrzymanie runtime (#67, #71, #73, #84)
+  oraz poprawki z pozostałych zgłoszeń – lista w §9.2 i w CHANGELOG.
 
-**Weryfikacja (`5c2608b`):** build, lint, `verify-deps` czyste; testy jednostkowe 2253 ✔ / 5 ✘ (projects/ssh –
-brak `ssh-keygen`); testy węzłów: 4 ✘ środowiskowe (proxy, IPv6 – tak samo na wersji bazowej); E2E 52/52.
+**Zgłoszenia forka:** wszystkie zamknięte (stan 2026-10-07); prace opisane niżej jako niezrealizowane nie mają otwartego
+zgłoszenia. **Weryfikacja wydań:** §9.1.
 
 **Wtyczki zewnętrzne:** magazyn i koordynację dla wielu instancji dostarcza się jako prywatne wtyczki poza tym
 repozytorium. Kontrakt: [MIGRACJA.md](design/engine-extensions/MIGRACJA.md) §5.2 (`watchFlows`,
@@ -651,7 +659,7 @@ węzeł trasy w rekordzie 503, ostrzeżenie o bardzo długim `timeout`. Zamknię
 operatora, wykrywanie wiadomości w hookach; wspólne walidatory `httpHold`/`httpDrain` – zamknięte (tylko refaktoryzacja). Wyścig `RED.stop` z
 wdrożeniem – poprawiony w #84 (§6).
 
-**#10 (Z-06, hooki `preDeploy`/`postDeploy`):** zrealizowany w MVP (R-50). Faza 2: `changedFlows` w ładunkach, agregacja wyników walidatorów (`errors[]`), `AsyncLocalStorage` z 409
+**#10 (Z-06, hooki `preDeploy`/`postDeploy`):** zrealizowany w MVP (R-50). Faza 2 (niezrealizowana): `changedFlows` w ładunkach, agregacja wyników walidatorów (`errors[]`), `AsyncLocalStorage` z 409
 `deploy_hook_reentrant` (po pomiarze na Node 22 i 24), `signal` przerywany przy `stopping`, `Retry-After` dla 503, `details` w edytorze (tylko z escapowaniem), krok 2a (Z-12.08) przed hookiem,
 metryka czasu hooka, ochrona hooków przed `RED.hooks.remove`. Rejestracja z `settings.js` (poza #7) wymaga nowej decyzji zgodnej z zasadą W7.
 
@@ -661,9 +669,105 @@ przed przejściem na Express 5: `rawBodyCapture` w `http in` (R-16, osobne zadan
 (`runtime/lib/httpHold.js`, #8), `matchesEveryPath` w `registry/lib/util.js` (Z-02); adapter `routerStack(app)` w
 `runtime/lib/nodes/httpRoutes.js` obsługuje już oba kształty (`_router` i `router`).
 
-**Poza zakresem (kolejny etap):** Z-03, Z-12 (rozszerzenia
-edytora), Z-13 (język polski), FL-B-011.
+**Poza zakresem (kolejny etap):** Z-03 (m.in. `externalModules.palette.allowDowngrade`), Z-12 (rozszerzenia edytora,
+m.in. `editorTheme.auth.tokenStorage`, `editorTheme.embedding.allowedOrigins`), kontrola `Origin` dla `/comms`
+(`httpAdminCommsOrigins`, R-06), dalsza część Z-13 (`runtime.json`, `jsonata.json`, `infotips.json`, pomoc pozostałych
+węzłów), FL-B-011. Nazwy tych ustawień są przyjęte (ZASADY §2.1, MIGRACJA §3.2), ale w `5.0.7-actuna.2` ustawienia
+nie istnieją – wpisane do `settings.js` nie mają efektu.
 
 **Do wykonania przez właściciela repozytorium:** przepisanie historii (usunięcie `design/k8s-postgres/` z
 historii i force push), przeniesienie do repozytorium prywatnego (forka publicznego repozytorium nie można
 przełączyć na prywatne), tag kamienia milowego F3 na commicie „Docs: milestone F3 summary”.
+
+## 9. Wydania i aktualizacja
+
+### 9.1 Wydania
+
+Wydanie forka to znacznik git `5.0.7-actuna.N` na `main`; wersje w `package.json` pozostają `5.0.7`. Zmiany każdego
+wydania opisuje [CHANGELOG.md](CHANGELOG.md) – sekcja `5.0.7-actuna.N` z podsekcjami tematów (zmiany po ostatnim
+wydaniu – sekcja „Unreleased” na początku pliku).
+
+| Znacznik | Data | Zakres | Weryfikacja |
+|---|---|---|---|
+| `5.0.7-actuna.1` | 2026-10-03 (commit `4d123b041`) | priorytety 1–3 (§8) | przetestowane w Bot-Engine 2.0.1 na środowisku testowym: E2E 330/0, weryfikacja infrastruktury 7/7, instancje tenantów 22/22, scenariusze wielu instancji S1–S10 |
+| `5.0.7-actuna.2` | 2026-10-07 | 43 scalone PR; 43 zamknięte zgłoszenia (40 zrealizowanych, 3 połączone z #63) – §9.2 | pełne `npm test` (build, verify-deps, lint, coverage; testy jednostkowe i węzłów w jednym procesie) w Dockerze na Node 22 i 24: 7293 zaliczone, 59 pominiętych, 0 nieudanych. **Nie przetestowane jeszcze w Bot-Engine (E2E)** |
+
+### 9.2 Aktualizacja z `5.0.7-actuna.1` do `5.0.7-actuna.2` (Bot-Engine)
+
+**Kolejność:** (1) przestawić odwołanie do forka (np. submoduł) na znacznik `5.0.7-actuna.2` – wszystkie pakiety
+`@node-red/*` razem, bo `@node-red/nodes` wymaga runtime z `node.registerHttpRoute` (#11); (2) bez zmian w `settings.js`
+instancja działa jak na `actuna.1`, z wyjątkiem zmian z punktu B; (3) nowe ustawienia (punkt A) włączać według §2
+i punktu C; (4) test E2E Bot-Engine – dla `actuna.2` jeszcze niewykonany.
+
+**A. Nowe ustawienia – wszystkie domyślnie wyłączone** (bez nich zachowanie jak w `actuna.1`):
+
+| Ustawienie | Działanie | Opis |
+|---|---|---|
+| `startupTimeout` | limit startu runtime (bez wczytania flow); po nim kod 1 i restart przez supervisora | §2, §5 „Wiele instancji” (#71) |
+| `health.unreadyGrace` | `/ready` 503 co najmniej tyle ms przed zatrzymaniem flow (SIGTERM, przeładowanie z magazynu) | §5 „Wiele instancji” (Z-16) |
+| `hooks` | `preReload.<etykieta>` i `preShutdown.<etykieta>` rejestrowane z `settings.js`; ostrzeżenie, gdy hook się nie wykona | §5 „Wiele instancji” (#7, #15) |
+| `deploy.reload.retry.onExhausted`, `deploy.reload.retry.maxStaleTime` | `"keepReady"`: niedostępny magazyn nie wyłącza gotowej instancji z ruchu (do `maxStaleTime`), z raportowaniem jako błąd | §5 „Wiele instancji” (#1, R-47) |
+| `deploy.holdHttpNodeRequests` | żądania do tras węzłów czekają na restart flow zamiast 404 | §5 „Wstrzymywanie żądań HTTP węzłów…” (#8) |
+| `deploy.drainHttpNodeRequests` | wdrożenie, przeładowanie i (z `shutdownTimeout`) SIGTERM czekają na zapytania przyjęte przez `http in`; po limicie 503 | §5 „Drenaż zapytań HTTP…” (#40, #82) |
+| `deploy.hookTimeout`, hooki `preDeploy`/`postDeploy` | walidacja wdrożeń we wtyczce (`RED.hooks.add`); bez zarejestrowanego handlera nic się nie zmienia | §5 „Walidacja wdrożeń” (#10) |
+| `httpInMaxBodySize` | domyślny limit ciał `http in` (surowe, upload, tekst, binarne) | §5 „Nowe ustawienia” (#48) |
+| opcje węzła `http in`: „Max body size” (`maxBodySize`), „Przy zatrzymaniu” (`drainMode`) | limit ciała dla jednego węzła; `"long"` dla SSE i long-poll | §6 (#16), §5 „Drenaż zapytań HTTP…” (#82) |
+| API węzłów `node.registerHttpRoute` | trasy HTTP węzła zdejmowane przez runtime przy zatrzymaniu węzła | §5 „Trasy HTTP węzłów” (#11) |
+
+**B. Zmiany widoczne bez nowych ustawień** (poprawki; szczegóły w §6 i w CHANGELOG):
+- **Zatrzymanie runtime (#84):** od wejścia instancji w stan `stopping` wdrożenia (`POST /flows`, `/flow*`, API runtime)
+  i `POST /flows/state` `{state: "start"}` dostają **503 `runtime_stopping`** – nic nie zmieniono, powtórzyć po restarcie
+  albo na innej instancji (MIGRACJA §4.4). Wdrożenie zapisywane w chwili rozpoczęcia zatrzymania jest zapisane, ale nie
+  startuje (z `deploy.response: "started"`: 500 `deploy_start_failed` z `errors[].code: "runtime_stopping"`).
+- **Start w CLI (#67, #73):** nieudany `RED.start()` kończy się zatrzymaniem (najwyżej 5 s) i **kodem wyjścia 1**
+  (wcześniej 0 albo proces bez serwera); trwały błąd konfiguracji daje pętlę restartów (MIGRACJA §3.3). Zatrzymanie
+  w trakcie startu: `RED.start()` odrzuca błędem `startup_stopped` (aplikacja osadzająca pomija go w `catch`).
+- **`http in`, rozmiar ciała (#16, #48):** surowe ciało („Do not parse request body”) ma limit `apiMaxLength`
+  (domyślnie 5 MB), większe → **413** – integracja wysyłająca więcej musi podnieść limit; trasa z tą opcją i z parametrem
+  (`/hook/:id`) dostaje surowe ciało jako `Buffer`; ciało tekstowe dłuższe niż maksymalna długość napisu Node.js → **413**; pole tekstowe
+  uploadu multipart z numerem w nawiasach powyżej 100 albo z więcej niż 8 znakami `[` w nazwie → **413**. Parsery JSON
+  i urlencoded (`http in` – #48, Admin API – #63) mają limit najwyżej równy maksymalnej długości napisu Node.js.
+- **`http in`, trasy (#11):** przy zamknięciu węzła zdejmowane są tylko jego trasy; gdy dwa węzły mają tę samą ścieżkę
+  i metodę, po zamknięciu pierwszego odpowiada drugi (wcześniej 404).
+- **Edytor (#22, #30, #34, #37, #63):** błędy wdrożenia, palety, projektów, biblioteki i kontroli wersji pokazują
+  czytelny komunikat z pola `message` albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”, tekst z serwera jako
+  tekst (escapowany), a nie HTML. `RED.utils.sanitize` escapuje też cudzysłowy – dodatki edytora, które wstawiają wynik
+  do `.text()`, zobaczą encje. Z `deploy.response: "started"` odpowiedź 500 z `rev` oznacza zapisane zmiany (edytor
+  przejmuje `rev`). Przeglądarka z językiem `pl` bez wybranego języka pokazuje edytor po polsku (tłumaczenie częściowe).
+- **Przeładowanie z magazynu (przy `deploy.reload.watch: true`; #2, #17, #26, #51):** zmiana samych poświadczeń wywołuje
+  przeładowanie (porównanie skrótu); flaga `credentialsChanged` w powiadomieniu `watchFlows` jest tylko wskazówką –
+  **zmiana dla wtyczki magazynu**, która wymuszała nią przeładowanie. Błędy ponownego odczytu i samego przeładowania
+  liczą się do `retry.attempts`: instancja przechodzi w `failed`, zamiast ponawiać bez końca.
+- **Koordynacja i `instanceId` (#3, #4, #75, #76):** `instanceId: undefined` (np. nieustawiona zmienna środowiskowa)
+  znaczy brak klucza (wcześniej błąd startu); wygenerowany identyfikator przy wtyczce koordynacji innej niż lokalna daje
+  ostrzeżenie; instancja `editorOnly` nie uruchamia wtyczki koordynacji i nigdy nie jest liderem; błąd wtyczki
+  zgłoszony dowolną wartością (także `undefined`) nie przerywa zatrzymania.
+- **Admin API, odpowiedzi błędów:** `GET /settings` z aktywnym projektem zwraca `export()` projektu – bez
+  `credentialSecret`, z zamaskowanymi adresami zdalnymi (#45); adres zdalny git z białym znakiem albo niezakodowanym
+  `/`, `?`, `#`, `@` w danych logowania → `git_invalid_argument` (#45); nowe kody błędów sesji `POST /auth/token`
+  i `POST /auth/revoke` (#68); zapis wpisu biblioteki czeka na zapis pliku, nieudany → 400 `unexpected_error`, nazwa
+  poza katalogiem typu albo kończąca się na `.$$$` → 403 (#54, #63); `PUT /projects/:id` z polem złego typu → 400
+  `invalid_request`, nieudany zapis → 400 `unexpected_error` (#63); odrzucone żądanie `/flow` nie przechodzi już przez
+  stan `deploying` (#10).
+- **Magazyn plików (#68):** nieudany zapis odrzuca operację, a plik zostaje bez zmian (wcześniej pusty albo ucięty).
+- **Hooki (#61, #63, #76):** handler odrzucający bez wartości albo rzucający synchronicznie wartość fałszywą kończy
+  łańcuch błędem (w hookach wiadomości wiadomość nie jest dostarczana); handler bez parametrów daje ostrzeżenie przy
+  rejestracji – zadeklarować `(payload)`.
+- **Log:** nowe komunikaty (np. `Stopping Node-RED (startup-error)`, `The flows are not started: the runtime is
+  stopping`) – narzędzia parsujące log muszą je tolerować.
+
+**C. Zalecane zmiany konfiguracji** (wartości i uzasadnienie: §2):
+- `startupTimeout: 120000` i budżet `startupProbe` większy niż `startupTimeout` + 5 s + czas wczytania flow (§2,
+  [MIGRACJA.md](design/engine-extensions/MIGRACJA.md) §3.3);
+- `health: { enabled: true, port: 1881, unreadyGrace: 15000 }` i `shutdownTimeout: 25000`;
+  `terminationGracePeriodSeconds` co najmniej 45 s, zalecane 60 s (§2 „Zatrzymanie”);
+- `deploy.reload.retry.onExhausted: "keepReady"` – przy `deploy.reload.watch: true` (§5 „Wiele instancji”);
+- `deploy.holdHttpNodeRequests: { enabled: true }` (§5 „Wstrzymywanie żądań HTTP węzłów…”);
+- `deploy.drainHttpNodeRequests: { enabled: true, timeout: 10000 }` (5000–10000 dla Bot-Engine), a endpointy SSE
+  i long-poll na `http in` z „Przy zatrzymaniu” = „Połączenie długotrwałe” (`drainMode: "long"`) (§5 „Drenaż zapytań HTTP…”);
+- `httpInMaxBodySize: "50mb"` – po sprawdzeniu największych ciał wysyłanych przez integracje (§5 „Nowe ustawienia”);
+- jawny `instanceId`, taki sam na wszystkich instancjach współdzielących magazyn (§5 „Uwagi konfiguracyjne”);
+- walidacja wdrożeń (np. unikalność `botId`) jako wtyczka z hookiem `preDeploy` i przełącznikiem awaryjnym (§2,
+  MIGRACJA §4.3);
+- narzędzia Admin API: obsługa 503 `runtime_stopping`, `deploy_hook_failed`, `deploy_hook_timeout` i 409
+  `http_drain_in_progress` – lista kontrolna MIGRACJA §7.
