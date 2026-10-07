@@ -299,9 +299,12 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   started: the runtime is stopping`). `RED.stop()` rozwiązuje się dopiero, gdy wszystkie flow są zatrzymane – także flow
   zostawione przez wdrożenie częściowe i flow uruchomione przez start, który już trwał: czeka na trwające zatrzymanie flow
   i na flow, które starty właśnie uruchamiają (każde najwyżej `nodeCloseTimeout`, potem ostrzeżenie), nigdy na instalację
-  modułów ani blokadę wdrożeń. Węzły, które start utworzy po tym limicie, są zamykane, gdy ten start się skończy.
-  Wdrożenie zapisane w okresie łaski zatrzymania (stan `stopping`, flow jeszcze działają) zatrzymuje tylko to, co zmienia
-  (`full` – wszystko), i niczego nie uruchamia; po nim `GET /flows/state` i zdarzenie `runtime-state` mówią `stop`
+  modułów ani blokadę wdrożeń. Węzły, które start utworzy po tym limicie, są zamykane, gdy ten start się skończy – już po
+  rozwiązaniu `RED.stop()` (także po zamknięciu kontekstów); są zamykane jak przy zwykłym zatrzymaniu (`removed: false`),
+  także gdy ich flow zostało usunięte z konfiguracji. Wdrożenie, które zapisywało konfigurację, gdy zatrzymanie się zaczęło
+  (stan `stopping`, flow jeszcze działają), zatrzymuje tylko to, co zmienia (`full` – wszystko; otwarte zapytania HTTP
+  dostają wtedy 503 po zatrzymaniu flow, co kończy wcześniej czekanie zatrzymania procesu na zapytania), i niczego nie
+  uruchamia; po nim `GET /flows/state` i zdarzenie `runtime-state` mówią `stop`
   (`deploy: true`), choć niezmienione flow obsługują jeszcze ruch do `RED.stop()` – stan instancji to już `stopping`,
   `/ready` 503. Kod osadzający, który wołał `setFlows` po `RED.stop()`, dostaje odrzucenie `runtime_stopping`.
   Zmiana projektu w trakcie zatrzymania nie jest odrzucana; flow przełączonego projektu startują po restarcie. Sekwencja
