@@ -2762,6 +2762,9 @@ describe('flows/index', function() {
             instanceState.reset();
             instanceState.markStarting();
             await flows.load();
+            // load() emits runtime-event runtime-state while the state is still starting (loadStoredCredentials):
+            // events from before the test's stop began are not what the assertions below are about
+            seen.length = 0;
         }
         async function bootAndStart(settings, config) {
             await boot(settings, config);

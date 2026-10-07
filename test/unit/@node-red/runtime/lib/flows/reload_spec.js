@@ -3642,6 +3642,39 @@ describe("flows/reload (Z-09)", function() {
             });
         });
 
+        it("AC-28 (#84): the stop begins while the real pipeline waits for the deploy lock (reread not yet called): the cycle ends quietly, no further cycle is scheduled, nothing reloaded", async function() {
+            env = createEnv({ reload: { type: "diff" } });
+            await env.start();
+            let release;
+            const held = lock.runExclusive(() => new Promise(resolve => { release = resolve }));
+            try {
+                env.change("B");
+                env.notify({ rev: "B" });
+                // the cycle ran its preReload and its drain and now waits in pipeline.deploy for the lock
+                await waitFor(() => hook.callCount === 1, 1000, "the preReload did not run");
+                await delay(80);
+                const reads = env.getFlowsCalls;
+                state.markStopping("SIGTERM");
+                release();
+                await held;
+                // a further cycle would read storage and call the preReload again
+                await delay(250);
+                hook.callCount.should.equal(1);
+                env.getFlowsCalls.should.equal(reads);
+                env.flows.reloadFromStorage.called.should.be.false();
+                env.applied.should.have.length(0);
+                failures().should.eql([]);
+                env.logs.info.filter(m => m.indexOf("reload.reloaded") === 0).should.eql([]);
+                env.audits.filter(a => a.event === "flows.reload").should.eql([]);
+                state.get().state.should.equal("stopping");
+                lock.isLocked().should.be.false();
+            } finally {
+                if (release) {
+                    release();
+                }
+            }
+        });
+
         it("AC-14 (off): without a stop the same cycle reloads (the skipped value is only for stopping)", async function() {
             env = createEnv({ reload: { type: "diff" } });
             await env.start();

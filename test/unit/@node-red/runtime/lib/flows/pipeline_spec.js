@@ -62,7 +62,7 @@ describe("flows/pipeline", function() {
                 return "loadRev";
             })
         };
-        pipeline.init({ flows: flows });
+        pipeline.init({ flows: flows, log: { _: function(key) { return key } } });
     });
 
     it("deploys full/nodes/flows through setFlows under the lock", async function() {
@@ -292,11 +292,13 @@ describe("flows/pipeline", function() {
             seen.should.eql(["deploying", "idle", "deploying", "idle"]);
         });
 
-        it("a deployment while stopping does not change the state", async function() {
+        it("a deployment while stopping is refused (#84, D1) and does not change the state", async function() {
             instanceState.markStopping("SIGTERM");
             flows.setFlows = startingSetFlows({ errors: [] });
-            await pipeline.deploy({ flows: { flows: [1] } });
-            finishStart();
+            const err = await pipeline.deploy({ flows: { flows: [1] } }).should.be.rejected();
+            err.should.have.property("code", "runtime_stopping");
+            err.should.have.property("status", 503);
+            flows.setFlows.called.should.be.false();
             await lock.runExclusive(async () => {});
             instanceState.get().state.should.equal("stopping");
         });
@@ -1655,6 +1657,36 @@ describe("flows/pipeline", function() {
                 await flush();
                 posts.should.have.length(0);
                 instanceState.get().state.should.equal("stopping");
+            });
+            ["stopping", "stopped"].forEach(function(name) {
+                it("AC-28 (#84): a reload that takes the lock in the state " + name + " (not reloadPending) returns {skipped: 'stopping'}, not 'superseded' - reread not called, nothing reloaded", async function() {
+                    instanceState.markReloadPending();
+                    instanceState.markDraining();
+                    instanceState.markStopping("SIGTERM");
+                    if (name === "stopped") {
+                        instanceState.markStopped();
+                    }
+                    let rereads = 0;
+                    const result = await pipeline.deploy({ type: "reload", source: "storage", reread: async function() {
+                        rereads++;
+                        return { apply: { flows: [], rev: "B" }, reloadType: "full", credentialsChanged: false };
+                    } });
+                    result.should.eql({ skipped: "stopping" });
+                    rereads.should.equal(0);
+                    flows.reloadFromStorage.called.should.be.false();
+                    lock.isLocked().should.be.false();
+                    await flush();
+                    posts.should.have.length(0);
+                    instanceState.get().state.should.equal(name);
+                });
+            });
+            it("AC-28 (#84, off): a reload superseded by a deployment while the instance is not stopping is still {skipped: 'superseded'}", async function() {
+                instanceState.markReloadPending();
+                instanceState.markDraining();
+                const a = pipeline.deploy({ type: "full", source: "api", req: {}, flows: { flows: [1] } });
+                const b = pipeline.deploy({ type: "reload", source: "storage", reread: async () => ({ apply: { flows: [], rev: "B" }, reloadType: "full" }) });
+                await a;
+                (await b).should.eql({ skipped: "superseded" });
             });
             it("AC-14: a reread that does not apply is returned as before (no 'stopping' without a stop)", async function() {
                 instanceState.markReloadPending();

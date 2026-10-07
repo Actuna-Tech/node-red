@@ -4020,7 +4020,7 @@ describe("runtime", function() {
                 saveFlows: async () => "r2"
             } });
             runtime.init({ testSettings: true, httpAdminRoot: "/", shutdownTimeout: 5000, hooks: {
-                "preShutdown.t84": function() { return new Promise(function(resolve) { setTimeout(resolve, 400) }) }
+                "preShutdown.t84": function(payload) { return new Promise(function(resolve) { setTimeout(resolve, 400) }) }
             } });
             await runtime.start();
             instanceState.get().state.should.equal("starting");

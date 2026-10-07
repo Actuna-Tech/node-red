@@ -2406,7 +2406,7 @@ describe("runtime-api/flows", function() {
                 assertRefused(await rejected(flows.deleteFlow({ id: "nope", req: {} })));
                 assertRefused(await rejected(flows.deleteFlow({ id: "t1", rev: "wrong", req: {} })));
                 assertRefused(await rejected(flows.addFlow({ flow: { nodes: [], globalConfigs: [], globalRev: "wrong" }, req: {} })));
-                runtime.flows.buildUpdateFlowConfig.callsFake(() => { throw Object.assign(new Error("build"), { code: "duplicate_id" }) });
+                runtime.flows.buildUpdateFlowConfig = sinon.spy(() => { throw Object.assign(new Error("build"), { code: "duplicate_id" }) });
                 assertRefused(await rejected(flows.updateFlow({ id: "t1", flow: { nodes: [], rev: "rev-t1" }, req: {} })));
                 changed().should.eql([]);
                 runtime.log.audit.calledWithMatch({ event: "flow.update", error: "runtime_stopping" }).should.be.true();
