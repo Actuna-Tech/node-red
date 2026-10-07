@@ -1268,6 +1268,295 @@ describe("runtime/httpDrain (#40)", function() {
             calls.should.eql([]);
         });
     });
+    // #82 (S-2): after the window one timer at the nearest deadline instead of an interval; `observe` skips
+    // the entries that have a deadline; a failed answer is retried inside the window; an answered entry
+    // leaves the guard at once
+    describe("the guard (S-2, #82)", function() {
+        // the pending fake timers; the periodic one has `interval`
+        function pendingTimers() {
+            return Object.keys(clock.timers || {}).map(id => clock.timers[id]);
+        }
+        function isPeriodic(t) {
+            return typeof t.interval === "number";
+        }
+        // whenever a deadline is pending and no window is open: exactly one timer, a timeout
+        function oneTimeout(message) {
+            const list = pendingTimers();
+            list.length.should.equal(1, (message || "") + " the number of the pending timers");
+            isPeriodic(list[0]).should.equal(false, (message || "") + " the timer is periodic");
+        }
+        function answerFailed() {
+            return log.warn.args.map(a => a[0]).filter(m => /httpDrain.answer-failed/.test(m));
+        }
+        function summaries() {
+            return log.warn.args.map(a => a[0]).filter(m => /httpDrain.answered /.test(m));
+        }
+        // three accepted routed requests of an open window with the deadlines START + 1000, + 1300, + 1600;
+        // the clock is at START + 700 when the window closes (the deadlines are 300, 600 and 900 ms ahead)
+        async function threeDeadlines(close) {
+            init();
+            const token = close === "state" ? deploying() : null;
+            await httpDrain.beforeStop();
+            const a = accept(route(arrive("POST")));
+            clock.tick(300);
+            const b = accept(route(arrive("POST")));
+            clock.tick(300);
+            const c = accept(route(arrive("POST")));
+            clock.tick(100);
+            if (token) {
+                instanceState.end(token, { errors: [] });
+                // the guard sees the end of the window at its next period
+                clock.tick(250);
+            } else {
+                httpDrain.afterStop("partial");
+            }
+            return [a, b, c];
+        }
+        const DEADLINES = [START + 1000, START + 1300, START + 1600];
+        async function walkDeadlines(all) {
+            for (let i = 0; i < all.length; i++) {
+                clock.tick(DEADLINES[i] - 1 - Date.now());
+                all[i].res.writableEnded.should.equal(false, "request " + i + " is answered before its deadline");
+                oneTimeout("before the deadline " + i + ":");
+                clock.tick(1 + 250);
+                all[i].res.statusCode.should.equal(503, "request " + i + " is answered at its deadline, at most 250 ms late");
+                if (i < all.length - 1) {
+                    oneTimeout("after the answer " + i + ":");
+                }
+            }
+            clock.countTimers().should.equal(0);
+        }
+
+        it("AC-20: after an operation window: exactly one timer, a timeout; each request is answered at its deadline; none is left", async function() {
+            const all = await threeDeadlines("operation");
+            oneTimeout("right after afterStop:");
+            await walkDeadlines(all);
+        });
+        it("AC-20: the same after a state window that ends by a state change (one period later)", async function() {
+            const all = await threeDeadlines("state");
+            oneTimeout("after the next period:");
+            await walkDeadlines(all);
+        });
+        it("AC-21 (as far as it can be reached): a request accepted after the window gets its own, later deadline; the planned one stays", async function() {
+            // A deadline is `max(t0, moment) + timeout`, so a request that is accepted later never has an
+            // earlier deadline than one that is planned (the clock does not run backwards): the test pins that
+            // the planned deadline is not disturbed and the new one is served at its own
+            init();
+            await httpDrain.beforeStop();
+            const early = accept(route(arrive("POST")));
+            const late = route(arrive("POST"));
+            clock.tick(100);
+            httpDrain.afterStop("partial");
+            oneTimeout("planned:");
+            clock.tick(100);
+            accept(late);
+            oneTimeout("after the later acceptance:");
+            clock.tick(START + TIMEOUT - 1 - Date.now());
+            early.res.writableEnded.should.be.false();
+            clock.tick(1 + 250);
+            early.res.statusCode.should.equal(503);
+            late.res.writableEnded.should.be.false();
+            oneTimeout("after the first answer:");
+            clock.tick(START + 200 + TIMEOUT - 1 - Date.now());
+            late.res.writableEnded.should.be.false();
+            clock.tick(1 + 250);
+            late.res.statusCode.should.equal(503);
+            clock.countTimers().should.equal(0);
+        });
+        it("AC-22: a new window while the timeout is pending makes the guard periodic again; a request routed in it gets a deadline and window-long still fires", async function() {
+            init();
+            await httpDrain.beforeStop();
+            const old = accept(route(arrive("POST")));
+            clock.tick(100);
+            httpDrain.afterStop("partial");
+            oneTimeout("the first window is closed:");
+            const token = deploying();
+            const second = httpDrain.beforeStop();
+            httpDrain.abortWait();
+            await second;
+            pendingTimers().some(isPeriodic).should.equal(true, "the guard is periodic in the new window");
+            // keeps the window busy (no route: never a deadline), like a request of a start that does not end
+            const keeper = arrive();
+            const routed = route(arrive("POST"));
+            clock.tick(250);
+            // a deadline was given to the routed request: it is answered after the timeout
+            clock.tick(TIMEOUT + 250);
+            routed.res.statusCode.should.equal(503);
+            old.res.statusCode.should.equal(503);
+            const before = log.warn.args.map(a => a[0]).filter(m => /httpDrain.window-long/.test(m)).length;
+            clock.tick(2 * TIMEOUT);
+            log.warn.args.map(a => a[0]).filter(m => /httpDrain.window-long/.test(m)).length.should.equal(1);
+            before.should.equal(0);
+            keeper.res.end("ok");
+            instanceState.end(token, { errors: [] });
+        });
+        it("AC-23: requests that finish before their deadlines leave no timer and no 503", async function() {
+            init();
+            await httpDrain.beforeStop();
+            const all = [accept(route(arrive("POST"))), accept(route(arrive("POST")))];
+            clock.tick(100);
+            httpDrain.afterStop("partial");
+            oneTimeout("pending deadlines:");
+            all.forEach(r => r.res.end("in time"));
+            clock.countTimers().should.equal(0);
+            clock.tick(10 * TIMEOUT);
+            all.forEach(r => r.res.body.should.equal("in time"));
+        });
+        it("AC-23b: a timeout that fires 1 ms early answers nothing, one timer is pending again, the 503 is sent at the deadline", async function() {
+            init();
+            await httpDrain.beforeStop();
+            const r = accept(route(arrive("POST")));
+            clock.tick(400);
+            httpDrain.afterStop("partial");
+            oneTimeout("planned for t + 600:");
+            // the clock is stepped back: the timeout (600 ms) now fires 1 ms before the deadline
+            clock.setSystemTime(Date.now() - 1);
+            clock.tick(600);
+            Date.now().should.equal(START + TIMEOUT - 1);
+            r.res.writableEnded.should.equal(false, "the 503 was sent before the deadline");
+            oneTimeout("after the early timeout:");
+            clock.tick(1 + 250);
+            r.res.statusCode.should.equal(503);
+            clock.countTimers().should.equal(0);
+        });
+        it("AC-24: in an open window one period reads the response of each request that has a deadline once; a request without one still gets it", async function() {
+            init();
+            const token = deploying();
+            const all = [];
+            const reads = [];
+            for (let i = 0; i < 50; i++) {
+                const r = route(arrive("POST"));
+                let count = 0;
+                reads.push(function() { return count });
+                Object.defineProperty(r.res, "writableEnded", { get: function() { count++; return false }, configurable: true });
+                all.push(r);
+            }
+            // every one has the deadline START + TIMEOUT from here on
+            await httpDrain.beforeStop();
+            const late = arrive("POST");
+            clock.tick(100);
+            route(late);
+            const before = reads.map(read => read());
+            clock.tick(150);
+            // one period (at START + 250): the entry of `late` got its deadline by the guard
+            reads.forEach(function(read, i) {
+                (read() - before[i]).should.equal(1, "the reads of request " + i + " in one period");
+            });
+            // late: the guard saw its route at START + 250 -> the deadline is START + 250 + TIMEOUT
+            clock.tick(START + 250 + TIMEOUT - 1 - Date.now());
+            late.res.writableEnded.should.be.false();
+            clock.tick(1 + 250);
+            late.res.statusCode.should.equal(503);
+            body(late).code.should.equal("http_drain_not_accepted");
+            instanceState.end(token, { errors: [] });
+        });
+        it("AC-25: a due request whose answer fails twice in the window is answered at the third period; one warning, one count of failed", async function() {
+            init();
+            const token = deploying();
+            const r = accept(route(arrive("POST")));
+            let attempts = 0;
+            const realEnd = r.res.end;
+            r.res.end = function(text) {
+                attempts++;
+                if (attempts <= 2) {
+                    throw Object.assign(new Error("secret detail"), { code: "EBOOM" });
+                }
+                return realEnd.call(this, text);
+            };
+            await drainNow();
+            clock.tick(1000);
+            attempts.should.equal(1);
+            clock.tick(250);
+            attempts.should.equal(2);
+            r.res.writableEnded.should.be.false();
+            clock.tick(250);
+            attempts.should.equal(3);
+            r.res.statusCode.should.equal(503);
+            body(r).code.should.equal("http_drain_outcome_unknown");
+            answerFailed().should.have.length(1);
+            answerFailed()[0].should.match(/EBOOM/);
+            summaries().filter(m => /"failed":1/.test(m)).should.have.length(1);
+            summaries().filter(m => /"outcomeUnknown":1/.test(m)).should.have.length(1);
+            summaries().should.have.length(2);
+            instanceState.end(token, { errors: [] });
+        });
+        it("AC-26: a request that fails for ever is warned about once in 2 s of the window; its close ends the retries and the guard", async function() {
+            init();
+            const token = deploying();
+            const r = accept(route(arrive("POST")));
+            let attempts = 0;
+            r.res.end = function() {
+                attempts++;
+                throw Object.assign(new Error("x"), { code: "EBOOM" });
+            };
+            await drainNow();
+            clock.tick(2000 + 1000);
+            // the deadline is at 1000: a retry at every period of 250 ms until 3000
+            attempts.should.be.above(5);
+            answerFailed().should.have.length(1);
+            summaries().should.have.length(1);
+            r.res.destroy();
+            const after = attempts;
+            clock.tick(5000);
+            attempts.should.equal(after);
+            clock.countTimers().should.equal(0);
+            instanceState.end(token, { errors: [] });
+        });
+        it("AC-27: a failed request is removed from the guard when the window closes; afterStop('full') answers it then", async function() {
+            init();
+            const token = deploying();
+            const r = accept(route(arrive("POST")));
+            r.res.endThrows = Object.assign(new Error("x"), { code: "EBOOM" });
+            await drainNow();
+            clock.tick(1000);
+            answerFailed().should.have.length(1);
+            instanceState.end(token, { errors: [] });
+            clock.tick(250);
+            clock.countTimers().should.equal(0);
+            r.res.endThrows = null;
+            httpDrain.afterStop("full");
+            r.res.statusCode.should.equal(503);
+        });
+        it("AC-27: a due request that fails after the window is removed from the guard; finalize() answers it then", async function() {
+            init();
+            await httpDrain.beforeStop();
+            const r = accept(route(arrive("POST")));
+            r.res.endThrows = Object.assign(new Error("x"), { code: "EBOOM" });
+            clock.tick(400);
+            httpDrain.afterStop("partial");
+            clock.tick(600 + 250);
+            answerFailed().should.have.length(1);
+            clock.countTimers().should.equal(0);
+            r.res.endThrows = null;
+            httpDrain.finalize();
+            r.res.statusCode.should.equal(503);
+        });
+        it("AC-28: a response whose end emits finish later, and a destroyed one: no timer is left right after afterStop('full'), no second answer later", async function() {
+            init();
+            await httpDrain.beforeStop();
+            const slow = accept(route(arrive("POST")));
+            slow.res.end = sinon.spy(function(text) {
+                // ends the response, but 'finish' comes later (a slow client)
+                this.body = text;
+                this.writableEnded = true;
+                this.headersSent = true;
+                return this;
+            });
+            const destroyed = accept(route(arrive("POST")));
+            destroyed.res.headersSent = true;
+            // destroy() without a 'close' event yet
+            destroyed.res.destroy = sinon.spy(function() { this.destroyed = true });
+            httpDrain.afterStop("full");
+            slow.res.end.calledOnce.should.be.true();
+            destroyed.res.destroy.calledOnce.should.be.true();
+            clock.countTimers().should.equal(0);
+            clock.tick(10 * TIMEOUT);
+            slow.res.end.calledOnce.should.be.true();
+            destroyed.res.destroy.calledOnce.should.be.true();
+            httpDrain.finalize();
+            slow.res.end.calledOnce.should.be.true();
+        });
+    });
 });
 
 // #82 (S-1): the same with a real Express app, a real HTTP server and real clients (no fake timers: the
