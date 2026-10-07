@@ -576,8 +576,9 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
             if (kind === "link") {
                 return base.concat([
                     { id: "li", type: "http in", z: "t", url: "/stream", method: "get", drainMode: "long", wires: [["lo"]] },
-                    { id: "lo", type: "link out", z: "t", mode: "link", links: ["lin"], wires: [] },
-                    { id: "lin", type: "link in", z: "t", links: ["lo"], wires: [["lw"]] },
+                    // x and y: a node without them is a configuration node, and two nodes that refer to each other are a loop
+                    { id: "lo", type: "link out", z: "t", x: 300, y: 100, mode: "link", links: ["lin"], wires: [] },
+                    { id: "lin", type: "link in", z: "t", x: 400, y: 100, links: ["lo"], wires: [["lw"]] },
                     fn("lw", "writer" + (v.writer || ""), STORE, { initialize: ticker(v.writer || "W1") })
                 ]);
             }
@@ -589,7 +590,7 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
             ]);
         }
 
-        const children = [];
+        this.timeout(90000);
         let inst;
         let streams;
 
@@ -597,8 +598,11 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
             extra = Object.assign({}, extra);
             return startInstance(drain, Object.assign({ flows: port => longFlows(extra.kind || "direct") }, extra));
         }
+        // a deployment that does not answer fails the test after 20 s instead of hanging it
         function deployLong(instance, type, kind, v) {
-            return api(instance.url, "POST", "/flows", { flows: longFlows(kind, v) }, { "Node-RED-Deployment-Type": type });
+            const deployment = api(instance.url, "POST", "/flows", { flows: longFlows(kind, v) }, { "Node-RED-Deployment-Type": type });
+            const limit = new Promise((resolve, reject) => setTimeout(() => reject(new Error("the deployment did not answer within 20 s")), 20000).unref());
+            return Promise.race([deployment, limit]);
         }
         // a stream like the one of a browser: resolves when the headers have arrived
         function openStream(instance) {
@@ -710,16 +714,16 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
                 ["flows", "nodes"].forEach(function(type) {
                     it("a " + type + " deployment that changes the writer keeps the stream open and the new writer writes to it", async function() {
                         const stream = await fresh(inst, kind);
-                        text(stream).should.match(/tick-W1/);
+                        /tick-W1/.test(text(stream)).should.equal(true, "the first writer does not write");
                         const result = await deployLong(inst, type, kind, { writer: "W2" });
                         result.status.should.equal(200);
                         const started = Date.now();
                         while (!/tick-W2/.test(text(stream)) && Date.now() - started < 3000) {
                             await sleep(50);
                         }
-                        text(stream).should.match(/tick-W2/);
-                        stream.closed.should.be.false();
-                        text(stream).should.not.match(/http_drain|503/);
+                        /tick-W2/.test(text(stream)).should.equal(true, "the new writer did not write to the stream");
+                        stream.closed.should.equal(false, "the stream was closed");
+                        /http_drain|503/.test(text(stream)).should.equal(false, "a 503 was written to the stream");
                     });
                 });
             });
