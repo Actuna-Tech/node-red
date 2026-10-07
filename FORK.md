@@ -543,7 +543,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   are not started: the runtime is stopping`); trwający start kończy się na najbliższym kroku. `RED.stop()` rozwiązuje
   się dopiero, gdy wszystkie flow są zatrzymane: czeka na trwające zatrzymanie flow i na flow, które start właśnie
   uruchamia (każde najwyżej `nodeCloseTimeout`, potem jedno ostrzeżenie na flow), nigdy na instalację modułów ani blokadę
-  wdrożeń. Węzły, które start utworzy po tym limicie, są zamykane, gdy ten start się skończy – już po rozwiązaniu
+  wdrożeń. Węzły, które start utworzy po tym limicie, są zamykane, gdy ten start się skończy – możliwie dopiero po rozwiązaniu
   `RED.stop()` (także po zamknięciu kontekstów). Wdrożenie, które zapisywało konfigurację, gdy zatrzymanie się zaczęło
   (stan `stopping`, flow jeszcze działają), zatrzymuje tylko to, co zmienia, i niczego nie uruchamia; pozostałe flow
   działają do `RED.stop()`. Wdrożenie `full` w tym oknie zatrzymuje wszystkie flow i niczego nie uruchamia; otwarte

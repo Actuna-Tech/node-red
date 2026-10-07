@@ -444,8 +444,8 @@ Fixes
    info log `The flows are not started: the runtime is stopping`; a start that is running stops at its next step.
    `RED.stop()` resolves only when every flow is stopped: it waits for a stop of the flows in progress and for the
    flows the starts are starting (each at most `nodeCloseTimeout`, then one warning per flow), never for a module
-   install or the deploy lock; nodes that a start creates after that limit are closed when that start ends, after
-   `RED.stop()` has resolved (also after the contexts are closed). A deployment whose save was in progress when the
+   install or the deploy lock; nodes that a start creates after that limit are closed when that start ends, possibly only
+   after `RED.stop()` has resolved (also after the contexts are closed). A deployment whose save was in progress when the
    stop began (state `stopping`, the flows still run) stops only what it changes and starts nothing - the other flows
    run until `RED.stop()`; a `full` deployment in that window stops all flows and starts nothing, and the open HTTP
    requests then get 503 after the flows stop, which ends the wait of the shutdown for them early. A reload from storage whose second read ends while the instance is stopping changes nothing and

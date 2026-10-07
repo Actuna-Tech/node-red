@@ -299,7 +299,7 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   started: the runtime is stopping`). `RED.stop()` rozwiązuje się dopiero, gdy wszystkie flow są zatrzymane – także flow
   zostawione przez wdrożenie częściowe i flow uruchomione przez start, który już trwał: czeka na trwające zatrzymanie flow
   i na flow, które starty właśnie uruchamiają (każde najwyżej `nodeCloseTimeout`, potem ostrzeżenie), nigdy na instalację
-  modułów ani blokadę wdrożeń. Węzły, które start utworzy po tym limicie, są zamykane, gdy ten start się skończy – już po
+  modułów ani blokadę wdrożeń. Węzły, które start utworzy po tym limicie, są zamykane, gdy ten start się skończy – możliwie dopiero po
   rozwiązaniu `RED.stop()` (także po zamknięciu kontekstów); są zamykane jak przy zwykłym zatrzymaniu (`removed: false`),
   także gdy ich flow zostało usunięte z konfiguracji. Wdrożenie, które zapisywało konfigurację, gdy zatrzymanie się zaczęło
   (stan `stopping`, flow jeszcze działają), zatrzymuje tylko to, co zmienia (`full` – wszystko; otwarte zapytania HTTP
