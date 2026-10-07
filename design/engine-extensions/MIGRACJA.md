@@ -71,7 +71,7 @@ nowego flow tuż po wdrożeniu (wraca zachowanie 5.0.7).
 | Z-09 | – | `deploy.reload: {watch, type, preReloadTimeout, concurrency}` (kontrakt wtyczek – §5.2) | `watch: false`, `type: "full"`, `preReloadTimeout: 1200000` (20 min) | to samo przeładowanie, co typ wdrożenia `reload` w Admin API; rekomendowane `type: "diff"`; `concurrency` – tylko liczba; bez łączności z koordynatorem przeładowanie czeka (działa stara konfiguracja) (R-20) |
 | Z-09 | – | `deploy.reload.retry: { min, max, attempts }` | `min: 1000`, `max: 60000` (ms), `attempts: 10` (~8 min) (R-36) | ponowienia nieudanych cykli przeładowania (odczyt magazynu, ponowny odczyt pod blokadą, samo przeładowanie); licznik zeruje się dopiero po udanym cyklu (#17); po wyczerpaniu `attempts` → stan `failed`, `/ready` 503 (R-20, D-18, R-36); przy `watch: true` błąd rejestracji `watchFlows` → błąd startu (R-36) |
 | #8 | – | `deploy.holdHttpNodeRequests: {enabled, timeout, maxPending, retryAfter}` | `enabled: false`, `timeout: 5000` ms, `maxPending: 1000`, `retryAfter: 1` s | żądania do tras węzłów (`httpNode`) bez istniejącej trasy (trasy niezmienionych węzłów odpowiadają od razu) czekają na koniec restartu flow (wdrożenie, przeładowanie z magazynu) zamiast 404; po limicie 503 `http_hold_timeout` / `http_hold_queue_full` z `Retry-After`; klienci powinni ponawiać 503 po `Retry-After` |
-| #40 | – | `deploy.drainHttpNodeRequests: {enabled, timeout, retryAfter}` | `enabled: false`, `timeout: 30000` ms, `retryAfter: 1` s | drenaż zapytań HTTP przed zatrzymaniem flow: runtime czeka (≤ `timeout`, limit twardy) na zapytania przyjęte przez `http in`, po zatrzymaniu odpowiada 503 na otwarte (`http_drain_not_accepted` / `http_drain_outcome_unknown`); zalecane `timeout` 5000–10000 dla Bot-Engine i ruchu publicznego; szczegóły: §4.7 (R-49) |
+| #40 | – | `deploy.drainHttpNodeRequests: {enabled, timeout, retryAfter}` | `enabled: false`, `timeout: 30000` ms, `retryAfter: 1` s | drenaż zapytań HTTP przed zatrzymaniem flow: runtime czeka (≤ `timeout`, limit twardy) na zapytania przyjęte przez `http in`, po zatrzymaniu odpowiada 503 na otwarte (`http_drain_not_accepted` / `http_drain_outcome_unknown`); zalecane `timeout` 5000–10000 dla Bot-Engine i ruchu publicznego; z `shutdownTimeout` także sygnał zatrzymania czeka na zapytania, SSE/long-poll – `http in` `drainMode: "long"` (#82); szczegóły: §4.7 (R-49) |
 | P-01 / Z-08 | – | `deploy.startTimeout` (ms) | wyłączony | limit czasu startu w trybie `deploy.response: "started"`; po przekroczeniu 500 `deploy_start_failed` z `errors[].code: "start_timeout"`, flow startują dalej w tle (R-38) |
 | Z-06 (#10) | – | `deploy.hookTimeout` | 30000 ms | jeden limit łańcucha hooków `preDeploy` (pod blokadą wdrożeń); skończona liczba > 0 i ≤ 2147483647, inaczej ostrzeżenie i 30000; hooki rejestruje się tylko przez `RED.hooks.add` we wtyczce (§4.3, §5); kontrakt: R-50 |
 | Z-10 | – | `coordination: {plugin, options}`; `singleInstance` w węźle `inject` | wtyczka lokalna | wtyczkę zewnętrzną wybiera się **tylko jawnie** w `coordination.plugin` (bez automatycznego wykrywania) (R-21) |
@@ -295,6 +295,14 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   także, gdy zmienia się **samo** pole `reload` (ustawienie, zmiana liczby prób, przekroczenie `maxStaleTime`, skasowanie)
   przy niezmienionym `state` – odbiorca, który ma reagować tylko na zmiany stanu, porównuje `state`, `reason` i `since`
   (nie liczy każdego zdarzenia jako przejścia). Gdy `keepReady` eskaluje do błędu konfiguracji (z `storage_error` na np. `invalid_flows`), odbiorca może zobaczyć jedno zdarzenie przejściowe – zdarzenie `failed` nosi jeszcze poprzedni warunek z `keepReady: true` – a zaraz po nim poprawiony warunek. Wtyczki i monitoring mogą z tego przekazywać alarm (np. do systemu alertów).
+- **Warunek `httpDrain` (#82)** – obok stanu, jak `reload` (ta sama reguła kontraktu, tabela przejść R-23 bez zmian): tylko przy
+  `deploy.drainHttpNodeRequests.enabled: true`, gdy zatrzymanie flow (wdrożenie, przeładowanie z magazynu, `POST /flows/state` stop, przełączenie
+  projektu) czeka na zapytania HTTP przyjęte przez węzły, zdarzenie i `runtime.state.get()` zawierają pole `httpDrain: {requests, since, deadline}`
+  (liczba zapytań, na które czeka, początek i najpóźniejszy koniec czekania, `Date.now()`); brak pola = brak czekania. Ustawienie i skasowanie pola
+  emitują `instance:state` przy niezmienionym `state` (odbiorca porównuje `state`, `reason` i `since`); pole nie powstaje w `stopping`/`stopped`
+  (ustawione wcześniej jest kasowane, gdy czekanie się skończy) ani przy czekaniu z sygnału zatrzymania. `/ready`, `state`, `previous`, `reason` i
+  `since` bez zmian. Edytor dostaje równolegle zachowywane powiadomienie `/comms` `notification/http-drain` (`{type: "warning", text, count,
+  limit}` – `limit` to `timeout` drenażu w ms; pola `timeout` nie ma, bo edytor czyta je jako czas samoczynnego zamknięcia; skasowanie – pusta treść). Przy wyłączonym ustawieniu sekwencja zdarzeń jak dotąd.
 - **Sondy** (`health.enabled`, R-19, R-22): `/health/ready` → 200 w `ready` i `loaded`; 503 m.in. w `idle` (safe mode,
   zatrzymane flow), `failed`, `stopping`. Treść 503 jest **stała**: `{"status":"unavailable"}` – nie zawiera nazwy stanu
   (stan odczytywać ze zdarzenia `instance:state` / `runtime.state`, nie z sondy).
@@ -341,7 +349,8 @@ zewnętrznych rejestrujących trasy na `RED.httpNode`. Przy `deploy.drainHttpNod
   Klienci Admin API muszą mieć limit czasu żądania dłuższy niż `timeout` + czas zatrzymania węzłów.
 - **Limit twardy (P1):** zapytanie dłuższe niż `timeout` dostaje 503 także we flow, których wdrożenie nie zmieniało. Długie raporty i eksporty
   powinny mieć `timeout` dłuższy niż najdłuższe zwykłe zapytanie albo być asynchroniczne (zwracać identyfikator zadania). Endpointy long-poll
-  i SSE na `http in` wstrzymują każde wdrożenie o pełny `timeout`, a potem są zrywane (wyjątki dla nich – faza 2).
+  i SSE na `http in` ustaw na „Połączenie długotrwałe (SSE/long-poll)” (`drainMode: "long"`, niżej) – bez tego wstrzymują każde wdrożenie o pełny
+  `timeout`, a potem są zrywane. `timeout` powyżej 300000 ms daje jedno ostrzeżenie przy starcie (`httpDrain.long-timeout`, #82).
 - **Dwa kody 503 (ciało stałe `{code, message}`, `Cache-Control: no-store`, bez URL i tekstu błędu):**
   - `http_drain_not_accepted` – zapytanie nie trafiło do flow (np. ciało jeszcze nie było odczytane, uwierzytelnianie w toku): **bezpieczne do
     ponowienia**; zawsze `Retry-After`; `Connection: close`, gdy ciało nie zostało odczytane do końca;
@@ -358,7 +367,17 @@ zewnętrznych rejestrujących trasy na `RED.httpNode`. Przy `deploy.drainHttpNod
   wpis runtime (istnieje tylko przy włączonym ustawieniu; węzeł go **nie tworzy**). Węzeł, który chce być drenowany: (1) oznacza handler trasy,
   (2) na początku handlera: `const e = req[S]; if (e) { if (e.drained) return; e.accepted = true; }` tuż przed przekazaniem wiadomości do flow,
   (3) przy późnej odpowiedzi sprawdza `res[S] && res[S].drained` i nic nie wysyła (zapytanie dostało już 503). Trasy bez znacznika (np. `bot-start`)
-  nie są drenowane – wymagają własnej obsługi.
+  nie są drenowane – wymagają własnej obsługi. Na zapytanie runtime czeka tylko wtedy, gdy jest otwarte, przyjęte (`accepted`) **i** na trasie ze
+  znacznikiem (#82) – `accepted` na trasie bez znacznika nic nie zmienia. Węzeł z połączeniami długotrwałymi (SSE, long-poll) **zostawia handler bez
+  znacznika** i sam zamyka swoje otwarte odpowiedzi w `close` (jak `http in` w trybie `"long"`); rekord `debug` odpowiedzi 503 nazywa węzeł trasy
+  zarejestrowanej przez `node.registerHttpRoute` (§5).
+- **`http in` – „Przy zatrzymaniu” (`drainMode`, #82):** nowa właściwość węzła we flow JSON (eksportowane flow): `"drain"` (domyślnie; brak lub inna
+  wartość = `"drain"`, zachowanie bez zmian) albo `"long"`: trasa bez znacznika (drenaż nie czeka i nie odpowiada 503), `accepted` nie jest
+  ustawiane, a przy zatrzymaniu węzła (wdrożenie `full`, wdrożenie `flows` zmieniające węzeł połączony z `http in`, usunięcie, `RED.stop`) jego
+  otwarte odpowiedzi są niszczone (połączenie zamknięte); działa przy włączonym i wyłączonym drenażu. Klient SSE (EventSource) łączy się ponownie
+  sam, klient long-poll widzi błąd sieci i musi ponowić. Strumień zostaje otwarty i cichy, gdy restartowany jest tylko pisarz (wdrożenie `nodes`
+  zmieniające tylko jego; w `flows` i `nodes` pisarz za węzłami link albo z odpowiedzią w kontekście) – zalecany heartbeat. Tylko dla SSE/long-poll:
+  zwykłe zapytanie w tym trybie jest zrywane zamiast obsłużone.
 - **Zapytania w czasie drenażu:** nowe zapytania są przepuszczane do starych flow (nie przedłużają drenażu, ale dostają termin); `holdHttpNodeRequests`
   (#8) nie jest zmieniony. Zapytanie w fazie `rawBodyCapture` (upload do trasy z `skipBodyParsing`, jeszcze bez dopasowanej trasy) nie jest objęte
   gwarancją: po zatrzymaniu dostaje 404 albo trasę nowego flow.
@@ -366,12 +385,19 @@ zewnętrznych rejestrujących trasy na `RED.httpNode`. Przy `deploy.drainHttpNod
   przy zatrzymaniu pełnym dostaje 503 zamiast późnego 200 (późna odpowiedź `http response` jest tylko w logu `debug`); symbol na handlerze `http in`
   jest nieobserwowalny (nie dodaje warstwy trasy).
 - **Stan instancji i sondy:** brak nowego stanu (R-23), `/ready` bez zmian: `deploying`/`reloading`/`stopping` → 503; przy `POST /flows/state` stop
-  i przełączeniu projektu `/ready` odpowiada 200 przez cały drenaż.
-- **Znane okno konfiguracji (A5):** w czasie drenażu konfiguracja jest już nowa, więc `checkTypeInUse` widzi nową konfigurację – da się usunąć
-  moduł używany tylko przez stare flow (dziś to samo okno trwa przez `nodeCloseTimeout`); `credentials.clean` też działa na nowej konfiguracji.
+  i przełączeniu projektu `/ready` odpowiada 200 przez cały drenaż. Czekanie widać w polu `httpDrain` zdarzenia `instance:state` (§4.5, #82).
+- **Usuwanie i wyłączanie typów węzłów (#82):** w czasie zatrzymania z drenażem (czekanie i zatrzymywanie węzłów) `DELETE /nodes/<moduł>`,
+  `PUT /nodes/<moduł>` i `PUT /nodes/<id>` z `enabled: false` odpowiadają **409** `{code: "http_drain_in_progress", message}` (stały komunikat,
+  bez nazwy modułu; audyt `nodes.remove` / `nodes.module.set` / `nodes.info.set`) – skrypty usuwające moduły zaraz po wdrożeniu muszą ponowić po
+  wdrożeniu (do `timeout`). `not_found` i `type_in_use` mają pierwszeństwo i swój status. Instalacja, aktualizacja i włączanie bez zmian.
+  `credentials.clean` nadal działa na nowej konfiguracji.
 - **Zatrzymanie procesu:** `RED.stop` nie czeka na zapytania (R-37): po zatrzymaniu flow `finalize` odpowiada 503 albo niszczy odpowiedź; trwający
-  drenaż wdrożenia przerywa dopiero `RED.stop`, więc przy `shutdownTimeout` trwa w czasie `preShutdown`. Czekanie na zapytania w `shutdownTimeout` –
-  faza 2.
+  drenaż wdrożenia przerywa dopiero `RED.stop`, więc przy `shutdownTimeout` trwa w czasie `preShutdown`. **Sygnał zatrzymania (#82):** przy
+  `shutdownTimeout` `health.shutdown` (CLI, `RED.health.shutdown`) po `health.unreadyGrace` i hookach `preShutdown` czeka na zapytania przyjęte w tej
+  chwili, najwyżej `min(timeout, czas pozostały z shutdownTimeout)` (logi `httpDrain.shutdown-waiting`, `httpDrain.shutdown-timeout`), potem
+  `RED.stop`; drugi sygnał kończy czekanie od razu. Działa od razu w istniejących konfiguracjach z oboma ustawieniami (wyjątek D8, R-49). Kod
+  osadzający, który woła `RED.stop()` wprost, nie czeka – może użyć `RED.health.shutdown({reason, signal})` (samo woła `RED.stop`). Kubernetes:
+  `terminationGracePeriodSeconds` ≥ `shutdownTimeout` + 15 s (`nodeCloseTimeout`) + 5 s (zamknięcie serwera).
 
 ## 5. Wtyczki i produkt
 
@@ -510,7 +536,9 @@ function MyNode(n) {
   dodane. Rejestracja po rozpoczęciu zamykania węzła jest pomijana z jednym ostrzeżeniem (`httpRoutes.after-close`).
 - **Czego API nie dodaje:** `httpNodeMiddleware`, CORS, parsowania cookies i ciała – przekaż je sam w `handlers` (jak `http in`).
   `httpNodeAuth` obowiązuje (ta sama aplikacja).
-- **Drenaż (#40, §4.7):** opcjonalnie oznacz handler kończący żądanie `handler[Symbol.for("node-red.httpNode.drain")] = true` – jak dotąd.
+- **Drenaż (#40, §4.7):** opcjonalnie oznacz handler kończący żądanie `handler[Symbol.for("node-red.httpNode.drain")] = true` – jak dotąd;
+  połączeń długotrwałych (SSE, long-poll) nie oznaczaj, zamykaj je w `close`. Rekord `debug` odpowiedzi 503 drenażu nazywa węzeł trasy
+  zarejestrowanej przez to API (`id`, `type`, `z`, #82).
 - **Zgodność:** sprawdź `typeof node.registerHttpRoute === "function"`, jeśli węzeł ma działać także na runtime bez tego API.
 
 ## 6. Kod korzystający z łatek załącznika A
@@ -539,7 +567,7 @@ Nagłówki „Modified by Actuna Sp. z o.o.” – zachowane w forku (D-19); pli
 - [ ] Monitoring stanu: nazwy stanów i zdarzenie `instance:state` wg §4.5; brak parsowania treści 503 sondy (R-22, R-23).
 - [ ] Lista `Origin` dla `/comms` i `editorTheme.embedding.allowedOrigins` ustawione na naszych instalacjach (R-06, R-35); klienty `/comms` bez założenia `auth fail` przy wyłączonym `adminAuth` (R-05).
 - [ ] Konfiguracja uploadu tylko przez `externalModules.palette.allowUpload` (R-17); instancje tylko do odczytu – `readOnlyUserDir` lub zmienna środowiskowa (R-18).
-- [ ] Drenaż HTTP (#40, §4.7): limit czasu żądań Admin API dłuższy niż `deploy.drainHttpNodeRequests.timeout`; klienty HTTP obsługują 503 `http_drain_not_accepted` (ponowienie) i `http_drain_outcome_unknown` (klucz idempotencji; GET traktowany jako bezpieczny); węzły zewnętrzne z trasami na `httpNode` – opcjonalny kontrakt symbolu.
+- [ ] Drenaż HTTP (#40, §4.7): limit czasu żądań Admin API dłuższy niż `deploy.drainHttpNodeRequests.timeout`; klienty HTTP obsługują 503 `http_drain_not_accepted` (ponowienie) i `http_drain_outcome_unknown` (klucz idempotencji; GET traktowany jako bezpieczny); węzły zewnętrzne z trasami na `httpNode` – opcjonalny kontrakt symbolu (połączenia długotrwałe – handler bez znacznika); endpointy SSE/long-poll na `http in` – `drainMode: "long"`; skrypty usuwające lub wyłączające moduły – ponowienie po 409 `http_drain_in_progress`; odbiorcy `instance:state` – pole `httpDrain` (#82).
 - [ ] Teksty i dokumentacja po polsku zgodne z terminologią §5.1 (R-29).
 - [ ] Test po migracji: wdrożenie przez narzędzie → natychmiastowe wywołanie endpointu nowego flow (200), konflikt rewizji (409), wdrożenie bez rewizji (409 `version_required`).
 

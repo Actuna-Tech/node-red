@@ -31,6 +31,7 @@ module.exports = {
     startupTimeout: 120000, // start runtime (bez wczytania flow) najwyżej 2 min, potem kod 1 i restart przez supervisora (#71)
     httpInMaxBodySize: "50mb", // domyślny limit ciał http in (surowe, upload, tekst, binarne); większe → 413; upload najwyżej 1000 części; JSON/urlencoded nadal apiMaxLength (#48)
     health: { enabled: true, port: 1881, unreadyGrace: 15000 }, // sondy; /ready 503 min. 15 s przed zatrzymaniem flow (Z-16) – tylko za balanserem
+    shutdownTimeout: 25000, // SIGTERM: grace, hooki preShutdown i zapytania HTTP w toku (#82) najwyżej 25 s, potem zatrzymanie flow; terminationGracePeriodSeconds ≥ 45 (zalecane 60)
     deploy: {
         response: "started",                // odpowiedź API po starcie flow (P-01)
         requireRevision: true,              // każde wdrożenie z aktualną rewizją (Z-05)
@@ -52,6 +53,14 @@ module.exports = {
 > Inaczej SIGTERM kubeleta przerywa start przed limitem i proces kończy się kodem 0 bez przyczyny w logu. Wtyczka
 > koordynacji nie może czekać na przywództwo w `start` (`start` tylko łączy z koordynatorem) – inaczej każdy start
 > instancji, która nie zostanie liderem, przekroczy limit.
+
+> **Zatrzymanie (`shutdownTimeout: 25000`, #82):** budżet SIGTERM na `health.unreadyGrace` (15 s), hooki `preShutdown`
+> i czekanie na zapytania HTTP przyjęte przez `http in` (drenaż #40, najwyżej `min(timeout, czas pozostały)`); potem
+> flow są zatrzymywane (każdy węzeł najwyżej `nodeCloseTimeout` 15 s), a serwer zamykany (do 5 s). W Kubernetes
+> `terminationGracePeriodSeconds` musi wynosić **co najmniej 45 s** (25 + 15 + 5), zalecane **60 s**. Skutki uboczne
+> względem konfiguracji bez `shutdownTimeout`: (1) hooki `preShutdown` (wtyczki, ustawienie `hooks`) są teraz wołane;
+> (2) znika ostrzeżenie startowe #15 o hooku `preShutdown`, który nigdy się nie wykona; (3) SIGTERM czeka do 25 s,
+> zanim flow zostaną zatrzymane (krócej, gdy nic nie trzeba czekać). Drugi sygnał zatrzymuje od razu.
 
 > **Aktualizacja istniejącej instalacji:** bez `editorTheme.flowLayout.enabled: true` kontrolki układu znikają,
 > a domyślny układ użytkownika jest ignorowany (flow bez własnego `layout` rysują się poziomo).
@@ -124,7 +133,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 | `deploy.startTimeoutReleasesLock` | `false` | `true` – blokada wdrożeń zwalniana po limicie (ryzyko równoległego startu) | R-45 |
 | `deploy.putCreatesFlow` | `false` | `PUT /flow/:id` tworzy brakujący flow pod tym id | Z-04 |
 | `deploy.holdHttpNodeRequests: {enabled, timeout, maxPending, retryAfter}` | `enabled: false`, `timeout: 5000` ms, `maxPending: 1000`, `retryAfter: 1` s | `enabled: true` – żądania do tras węzłów (`httpNodeRoot`, np. `http in`), **dla których w danym momencie nie ma trasy**, są wstrzymywane na czas restartu flow (wdrożenie i przeładowanie z magazynu) i obsługiwane przez nowe flow po ich starcie, zamiast 404; trasy niezmienionych węzłów odpowiadają od razu; po `timeout` lub przy przepełnieniu `maxPending` (limit globalny, nie na klienta) → 503 z `Retry-After` (kody `http_hold_timeout`, `http_hold_queue_full`, `http_hold_release_failed`); szczegóły niżej | #8 |
-| `deploy.drainHttpNodeRequests: {enabled, timeout, retryAfter}` | `enabled: false`, `timeout: 30000` ms, `retryAfter: 1` s | `enabled: true` – przed zatrzymaniem flow (wdrożenie dowolnego typu, przeładowanie z magazynu, `POST /flows/state` stop, przełączenie projektu) runtime czeka najwyżej `timeout` na zapytania **przyjęte** przez `http in`, po zatrzymaniu odpowiada 503 na zapytania, które nadal są otwarte (kody `http_drain_not_accepted`, `http_drain_outcome_unknown`); **limit twardy** – także flow niezmieniane; szczegóły niżej | #40 |
+| `deploy.drainHttpNodeRequests: {enabled, timeout, retryAfter}` | `enabled: false`, `timeout: 30000` ms, `retryAfter: 1` s | `enabled: true` – przed zatrzymaniem flow (wdrożenie dowolnego typu, przeładowanie z magazynu, `POST /flows/state` stop, przełączenie projektu) runtime czeka najwyżej `timeout` na zapytania **przyjęte** przez `http in`, po zatrzymaniu odpowiada 503 na zapytania, które nadal są otwarte (kody `http_drain_not_accepted`, `http_drain_outcome_unknown`); **limit twardy** – także flow niezmieniane; `timeout` > 300000 ms – jedno ostrzeżenie przy starcie (#82); z `shutdownTimeout` także SIGTERM czeka na zapytania (#82); szczegóły niżej | #40, #82 |
 | `deploy.requireRevision` | `false` | wdrożenie bez rewizji → 409 `version_required`; v1 zawsze 409 | Z-05 |
 | `httpInMaxBodySize` | brak (zachowanie bez zmian) | domyślny limit ciał węzłów `http in` metod POST, PUT, PATCH, DELETE, np. `"50mb"` (format pola „Max body size”): surowe ciało (zamiast `apiMaxLength`), całe ciało uploadu multipart oraz ciała tekstowe i binarne węzłów bez opcji; większe → **413** (z nagłówkami `httpNodeCors`, bez wpisu w logu), flow się nie wykonuje. Pole węzła podnosi lub obniża limit dla tego węzła (podniesienie – jedno ostrzeżenie węzła); przy ustawieniu pole jest widoczne dla każdego węzła tych metod. **Nie dotyczy** ciał JSON i urlencoded (nadal `apiMaxLength`). Wartość powyżej maksymalnej długości napisu Node.js działa, z jednym ostrzeżeniem. **Niepoprawna wartość (fail-open):** nie rozmiar > 0 albo wartość, której nie da się odczytać → jedno ostrzeżenie w logu i **limity jak bez ustawienia** (surowe ciało nadal `apiMaxLength`, pozostałe ciała i upload bez pola węzła – bez limitu) – po zmianie sprawdzić log. Ostrzeżenia o tym ustawieniu, o polu węzła i o `apiMaxLength` pokazują wartość w postaci skróconej: tekst do 32 znaków, każdy znak inny niż litera, cyfra, spacja, `.`, `+`, `-` jako `?` (wartość nieodczytywalna jako `?`), liczba bez zmian, inna wartość jako nazwa typu. Czytane raz przy starcie. `GET /settings` dostaje tylko `httpInMaxBodySizeEnabled: true` przy poprawnej wartości (nigdy samej wartości). Limit dotyczy jednego żądania, nie sumy ciał przyjmowanych jednocześnie. **Upload:** przy limicie uploadu (to ustawienie albo samo pole węzła) najwyżej **1000 części** w jednym żądaniu (pola i pliki razem; liczba stała, niezależna od limitu bajtów); więcej → 413 bez wpisu w logu. **Szacowanie pamięci (przy `httpInMaxBodySize` albo polu „Max body size”):** szczyt ≈ liczba równoczesnych uploadów × (limit bajtów + ok. 20 MB); kopie wiadomości w flow (kilka wyjść, węzeł debug) dodają do tego. Właściwym ograniczeniem uploadu jest to ustawienie (albo pole węzła) – bez nich rozmiar i liczba części uploadu nie są ograniczone | #48 |
 | `deploy.hookTimeout` | `30000` ms | limit hooków `preDeploy` (jeden dla całego łańcucha, pod blokadą wdrożeń): brak wyniku → 503 `deploy_hook_timeout`; w `postDeploy` tylko ostrzeżenie i `abort("timeout")` sygnału. Liczba > 0, ≤ 2147483647, inaczej ostrzeżenie i 30000. Same hooki: bez zarejestrowanego handlera zachowanie jak dotąd; szczegóły niżej | #10 (Z-06) |
@@ -238,15 +247,17 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   Odpowiedź już rozpoczęta (strumień) jest niszczona. **Zalecenie:** flow z zapisami lub płatnościami wymagają klucza idempotencji po stronie klienta;
   przy włączonym drenażu GET jest traktowany jako bezpieczny do ponowienia – flow z efektami ubocznymi powinny używać POST (SEC-007).
 - **Limit twardy (P1, decyzja właściciela):** zapytanie dłuższe niż `timeout` dostaje 503 **także we flow niezmienianych** przez wdrożenie. Długie
-  raporty i eksporty dostają 503 przy każdym wdrożeniu w ich trakcie, jeśli trwają dłużej niż `timeout`; endpointy long-poll i SSE na `http in`
-  wstrzymują każde wdrożenie o pełny `timeout`, a potem są zrywane. Ustaw `timeout` dłuższy niż najdłuższe zwykłe zapytanie albo skróć go (5000–10000)
-  tam, gdzie takich zapytań nie ma (Bot-Engine, ruch publiczny).
+  raporty i eksporty dostają 503 przy każdym wdrożeniu w ich trakcie, jeśli trwają dłużej niż `timeout`. Endpointy long-poll i SSE na `http in`
+  ustaw na **„Połączenie długotrwałe (SSE/long-poll)”** (`drainMode: "long"`, #82, niżej) – bez tego wstrzymują każde wdrożenie o pełny `timeout`,
+  a potem są zrywane. Ustaw `timeout` dłuższy niż najdłuższe zwykłe zapytanie albo skróć go (5000–10000) tam, gdzie takich zapytań nie ma (Bot-Engine,
+  ruch publiczny). `timeout` powyżej 300000 ms (5 min) daje jedno ostrzeżenie przy starcie (`httpDrain.long-timeout`, #82): drenaż trzyma blokadę
+  wdrożeń, a klienci Admin API i proxy zwykle rezygnują po 60–120 s.
 - **Czas wdrożenia:** `POST /flows`, `POST /flows/state` stop i przeładowanie trwają do `timeout` dłużej (drenaż pod blokadą wdrożeń; w klastrze trzyma
   slot Z-10 – przejście klastra wydłuża się o N × `timeout`, zalecane `deploy.reload.concurrency`). Najgorszy czas przeładowania Z-09:
   czekanie na blokadę + `preReloadTimeout` + `timeout` + `nodeCloseTimeout` + start; `PreReloadEvent.deadline` nie jest najpóźniejszą chwilą zatrzymania.
   Drenaż HTTP jest po hookach `preReload` i dodatkowej rundzie (D-17). Ryzyko szczątkowe: publiczny `http in`, którego flow odpowiada wolno, pozwala
   klientowi wydłużyć każde wdrożenie o `timeout` – krótszy `timeout`, w klastrze `deploy.reload.concurrency`, w trybie osadzonym `server.requestTimeout`/`headersTimeout`.
-- **Zakres:** wszystkie zapytania do tras `httpNode` z oznaczonym handlerem (rdzeń: `http in`), globalnie (nie per flow); wiadomość może przejść przez
+- **Zakres:** wszystkie zapytania do tras `httpNode` z oznaczonym handlerem (rdzeń: `http in` w trybie „drain”), globalnie (nie per flow); wiadomość może przejść przez
   link, link call lub kontekst. Trasy innych węzłów (np. `bot-start`) nie są drenowane; mogą przyjąć kontrakt symbolu (MIGRACJA §4.7). Zapytanie w fazie
   `rawBodyCapture` (upload do trasy `skipBodyParsing` przed dopasowaniem trasy) nie jest objęte gwarancją – po zatrzymaniu dostaje 404 albo trasę nowego flow.
   Nowe zapytania w czasie drenażu są przepuszczane do starych flow; `holdHttpNodeRequests` (#8) bez zmian i bez zależności.
@@ -254,10 +265,32 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   pełnym klient dostaje 503 zamiast późnego 200 (późna odpowiedź `http response` jest tylko w logu `debug`). Brak nowego stanu instancji; `/ready` bez
   zmian (przy `POST /flows/state` stop i przełączeniu projektu 200 przez cały drenaż). Przy wyłączonym ustawieniu nie ma middleware ani wpisów,
   `stop()` działa jak dotąd; jedyna różnica to właściwość-symbol na handlerze `http in` (nieobserwowalna).
-- **Znane ograniczenia:** w czasie drenażu konfiguracja jest już nowa – `checkTypeInUse` pozwala usunąć moduł używany tylko przez stare flow (to samo okno
-  istnieje dziś przez `nodeCloseTimeout`); wyścig `RED.stop` z wdrożeniem może uruchomić nowe flow po `RED.stop` (jak w wersji bazowej; zgłoszenie osobno:
-  `start()` odmawia w stanie `stopping`); okno zatrzymania zapytań nie ma końca przy starcie, który się nie kończy (limity startu: `deploy.startTimeout`,
-  ostrzeżenie po 2 × `timeout`). Faza 2 (poza tym wydaniem): czekanie na zapytania przy SIGTERM w `shutdownTimeout`, stan w `instance:state`, wyjątki dla SSE.
+- **Zatrzymanie procesu sygnałem (#82, S-3):** przy ustawionym `shutdownTimeout` `health.shutdown` (SIGTERM, SIGINT, `RED.health.shutdown`) po
+  `health.unreadyGrace` i hookach `preShutdown` czeka na zapytania przyjęte przez `http in` w tej chwili (migawka; zapytanie przyjęte później nie
+  wydłuża czekania), najwyżej `min(timeout, shutdownTimeout − czas, który minął)`; log `httpDrain.shutdown-waiting` / `httpDrain.shutdown-timeout`.
+  Drugi sygnał kończy czekanie od razu (R-22). Potem `RED.stop`: pozostałe zapytania dostają 503 jak dotąd. Bez `shutdownTimeout` nic się nie zmienia,
+  a `RED.stop()` wywołane wprost nadal nie czeka (R-37). **Wyjątek od zasady „domyślnie bez zmian” (D8):** działa od razu w istniejących
+  konfiguracjach z włączonym drenażem i ustawionym `shutdownTimeout` – oba ustawienia są opcjonalne, a `shutdownTimeout` to zadeklarowany budżet
+  zatrzymania (R-49, uzupełnienie #82).
+- **Stan w `instance:state` i powiadomienie w edytorze (#82, S-4):** gdy zatrzymanie czeka na zapytania (`beforeStop`), zdarzenie `instance:state` i
+  `runtime.state.get()` mają pole `httpDrain: {requests, since, deadline}` (bez zmiany stanu, jak warunek `reload` R-47 – zdarzenie emitowane także
+  przy zmianie samego pola), a edytor pokazuje stałe ostrzeżenie (`notification/http-drain`, liczba zapytań i limit), zdejmowane po końcu czekania.
+  Nie w stanie `stopping` i nie przy czekaniu z SIGTERM. `/ready` bez zmian.
+- **Usuwanie i wyłączanie typów węzłów w czasie drenażu (#82, S-5):** gdy zatrzymanie czeka na zapytania albo zatrzymuje węzły, `DELETE /nodes/<moduł>`
+  i wyłączenie modułu lub zestawu (`PUT /nodes/...` `enabled: false`) odpowiadają **409** `{code: "http_drain_in_progress"}` (stały komunikat, audyt
+  jak dotąd); należy ponowić po wdrożeniu. Wcześniejsze błędy (`not_found`, `type_in_use`) mają pierwszeństwo. Instalacja, aktualizacja i włączanie –
+  bez zmian.
+- **Połączenia długotrwałe – `http in` „Przy zatrzymaniu” (`drainMode`, #82, S-8):** „Poczekaj na żądanie (drenaż)” (`"drain"`, domyślnie, także
+  węzeł bez właściwości) – jak wyżej; „Połączenie długotrwałe (SSE/long-poll)” (`"long"`) – trasa nie jest oznaczona: drenaż na nią nie czeka i nie
+  odpowiada 503, a gdy węzeł się zatrzymuje (wdrożenie `full`, wdrożenie `flows` zmieniające węzeł połączony z `http in`, usunięcie węzła, `RED.stop`),
+  jego otwarte połączenia są zamykane (klient SSE łączy się ponownie, klient long-poll widzi błąd sieci i ponawia); działa przy włączonym i wyłączonym
+  drenażu. Tylko dla SSE i long-poll – zwykłe zapytanie w tym trybie jest zrywane zamiast obsłużone. **Ryzyko szczątkowe:** strumień zostaje otwarty i
+  cichy, gdy restartowany jest tylko węzeł, który do niego pisze, a `http in` nie (wdrożenie `nodes` zmieniające tylko pisarza; w `flows` i `nodes`
+  pisarz za węzłami link albo z odpowiedzią w kontekście flow/global) – zalecany heartbeat (okresowy komentarz/ping), by klient wykrył ciszę.
+- **Rekord 503 w logu (#82, S-1):** wpis `debug` każdej odpowiedzi 503 drenażu nazywa węzeł trasy (`[http in:<nazwa albo id>]`; pola `id`, `type`, `z`)
+  dla tras zarejestrowanych przez `node.registerHttpRoute` (rdzeń: `http in`); bez URL i nazwy węzła w treści.
+- **Znane ograniczenia:** wyścig `RED.stop` z wdrożeniem może uruchomić nowe flow po `RED.stop` (jak w wersji bazowej; zgłoszenie #84); okno zatrzymania
+  zapytań nie ma końca przy starcie, który się nie kończy (limity startu: `deploy.startTimeout`, ostrzeżenie po 2 × `timeout`).
 - **Wybory projektowe:** nazwa z rodziny `deploy.*`, symetryczna z `holdHttpNodeRequests`; `timeout` ma inne znaczenie niż `holdHttpNodeRequests.timeout`
   (limit czekania na zapytania przyjęte i odstęp terminu); w logach i dokumentach „drenaż HTTP” (nie mylić z `preReload`/`preShutdown`).
 
@@ -308,7 +341,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 | `health: {enabled, path, port, host}` | wyłączone | `/live`, `/ready` (503 `{"status":"unavailable"}` poza stanem gotowości), bez uwierzytelnienia | Z-08 |
 | `health.unreadyGrace` | brak (0) | planowane zatrzymanie (SIGTERM, przeładowanie z magazynu `deploy.reload`): `/ready` odpowiada 503 co najmniej tyle ms, **liczone od początku planowanego zatrzymania/przeładowania** (najpóźniej wtedy `/ready` odpowiada 503; instancja już niegotowa czeka pełny czas ponownie – bezpiecznie, tylko dłużej), zanim flow zostaną zatrzymane – balanser odpytujący `/ready` zdąży wyłączyć instancję z ruchu. Czeka równolegle z hookami `preShutdown`/`preReload` (zatrzymanie po dłuższym z nich) i mieści się w limicie: ograniczone `shutdownTimeout` (SIGTERM) i `deploy.reload.preReloadTimeout` (przeładowanie). Przy SIGTERM przerywa je tylko drugi sygnał; przed przeładowaniem – wdrożenie na tej instancji lub zatrzymanie runtime. Bez `shutdownTimeout` zamykanie czeka dokładnie `unreadyGrace` (hook `preShutdown` nadal nie jest wołany) – `terminationGracePeriodSeconds` musi być dłuższy. **Nie dotyczy** wdrożenia z edytora/Admin API (ta instancja jest edytowana, żądanie nie może czekać). Wymaga `health.enabled: true`; wartość nie będąca liczbą ≥ 0 lub brak `enabled` → ostrzeżenie w logu i brak oczekiwania (zgłoszenia #8, #1) | Z-16 |
 | `hooks: {"preReload.<etykieta>": fn, "preShutdown.<etykieta>": fn}` | brak | hooki `preReload` i `preShutdown` rejestrowane z `settings.js` przy `init` runtime – przed wtyczkami i pierwszym startem flow (SIGTERM podczas startu też je widzi); semantyka jak `RED.hooks.add` (arność 1 = obietnica); dozwolone tylko te dwa hooki i tylko funkcje – inna nazwa, brak etykiety lub wartość niebędąca funkcją = błąd startu `invalid_hook_setting` z nazwą klucza (nic nie jest rejestrowane); etykieta: litery, cyfry, `_`, `-`; hooki z `settings.js` są rejestrowane przed wtyczkami, więc przy starcie wołane przed ich hookami; ta sama etykieta z wtyczki → „already registered”; `preShutdown` działa tylko z `shutdownTimeout`, `preReload` tylko z `deploy.reload.watch`; hook z `settings.js`, który się nie wykona (`preShutdown.*` bez `shutdownTimeout` > 0, `preReload.*` bez `deploy.reload.watch: true`), pozostaje zarejestrowany, a przy starcie jest ostrzeżenie w logu z nazwą klucza i brakującym ustawieniem (tylko diagnostyka; hooki wtyczek bez ostrzeżeń; bez ustawienia `hooks` brak ostrzeżeń) | #7, #15 |
-| `shutdownTimeout` + hook `preShutdown` | brak | drenaż przy SIGTERM: `/ready` 503 od razu, hook z limitem, potem zatrzymanie; drugi sygnał = natychmiast | Z-08 |
+| `shutdownTimeout` + hook `preShutdown` | brak | drenaż przy SIGTERM: `/ready` 503 od razu, hook z limitem, potem (przy włączonym `deploy.drainHttpNodeRequests`) czekanie na zapytania HTTP w toku w czasie, który został (#82), potem zatrzymanie; drugi sygnał = natychmiast | Z-08, #82 |
 | `startupTimeout` | brak (bez limitu) | limit `runtime.start()` w ms (magazyn, ustawienia, węzły, kontekst, wtyczka koordynacji, obserwator magazynu; **bez** wczytania i startu flow). Po przekroczeniu start jest nieudany: błąd `startup_timeout` z polami `step` (krok, na który runtime czekał) i `timeout`, stan `failed`/`startup-error`; w CLI zatrzymanie (najwyżej 5 s) i kod 1 (#67), u osadzającego `RED.start()` odrzuca. Krok, który skończy się po limicie, jest ignorowany (ostrzeżenie, nic po nim się nie wykonuje); późno uruchomiona wtyczka koordynacji dostaje od razu `resign()` i `stop()`, późny serwer sond i obserwator magazynu są zatrzymywane. `RED.stop()` (także sygnał) w trakcie startu kończy próbę od razu błędem `startup_stopped` i czyści limit (#73). Kontrakt wtyczki koordynacji: start, który rozwiąże się po `startupTimeout` albo po zatrzymaniu, jest od razu zakończony wywołaniami `resign()` i `stop()` (`stop()` także wtedy, gdy `resign()` się nie powiedzie); start, który nigdy się nie rozstrzygnie, nie może zostać zwolniony – wtyczka powinna mieć własne limity połączenia. Wartość inna niż liczba ms > 0 i ≤ 2147483647 (np. napis ze zmiennej środowiskowej) → ostrzeżenie i brak limitu; ze zmiennej: `startupTimeout: process.env.X ? Number(process.env.X) : undefined`. Budżet `startupProbe` > `startupTimeout` + 5 s + czas wczytania flow (§2) | #71 |
 | `readOnlyUserDir`, zmienna `NODE_RED_READ_ONLY_USER_DIR` | `false` | brak zapisu do katalogu użytkownika; wdrożenie przy magazynie plikowym i `DELETE /nodes/<moduł>` → 400 `read_only_user_dir`; instalatory palety i modułów function odrzucają zapis niezależnie od innych ustawień | Z-11 |
 | `coordination: {plugin, options}`, `RED.coordination` (węzły), typ wtyczki `node-red-coordination` | wtyczka lokalna | przywództwo i zajęcia z TTL; własna wtyczka wybierana jawnie | Z-10 |
@@ -545,6 +578,10 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   także przywrócenie ustawień (np. pierwszy zapis się udał, przywrócenie nie), ustawienia na dysku mogą mieć nowy klucz,
   a poświadczenia stary – po restarcie projekt zgłosi klucz jako nieprawidłowy i trzeba go podać ponownie (ostrzeżenie
   w logu to mówi). Edytor wysyła tylko poprawne wartości; klient API wysyłający inne typy dostaje teraz 400.
+- **SIGTERM czeka na zapytania HTTP w toku (#82, wyjątek D8):** w istniejących konfiguracjach z `deploy.drainHttpNodeRequests.enabled: true`
+  **i** ustawionym `shutdownTimeout` sygnał zatrzymania po `health.unreadyGrace` i hookach `preShutdown` czeka teraz na zapytania przyjęte przez
+  `http in` (najwyżej `min(timeout, czas pozostały z shutdownTimeout)`) zamiast od razu odpowiadać im 503 – zapytanie, które flow zdąży obsłużyć,
+  dostaje swoją odpowiedź, a zatrzymanie trwa do tego czasu dłużej. Bez jednego z tych ustawień – bez zmian. Szczegóły: §5 „Drenaż zapytań HTTP”, R-49.
 
 ## 7. Testy i proces
 
@@ -581,9 +618,11 @@ wtyczce magazynu; wspólny wolumen sieciowy (NFS) i klastrowa wtyczka koordynacj
 różne strefy czasowe instancji – podwójne wyzwolenie crona w `inject` „tylko jedna instancja”; ostrzeżenie o
 brakujących typach na instancji `editorOnly` tylko w logu.
 
-**#40 (drenaż zapytań HTTP):** zrealizowany w MVP (R-49). Faza 2: czekanie na zapytania przy SIGTERM w `shutdownTimeout` (część HTTP w
-`health.shutdown`), pole `httpDrain` w `instance:state` i powiadomienie w edytorze, wyjątki dla SSE i long-poll, zakres per flow, `start()` odmawia
-w stanie `stopping`, awaryjne pominięcie drenażu przez operatora, ochrona usuwania modułu w czasie drenażu, wspólne walidatory `httpHold`/`httpDrain`.
+**#40 (drenaż zapytań HTTP):** zrealizowany (R-49). Uzupełnienie #82 zrealizowane: czekanie na zapytania przy SIGTERM w `shutdownTimeout`, pole
+`httpDrain` w `instance:state` i powiadomienie w edytorze, `http in` `drainMode: "long"` dla SSE i long-poll, ochrona usuwania modułu w czasie drenażu,
+węzeł trasy w rekordzie 503, ostrzeżenie o bardzo długim `timeout`. Zamknięte bez realizacji (R-49): zakres per flow, awaryjne pominięcie drenażu przez
+operatora, wykrywanie wiadomości w hookach; wspólne walidatory `httpHold`/`httpDrain` – zamknięte (tylko refaktoryzacja). Wyścig `RED.stop` z
+wdrożeniem – zgłoszenie #84.
 
 **#10 (Z-06, hooki `preDeploy`/`postDeploy`):** zrealizowany w MVP (R-50). Faza 2: `changedFlows` w ładunkach, agregacja wyników walidatorów (`errors[]`), `AsyncLocalStorage` z 409
 `deploy_hook_reentrant` (po pomiarze na Node 22 i 24), `signal` przerywany przy `stopping`, `Retry-After` dla 503, `details` w edytorze (tylko z escapowaniem), krok 2a (Z-12.08) przed hookiem,

@@ -34,6 +34,7 @@
  *   Z-06 (#10): tests of opts.built of addFlow/updateFlow/removeFlow (the configuration built by the pipeline);
  *   readStoredFlows/loadStoredCredentials (the halves of readFlowsFromStorage, D15, A32)
  *   #63: load(true), the project switch path, does not call preDeploy or postDeploy handlers (I8 of #10)
+ *   #82: the tests of the stop with the drain leave no flow objects (stubs) in the module for the specs that run later; checkTypeInUse refuses the removal and the disabling of node types during a drain stop (409)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -2352,6 +2353,12 @@ describe('flows/index', function() {
             httpDrain.dispose();
             // a configuration without missing types: a type registered by later tests must not start these flows
             await flows.stopFlows();
+            // A partial stop ("nodes", "flows") keeps the flow objects of the module (here the stubs of Flow.create)
+            // and a stop of flows that are not started does not remove them: a later spec in the same process that
+            // loads flows (the test helper of the nodes) would find them and fail with "getNode is not a function".
+            // A full stop of started flows drops them
+            await loadAndStart();
+            await flows.stopFlows("full");
             storage.getFlows = function() { return Promise.resolve({flows:clone(okConfig), rev:"cleanRev"}) };
             await flows.load();
             instanceState.reset();
@@ -2479,6 +2486,153 @@ describe('flows/index', function() {
             events.emit("type-registered", "missing");
             await flush();
             flowCreate.called.should.be.true();
+        });
+
+        // #82 (S-5): removing or disabling node types is refused while a stop waits for the HTTP requests or
+        // stops the nodes (the drain on); the existing errors come first
+        describe('refusal of the removal and of the disabling during a drain stop (S-5, #82)', function() {
+            const keyLog = Object.assign({}, mockLog, { _: function(key, params) { return params ? key + JSON.stringify(params) : key } });
+            let extra;
+            let removed;
+            function onEvent(event) {
+                if (event && event.id === "node/removed") { removed.push(event) }
+            }
+            function loadAndStartKeyLog() {
+                storage.getFlows = function() {
+                    return Promise.resolve({flows:clone(okConfig), rev:"loadedRev"});
+                }
+                flows.init({log:keyLog, settings:{},storage:storage});
+                return flows.load().then(function() {
+                    return flows.startFlows();
+                });
+            }
+            function refusal(fn) {
+                try {
+                    fn();
+                } catch (err) {
+                    return err;
+                }
+                return null;
+            }
+            function assertRefused(err) {
+                should.exist(err, 'checkTypeInUse did not throw');
+                err.should.have.property('code', 'http_drain_in_progress');
+                err.should.have.property('status', 409);
+                // a constant text: no module name, no request data
+                err.message.should.equal('nodes.index.drain-in-progress');
+            }
+            // Runs `fn` while a stop of the flows is in progress: "beforeStop" (waiting for the requests) or
+            // "stopNow" (the nodes are being stopped). The stop is always released and awaited
+            async function during(phase, fn) {
+                await loadAndStartKeyLog();
+                const gate = deferred();
+                if (phase === "stopNow") {
+                    flowCreate.flows.t1.stop = sinon.spy(() => gate.promise);
+                    enable();
+                } else {
+                    enable(gate.promise);
+                }
+                const promise = flows.stopFlows();
+                try {
+                    await flush();
+                    if (phase === "stopNow") {
+                        flowCreate.flows.t1.stop.called.should.be.true();
+                    }
+                    await fn();
+                } finally {
+                    gate.resolve();
+                    await promise;
+                }
+            }
+            beforeEach(function() {
+                removed = [];
+                events.on("runtime-event", onEvent);
+                extra = [
+                    sinon.stub(typeRegistry, "getNodeInfo").callsFake(function(id) {
+                        if (/^missing\//.test(id)) { return null }
+                        if (/^used\//.test(id)) { return {types:['test']} }
+                        return {types:['unused-type']};
+                    }),
+                    sinon.stub(typeRegistry, "getModuleInfo").callsFake(function(id) {
+                        return id === "m" ? {name:"m", user:true, nodes:[{name:"n"}]} : null;
+                    }),
+                    sinon.stub(typeRegistry, "uninstallModule").callsFake(function() { return Promise.resolve([{id:"m/n"}]) }),
+                    sinon.stub(typeRegistry, "disableNode").callsFake(function() { return Promise.resolve({id:"m/n", enabled:false, types:[]}) })
+                ];
+            });
+            afterEach(function() {
+                events.removeListener("runtime-event", onEvent);
+                extra.forEach(stub => stub.restore());
+            });
+
+            ["beforeStop", "stopNow"].forEach(function(phase) {
+                it('AC-70: during ' + phase + ' checkTypeInUse refuses with 409 http_drain_in_progress and a constant message; after the stop it does not', async function() {
+                    await during(phase, async function() {
+                        assertRefused(refusal(() => flows.checkTypeInUse('some/module')));
+                    });
+                    should.not.exist(refusal(() => flows.checkTypeInUse('some/module')));
+                });
+                it('AC-70: during ' + phase + ' the removal of a module is refused: it stays installed and no node/removed event is sent', async function() {
+                    await during(phase, async function() {
+                        assertRefused(refusal(() => RED.uninstallModule('m')));
+                        typeRegistry.uninstallModule.called.should.be.false();
+                        removed.should.eql([]);
+                    });
+                    await RED.uninstallModule('m');
+                    typeRegistry.uninstallModule.calledOnce.should.be.true();
+                    removed.should.have.length(1);
+                });
+                it('AC-71: during ' + phase + ' disabling a node set or a module is refused: nothing is disabled', async function() {
+                    await during(phase, async function() {
+                        assertRefused(refusal(() => RED.disableNode('m/n')));
+                        typeRegistry.disableNode.called.should.be.false();
+                    });
+                });
+            });
+            it('AC-72: an unknown module and a type that the configuration uses keep their own errors during the drain', async function() {
+                await during("beforeStop", async function() {
+                    const unknown = refusal(() => flows.checkTypeInUse('missing/n'));
+                    should.exist(unknown);
+                    should.not.exist(unknown.code);
+                    unknown.message.should.match(/unrecognised-id/);
+                    const used = refusal(() => flows.checkTypeInUse('used/n'));
+                    should.exist(used);
+                    used.should.have.property('code', 'type_in_use');
+                    should.not.exist(used.status);
+                });
+            });
+            it('AC-73: after the stop (also while the new nodes start) the check passes as before', async function() {
+                await loadAndStartKeyLog();
+                enable();
+                await flows.stopFlows();
+                should.not.exist(refusal(() => flows.checkTypeInUse('some/module')));
+                (refusal(() => flows.checkTypeInUse('used/n')) || {}).should.have.property('code', 'type_in_use');
+            });
+            it('AC-74: with the drain off the check is as before, also while the nodes are being stopped', async function() {
+                await loadAndStartKeyLog();
+                httpDrain.isEnabled().should.be.false();
+                const stopGate = deferred();
+                flowCreate.flows.t1.stop = sinon.spy(() => stopGate.promise);
+                const promise = flows.stopFlows();
+                try {
+                    should.not.exist(refusal(() => flows.checkTypeInUse('some/module')));
+                    (refusal(() => flows.checkTypeInUse('used/n')) || {}).should.have.property('code', 'type_in_use');
+                } finally {
+                    stopGate.resolve();
+                    await promise;
+                }
+            });
+            it('AC-75: the message does not contain the module name, whatever it is', async function() {
+                await during("beforeStop", async function() {
+                    ['<script>alert(1)</script>', 'x'.repeat(10000)].forEach(function(name) {
+                        const err = refusal(() => flows.checkTypeInUse(name));
+                        assertRefused(err);
+                        err.message.length.should.be.below(100);
+                        err.message.should.not.match(/script|xxx/);
+                        JSON.stringify(err).should.not.match(/script|xxx/);
+                    });
+                });
+            });
         });
 
         describe('with the real drain', function() {

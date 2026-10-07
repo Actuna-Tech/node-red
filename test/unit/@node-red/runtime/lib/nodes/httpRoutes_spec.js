@@ -18,6 +18,7 @@
  *   new test file (#11): the API of the HTTP routes of a node (node.registerHttpRoute): the
  *   contract, the removal of the routes when the node stops, the adapter of the router of
  *   the app (Express 4 and 5), the order of the routes, the hold of the requests (#8)
+ *   #82: tests of httpRoutes.ownerOf(route) (the node that registered a route, for the record of the drain)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1194,6 +1195,132 @@ describe("runtime/nodes/httpRoutes (#11)", function() {
             app.get("/legacy-a", send("legacy-a"));
             await A.close();
             (await get("/legacy-a").expect(200)).text.should.equal("legacy-a");
+        });
+    });
+    describe("AC-12 (#82): ownerOf(route), the node that registered a route", function() {
+        const httpRoutes = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/httpRoutes");
+
+        function needOwnerOf() {
+            assert.strictEqual(typeof httpRoutes.ownerOf, "function", "httpRoutes.ownerOf is not defined");
+        }
+        function routeOf(path, a) {
+            return layersOfPath(path, a)[0].route;
+        }
+        function owned(id, type, z, path) {
+            const node = new RedNode({ id: id, type: type, z: z });
+            nodes.push(node);
+            const handle = reg(node, "get", path, send("x"));
+            return { node: node, handle: handle, route: routeOf(path) };
+        }
+
+        it("returns a new frozen {id, type, z} of the node of a registered route, a new object per call", function() {
+            needOwnerOf();
+            const o = owned("o1", "http in", "flow1", "/own-1");
+            const first = httpRoutes.ownerOf(o.route);
+            first.should.eql({ id: "o1", type: "http in", z: "flow1" });
+            Object.isFrozen(first).should.be.true();
+            const second = httpRoutes.ownerOf(o.route);
+            second.should.eql(first);
+            second.should.not.equal(first);
+        });
+
+        it("reads the node at the call: a node that changed after the registration is reported as it is now", function() {
+            needOwnerOf();
+            const o = owned("o2", "http in", "flow1", "/own-2");
+            o.node.z = "flow2";
+            httpRoutes.ownerOf(o.route).should.eql({ id: "o2", type: "http in", z: "flow2" });
+        });
+
+        it("has no z key without a z, no type key for a type that is not a string, and never a name", function() {
+            needOwnerOf();
+            const noZ = owned("o3", "http in", undefined, "/own-3");
+            const owner = httpRoutes.ownerOf(noZ.route);
+            owner.should.eql({ id: "o3", type: "http in" });
+            owner.should.not.have.property("z");
+            const noType = owned("o4", 42, "f", "/own-4");
+            httpRoutes.ownerOf(noType.route).should.eql({ id: "o4", z: "f" });
+            httpRoutes.ownerOf(noType.route).should.not.have.property("type");
+            const emptyZ = owned("o4b", "t", "", "/own-4b");
+            httpRoutes.ownerOf(emptyZ.route).should.not.have.property("z");
+            const named = owned("o5", "http in", "f", "/own-5");
+            named.node.name = "secret-name";
+            httpRoutes.ownerOf(named.route).should.not.have.property("name");
+        });
+
+        it("never reads the name of the node", function() {
+            needOwnerOf();
+            const o = owned("o6", "http in", "f", "/own-6");
+            let reads = 0;
+            Object.defineProperty(o.node, "name", { get: function() { reads++; return "n" }, configurable: true });
+            httpRoutes.ownerOf(o.route);
+            reads.should.equal(0);
+        });
+
+        it("is null for a node whose id is not a non-empty string", function() {
+            needOwnerOf();
+            const numeric = owned("o7", "http in", "f", "/own-7");
+            numeric.node.id = 7;
+            should(httpRoutes.ownerOf(numeric.route)).be.null();
+            const empty = owned("o8", "http in", "f", "/own-8");
+            empty.node.id = "";
+            should(httpRoutes.ownerOf(empty.route)).be.null();
+        });
+
+        it("is null, without throwing, for a node whose id getter throws", function() {
+            needOwnerOf();
+            const o = owned("o9", "http in", "f", "/own-9");
+            Object.defineProperty(o.node, "id", { get: function() { throw new Error("id getter") }, configurable: true });
+            const result = thrownBy(function() { return httpRoutes.ownerOf(o.route) });
+            should(result.error).be.undefined();
+            should(httpRoutes.ownerOf(o.route)).be.null();
+        });
+
+        it("is null for anything that is not a Route of a registration, and calls nothing on it", function() {
+            needOwnerOf();
+            const o = owned("o10", "http in", "f", "/own-10");
+            const trapCalls = [];
+            const traps = {};
+            ["get", "has", "ownKeys", "getOwnPropertyDescriptor", "getPrototypeOf", "set", "defineProperty",
+                "deleteProperty", "isExtensible", "setPrototypeOf", "preventExtensions", "apply", "construct"].forEach(function(trap) {
+                traps[trap] = function() { trapCalls.push(trap); throw new Error("trap " + trap) };
+            });
+            const direct = app.route("/own-direct");
+            [undefined, null, 1, "x", {}, [], function() {}, new Proxy({}, traps), direct, o.handle].forEach(function(value) {
+                let result;
+                const thrown = thrownBy(function() { result = httpRoutes.ownerOf(value) });
+                should(thrown.error).be.undefined();
+                should(result).be.null();
+            });
+            trapCalls.should.eql([]);
+        });
+
+        it("is null for a Route that app.route() created directly or that a legacy app.get() registered", function() {
+            needOwnerOf();
+            app.get("/own-legacy", send("x"));
+            should(httpRoutes.ownerOf(routeOf("/own-legacy"))).be.null();
+        });
+
+        it("still reports the owner after handle.remove(), after removeAll(node) and after a failed removal", function() {
+            needOwnerOf();
+            const a = owned("oa", "http in", "f", "/own-a");
+            a.handle.remove();
+            httpRoutes.ownerOf(a.route).should.eql({ id: "oa", type: "http in", z: "f" });
+            const b = owned("ob", "http in", "f", "/own-b");
+            httpRoutes.removeAll(b.node);
+            httpRoutes.ownerOf(b.route).should.eql({ id: "ob", type: "http in", z: "f" });
+            const c = owned("oc", "http in", "f", "/own-c");
+            const original = app._router.stack;
+            Object.defineProperty(app._router, "stack", { get: function() { throw new Error("boom") }, configurable: true });
+            c.handle.remove();
+            Object.defineProperty(app._router, "stack", { value: original, writable: true, configurable: true, enumerable: true });
+            httpRoutes.ownerOf(c.route).should.eql({ id: "oc", type: "http in", z: "f" });
+        });
+
+        it("a route registered by the node of an app that was replaced by init is still recognised", function() {
+            needOwnerOf();
+            const o = owned("od", "http in", "f", "/own-d");
+            redNodes.init(runtimeOf(createApp()));
+            httpRoutes.ownerOf(o.route).should.eql({ id: "od", type: "http in", z: "f" });
         });
     });
 });

@@ -19,6 +19,7 @@
  *   Z-16: tests of health.unreadyGrace on shutdown
  *   #61: test of a preShutdown handler that rejects without a value
  *   #76: a preShutdown handler that rejects with a value that cannot be printed
+ *   #82: tests of the wait for the HTTP requests of the drain inside shutdownTimeout (S-3)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -418,6 +419,380 @@ describe("runtime/health shutdown (Z-08, D-11)", function() {
             health.resolveUnreadyGrace({ health: { enabled: true, unreadyGrace: "x" } }).should.eql({ ms: 0, problem: "invalid" });
             health.resolveUnreadyGrace({ health: { unreadyGrace: 250 } }).should.eql({ ms: 0, problem: "no-probes" });
             log.warn.called.should.be.false();
+        });
+    });
+    // #82 (S-3): the shutdown waits for the HTTP requests that are in progress (`httpDrain.waitForShutdown`),
+    // inside shutdownTimeout. A fresh health.init per test; the real drain, fake time, a spy for stop
+    describe("the wait for the HTTP requests (S-3, #82)", function() {
+        const EventEmitter = require("events");
+        const httpDrain = NR_TEST_UTILS.require("@node-red/runtime/lib/httpDrain");
+        const S = httpDrain.S;
+        let stopTimes;
+
+        function fakeTime() {
+            clock = sinon.useFakeTimers({ now: 1000, toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+        }
+        function markedRoute() {
+            const handler = function() {};
+            handler[S] = true;
+            return { stack: [{ handle: handler }] };
+        }
+        function fakeRes() {
+            const res = new EventEmitter();
+            const headers = {};
+            Object.assign(res, { statusCode: 200, headersSent: false, writableEnded: false, destroyed: false, body: undefined });
+            res.getHeaderNames = () => Object.keys(headers);
+            res.setHeader = (name, value) => { headers[name.toLowerCase()] = value };
+            res.removeHeader = name => { delete headers[name.toLowerCase()] };
+            res.end = function(body) {
+                this.body = body;
+                this.writableEnded = true;
+                this.headersSent = true;
+                this.emit("finish");
+                return this;
+            };
+            res.destroy = function() { this.destroyed = true; this.emit("close") };
+            return res;
+        }
+        // a request that entered the app; `accepted`, `routed`
+        function request(options) {
+            options = options || {};
+            const req = new EventEmitter();
+            Object.assign(req, { method: "POST", url: "/x", complete: true, route: options.routed === false ? null : markedRoute() });
+            req.resume = function() {};
+            const res = fakeRes();
+            httpDrain.middleware(req, res, function() {});
+            if (options.accepted !== false) {
+                req[S].accepted = true;
+            }
+            return { req, res };
+        }
+        function enableDrain(timeout) {
+            httpDrain.init({ deploy: { drainHttpNodeRequests: { enabled: true, timeout: timeout || 1000 } } });
+        }
+        function logsOf(stub, key) {
+            return stub.args.map(a => a[0]).filter(m => String(m).indexOf(key) !== -1);
+        }
+        function shutdownLogs() {
+            return logsOf(log.info, "httpDrain.shutdown-").concat(logsOf(log.warn, "httpDrain.shutdown-"));
+        }
+        function needWait() {
+            if (typeof httpDrain.waitForShutdown !== "function") {
+                throw new Error("httpDrain.waitForShutdown is not defined");
+            }
+        }
+        function start(options) {
+            return health.shutdown(Object.assign({ reason: "SIGTERM", signal: "SIGTERM", stop: stop }, options || {}));
+        }
+
+        beforeEach(function() {
+            fakeTime();
+            stopTimes = [];
+            stop = sinon.spy(async function(reason) {
+                stopTimes.push(Date.now() - 1000);
+                order.push("stop:" + reason);
+            });
+            log._.callsFake((key, v) => key + (v ? " " + JSON.stringify(v) : ""));
+        });
+        afterEach(function() {
+            httpDrain.dispose();
+        });
+
+        it("AC-30: waits for the accepted request, which the flow answers at +300 ms; stop is called after the answer; one info log", async function() {
+            health.init({ shutdownTimeout: 5000 });
+            enableDrain(1000);
+            const r = request();
+            const done = start();
+            await clock.tickAsync(299);
+            stop.called.should.be.false();
+            r.res.statusCode = 200;
+            await clock.tickAsync(1);
+            r.res.end("answer of the flow");
+            await clock.tickAsync(0);
+            await done;
+            stop.calledOnce.should.be.true();
+            stopTimes[0].should.be.within(300, 300 + 250);
+            r.res.body.should.equal("answer of the flow");
+            r.res.statusCode.should.equal(200);
+            logsOf(log.info, "httpDrain.shutdown-waiting").should.eql(['httpDrain.shutdown-waiting {"count":1,"timeout":1000}']);
+            logsOf(log.warn, "httpDrain.shutdown-timeout").should.eql([]);
+            clock.countTimers().should.equal(0);
+        });
+        it("AC-31: a request that is never answered: stop at +1000 ms with a warning; finalize then gives the client 503 outcome unknown", async function() {
+            health.init({ shutdownTimeout: 5000 });
+            enableDrain(1000);
+            const r = request();
+            const done = start();
+            await clock.tickAsync(999);
+            stop.called.should.be.false();
+            await clock.tickAsync(1);
+            await done;
+            stopTimes.should.eql([1000]);
+            logsOf(log.warn, "httpDrain.shutdown-timeout").should.eql(['httpDrain.shutdown-timeout {"count":1}']);
+            httpDrain.finalize();
+            r.res.statusCode.should.equal(503);
+            JSON.parse(r.res.body).code.should.equal("http_drain_outcome_unknown");
+        });
+        it("AC-32: shutdownTimeout 800 with a drain timeout of 1000: stop at +800 ms", async function() {
+            health.init({ shutdownTimeout: 800 });
+            enableDrain(1000);
+            request();
+            const done = start();
+            await clock.tickAsync(799);
+            stop.called.should.be.false();
+            await clock.tickAsync(1);
+            await done;
+            stopTimes.should.eql([800]);
+            logsOf(log.info, "httpDrain.shutdown-waiting").should.eql(['httpDrain.shutdown-waiting {"count":1,"timeout":800}']);
+        });
+        it("AC-33: after the grace (500 ms) and a hook that ends at +200 ms the snapshot is taken: a request accepted at +400 ms is waited for", async function() {
+            health.init({ shutdownTimeout: 5000, health: { enabled: true, unreadyGrace: 500 } });
+            enableDrain(3000);
+            hooks.add("preShutdown", function(payload) { return new Promise(resolve => setTimeout(resolve, 200)) });
+            const done = start();
+            await clock.tickAsync(400);
+            const r = request();
+            await clock.tickAsync(99);
+            logsOf(log.info, "httpDrain.shutdown-waiting").should.eql([]);
+            await clock.tickAsync(1);
+            logsOf(log.info, "httpDrain.shutdown-waiting").should.eql(['httpDrain.shutdown-waiting {"count":1,"timeout":3000}']);
+            await clock.tickAsync(200);
+            stop.called.should.be.false();
+            r.res.end("ok");
+            await clock.tickAsync(0);
+            await done;
+            stopTimes.should.eql([700]);
+            stopTimes[0].should.be.below(5000);
+        });
+        it("AC-34: a hook that does not end within shutdownTimeout: stop at the timeout with the warning of the hook, no wait of the requests", async function() {
+            health.init({ shutdownTimeout: 300 });
+            enableDrain(1000);
+            hooks.add("preShutdown", function(payload) { return new Promise(() => {}) });
+            request();
+            const done = start();
+            await clock.tickAsync(299);
+            stop.called.should.be.false();
+            await clock.tickAsync(1);
+            await done;
+            stopTimes.should.eql([300]);
+            logsOf(log.warn, "health.shutdown-timeout").should.have.length(1);
+            shutdownLogs().should.eql([]);
+            clock.tick(5000);
+            stopTimes.should.eql([300]);
+        });
+        it("AC-35: a second shutdown() during the wait of the requests (after the grace and the hook) calls stop at once, both return the same promise", async function() {
+            health.init({ shutdownTimeout: 5000, health: { enabled: true, unreadyGrace: 200 } });
+            enableDrain(3000);
+            request();
+            const first = start();
+            await clock.tickAsync(250);
+            logsOf(log.info, "httpDrain.shutdown-waiting").should.have.length(1);
+            stop.called.should.be.false();
+            const second = start();
+            second.should.equal(first);
+            await first;
+            stopTimes.should.eql([250]);
+            clock.countTimers().should.equal(0);
+        });
+        it("AC-42 (R-22): without grace and hook a second shutdown() ends the wait of the requests at once; the same promise", async function() {
+            health.init({ shutdownTimeout: 5000 });
+            enableDrain(3000);
+            request();
+            const first = start();
+            await clock.tickAsync(100);
+            stop.called.should.be.false();
+            const second = start();
+            second.should.equal(first);
+            await first;
+            stopTimes.should.eql([100]);
+            stop.calledOnce.should.be.true();
+            clock.countTimers().should.equal(0);
+        });
+        it("REV-002 (R-22): a second shutdown() during the grace, with the drain on and an accepted request, skips the wait for the requests", async function() {
+            health.init({ shutdownTimeout: 5000, health: { enabled: true, unreadyGrace: 500 } });
+            enableDrain(3000);
+            request();
+            const first = start();
+            await clock.tickAsync(100);
+            stop.called.should.be.false();
+            const second = start();
+            second.should.equal(first);
+            await first;
+            stopTimes.should.eql([100]);
+            logsOf(log.info, "httpDrain.shutdown-waiting").should.eql([]);
+            shutdownLogs().should.eql([]);
+            clock.countTimers().should.equal(0);
+        });
+        it("REV-002 (R-22): the same during a hook that does not end", async function() {
+            health.init({ shutdownTimeout: 5000 });
+            enableDrain(3000);
+            hooks.add("preShutdown", function(payload) { return new Promise(() => {}) });
+            request();
+            const first = start();
+            await clock.tickAsync(100);
+            const second = start();
+            await first;
+            second.should.equal(first);
+            stopTimes.should.eql([100]);
+            logsOf(log.info, "httpDrain.shutdown-waiting").should.eql([]);
+            clock.countTimers().should.equal(0);
+        });
+        it("AC-36: a request that is not accepted is not waited for", async function() {
+            health.init({ shutdownTimeout: 5000 });
+            enableDrain(1000);
+            request({ accepted: false });
+            const done = start();
+            await clock.tickAsync(0);
+            await done;
+            stopTimes.should.eql([0]);
+            shutdownLogs().should.eql([]);
+        });
+        it("AC-36: a request accepted after the snapshot is not waited for; the one of the snapshot is", async function() {
+            health.init({ shutdownTimeout: 5000 });
+            enableDrain(3000);
+            const first = request();
+            const done = start();
+            await clock.tickAsync(100);
+            const late = request();
+            first.res.end("ok");
+            await clock.tickAsync(0);
+            await done;
+            stopTimes.should.eql([100]);
+            late.res.writableEnded.should.be.false();
+        });
+        it("AC-36: the client of the waited request aborts: the wait ends at once and the request gets no 503", async function() {
+            health.init({ shutdownTimeout: 5000 });
+            enableDrain(3000);
+            const r = request();
+            const done = start();
+            await clock.tickAsync(50);
+            r.res.destroy();
+            await clock.tickAsync(0);
+            await done;
+            stopTimes.should.eql([50]);
+            r.res.statusCode.should.equal(200);
+        });
+        it("AC-43: a waited request whose response has ended without 'finish': stop at the next guard check, not at the limit", async function() {
+            health.init({ shutdownTimeout: 5000 });
+            enableDrain(3000);
+            const r = request();
+            const done = start();
+            await clock.tickAsync(10);
+            r.res.writableEnded = true;
+            await clock.tickAsync(250);
+            await done;
+            stopTimes[0].should.be.within(10, 10 + 250);
+            logsOf(log.warn, "httpDrain.shutdown-timeout").should.eql([]);
+        });
+        it("AC-37 and AC-44: the drain on and no shutdownTimeout: stop at once, waitForShutdown is not called, none of the new log keys", async function() {
+            health.init({});
+            enableDrain(1000);
+            request();
+            request();
+            needWait();
+            const wait = sinon.spy(httpDrain, "waitForShutdown");
+            await start();
+            stopTimes.should.eql([0]);
+            wait.called.should.be.false();
+            shutdownLogs().should.eql([]);
+            clock.tick(10000);
+            shutdownLogs().should.eql([]);
+        });
+        [0, -1, "1000", null].forEach(function(value) {
+            it("AC-37: an invalid shutdownTimeout (" + JSON.stringify(value) + ") adds no wait of the requests", async function() {
+                state.reset();
+                state.markStarting();
+                state.report({ errors: [] });
+                health.init({ shutdownTimeout: value });
+                enableDrain(1000);
+                request();
+                await start();
+                stopTimes.should.eql([0]);
+                shutdownLogs().should.eql([]);
+            });
+        });
+        it("AC-38: the drain off, shutdownTimeout 5000: the timing and the logs of the grace and of the hook are unchanged", async function() {
+            health.init({ shutdownTimeout: 5000, health: { enabled: true, unreadyGrace: 500 } });
+            hooks.add("preShutdown", function(payload) { return new Promise(resolve => setTimeout(resolve, 200)) });
+            const done = start();
+            await clock.tickAsync(499);
+            stop.called.should.be.false();
+            await clock.tickAsync(1);
+            await done;
+            stopTimes.should.eql([500]);
+            shutdownLogs().should.eql([]);
+            logsOf(log.info, "health.draining").should.have.length(1);
+            logsOf(log.info, "health.unready-grace").should.have.length(1);
+        });
+        it("AC-38: the drain off, shutdownTimeout 5000, no grace and no hook: stop at once, no log of the drain", async function() {
+            health.init({ shutdownTimeout: 5000 });
+            await start();
+            stopTimes.should.eql([0]);
+            shutdownLogs().should.eql([]);
+            logsOf(log.info, "httpDrain").should.eql([]);
+        });
+        describe("AC-45: the budget given to waitForShutdown is deadline - now, in every branch", function() {
+            let wait;
+            beforeEach(function() {
+                needWait();
+                wait = sinon.stub(httpDrain, "waitForShutdown").callsFake(function() { return { promise: Promise.resolve(), cancel: function() {} } });
+            });
+            async function budgetFor(settings, withHook) {
+                state.reset();
+                state.markStarting();
+                state.report({ errors: [] });
+                hooks.clear();
+                if (withHook) {
+                    hooks.add("preShutdown", function(payload) { return new Promise(resolve => setTimeout(resolve, 200)) });
+                }
+                health.init(settings);
+                const done = start();
+                await clock.tickAsync(1000);
+                await done;
+                wait.calledOnce.should.be.true();
+                return wait.firstCall.args[0];
+            }
+            it("no grace and no hook: the whole shutdownTimeout", async function() {
+                (await budgetFor({ shutdownTimeout: 5000 }, false)).should.equal(5000);
+            });
+            it("a grace of 500 ms: 4500", async function() {
+                (await budgetFor({ shutdownTimeout: 5000, health: { enabled: true, unreadyGrace: 500 } }, false)).should.equal(4500);
+            });
+            it("a hook that ends at +200 ms: 4800", async function() {
+                (await budgetFor({ shutdownTimeout: 5000 }, true)).should.equal(4800);
+            });
+            it("a grace of 500 ms and a hook of 200 ms: 4500", async function() {
+                (await budgetFor({ shutdownTimeout: 5000, health: { enabled: true, unreadyGrace: 500 } }, true)).should.equal(4500);
+            });
+            it("is called with the drain off too (the drain decides), and not without shutdownTimeout", async function() {
+                state.reset();
+                state.markStarting();
+                state.report({ errors: [] });
+                health.init({});
+                await start();
+                wait.called.should.be.false();
+            });
+            it("stop is called when the promise of the wait resolves, not before", async function() {
+                let release;
+                wait.callsFake(function() { return { promise: new Promise(resolve => { release = resolve }), cancel: function() {} } });
+                health.init({ shutdownTimeout: 5000 });
+                const done = start();
+                await clock.tickAsync(100);
+                stop.called.should.be.false();
+                release();
+                await done;
+                stopTimes.should.eql([100]);
+            });
+            it("a second shutdown() calls cancel() of the wait, also without grace and hook (R-22)", async function() {
+                const cancel = sinon.spy();
+                wait.callsFake(function() { return { promise: new Promise(() => {}), cancel: cancel } });
+                health.init({ shutdownTimeout: 5000 });
+                start();
+                await clock.tickAsync(10);
+                cancel.called.should.be.false();
+                start();
+                cancel.calledOnce.should.be.true();
+            });
         });
     });
 });
