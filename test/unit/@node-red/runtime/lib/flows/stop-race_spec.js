@@ -18,6 +18,9 @@
  *   #84: new file - a deployment, a start or a reload that races the stop of the runtime (runtime.stop()) must not
  *   start flows after the stop or leave flows running: the complete stop, the start guard, the result of a deployment
  *   that was past step 4 when the stop began, the refusal of the runtime api in stopping and stopped
+ *   #84 (review round 1): AC-29 the stop of a deployment that finishes saving in stopping keeps its scope (D5 amended),
+ *   AC-30 the nodes that a start creates after the limit of the wait are closed when that start ends, AC-31 two starts
+ *   in Flow.start at the same time are both waited for
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -32,6 +35,7 @@
 const should = require("should");
 const sinon = require("sinon");
 const fs = require("fs");
+const EventEmitter = require("events");
 const path = require("path");
 const clone = require("clone");
 const NR_TEST_UTILS = require("nr-test-utils");
@@ -42,6 +46,7 @@ const apiFlows = NR_TEST_UTILS.require("@node-red/runtime/lib/api/flows");
 const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
 const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
 const httpDrain = NR_TEST_UTILS.require("@node-red/runtime/lib/httpDrain");
+const context = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/context");
 const credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
 const redNodes = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes");
 const runtimeIndex = NR_TEST_UTILS.require("@node-red/runtime");
@@ -137,7 +142,9 @@ describe("flows: a deployment racing the stop of the runtime (#84)", function() 
         flows.init(runtime);
         apiFlows.init(runtime);
         await flows.load();
-        await flows.startFlows();
+        if (!options.noStart) {
+            await flows.startFlows();
+        }
         await flush();
         if (!options.keepEvents) {
             seen.length = 0;
@@ -735,6 +742,340 @@ describe("flows: a deployment racing the stop of the runtime (#84)", function() 
             seen.length = 0;
             await stopRuntime();
             seen.should.eql([]);
+        });
+    });
+
+    // ---- review round 1 (G4) -------------------------------------------------------------------------------------
+
+    // a request of the httpNode app that an `http in` accepted (the drain waits for it)
+    function fakeRes() {
+        const res = new EventEmitter();
+        const headers = {};
+        Object.assign(res, { statusCode: 200, headersSent: false, writableEnded: false, destroyed: false, body: undefined });
+        res.getHeaderNames = () => Object.keys(headers);
+        res.setHeader = (name, value) => { headers[name.toLowerCase()] = value };
+        res.getHeader = name => headers[name.toLowerCase()];
+        res.removeHeader = name => { delete headers[name.toLowerCase()] };
+        res.end = function(body) {
+            this.body = body;
+            this.writableEnded = true;
+            this.headersSent = true;
+            this.emit("finish");
+            return this;
+        };
+        res.destroy = function() {
+            this.destroyed = true;
+            this.emit("close");
+        };
+        return res;
+    }
+    function acceptedRequest() {
+        const req = new EventEmitter();
+        Object.assign(req, { method: "POST", url: "/x", complete: true, route: null });
+        req.resume = function() {};
+        const res = fakeRes();
+        httpDrain.middleware(req, res, function() {});
+        const handler = function() {};
+        handler[httpDrain.S] = true;
+        req.route = { stack: [{ handle: handler }] };
+        req[httpDrain.S].accepted = true;
+        return { req: req, res: res };
+    }
+    // the real drain (deploy.drainHttpNodeRequests), finalize() recorded with the number of the closed nodes
+    function enableRealDrain(timeout) {
+        httpDrain.init({ deploy: { drainHttpNodeRequests: { enabled: true, timeout: timeout || 1000 } } });
+        httpDrain.isEnabled().should.be.true();
+        const original = httpDrain.finalize;
+        stubs.push(sinon.stub(httpDrain, "finalize").callsFake(function() {
+            finalized.push(world.closed.length);
+            return original.apply(httpDrain, arguments);
+        }));
+    }
+    async function until(condition, ms) {
+        const limit = Date.now() + (ms || 2000);
+        while (!condition() && Date.now() < limit) {
+            await delay(10);
+        }
+        condition().should.be.true("the condition was not reached");
+    }
+    function warnings() {
+        return mockLog.warn.args.filter(a => /nodes\.flows\.start-wait-timeout/.test(a[0]));
+    }
+    // every node that was constructed was closed, and each one exactly once (a request per instance)
+    function assertNoOrphans() {
+        world.flowObjects.forEach(fake => Object.keys(fake.nodes).should.eql([], "flow " + fake.id + " keeps nodes"));
+        world.closed.length.should.equal(world.constructed.length, "constructed and closed nodes differ");
+        world.constructed.forEach(n => {
+            const instances = world.constructed.filter(m => m.id === n.id).length;
+            (world.closeCalls[n.id] || 0).should.equal(instances, n.id + " was not closed exactly once per instance");
+        });
+    }
+
+    describe("AC-29 (F-2, D5 amended): the stop of a deployment that finishes saving in stopping keeps its scope", function() {
+        // [name, a deployment whose save is pending, how the save is finished]
+        const kinds = [
+            ["nodes deployment", function() {
+                saveGate = deferred();
+                const deployment = deploy("nodes", 2);
+                return { deployment: deployment, release: () => saveGate.resolve(), held: () => saved.length === 1 };
+            }],
+            ["flows-type diff reload (the save of the reload finishes in stopping)", function() {
+                const gate = deferred();
+                storage.getFlows = async () => {
+                    await gate.promise;
+                    return { flows: clone(config(2)), rev: "rev-reload" };
+                };
+                const deployment = flows.load(false, { reloadType: "diff" });
+                pending.push(deployment.catch(() => {}));
+                return { deployment: deployment, release: () => gate.resolve(), held: () => true };
+            }]
+        ];
+        [["drain off", false], ["drain on", true]].forEach(function(mode) {
+            kinds.forEach(function(kind) {
+                describe(mode[0] + ", " + kind[0], function() {
+                    let startsBefore;
+                    let race;
+                    async function savedInStopping() {
+                        await boot();
+                        if (mode[1]) {
+                            enableRealDrain();
+                        }
+                        startsBefore = starts();
+                        race = kind[1]();
+                        await flush();
+                        race.held().should.be.true("the deployment is not past its save");
+                        instanceState.markStopping("SIGTERM");
+                        race.release();
+                        (await settle(race.deployment)).state.should.equal("resolved");
+                        await delay(150);
+                    }
+
+                    it("AC-29 (a): only the changed node is closed; the unchanged node is not closed and still exists; the start is skipped (D3/D4)", async function() {
+                        await savedInStopping();
+                        (world.closeCalls.b1 || 0).should.equal(1, "the changed node was not closed once");
+                        should(world.closeCalls.a1).equal(undefined, "the unchanged node was closed by the stop of the deployment");
+                        existing().should.eql(["a1"]);
+                        world.liveIds().should.containEql("A");
+                        starts().should.equal(startsBefore, "a flow was started in stopping");
+                        world.constructedNew().should.eql([]);
+                        infoCount(SKIPPED).should.equal(1);
+                        seen.should.not.containEql("flows:started");
+                    });
+                    it("AC-29 (c): RED.stop then closes every remaining node exactly once; closeContexts" + (mode[1] ? " and httpDrain.finalize run" : " runs") + " after the closes", async function() {
+                        await savedInStopping();
+                        (await settle(stopRuntime())).state.should.equal("resolved");
+                        (world.closeCalls.a1 || 0).should.equal(1, "the remaining node was not closed once");
+                        (world.closeCalls.b1 || 0).should.equal(1, "the changed node was closed again");
+                        world.closedTwice().should.eql([]);
+                        existing().should.eql([]);
+                        world.liveIds().should.eql([]);
+                        flows.started.should.be.false();
+                        flows.state().should.equal("stop");
+                        contexts.should.eql([2], "closeContexts did not run after both closes");
+                        if (mode[1]) {
+                            finalized.should.eql([2], "finalize did not run after both closes");
+                        }
+                        starts().should.equal(startsBefore);
+                    });
+                });
+            });
+        });
+
+        describe("drain on, the shutdown wait for an accepted request on the unchanged flow", function() {
+            // the request is accepted by an http in of flow A; the shutdown (health.shutdown) waits for it; a nodes
+            // deployment (it changes b1 only) finishes saving in stopping
+            async function race(timeout) {
+                await boot();
+                enableRealDrain(timeout);
+                const request = acceptedRequest();
+                saveGate = deferred();
+                const deployment = deploy("nodes", 2);
+                await flush();
+                saved.should.have.length(1);
+                instanceState.markStopping("SIGTERM");
+                const wait = httpDrain.waitForShutdown(5000);
+                let ended = false;
+                wait.promise.then(() => { ended = true });
+                const began = Date.now();
+                saveGate.resolve();
+                (await settle(deployment)).state.should.equal("resolved");
+                return { request: request, wait: wait, began: began, ended: () => ended };
+            }
+
+            it("AC-29 (b): the deployment does not answer the request (no 503) and does not end the wait; the wait ends when the request finishes", async function() {
+                const r = await race(1000);
+                await delay(100);
+                r.request.res.writableEnded.should.be.false("the deployment answered the accepted request");
+                r.request.res.statusCode.should.equal(200);
+                should(r.request.res.body).equal(undefined);
+                r.ended().should.be.false("the shutdown wait was cut by the deployment");
+                r.request.res.end("done");
+                await flush();
+                r.ended().should.be.true("the wait did not end when the request finished");
+                r.request.res.statusCode.should.equal(200);
+                r.request.res.body.should.equal("done");
+            });
+            it("AC-29 (b): a request that does not finish: the wait ends at its limit, not before", async function() {
+                const r = await race(300);
+                await delay(100);
+                r.request.res.writableEnded.should.be.false("the deployment answered the accepted request");
+                r.ended().should.be.false("the shutdown wait was cut by the deployment");
+                await until(r.ended, 1500);
+                (Date.now() - r.began).should.be.aboveOrEqual(250);
+            });
+            it("AC-29 (b)+(c): the request is answered only by the stop of the runtime, after the closes (finalize)", async function() {
+                const r = await race(1000);
+                await delay(100);
+                r.request.res.writableEnded.should.be.false("the deployment answered the accepted request");
+                (await settle(stopRuntime())).state.should.equal("resolved");
+                finalized.should.eql([2]);
+                r.request.res.writableEnded.should.be.true("finalize did not answer the open request");
+                r.request.res.statusCode.should.equal(503);
+                world.liveIds().should.eql([]);
+                world.closedTwice().should.eql([]);
+            });
+        });
+
+        describe("drain off, C2: a deployment with forceStart whose stop arrives while RED.stop is still closing nodes", function() {
+            it("AC-29 (d): it resolves only after those closes; context.clean does not run while a close handler is running", async function() {
+                await boot();
+                const cleans = [];
+                stubs.push(sinon.stub(context, "clean").callsFake(async function() { cleans.push(world.closed.length) }));
+                const gate = deferred();
+                storage.getFlows = async () => {
+                    await gate.promise;
+                    return { flows: clone(config(2)), rev: "rev-load" };
+                };
+                // the project switch / reload API: load(true) = forceStart
+                const loading = flows.load(true);
+                pending.push(loading.catch(() => {}));
+                await flush();
+                world.closeGate.b1 = deferred();
+                instanceState.markStopping("SIGTERM");
+                const stopped = stopRuntime();
+                await until(() => world.closeCalls.b1 === 1);
+                // RED.stop's stopNow is closing nodes (b1 waits); the deployment's stop arrives now
+                gate.resolve();
+                (await settle(loading, 200)).state.should.equal("timeout", "the deployment resolved while a node was closing");
+                cleans.should.eql([], "context.clean ran while a close handler was running");
+                world.closeGate.b1.resolve();
+                (await settle(loading)).state.should.equal("resolved");
+                (await settle(stopped)).state.should.equal("resolved");
+                cleans.length.should.be.above(0);
+                cleans.forEach(n => n.should.equal(2, "context.clean ran before the closes completed"));
+                world.closedTwice().should.eql([]);
+                world.liveIds().should.eql([]);
+                world.constructedNew().should.eql([]);
+            });
+        });
+    });
+
+    describe("AC-30 (F-1): the nodes that a start creates after the limit of the wait of the stop", function() {
+        async function hungStart() {
+            await boot({ nodeCloseTimeout: 200 }, { noStart: true });
+            world.startHangs.A = true;
+            const starting = flows.startFlows();
+            pending.push(starting.catch(() => {}));
+            await until(() => world.starts.indexOf("A") !== -1);
+            const began = Date.now();
+            const stopped = stopRuntime();
+            const outcome = await settle(stopped, 2000);
+            outcome.state.should.equal("resolved");
+            const elapsed = Date.now() - began;
+            elapsed.should.be.aboveOrEqual(190, "runtime.stop() did not wait for the bound");
+            elapsed.should.be.below(1200);
+            warnings().should.have.length(1);
+            // nothing was created yet: the start of A is suspended
+            world.constructed.should.eql([]);
+            // wrapped: a promise that is returned from an async function is waited for
+            return { starting: starting };
+        }
+        it("AC-30: runtime.stop() resolves after about the bound with one warning; the start is released and ends: every node it created is closed exactly once; no node is left", async function() {
+            const starting = (await hungStart()).starting;
+            world.releaseAll();
+            await settle(starting);
+            await delay(150);
+            world.constructed.map(n => n.id).should.eql(["a1"], "the released start did not create its node");
+            world.starts.should.eql(["global", "A"], "a further flow was started after the bound");
+            (world.closeCalls.a1 || 0).should.equal(1, "a node created after the bound was not closed");
+            world.closed.should.eql(["a1"]);
+            assertNoOrphans();
+            warnings().should.have.length(1);
+            flows.started.should.be.false();
+            flows.state().should.equal("stop");
+        });
+        it("AC-30: a start that creates a node and then fails after the bound: the node is closed too (the rejection path)", async function() {
+            const starting = (await hungStart()).starting;
+            // the start fails after it created its node (the stack is not printed)
+            world.onConstruct = function() {
+                const err = new Error("start failed");
+                err.stack = "start failed";
+                throw err;
+            };
+            const log = console.log;
+            console.log = function() {};
+            try {
+                world.releaseAll();
+                await settle(starting);
+                await delay(150);
+            } finally {
+                console.log = log;
+                // the clean-up of the test starts flows again: they must not fail
+                world.onConstruct = null;
+            }
+            world.constructed.map(n => n.id).should.eql(["a1"]);
+            (world.closeCalls.a1 || 0).should.equal(1, "a node created by a failed start after the bound was not closed");
+            assertNoOrphans();
+        });
+    });
+
+    describe("AC-31 (NB-2): two starts in Flow.start at the same time (deploy.startTimeoutReleasesLock)", function() {
+        const BOUND = 400;
+        // start 1 (deployment 1) and start 2 (deployment 2, taken after the lock was released) are both in A.start
+        async function twoStarts() {
+            await boot({ nodeCloseTimeout: BOUND, deploy: { startTimeout: 100, startTimeoutReleasesLock: true } });
+            const gates = { first: deferred(), second: deferred() };
+            const startsOfA = () => world.starts.filter(id => id === "A").length;
+            // the first start of the runtime (boot) is not one of the two
+            const base = startsOfA();
+            world.startGates.A = gates.first;
+            const first = await deploy("full", 2);
+            first.should.have.property("rev");
+            await until(() => startsOfA() === base + 1);
+            world.startGates.A = gates.second;
+            const second = deploy("full", 3);
+            await until(() => startsOfA() === base + 2, 3000);
+            // both starts are inside Flow.start and nothing of them was constructed yet
+            world.constructed.filter(n => n.v >= 2).should.eql([]);
+            return gates;
+        }
+        async function stopWith(gates, early, late) {
+            const began = Date.now();
+            const stopped = stopRuntime();
+            await delay(100);
+            gates[early].resolve();
+            const outcome = await settle(stopped, 3000);
+            outcome.state.should.equal("resolved");
+            const elapsed = Date.now() - began;
+            // the other start never ends: the stop waits for it at most nodeCloseTimeout, with one warning
+            elapsed.should.be.aboveOrEqual(BOUND - 20, "runtime.stop() did not wait for both starts");
+            elapsed.should.be.below(BOUND * 3);
+            warnings().should.have.length(1);
+            gates[late].resolve();
+            await delay(250);
+            // a1 of the first start, a1 of the second start and a1 of the first generation
+            world.constructed.filter(n => n.id === "a1").should.have.length(3);
+            assertNoOrphans();
+            world.liveIds().should.eql([]);
+            flows.started.should.be.false();
+        }
+        it("AC-31: the second start ends within the bound, the first one after it: RED.stop waits for the bound, every node of both starts is closed once", async function() {
+            const gates = await twoStarts();
+            await stopWith(gates, "second", "first");
+        });
+        it("AC-31: the first start ends within the bound, the second one after it: every node of both starts is closed once, including the nodes the slower start creates after the stop", async function() {
+            const gates = await twoStarts();
+            await stopWith(gates, "first", "second");
         });
     });
 

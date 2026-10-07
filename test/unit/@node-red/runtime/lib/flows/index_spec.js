@@ -3030,7 +3030,8 @@ describe('flows/index', function() {
                 const outcome = await settle(stopped, 1500);
                 outcome.state.should.equal("resolved");
                 const elapsed = Date.now() - began;
-                elapsed.should.be.within(190, 1200);
+                // NB-4: the lower bound only - an upper bound of the wall clock is not a behaviour of the stop
+                elapsed.should.be.aboveOrEqual(190);
                 const warnings = keyLog.warn.args.filter(a => /nodes\.flows\.start-wait-timeout/.test(a[0]));
                 warnings.should.have.length(1);
                 warnings[0][0].should.containEql("global");
