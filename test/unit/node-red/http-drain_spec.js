@@ -20,6 +20,7 @@
  *   of the flows), with the setting off, on with a long limit and on with a short one
  *   #63: every describe stops its own instance in its `after`; the slow-body test asserts that the client socket is
  *   closed after the 503 with `Connection: close`
+ *   #82: the debug record of a drain 503 names the node of the route
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -460,6 +461,15 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
         it("the instance serves the requests normally afterwards", async function() {
             await reset(inst);
             (await send(inst.url, "/slow", { waitMs: 3000 }).done).status.should.equal(200);
+        });
+        it("AC-15 (#82): the debug record of the 503 names the node of the route", async function() {
+            const result = await scenario(inst, "full", { path: "/slowpost", method: "POST", waitMs: 3000 });
+            result.status.should.equal(503);
+            result.body.code.should.equal("http_drain_outcome_unknown");
+            await sleep(200);
+            // a boolean, so that a failure does not print the whole output of the child
+            (inst.output().indexOf("[http in:pi] HTTP drain: a POST request answered 503 http_drain_outcome_unknown") !== -1)
+                .should.equal(true, "the debug record of the 503 does not name the node pi");
         });
     });
 });

@@ -19,16 +19,22 @@
  *   (deploy.drainHttpNodeRequests): settings, tracking, the window, deadlines, the
  *   wait, the answers and their codes
  *   #76: a failure whose code cannot be read does not make the report of the failure throw
+ *   #82: tests of the node in the record of a drain 503 (S-1), the guard after the window (S-2: one timer,
+ *   retries inside the window), isWaitedFor (S-P), the wait of the shutdown (S-3), the condition and the
+ *   notice of the drain (S-4) and the warning of a very large timeout (S-6)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
 const should = require("should");
 const sinon = require("sinon");
 const EventEmitter = require("events");
+const http = require("http");
+const express = require("express");
 const NR_TEST_UTILS = require("nr-test-utils");
 const httpDrain = NR_TEST_UTILS.require("@node-red/runtime/lib/httpDrain");
 const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
-const { log } = NR_TEST_UTILS.require("@node-red/util");
+const httpRoutes = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/httpRoutes");
+const { log, events } = NR_TEST_UTILS.require("@node-red/util");
 
 const S = httpDrain.S;
 const TIMEOUT = 1000;
@@ -126,7 +132,9 @@ describe("runtime/httpDrain (#40)", function() {
         return JSON.parse(r.res.body);
     }
     function logged() {
-        return [log.info, log.warn, log.debug].map(stub => stub.args.map(args => args.join(" ")).join("\n")).join("\n");
+        const text = [log.info, log.warn, log.debug].map(stub => stub.args.map(args => args.join(" ")).join("\n")).join("\n");
+        // the records (log.log) of a node are part of the output of the drain too (#82)
+        return text + "\n" + log.log.args.map(args => JSON.stringify(args)).join("\n");
     }
 
     beforeEach(function() {
@@ -134,6 +142,7 @@ describe("runtime/httpDrain (#40)", function() {
         sinon.stub(log, "warn");
         sinon.stub(log, "info");
         sinon.stub(log, "debug");
+        sinon.stub(log, "log");
         sinon.stub(log, "_").callsFake((key, v) => key + (v ? " " + JSON.stringify(v) : ""));
         ready();
     });
@@ -1034,5 +1043,354 @@ describe("runtime/httpDrain (#40)", function() {
             logged().should.match(/httpDrain.answer-failed \{"code":"EBOOM"\}/);
             logged().should.not.match(/secret detail/);
         });
+    });
+    // #82 (S-1): the record of a drain 503 names the node of the route. "Owned" is a route that
+    // `httpRoutes.register` created; the record is `log.log({level: DEBUG, id, type, z, msg})`
+    describe("the node of the route in the record of the 503 (S-1, #82)", function() {
+        const ANSWERED = "httpDrain.answered-request";
+
+        function ownedRoute(node, method, path, handlers) {
+            const app = express();
+            httpRoutes.init(app);
+            httpRoutes.register(node, method || "post", path || "/p", handlers || [markedHandler()]);
+            return app._router.stack.find(layer => layer.route && layer.route.path === (path || "/p")).route;
+        }
+        function owned(r, node, handlers) {
+            r.req.route = ownedRoute(node, r.req.method.toLowerCase(), "/p", handlers);
+            return r;
+        }
+        function plainNode(extra) {
+            return Object.assign({ id: "n1", type: "http in", z: "f1", name: "secret-name" }, extra);
+        }
+        // the records of the drain with a node
+        function records() {
+            return log.log.args.map(a => a[0]).filter(e => e && e.level === log.DEBUG && String(e.msg).indexOf(ANSWERED) !== -1);
+        }
+        // the answers that are logged without a node (log.debug)
+        function plainRecords() {
+            return log.debug.args.filter(a => String(a[0]).indexOf(ANSWERED) !== -1).map(a => a[0]);
+        }
+        function expectedMsg(method, code) {
+            return log._(ANSWERED, { method: method, code: code });
+        }
+        afterEach(function() {
+            httpRoutes.init(null);
+        });
+
+        it("AC-1: an accepted POST: 503 outcome unknown and one record with id, type and z, no name; log.debug is not used", async function() {
+            init();
+            const r = accept(owned(arrive("POST"), plainNode()));
+            await drainNow();
+            httpDrain.afterStop("full");
+            r.res.statusCode.should.equal(503);
+            body(r).code.should.equal("http_drain_outcome_unknown");
+            records().should.eql([{ level: log.DEBUG, id: "n1", type: "http in", z: "f1", msg: expectedMsg("POST", "http_drain_outcome_unknown") }]);
+            records()[0].should.not.have.property("name");
+            plainRecords().should.eql([]);
+        });
+        it("AC-2: a request that is not accepted: 503 not accepted and a record with the same owner and that code", async function() {
+            init();
+            const r = owned(arrive("POST"), plainNode());
+            await drainNow();
+            httpDrain.afterStop("full");
+            body(r).code.should.equal("http_drain_not_accepted");
+            records().should.eql([{ level: log.DEBUG, id: "n1", type: "http in", z: "f1", msg: expectedMsg("POST", "http_drain_not_accepted") }]);
+            plainRecords().should.eql([]);
+        });
+        it("AC-3a: the record has the owner when the answer comes from afterStop('partial') past the deadline", async function() {
+            init();
+            const token = deploying();
+            const r = accept(owned(arrive("POST"), plainNode({ id: "pa" })));
+            const promise = httpDrain.beforeStop();
+            clock.setSystemTime(START + TIMEOUT);
+            httpDrain.afterStop("partial");
+            r.res.statusCode.should.equal(503);
+            records().map(e => e.id).should.eql(["pa"]);
+            instanceState.end(token, { errors: [] });
+            await promise;
+        });
+        it("AC-3b: the record has the owner when the answer comes from the guard after the window", async function() {
+            init();
+            const token = deploying();
+            const r = accept(owned(arrive("POST"), plainNode({ id: "pb" })));
+            await drainNow();
+            httpDrain.afterStop("partial");
+            instanceState.end(token, { errors: [] });
+            clock.tick(1);
+            clock.tick(TIMEOUT + 250);
+            r.res.statusCode.should.equal(503);
+            records().map(e => e.id).should.eql(["pb"]);
+            plainRecords().should.eql([]);
+        });
+        it("AC-3c: the record has the owner when the answer comes from finalize()", function() {
+            init();
+            const r = accept(owned(arrive("POST"), plainNode({ id: "pc" })));
+            httpDrain.finalize();
+            r.res.statusCode.should.equal(503);
+            records().map(e => e.id).should.eql(["pc"]);
+            plainRecords().should.eql([]);
+        });
+        it("AC-4: removeAll(node) before afterStop('full'): the owner is still reported", async function() {
+            init();
+            const node = plainNode({ id: "pd" });
+            const r = accept(owned(arrive("POST"), node));
+            httpRoutes.removeAll(node);
+            await drainNow();
+            httpDrain.afterStop("full");
+            r.res.statusCode.should.equal(503);
+            records().map(e => e.id).should.eql(["pd"]);
+        });
+        it("AC-5: a marked route that register did not create (a fake object, a real app.post) is logged by log.debug as before", async function() {
+            init();
+            const fake = accept(route(arrive("POST")));
+            const app = express();
+            app.post("/q", markedHandler());
+            const real = accept(arrive("POST"));
+            real.req.route = app._router.stack.find(layer => layer.route && layer.route.path === "/q").route;
+            await drainNow();
+            httpDrain.afterStop("full");
+            fake.res.statusCode.should.equal(503);
+            real.res.statusCode.should.equal(503);
+            plainRecords().should.eql([expectedMsg("POST", "http_drain_outcome_unknown"), expectedMsg("POST", "http_drain_outcome_unknown")]);
+            records().should.eql([]);
+        });
+        it("AC-8: an owner without z has no z key, a type that is not a string no type key, never a name key", async function() {
+            init();
+            const noZ = accept(owned(arrive("POST"), plainNode({ id: "z1", z: undefined })));
+            const noType = accept(owned(arrive("POST"), plainNode({ id: "t1", type: 42 })));
+            await drainNow();
+            httpDrain.afterStop("full");
+            const list = records();
+            list.should.have.length(2);
+            const byId = id => list.find(e => e.id === id);
+            byId("z1").should.not.have.property("z");
+            byId("z1").type.should.equal("http in");
+            byId("t1").should.not.have.property("type");
+            byId("t1").z.should.equal("f1");
+            list.forEach(e => e.should.not.have.property("name"));
+        });
+        it("AC-8: an owner whose id is not a string or is empty gives the plain record, the request is answered", async function() {
+            init();
+            const numeric = accept(owned(arrive("POST"), plainNode({ id: 7 })));
+            const empty = accept(owned(arrive("POST"), plainNode({ id: "" })));
+            await drainNow();
+            httpDrain.afterStop("full");
+            numeric.res.statusCode.should.equal(503);
+            empty.res.statusCode.should.equal(503);
+            records().should.eql([]);
+            plainRecords().should.have.length(2);
+        });
+        it("AC-9a: an owner whose id getter throws: the 503 is sent, the counters are not changed, the plain record", async function() {
+            init();
+            const node = plainNode();
+            const r = accept(owned(arrive("POST"), node));
+            Object.defineProperty(node, "id", { get: function() { throw new Error("id getter") }, configurable: true });
+            await drainNow();
+            httpDrain.afterStop("full");
+            r.res.statusCode.should.equal(503);
+            r.entry.drained.should.be.true();
+            const text = logged();
+            text.should.match(/"outcomeUnknown":1,"destroyed":0,"failed":0/);
+            text.should.not.match(/answer-failed/);
+            records().should.eql([]);
+            plainRecords().should.eql([expectedMsg("POST", "http_drain_outcome_unknown")]);
+        });
+        it("AC-9b: a req.route getter that throws after the 503 was sent: counters unchanged, no answer-failed, the plain record", async function() {
+            init();
+            const r = accept(arrive("POST"));
+            const theRoute = ownedRoute(plainNode());
+            Object.defineProperty(r.req, "route", {
+                get: function() {
+                    if (r.res.statusCode !== 503) { return theRoute }
+                    throw new Error("route getter");
+                },
+                configurable: true
+            });
+            await drainNow();
+            httpDrain.afterStop("full");
+            r.res.statusCode.should.equal(503);
+            const text = logged();
+            text.should.match(/"outcomeUnknown":1,"destroyed":0,"failed":0/);
+            text.should.not.match(/answer-failed/);
+            records().should.eql([]);
+            plainRecords().should.eql([expectedMsg("POST", "http_drain_outcome_unknown")]);
+        });
+        it("AC-10: an ended response is left alone, a started one is destroyed (counted), a res.end that throws is counted as failed; none has a record", async function() {
+            init();
+            const ended = accept(owned(arrive("POST"), plainNode({ id: "e1" })));
+            ended.res.writableEnded = true;
+            ended.res.headersSent = true;
+            const started = accept(owned(arrive("POST"), plainNode({ id: "e2" })));
+            started.res.headersSent = true;
+            const failing = accept(owned(arrive("POST"), plainNode({ id: "e3" })));
+            failing.res.endThrows = Object.assign(new Error("x"), { code: "EBOOM" });
+            await drainNow();
+            httpDrain.afterStop("full");
+            started.res.destroyed.should.be.true();
+            ended.res.destroyed.should.be.false();
+            const text = logged();
+            text.should.match(/"destroyed":1,"failed":1/);
+            text.should.match(/httpDrain.answer-failed \{"code":"EBOOM"\}/);
+            records().should.eql([]);
+            plainRecords().should.eql([]);
+        });
+        it("AC-11: no record or log line contains a URL, a path, a query or the name of the node", async function() {
+            init();
+            const a = accept(owned(arrive("GET", "/private/path?token=abc123"), plainNode({ id: "u1" })));
+            const b = accept(owned(arrive("GET", "/another/secret?x=1"), plainNode({ id: "u2" })));
+            b.res.endThrows = Object.assign(new Error("failed for /another/secret"), { code: "EFAIL" });
+            const promise = httpDrain.beforeStop();
+            clock.tick(TIMEOUT);
+            await promise;
+            httpDrain.afterStop("full");
+            records().map(e => e.id).should.eql(["u1"]);
+            const text = logged();
+            text.should.match(/httpDrain.answered/);
+            text.should.not.match(/private|token|abc123|another|secret/);
+        });
+        it("AC-13: with the drain off (absent, disabled, an empty object, a string) nothing is answered and no record is made", async function() {
+            [undefined, { enabled: false }, {}, "yes"].forEach(function(setting) {
+                httpDrain.init({ deploy: { drainHttpNodeRequests: setting } });
+                const r = owned(arrive("POST"), plainNode());
+                httpDrain.afterStop("full");
+                httpDrain.finalize();
+                r.res.writableEnded.should.be.false();
+            });
+            records().should.eql([]);
+            plainRecords().should.eql([]);
+        });
+        it("AC-13: register() reads nothing of the node: the getters id, type and z are not called", function() {
+            init();
+            const calls = [];
+            const node = {};
+            ["id", "type", "z", "name"].forEach(key => Object.defineProperty(node, key, { get: function() { calls.push(key); return key }, configurable: true }));
+            ownedRoute(node);
+            calls.should.eql([]);
+        });
+    });
+});
+
+// #82 (S-1): the same with a real Express app, a real HTTP server and real clients (no fake timers: the
+// requests are cut by afterStop("full"), no wait runs)
+describe("runtime/httpDrain with a real Express app (S-1, #82)", function() {
+    const ANSWERED = "httpDrain.answered-request";
+    let app;
+    let server;
+    let port;
+    let inFlight;
+
+    function node(id) {
+        return { id: id, type: "x in", z: "f" };
+    }
+    // a marked handler that accepts the request and never answers it
+    function accepting() {
+        const handler = function(req, res) { inFlight++; req[S].accepted = true };
+        handler[S] = true;
+        return handler;
+    }
+    function passing() {
+        const handler = function(req, res, next) { next("route") };
+        handler[S] = true;
+        return handler;
+    }
+    function client(method, path) {
+        return new Promise(function(resolve) {
+            const req = http.request({ host: "127.0.0.1", port: port, method: method, path: path, agent: false, headers: { Connection: "close" } }, function(res) {
+                const chunks = [];
+                res.on("data", d => chunks.push(d));
+                res.on("end", function() {
+                    let json;
+                    try { json = JSON.parse(Buffer.concat(chunks).toString()) } catch (err) { json = undefined }
+                    resolve({ status: res.statusCode, body: json });
+                });
+            });
+            req.on("error", err => resolve({ error: err.message }));
+            req.end();
+        });
+    }
+    async function until(condition, what) {
+        const started = Date.now();
+        while (!condition()) {
+            if (Date.now() - started > 5000) {
+                throw new Error("timeout waiting for " + what);
+            }
+            await new Promise(resolve => setTimeout(resolve, 5));
+        }
+    }
+    function records() {
+        return log.log.args.map(a => a[0]).filter(e => e && e.level === log.DEBUG && String(e.msg).indexOf(ANSWERED) !== -1);
+    }
+    function plainRecords() {
+        return log.debug.args.filter(a => String(a[0]).indexOf(ANSWERED) !== -1);
+    }
+
+    beforeEach(async function() {
+        sinon.stub(log, "warn");
+        sinon.stub(log, "info");
+        sinon.stub(log, "debug");
+        sinon.stub(log, "log");
+        sinon.stub(log, "_").callsFake((key, v) => key + (v ? " " + JSON.stringify(v) : ""));
+        instanceState.reset();
+        instanceState.markStarting();
+        instanceState.report({ errors: [] });
+        httpDrain.init({ deploy: { drainHttpNodeRequests: { enabled: true, timeout: 30000 } } });
+        inFlight = 0;
+        app = express();
+        app.use(httpDrain.middleware);
+        httpRoutes.init(app);
+        server = http.createServer(app);
+        await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+        port = server.address().port;
+    });
+    afterEach(async function() {
+        httpDrain.dispose();
+        httpRoutes.init(null);
+        instanceState.reset();
+        if (server.closeAllConnections) {
+            server.closeAllConnections();
+        }
+        await new Promise(resolve => server.close(resolve));
+        sinon.restore();
+    });
+
+    it("AC-6: owned A calls next('route') to owned B on the same method and path: the record names B", async function() {
+        httpRoutes.register(node("a"), "post", "/dual", [passing()]);
+        httpRoutes.register(node("b"), "post", "/dual", [accepting()]);
+        const pending = client("POST", "/dual");
+        await until(() => inFlight === 1, "the request in B");
+        httpDrain.afterStop("full");
+        (await pending).status.should.equal(503);
+        records().map(e => e.id).should.eql(["b"]);
+    });
+    it("AC-7: owned A (registered first) and B: the request matched by A is reported with A", async function() {
+        httpRoutes.register(node("a"), "post", "/dual", [accepting()]);
+        httpRoutes.register(node("b"), "post", "/dual", [accepting()]);
+        const pending = client("POST", "/dual");
+        await until(() => inFlight === 1, "the request in A");
+        httpDrain.afterStop("full");
+        (await pending).status.should.equal(503);
+        records().map(e => e.id).should.eql(["a"]);
+    });
+    it("AC-14: 200 requests of an owned route and one of a route of app.post: all get 503 outcome unknown, 200 records with the id, one in the plain form", async function() {
+        this.timeout(20000);
+        httpRoutes.register(node("r1"), "post", "/p", [accepting()]);
+        app.post("/q", accepting());
+        const all = [];
+        for (let i = 0; i < 200; i++) {
+            all.push(client("POST", "/p"));
+        }
+        all.push(client("POST", "/q"));
+        await until(() => inFlight === 201, "201 requests in the handlers");
+        httpDrain.afterStop("full");
+        const results = await Promise.all(all);
+        results.forEach(function(result) {
+            should.not.exist(result.error);
+            result.status.should.equal(503);
+            result.body.code.should.equal("http_drain_outcome_unknown");
+        });
+        const list = records();
+        list.should.have.length(200);
+        list.forEach(e => { e.id.should.equal("r1"); e.type.should.equal("x in"); e.z.should.equal("f") });
+        plainRecords().should.have.length(1);
     });
 });
