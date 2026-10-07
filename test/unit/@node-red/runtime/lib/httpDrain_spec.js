@@ -1345,12 +1345,13 @@ describe("runtime/httpDrain (#40)", function() {
             init();
             await httpDrain.beforeStop();
             const early = accept(route(arrive("POST")));
-            const late = route(arrive("POST"));
+            // arrived in the window, its route is not matched yet
+            const late = arrive("POST");
             clock.tick(100);
             httpDrain.afterStop("partial");
             oneTimeout("planned:");
-            clock.tick(100);
-            accept(late);
+            clock.tick(300);
+            accept(route(late));
             oneTimeout("after the later acceptance:");
             clock.tick(START + TIMEOUT - 1 - Date.now());
             early.res.writableEnded.should.be.false();
@@ -1358,7 +1359,7 @@ describe("runtime/httpDrain (#40)", function() {
             early.res.statusCode.should.equal(503);
             late.res.writableEnded.should.be.false();
             oneTimeout("after the first answer:");
-            clock.tick(START + 200 + TIMEOUT - 1 - Date.now());
+            clock.tick(START + 400 + TIMEOUT - 1 - Date.now());
             late.res.writableEnded.should.be.false();
             clock.tick(1 + 250);
             late.res.statusCode.should.equal(503);
@@ -2409,6 +2410,27 @@ describe("runtime/httpDrain (#40)", function() {
             assert.strictEqual(typeof httpDrain.waitForShutdown, "function", "httpDrain.waitForShutdown is not defined");
             (await settled(httpDrain.waitForShutdown(5000).promise)).should.be.true();
             log.info.args.map(a => a[0]).join("\n").should.not.match(/shutdown-waiting/);
+        });
+    });
+    // Found while writing the tests of S-3 (not in the spec of #82): the timer of the wait of beforeStop reads the
+    // responses to count the open ones; a response that cannot be read must not make the callback of the timer throw
+    describe("the timeout of the wait of beforeStop with a response that cannot be read (gap of the spec, #82)", function() {
+        it("the callback of the timer does not throw, the wait ends and the other requests are answered by afterStop", async function() {
+            init();
+            const hostile = accept(route(arrive("POST")));
+            const good = accept(route(arrive("POST")));
+            const promise = httpDrain.beforeStop();
+            Object.defineProperty(hostile.res, "writableEnded", { get: function() { throw new Error("hostile getter") } });
+            let thrown = null;
+            try {
+                clock.tick(TIMEOUT);
+            } catch (err) {
+                thrown = err;
+            }
+            should.not.exist(thrown, "the timer of the wait threw: " + (thrown && thrown.message));
+            (await settled(promise)).should.be.true();
+            httpDrain.finalize();
+            good.res.statusCode.should.equal(503);
         });
     });
 });

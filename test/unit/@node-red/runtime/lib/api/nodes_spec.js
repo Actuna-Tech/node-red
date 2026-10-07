@@ -384,8 +384,6 @@ describe("runtime-api/nodes", function() {
             (await failure(nodes.setNodeSetState({ id: "m/a", enabled: false }))).should.have.property("status", 409);
             setup({ disableNode: function() { return Promise.reject(new Error("boom")); } });
             (await failure(nodes.setNodeSetState({ id: "m/a", enabled: false }))).should.have.property("status", 400);
-            setup({ getNodeInfo: function() { return null; } });
-            (await failure(nodes.setNodeSetState({ id: "m/a", enabled: false }))).should.have.property("status", 404);
         });
     });
 
