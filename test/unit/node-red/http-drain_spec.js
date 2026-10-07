@@ -674,6 +674,7 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
                     text(stream).should.not.match(/http_drain|503/);
                     const output = inst.output().slice(mark);
                     output.should.not.match(/Waiting for \d+ HTTP request/);
+                    output.should.not.match(/Shutdown: waiting for \d+ HTTP request/i);
                     output.should.not.match(/HTTP drain \(/);
                 });
                 it("AC-93: a flows deployment that changes the node wired to the http in closes the stream", async function() {
@@ -760,6 +761,8 @@ describe("drain of the HTTP requests (acceptance, #40)", function() {
                 const exit = await Promise.race([exited, sleep(8000).then(() => ({ timeout: true }))]);
                 should.not.exist(exit.timeout);
                 (Date.now() - started).should.be.below(4000);
+                // the log of the wait of the shutdown is "Shutdown: waiting for N HTTP request(s)" (REV-003)
+                inst.output().slice(mark).should.not.match(/Shutdown: waiting for \d+ HTTP request/i);
                 inst.output().slice(mark).should.not.match(/Waiting for \d+ HTTP request/);
                 text(stream).should.not.match(/http_drain|503/);
             });

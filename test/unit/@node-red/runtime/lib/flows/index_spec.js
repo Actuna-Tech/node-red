@@ -34,7 +34,7 @@
  *   Z-06 (#10): tests of opts.built of addFlow/updateFlow/removeFlow (the configuration built by the pipeline);
  *   readStoredFlows/loadStoredCredentials (the halves of readFlowsFromStorage, D15, A32)
  *   #63: load(true), the project switch path, does not call preDeploy or postDeploy handlers (I8 of #10)
- *   #82: checkTypeInUse refuses the removal and the disabling of node types during a drain stop (409)
+ *   #82: the tests of the stop with the drain leave no flow objects (stubs) in the module for the specs that run later; checkTypeInUse refuses the removal and the disabling of node types during a drain stop (409)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -2353,6 +2353,12 @@ describe('flows/index', function() {
             httpDrain.dispose();
             // a configuration without missing types: a type registered by later tests must not start these flows
             await flows.stopFlows();
+            // A partial stop ("nodes", "flows") keeps the flow objects of the module (here the stubs of Flow.create)
+            // and a stop of flows that are not started does not remove them: a later spec in the same process that
+            // loads flows (the test helper of the nodes) would find them and fail with "getNode is not a function".
+            // A full stop of started flows drops them
+            await loadAndStart();
+            await flows.stopFlows("full");
             storage.getFlows = function() { return Promise.resolve({flows:clone(okConfig), rev:"cleanRev"}) };
             await flows.load();
             instanceState.reset();

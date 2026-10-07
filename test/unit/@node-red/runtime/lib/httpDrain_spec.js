@@ -1797,6 +1797,54 @@ describe("runtime/httpDrain (#40)", function() {
             warnLogs("httpDrain.shutdown-timeout").should.have.length(1);
             warnLogs("httpDrain.timeout").should.eql([]);
         });
+        it("AC-40 (REV-004, I-6): while the wait of beforeStop runs, the end of the wait of the shutdown (cancel, the limit, the answers) leaves the condition set", async function() {
+            init();
+            const a = accept(route(arrive("POST")));
+            const b = accept(route(arrive("POST")));
+            const deployment = httpDrain.beforeStop();
+            const condition = instanceState.get().httpDrain;
+            should.exist(condition);
+            condition.requests.should.equal(2);
+            const notices = [];
+            const onNotice = e => { if (e && e.id === "http-drain") { notices.push(e) } };
+            events.on("runtime-event", onNotice);
+            try {
+                // cancel()
+                const first = wait(5000);
+                first.cancel();
+                (await settled(first.promise)).should.be.true();
+                instanceState.get().httpDrain.should.eql(condition);
+                // the limit
+                const second = wait(300);
+                clock.tick(300);
+                (await settled(second.promise)).should.be.true();
+                instanceState.get().httpDrain.should.eql(condition);
+                // all its requests answered, one of the wait of the deployment too
+                const third = wait(5000);
+                a.res.end("a");
+                instanceState.get().httpDrain.should.eql(condition, "the condition changed while the wait of beforeStop still runs");
+                (await settled(deployment)).should.be.false();
+                b.res.end("b");
+                (await settled(third.promise)).should.be.true();
+                (await settled(deployment)).should.be.true();
+                // no notice was sent for the ends of the waits of the shutdown; the end of the wait of beforeStop clears
+                notices.should.eql([{ id: "http-drain", retain: false }]);
+                should.not.exist(instanceState.get().httpDrain);
+            } finally {
+                events.removeListener("runtime-event", onNotice);
+            }
+        });
+        it("AC-40 (REV-004): finalize() and dispose() end both waits and clear the condition once", async function() {
+            init();
+            accept(route(arrive("POST")));
+            const deployment = httpDrain.beforeStop();
+            const shutdown = wait(5000);
+            should.exist(instanceState.get().httpDrain);
+            httpDrain.finalize();
+            (await settled(deployment)).should.be.true();
+            (await settled(shutdown.promise)).should.be.true();
+            should.not.exist(instanceState.get().httpDrain);
+        });
         it("AC-44: the wait of a deployment never logs the keys of the shutdown", async function() {
             init();
             accept(route(arrive("POST")));
@@ -1843,9 +1891,15 @@ describe("runtime/httpDrain (#40)", function() {
             });
         }
         function warningOf(count) {
-            return { id: "http-drain", retain: true, payload: { type: "warning", text: "notification.warnings.http_drain", count: count, timeout: TIMEOUT } };
+            return { id: "http-drain", retain: true, payload: { type: "warning", text: "notification.warnings.http_drain", count: count, limit: TIMEOUT } };
         }
         const CLEARED = { id: "http-drain", retain: false };
+        // the editor reads `timeout` of a notification as the time after which it hides (red.js): the notice
+        // is fixed only without it, so the limit is given as `limit` (REV-001)
+        function assertFixed(event) {
+            event.payload.should.not.have.property("timeout");
+            event.payload.should.have.property("limit");
+        }
 
         beforeEach(function() {
             listeners = [];
@@ -1870,6 +1924,7 @@ describe("runtime/httpDrain (#40)", function() {
             instanceState.get().httpDrain.should.eql({ requests: 2, since: t0, deadline: t0 + TIMEOUT });
             instanceState.get().state.should.equal("deploying");
             noticeEvents.should.eql([warningOf(2)]);
+            assertFixed(noticeEvents[0]);
             httpDrain.abortWait();
             await promise;
             instanceState.end(token, { errors: [] });
@@ -1887,6 +1942,7 @@ describe("runtime/httpDrain (#40)", function() {
             stateEvents[0].httpDrain.should.eql({ requests: 3, since: t0, deadline: t0 + TIMEOUT });
             instanceState.get().httpDrain.requests.should.equal(3);
             noticeEvents.should.eql([warningOf(3)]);
+            assertFixed(noticeEvents[0]);
             httpDrain.abortWait();
             await promise;
         });
@@ -2125,16 +2181,17 @@ describe("runtime/httpDrain (#40)", function() {
             await comms.removeConnection({ client: first });
         });
         ["en-US", "pl"].forEach(function(lang) {
-            it("AC-57: the text of the editor " + lang + " exists and names the count and the timeout", function() {
+            it("AC-57: the text of the editor " + lang + " exists and names the count and the limit", function() {
                 const file = NR_TEST_UTILS.resolve("@node-red/editor-client/locales/" + lang + "/editor.json");
                 const catalog = JSON.parse(fs.readFileSync(file, "utf8"));
                 const text = catalog.notification && catalog.notification.warnings && catalog.notification.warnings.http_drain;
                 should.exist(text, "notification.warnings.http_drain is missing in " + lang);
                 text.should.containEql("__count__");
-                text.should.containEql("__timeout__");
+                text.should.containEql("__limit__");
+                text.should.not.containEql("__timeout__");
             });
         });
-        it("AC-58: the notice has only the count and the timeout: nothing of a URL, a path or a node", async function() {
+        it("AC-58: the notice has only the count and the limit: nothing of a URL, a path or a node", async function() {
             init();
             const secret = accept(route(arrive("POST", "/private/path?token=abc123")));
             secret.req.headers = { authorization: "Bearer abc123" };
@@ -2144,6 +2201,7 @@ describe("runtime/httpDrain (#40)", function() {
             await promise;
             noticeEvents.should.have.length(2);
             noticeEvents[0].should.eql(warningOf(1));
+            assertFixed(noticeEvents[0]);
             JSON.stringify(noticeEvents.concat(stateEvents)).should.not.match(/private|token|abc123|path|Bearer/);
         });
         it("AC-59: listeners that throw (instance:state, runtime-event) do not change the drain: it waits, ends and answers", async function() {

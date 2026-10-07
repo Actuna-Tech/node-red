@@ -608,6 +608,35 @@ describe("runtime/health shutdown (Z-08, D-11)", function() {
             stop.calledOnce.should.be.true();
             clock.countTimers().should.equal(0);
         });
+        it("REV-002 (R-22): a second shutdown() during the grace, with the drain on and an accepted request, skips the wait for the requests", async function() {
+            health.init({ shutdownTimeout: 5000, health: { enabled: true, unreadyGrace: 500 } });
+            enableDrain(3000);
+            request();
+            const first = start();
+            await clock.tickAsync(100);
+            stop.called.should.be.false();
+            const second = start();
+            second.should.equal(first);
+            await first;
+            stopTimes.should.eql([100]);
+            logsOf(log.info, "httpDrain.shutdown-waiting").should.eql([]);
+            shutdownLogs().should.eql([]);
+            clock.countTimers().should.equal(0);
+        });
+        it("REV-002 (R-22): the same during a hook that does not end", async function() {
+            health.init({ shutdownTimeout: 5000 });
+            enableDrain(3000);
+            hooks.add("preShutdown", function(payload) { return new Promise(() => {}) });
+            request();
+            const first = start();
+            await clock.tickAsync(100);
+            const second = start();
+            await first;
+            second.should.equal(first);
+            stopTimes.should.eql([100]);
+            logsOf(log.info, "httpDrain.shutdown-waiting").should.eql([]);
+            clock.countTimers().should.equal(0);
+        });
         it("AC-36: a request that is not accepted is not waited for", async function() {
             health.init({ shutdownTimeout: 5000 });
             enableDrain(1000);
