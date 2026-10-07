@@ -24,6 +24,8 @@
  *   event, I10, I13, I14, SEC-104(a); without a handler nothing is done (I1); the postDeploy hook (step 11):
  *   once per saved or reloaded configuration (I11, D18, D22/A31, D23, D24), the dictionary of start.status, I7
  *   #63: a handler added or removed during a deployment (after the gate, before step 3)
+ *   #84: an instance that is stopping refuses every deployment (503 runtime_stopping) at the entry, under the lock, after
+ *   step 3 and at step 4; a reload from storage whose reread ends in stopping is skipped
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -1349,6 +1351,342 @@ describe("flows/pipeline", function() {
                 instanceState.markReloadPending();
                 await pipeline.deploy({ type: "reload", source: "storage", reread: async () => ({ apply: { flows: [], rev: "B" }, reloadType: "full" }) });
                 flows.getFlows.called.should.be.false();
+            });
+        });
+    });
+    // #84 (S-1, S-2, D1, D2, D8): once the instance is stopping or stopped no deployment changes anything
+    describe("an instance that is stopping (#84)", function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const { hooks, log } = NR_TEST_UTILS.require("@node-red/util");
+        let logStubs;
+        let seen;
+        let offState;
+        let posts;
+        let preCalls;
+        let runtimeLog;
+        // the starts that a mock of setFlows holds the lock for: always released, also when a test fails
+        let heldStarts;
+        const flush = async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)) };
+        function deferred() {
+            let resolve;
+            const promise = new Promise(r => { resolve = r });
+            return { promise, resolve };
+        }
+        function init(extra) {
+            pipeline.init(Object.assign({ flows: flows, log: runtimeLog, settings: { deploy: { hookTimeout: 100 } } }, extra || {}));
+        }
+        beforeEach(function() {
+            instanceState.reset();
+            instanceState.markStarting();
+            instanceState.report({ errors: [] });
+            hooks.clear();
+            logStubs = [
+                sinon.stub(log, "_").callsFake(k => "[" + k + "]"),
+                sinon.stub(log, "warn"),
+                sinon.stub(log, "error"),
+                sinon.stub(log, "debug")
+            ];
+            runtimeLog = { _: k => "[" + k + "]", warn: sinon.stub(), error: sinon.stub(), info: sinon.stub(), debug: sinon.stub(), trace: sinon.stub(), audit: sinon.stub() };
+            seen = [];
+            offState = instanceState.onChange(info => seen.push(info.state));
+            posts = [];
+            preCalls = [];
+            heldStarts = [];
+            hooks.add("postDeploy.t84", function(event) { posts.push(event) });
+            init();
+        });
+        afterEach(function() {
+            heldStarts.forEach(release => release({ errors: [] }));
+            offState();
+            logStubs.forEach(s => s.restore());
+            hooks.clear();
+            instanceState.reset();
+        });
+        async function rejected(promise) {
+            try {
+                await promise;
+            } catch (err) {
+                return err;
+            }
+            throw new Error("the deployment was not rejected");
+        }
+        function assertRefused(err) {
+            err.should.have.property("code", "runtime_stopping");
+            err.should.have.property("status", 503);
+            // a constant catalogue text (I-7, D7)
+            err.message.should.equal("[api.flows.runtime-stopping]");
+        }
+        // nothing was read, saved, started or reported (I-3)
+        async function assertNoEffects() {
+            flows.setFlows.called.should.be.false();
+            flows.loadFlows.called.should.be.false();
+            flows.loadStoredCredentials.called.should.be.false();
+            if (flows.reloadFromStorage) {
+                flows.reloadFromStorage.called.should.be.false();
+            }
+            lock.isLocked().should.be.false();
+            await flush();
+            posts.should.have.length(0);
+        }
+        function goStopping(reason) {
+            instanceState.markStopping(reason || "SIGTERM");
+        }
+
+        const CALLS = {
+            full: opts => pipeline.deploy(Object.assign({ type: "full", source: "api", flows: { flows: [1, 2], credentials: {} } }, opts)),
+            nodes: opts => pipeline.deploy(Object.assign({ type: "nodes", source: "api", flows: { flows: [1, 2] } }, opts)),
+            flows: opts => pipeline.deploy(Object.assign({ type: "flows", source: "api", flows: { flows: [1, 2] } }, opts)),
+            reload: opts => pipeline.deploy(Object.assign({ type: "reload", source: "api" }, opts)),
+            load: opts => pipeline.deploy(Object.assign({ type: "load", source: "api", flows: { flows: [1] } }, opts))
+        };
+
+        describe("S-1: the entry of the pipeline", function() {
+            ["stop", "SIGTERM"].forEach(function(reason) {
+                Object.keys(CALLS).forEach(function(type) {
+                    [false, true].forEach(function(withHandler) {
+                        it("AC-1: type " + type + ", reason " + reason + (withHandler ? ", with a preDeploy handler" : "") + ": 503 runtime_stopping, nothing read, saved or started, no postDeploy, no handler call", async function() {
+                            if (withHandler) {
+                                hooks.add("preDeploy.t84", function(event) { preCalls.push(event) });
+                            }
+                            goStopping(reason);
+                            const before = seen.slice();
+                            const err = await rejected(CALLS[type]());
+                            assertRefused(err);
+                            await assertNoEffects();
+                            flows.readStoredFlows.called.should.be.false();
+                            preCalls.should.have.length(0);
+                            // no instance:state event of the refusal
+                            seen.should.eql(before);
+                            instanceState.get().state.should.equal("stopping");
+                        });
+                    });
+                });
+            });
+            it("AC-1: the same in the state stopped", async function() {
+                goStopping();
+                instanceState.markStopped();
+                for (const type of Object.keys(CALLS)) {
+                    assertRefused(await rejected(CALLS[type]()));
+                }
+                await assertNoEffects();
+                flows.readStoredFlows.called.should.be.false();
+                instanceState.get().state.should.equal("stopped");
+            });
+            it("AC-1 (E19): a deployment of the runtime itself (source internal, no req) is refused the same way", async function() {
+                goStopping();
+                assertRefused(await rejected(pipeline.deploy({ type: "full", source: "internal", flows: { flows: [1] } })));
+                assertRefused(await rejected(pipeline.deploy({ type: "reload", source: "internal" })));
+                await assertNoEffects();
+            });
+            it("AC-1: the single-flow entries (prepare and apply) are refused before prepare runs", async function() {
+                goStopping();
+                const prepare = sinon.spy(async () => ({ config: [] }));
+                const apply = sinon.spy(async () => "id");
+                assertRefused(await rejected(pipeline.deploy({ type: "flows", source: "api", operation: "addFlow", prepare: prepare, apply: apply })));
+                prepare.called.should.be.false();
+                apply.called.should.be.false();
+                await assertNoEffects();
+            });
+            it("AC-1: the body is not read: a Proxy, a throwing getter and toJSON are never touched", async function() {
+                goStopping();
+                let touched = 0;
+                const trap = () => { touched++; throw new Error("the body was read") };
+                const hostile = [
+                    new Proxy({}, { get: trap, has: trap, getOwnPropertyDescriptor: trap, ownKeys: trap }),
+                    { get flows() { touched++; throw new Error("the body was read") }, get rev() { touched++; throw new Error("the body was read") }, toJSON: trap }
+                ];
+                for (const body of hostile) {
+                    assertRefused(await rejected(pipeline.deploy({ type: "full", source: "api", flows: body })));
+                }
+                touched.should.equal(0);
+                await assertNoEffects();
+            });
+            it("AC-1: without a refusal the same calls deploy (the refusal is only for a stopping instance)", async function() {
+                for (const type of ["full", "nodes", "flows", "reload", "load"]) {
+                    const result = await CALLS[type]();
+                    result.should.have.property("rev");
+                }
+            });
+            ["idle", "failed", "loaded", "reloadPending"].forEach(function(name) {
+                it("AC-22 (V1): in the state " + name + " a deployment goes through", async function() {
+                    instanceState.reset();
+                    instanceState.markStarting();
+                    if (name === "idle") {
+                        instanceState.report({ flowsRunning: false, reason: "set-state" });
+                    } else if (name === "failed") {
+                        instanceState.fail(new Error("x"));
+                    } else if (name === "loaded") {
+                        instanceState.report({ flowsRunning: false, reason: "editor-only" });
+                    } else {
+                        instanceState.report({ errors: [] });
+                        instanceState.markReloadPending();
+                    }
+                    instanceState.get().state.should.equal(name);
+                    (await CALLS.full()).should.eql({ rev: "newRev" });
+                });
+            });
+        });
+
+        describe("D8: the refusal wins over the checks of step 2 and over the hook", function() {
+            it("AC-1: a revision that does not match (would be 409) and a missing revision with requireRevision", async function() {
+                goStopping();
+                assertRefused(await rejected(pipeline.deploy({ type: "full", flows: { flows: [1], rev: "otherRev" } })));
+                assertRefused(await rejected(pipeline.deploy({ type: "full", flows: { flows: [1] }, requireRevision: true })));
+                assertRefused(await rejected(pipeline.deploy({ type: "full", flows: { flows: [1] }, requireRevision: true, apiVersion: "v1" })));
+                await assertNoEffects();
+            });
+            it("AC-2: prepare errors (404, 400, 409 version_mismatch) and a rejecting preDeploy handler lose against the refusal", async function() {
+                goStopping();
+                hooks.add("preDeploy.t84", function(event) { preCalls.push(event); throw Object.assign(new Error("no"), { code: "deploy_rejected", status: 400 }) });
+                for (const code of [404, 400, "version_mismatch"]) {
+                    const prepare = sinon.spy(async () => { throw Object.assign(new Error("prepare"), { code: code, status: typeof code === "number" ? code : 409 }) });
+                    const apply = sinon.spy(async () => "id");
+                    assertRefused(await rejected(pipeline.deploy({ type: "flows", source: "api", operation: "updateFlow", prepare: prepare, apply: apply })));
+                    prepare.called.should.be.false();
+                    apply.called.should.be.false();
+                }
+                preCalls.should.have.length(0);
+                await assertNoEffects();
+            });
+        });
+
+        describe("V3: the instance enters stopping while the deployment waits for the lock", function() {
+            it("AC-1: the refusal is given before the lock is waited for - a long start that holds the lock does not delay the answer", async function() {
+                const hold = deferred();
+                const holding = lock.runExclusive(() => hold.promise);
+                try {
+                    goStopping();
+                    const request = pipeline.deploy({ type: "full", flows: { flows: [1] } });
+                    const outcome = await Promise.race([request.then(() => "resolved", err => err), new Promise(r => setTimeout(() => r("waiting"), 150))]);
+                    outcome.should.not.equal("waiting", "the deployment waits for the lock instead of being refused");
+                    assertRefused(outcome);
+                } finally {
+                    hold.resolve();
+                    await holding;
+                }
+                await assertNoEffects();
+            });
+            it("AC-5: two deployments queued behind a held start are refused in order when the instance stops; the first one is not repeated", async function() {
+                let finishStart;
+                flows.setFlows = sinon.spy(async function(config) {
+                    calls.push({ fn: "setFlows:" + config[0] });
+                    if (config[0] === "first") {
+                        lock.holdUntil(new Promise(resolve => { finishStart = resolve; heldStarts.push(resolve) }));
+                    }
+                    return "rev" + calls.length;
+                });
+                const first = pipeline.deploy({ type: "full", flows: { flows: ["first"] } });
+                (await first).should.eql({ rev: "rev1" });
+                const order = [];
+                const second = pipeline.deploy({ type: "full", flows: { flows: ["second"] } }).then(() => order.push("second:ok"), err => order.push("second:" + err.code));
+                const third = pipeline.deploy({ type: "full", flows: { flows: ["third"] } }).then(() => order.push("third:ok"), err => order.push("third:" + err.code));
+                await new Promise(r => setTimeout(r, 20));
+                order.should.eql([]);
+                goStopping();
+                finishStart({ errors: [] });
+                await Promise.all([second, third]);
+                order.should.eql(["second:runtime_stopping", "third:runtime_stopping"]);
+                calls.map(c => c.fn).should.eql(["setFlows:first"]);
+                lock.isLocked().should.be.false();
+                instanceState.get().state.should.equal("stopping");
+            });
+        });
+
+        describe("V4, V5, H2: the instance enters stopping during the deployment", function() {
+            ["full", "reload"].forEach(function(type) {
+                it("AC-4: a preDeploy handler that stops the instance and then accepts: " + type + " is refused, nothing saved, the request settles", async function() {
+                    hooks.add("preDeploy.t84", function() { instanceState.markStopping("SIGTERM") });
+                    const outcome = await Promise.race([rejected(CALLS[type]()), new Promise(r => setTimeout(() => r("hang"), 1000))]);
+                    outcome.should.not.equal("hang");
+                    assertRefused(outcome);
+                    flows.setFlows.called.should.be.false();
+                    flows.loadFlows.called.should.be.false();
+                    // the credentials of a reload are loaded in step 3a, after the hook
+                    flows.loadStoredCredentials.called.should.be.false();
+                    lock.isLocked().should.be.false();
+                    await flush();
+                    posts.should.have.length(0);
+                    instanceState.get().state.should.equal("stopping");
+                });
+            });
+            it("AC-1: stopping begins during step 2 (the read of storage of a reload), without a handler: refused before step 3a", async function() {
+                flows.readStoredFlows = sinon.spy(async function() { instanceState.markStopping("SIGTERM"); return loadedConfig });
+                assertRefused(await rejected(CALLS.reload()));
+                flows.loadStoredCredentials.called.should.be.false();
+                flows.loadFlows.called.should.be.false();
+                lock.isLocked().should.be.false();
+            });
+            it("AC-4 (V5): stopping begins during step 3a (the credentials load): refused at step 4, nothing deployed", async function() {
+                flows.loadStoredCredentials = sinon.spy(async function(config) { instanceState.markStopping("SIGTERM"); return config });
+                assertRefused(await rejected(CALLS.reload()));
+                flows.loadFlows.called.should.be.false();
+                flows.setFlows.called.should.be.false();
+                lock.isLocked().should.be.false();
+                await flush();
+                posts.should.have.length(0);
+            });
+            it("AC-4: stopping begins during the prepare step of a single-flow entry: refused, apply not called", async function() {
+                const apply = sinon.spy(async () => "id");
+                const err = await rejected(pipeline.deploy({ type: "flows", source: "api", operation: "addFlow",
+                    prepare: async () => { instanceState.markStopping("SIGTERM"); return { config: [] } }, apply: apply }));
+                assertRefused(err);
+                apply.called.should.be.false();
+            });
+        });
+
+        describe("S-2: a reload from storage whose reread ends in stopping", function() {
+            beforeEach(function() {
+                flows.reloadFromStorage = sinon.spy(async function(loaded) { lock.holdUntil(Promise.resolve({ errors: [] })); return loaded.rev });
+                init();
+            });
+            it("AC-14: pipeline.deploy resolves {skipped: 'stopping'} - no reload, no postDeploy, no failure, the state stays stopping", async function() {
+                instanceState.markReloadPending();
+                let rereads = 0;
+                const result = await pipeline.deploy({ type: "reload", source: "storage", reread: async function() {
+                    rereads++;
+                    instanceState.markStopping("SIGTERM");
+                    return { apply: { flows: [], rev: "B" }, reloadType: "full", credentialsChanged: false };
+                } });
+                result.should.eql({ skipped: "stopping" });
+                rereads.should.equal(1);
+                flows.reloadFromStorage.called.should.be.false();
+                flows.loadFlows.called.should.be.false();
+                lock.isLocked().should.be.false();
+                await flush();
+                posts.should.have.length(0);
+                instanceState.get().state.should.equal("stopping");
+            });
+            it("AC-14: a reread that does not apply is returned as before (no 'stopping' without a stop)", async function() {
+                instanceState.markReloadPending();
+                const result = await pipeline.deploy({ type: "reload", source: "storage", reread: async () => ({ skip: "unchanged" }) });
+                result.should.eql({ skipped: { skip: "unchanged" } });
+            });
+        });
+
+        describe("AC-27: the guards ask isStopping()", function() {
+            let stub;
+            afterEach(function() {
+                if (stub) {
+                    stub.restore();
+                }
+            });
+            it("AC-27: a stub of isStopping() that returns true refuses the deployment while the state text is unchanged", async function() {
+                should(typeof instanceState.isStopping).equal("function", "state.isStopping is not exported");
+                stub = sinon.stub(instanceState, "isStopping").returns(true);
+                const err = await rejected(CALLS.full());
+                assertRefused(err);
+                stub.called.should.be.true();
+                instanceState.get().state.should.equal("ready");
+                flows.setFlows.called.should.be.false();
+            });
+            it("AC-27: a stub that turns true only after step 3 (the guard after the hook) refuses at that point", async function() {
+                should(typeof instanceState.isStopping).equal("function", "state.isStopping is not exported");
+                let hookDone = false;
+                hooks.add("preDeploy.t84", function() { hookDone = true });
+                stub = sinon.stub(instanceState, "isStopping").callsFake(() => hookDone);
+                assertRefused(await rejected(CALLS.full()));
+                flows.setFlows.called.should.be.false();
+                hookDone.should.be.true();
             });
         });
     });

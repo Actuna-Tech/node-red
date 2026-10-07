@@ -18,6 +18,7 @@
  *   E-02: tests of the instance state module
  *   #1 (R-47): tests of the condition `reload`
  *   #76: a listener of the state that throws a value without text or that cannot be printed
+ *   #84: isStopping() - false in every state before stopping, true in stopping and stopped (AC-27)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -624,6 +625,70 @@ describe("runtime/state (E-02)", function() {
             state.markReloadFailed(FAILED);
             state.reset();
             state.get().should.not.have.property("reload");
+        });
+    });
+    // #84 (S-10, AC-27): the one question "has the instance started to stop?" - the guards of the
+    // deployments, of the start and of the stop of the flows ask it, none compares the state text
+    describe("isStopping (#84, AC-27)", function() {
+        it("AC-27: is exported as a function", function() {
+            should(typeof state.isStopping).equal("function", "state.isStopping is not exported");
+        });
+        // [description, how the state is reached, the expected state]
+        const resting = [
+            ["init", function() {}, "init"],
+            ["starting", function() { state.markStarting() }, "starting"],
+            ["ready", function() { toReady() }, "ready"],
+            ["deploying", function() { toReady(); state.begin("deploy") }, "deploying"],
+            ["reloadPending", function() { toReady(); state.markReloadPending() }, "reloadPending"],
+            ["reloadPending (draining)", function() { toReady(); state.markReloadPending(); state.markDraining() }, "reloadPending"],
+            ["reloading", function() { toReady(); state.markReloadPending(); state.begin("reload") }, "reloading"],
+            ["idle", function() { state.markStarting(); state.report({ flowsRunning: false, reason: "set-state" }) }, "idle"],
+            ["loaded", function() { state.markStarting(); state.report({ flowsRunning: false, reason: "editor-only" }) }, "loaded"],
+            ["failed", function() { state.markStarting(); state.fail(new Error("x")) }, "failed"]
+        ];
+        resting.forEach(function(c) {
+            it("AC-27: is false in " + c[0], function() {
+                c[1]();
+                state.get().state.should.equal(c[2]);
+                should(typeof state.isStopping).equal("function", "state.isStopping is not exported");
+                state.isStopping().should.be.false();
+            });
+        });
+        it("AC-27: is true in stopping and in stopped, whatever the reason", function() {
+            ["stop", "SIGTERM", "shutdown", "startup-error"].forEach(function(reason) {
+                state.reset();
+                toReady();
+                state.markStopping(reason);
+                state.get().state.should.equal("stopping");
+                state.isStopping().should.be.true();
+                state.markStopped();
+                state.get().state.should.equal("stopped");
+                state.isStopping().should.be.true();
+            });
+        });
+        it("AC-27: is true when the instance stops from init and from a running operation", function() {
+            state.markStopping("stop");
+            state.isStopping().should.be.true();
+            state.reset();
+            toReady();
+            state.begin("deploy");
+            state.isStopping().should.be.false();
+            state.markStopping("SIGTERM");
+            state.isStopping().should.be.true();
+        });
+        it("AC-27: reset() makes it false again", function() {
+            toReady();
+            state.markStopping("stop");
+            state.reset();
+            state.isStopping().should.be.false();
+        });
+        it("AC-27: answers like the final state of begin(): begin() is refused exactly when it is true", function() {
+            toReady();
+            should(state.begin("deploy")).not.be.null();
+            state.isStopping().should.be.false();
+            state.markStopping("SIGTERM");
+            should(state.begin("deploy")).be.null();
+            state.isStopping().should.be.true();
         });
     });
 });

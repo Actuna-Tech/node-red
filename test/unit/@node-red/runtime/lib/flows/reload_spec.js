@@ -48,6 +48,7 @@
  *   #61: test of a preReload handler that rejects without a value
  *   #76: the report of an error that has no text or cannot be printed (unwatch, registration, read of storage,
  *   slots, preReload hook) does not throw
+ *   #84: a reload whose reread ends in stopping changes nothing and ends the cycle quietly (no failure, no extra round)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -3568,6 +3569,87 @@ describe("flows/reload (Z-09)", function() {
                     env.logs.error.filter(m => m.indexOf("reload.hook-failed") === 0).should.eql(["reload.hook-failed " + JSON.stringify({ message: v.message })]);
                 });
             });
+        });
+    });
+    // #84 (S-2, AC-14, B3): the reread under the deploy lock completes after the instance started to stop
+    describe("a reload that meets the stop (#84, AC-14)", function() {
+        const failures = () => env.logs.warn.concat(env.logs.error).filter(m => /^reload\.(read-failed|failed|still-failing|retries-exhausted|keep-ready|not-kept-ready|stale)/.test(m));
+        let hook;
+        beforeEach(function() {
+            hook = { callCount: 0 };
+            hooks.add("preReload", p => { hook.callCount++ });
+        });
+
+        it("AC-14: the stop begins while the reread reads storage: nothing is stopped, started or loaded, no failure, no extra round, the state stays stopping", async function() {
+            env = createEnv({ reload: { type: "diff" } });
+            await env.start();
+            const read = env.storage.getFlows;
+            env.storage.getFlows = async function(readOpts) {
+                const result = await read(readOpts);
+                if (env.getFlowsCalls === 2) {
+                    // the reread under the lock (the second read of the cycle) completes in stopping
+                    state.markStopping("SIGTERM");
+                }
+                return result;
+            };
+            env.change("B");
+            env.notify({ rev: "B" });
+            await waitFor(() => env.getFlowsCalls >= 2, 1000, "the reread did not run");
+            await delay(120);
+            env.flows.reloadFromStorage.called.should.be.false();
+            env.applied.should.have.length(0);
+            env.runtime.flows.credentialsChanged.callCount.should.be.below(3);
+            // one preReload round only, no second read
+            hook.callCount.should.equal(1);
+            env.getFlowsCalls.should.equal(2);
+            failures().should.eql([]);
+            env.logs.info.filter(m => m.indexOf("reload.reloaded") === 0).should.eql([]);
+            env.audits.filter(a => a.event === "flows.reload").should.eql([]);
+            state.get().state.should.equal("stopping");
+            state.get().should.not.have.property("reload");
+            lock.isLocked().should.be.false();
+        });
+
+        [
+            { name: "full", reload: { type: "full" } },
+            { name: "diff", reload: { type: "diff" } }
+        ].forEach(function(v) {
+            it("AC-14: reload.js ends the cycle quietly on {skipped: 'stopping'} (" + v.name + "): one call of the pipeline, one preReload, no markReloadFailed, no failure log, no audit", async function() {
+                env = createEnv({ reload: v.reload });
+                const deploy = sinon.stub(pipeline, "deploy").callsFake(async function(opts) {
+                    // the reread decides to apply; the pipeline meets the stop in step 4
+                    await opts.reread();
+                    return { skipped: "stopping" };
+                });
+                const failed = sinon.spy(state, "markReloadFailed");
+                try {
+                    await env.start();
+                    env.change("B");
+                    env.notify({ rev: "B" });
+                    await waitFor(() => deploy.callCount >= 1, 1000, "the pipeline was not called");
+                    await delay(150);
+                    deploy.callCount.should.equal(1);
+                    hook.callCount.should.equal(1);
+                    failed.called.should.be.false();
+                    failures().should.eql([]);
+                    env.logs.info.filter(m => m.indexOf("reload.reloaded") === 0).should.eql([]);
+                    env.audits.filter(a => a.event === "flows.reload").should.eql([]);
+                    env.applied.should.have.length(0);
+                } finally {
+                    deploy.restore();
+                    failed.restore();
+                }
+            });
+        });
+
+        it("AC-14 (off): without a stop the same cycle reloads (the skipped value is only for stopping)", async function() {
+            env = createEnv({ reload: { type: "diff" } });
+            await env.start();
+            env.change("B");
+            env.notify({ rev: "B" });
+            await waitFor(() => env.applied.length === 1 && state.get().state === "ready");
+            hook.callCount.should.equal(1);
+            failures().should.eql([]);
         });
     });
 });

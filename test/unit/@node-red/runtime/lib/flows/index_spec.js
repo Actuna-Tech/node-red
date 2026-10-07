@@ -35,6 +35,8 @@
  *   readStoredFlows/loadStoredCredentials (the halves of readFlowsFromStorage, D15, A32)
  *   #63: load(true), the project switch path, does not call preDeploy or postDeploy handlers (I8 of #10)
  *   #82: the tests of the stop with the drain leave no flow objects (stubs) in the module for the specs that run later; checkTypeInUse refuses the removal and the disabling of node types during a drain stop (409)
+ *   #84: the start guard (no flow is created or started in stopping and stopped, by any caller) and the complete stop
+ *   (a stop in stopping waits for the stop and for the flow that is starting, then stops every flow)
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 
@@ -50,6 +52,7 @@ var events = NR_TEST_UTILS.require("@node-red/util/lib/events");
 var credentials = NR_TEST_UTILS.require("@node-red/runtime/lib/nodes/credentials");
 var typeRegistry = NR_TEST_UTILS.require("@node-red/registry")
 var Flow = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/Flow");
+const { createWorld, deferred: worldDeferred, delay: worldDelay, flush: worldFlush, settle } = require("nr-test-utils/stop-race-world");
 
 describe('flows/index', function() {
 
@@ -2706,6 +2709,497 @@ describe('flows/index', function() {
                 httpDrain.finalize();
                 request.res.statusCode.should.equal(503);
                 instanceState.end(token, { errors: [] });
+            });
+        });
+    });
+    // #84 (S-4, S-6, S-7, D3, D4, D5, D6): the start guard and the complete stop of the flows module, with the fake flows
+    describe('stopping instance: the start guard and the complete stop (#84)', function() {
+        const instanceState = NR_TEST_UTILS.require("@node-red/runtime/lib/state");
+        const httpDrain = NR_TEST_UTILS.require("@node-red/runtime/lib/httpDrain");
+        const lock = NR_TEST_UTILS.require("@node-red/runtime/lib/flows/lock");
+        const SKIPPED = "nodes.flows.start-skipped-stopping";
+        const CONFIG = [
+            {id:"A",type:"tab"}, {id:"a1",type:"test",z:"A",wires:[]},
+            {id:"B",type:"tab"}, {id:"b1",type:"test",z:"B",wires:[]}
+        ];
+        const CONFIG3 = CONFIG.concat([{id:"C",type:"tab"}, {id:"c1",type:"test",z:"C",wires:[]}]);
+        const PARTIAL = {added:[],changed:["b1"],removed:[],rewired:[],linked:[],flowChanged:[]};
+        let world;
+        let keyLog;
+        let settingsObject;
+        let seen;
+        let gates;
+        let drainStubs;
+        let listeners;
+        const defaultDependencies = async function(flow) {
+            if (flow[0].id === "node-with-missing-modules") {
+                throw new Error("Missing module");
+            }
+        };
+
+        function listen(name, fn) {
+            events.on(name, fn);
+            listeners.push([name, fn]);
+        }
+        function gate() {
+            const g = worldDeferred();
+            gates.push(g);
+            return g;
+        }
+        function infoCount(key) {
+            return keyLog.info.args.filter(a => a[0] === key).length;
+        }
+        // the module initialised, the configuration loaded, the flows not started
+        async function boot(settings, config) {
+            // the stub of the outer beforeEach is replaced by the world's
+            flowCreate.restore();
+            world = createWorld(Flow, sinon);
+            settingsObject = settings || {};
+            storage.getFlows = function() {
+                return Promise.resolve({flows:clone(config||CONFIG), rev:"loadedRev"});
+            };
+            flows.init({log:keyLog, settings:settingsObject, storage:storage});
+            instanceState.reset();
+            instanceState.markStarting();
+            await flows.load();
+        }
+        async function bootAndStart(settings, config) {
+            await boot(settings, config);
+            await flows.startFlows();
+            await worldFlush();
+            seen.length = 0;
+        }
+
+        beforeEach(function() {
+            keyLog = {
+                log: sinon.stub(), debug: sinon.stub(), trace: sinon.stub(), warn: sinon.stub(), info: sinon.stub(), metric: sinon.stub(),
+                _: function(key, params) { return params ? key + " " + JSON.stringify(params) : key }
+            };
+            seen = [];
+            gates = [];
+            drainStubs = [];
+            listeners = [];
+            ["flows:starting", "flows:started", "flows:stopping", "flows:stopped", "nodes-started", "nodes-stopped"].forEach(name => listen(name, () => seen.push(name)));
+            listen("runtime-event", function(event) {
+                if (event && event.id === "runtime-state") {
+                    seen.push("runtime-state" + (event.payload && event.payload.state ? ":" + event.payload.state : ""));
+                }
+            });
+        });
+        afterEach(async function() {
+            world.releaseAll();
+            gates.forEach(g => g.resolve());
+            await worldDelay(30);
+            world.closeFail = {};
+            world.closeGate = {};
+            drainStubs.forEach(stub => stub.restore());
+            httpDrain.dispose();
+            listeners.forEach(l => events.removeListener(l[0], l[1]));
+            checkFlowDependencies.callsFake(defaultDependencies);
+            instanceState.reset();
+            // a configuration without missing types, started and stopped completely: the fakes of this test must
+            // not stay in the module for the specs that run later
+            delete settingsObject.safeMode;
+            delete settingsObject.get;
+            delete settingsObject.nodeCloseTimeout;
+            storage.getFlows = function() { return Promise.resolve({flows:clone(CONFIG), rev:"cleanRev"}) };
+            try {
+                await flows.load();
+                await flows.startFlows();
+                await flows.stopFlows("full");
+            } finally {
+                world.restore();
+            }
+            await flows.load();
+            instanceState.reset();
+        });
+
+        describe('D4, AC-18: a start in stopping and stopped', function() {
+            function assertSkipped(result) {
+                result.should.have.property("flowsRunning", false);
+                result.should.have.property("reason", "stopping");
+                result.errors.should.have.length(1);
+                result.errors[0].should.have.property("code", "runtime_stopping");
+                result.errors[0].should.have.property("message", SKIPPED);
+            }
+            function assertNothingStarted() {
+                world.created.should.eql([]);
+                world.starts.should.eql([]);
+                flows.started.should.be.false();
+                flows.state().should.equal("stop");
+                seen.filter(e => e !== "flows:stopping" && e !== "flows:stopped").should.eql([]);
+            }
+            ["stopping", "stopped"].forEach(function(name) {
+                it('AC-18: in ' + name + ' startFlows() returns the skipped result, creates no flow, emits nothing and logs once', async function() {
+                    await boot();
+                    instanceState.markStopping("SIGTERM");
+                    if (name === "stopped") {
+                        instanceState.markStopped();
+                    }
+                    const result = await flows.startFlows();
+                    assertSkipped(result);
+                    assertNothingStarted();
+                    infoCount(SKIPPED).should.equal(1);
+                    keyLog.warn.called.should.be.false();
+                });
+            });
+            it('AC-18: a start with safe mode on returns the skipped result and emits no safe-mode or runtime-state event', async function() {
+                await boot({safeMode: true});
+                instanceState.markStopping("SIGTERM");
+                assertSkipped(await flows.startFlows());
+                assertNothingStarted();
+                keyLog.info.args.map(a => a[0]).join("|").should.not.containEql("safe-mode");
+            });
+            it('AC-18: a start with runtimeFlowState stop returns the skipped result and emits no runtime-state event', async function() {
+                await boot({get: function(prop) { return prop === "runtimeFlowState" ? "stop" : undefined }});
+                instanceState.markStopping("SIGTERM");
+                assertSkipped(await flows.startFlows());
+                assertNothingStarted();
+                keyLog.info.args.map(a => a[0]).join("|").should.not.containEql("stopped-flows");
+            });
+            it('AC-18: a start with missing types returns the skipped result and emits no missing-types event', async function() {
+                await boot({}, [{id:"A",type:"tab"}, {id:"m1",type:"missing",z:"A",wires:[]}]);
+                instanceState.markStopping("SIGTERM");
+                assertSkipped(await flows.startFlows());
+                assertNothingStarted();
+                keyLog.info.args.map(a => a[0]).join("|").should.not.containEql("missing-types");
+            });
+            it('AC-18 (off): outside stopping the same starts do what they did (the skipped result is only for stopping)', async function() {
+                await boot();
+                const result = await flows.startFlows();
+                result.should.eql({errors: []});
+                world.created.should.not.eql([]);
+                flows.started.should.be.true();
+            });
+            it('AC-27: a stub of isStopping() that returns true skips the start while the state text is starting', async function() {
+                await boot();
+                should(typeof instanceState.isStopping).equal("function", "state.isStopping is not exported");
+                const stub = sinon.stub(instanceState, "isStopping").returns(true);
+                try {
+                    assertSkipped(await flows.startFlows());
+                    instanceState.get().state.should.equal("starting");
+                    assertNothingStarted();
+                } finally {
+                    stub.restore();
+                }
+            });
+        });
+
+        describe('D6, AC-17: a node type registered while the instance is stopping', function() {
+            const MISSING = [{id:"A",type:"tab"}, {id:"m1",type:"missing",z:"A",wires:[]}];
+            it('AC-17: the last missing type arrives in stopping: no start, no runtime-state event, one debug log', async function() {
+                await boot({}, MISSING);
+                const result = await flows.startFlows();
+                result.errors[0].should.have.property("code", "missing_types");
+                seen.length = 0;
+                instanceState.markStopping("SIGTERM");
+                events.emit("type-registered", "missing");
+                await worldFlush();
+                world.created.should.eql([]);
+                seen.should.eql([]);
+                keyLog.debug.args.filter(a => a[0] === SKIPPED).should.have.length(1);
+                infoCount(SKIPPED).should.equal(0);
+                flows.started.should.be.true();
+            });
+            it('AC-17 (off): without stopping the same registration starts the flows', async function() {
+                await boot({}, MISSING);
+                await flows.startFlows();
+                seen.length = 0;
+                events.emit("type-registered", "missing");
+                await worldFlush();
+                world.created.should.not.eql([]);
+                seen.should.containEql("runtime-state");
+            });
+            it('AC-27: a stub of isStopping() that returns true skips the late start', async function() {
+                await boot({}, MISSING);
+                await flows.startFlows();
+                seen.length = 0;
+                should(typeof instanceState.isStopping).equal("function", "state.isStopping is not exported");
+                const stub = sinon.stub(instanceState, "isStopping").returns(true);
+                try {
+                    events.emit("type-registered", "missing");
+                    await worldFlush();
+                    world.created.should.eql([]);
+                    seen.should.eql([]);
+                } finally {
+                    stub.restore();
+                }
+            });
+        });
+
+        describe('E13, AC-15: load(true) - the project switch and the reload', function() {
+            it('AC-15: in stopping load(true) resolves with the revision and creates no flow', async function() {
+                await boot();
+                instanceState.markStopping("SIGTERM");
+                const rev = await flows.load(true);
+                rev.should.equal("loadedRev");
+                world.created.should.eql([]);
+                flows.started.should.be.false();
+                flows.state().should.equal("stop");
+            });
+            it('AC-15 (off): outside stopping load(true) starts the flows', async function() {
+                await boot();
+                await flows.load(true);
+                world.created.should.not.eql([]);
+                flows.started.should.be.true();
+            });
+            it('AC-15: a project switch that races the stop leaves no flow running after the stop', async function() {
+                await bootAndStart();
+                const base = world.created.length;
+                world.closeGate.b1 = worldDeferred();
+                // what the project switch does under the lock: stop the flows, load the flows of the project and start them
+                const switching = lock.runExclusive(async function() {
+                    await flows.stopFlows();
+                    await flows.load(true);
+                });
+                await worldFlush();
+                world.closeCalls.b1.should.equal(1);
+                instanceState.markStopping("SIGTERM");
+                const stopped = flows.stopFlows();
+                await worldDelay(30);
+                world.closeGate.b1.resolve();
+                (await settle(stopped)).state.should.equal("resolved");
+                (await settle(switching)).state.should.equal("resolved");
+                await worldDelay(100);
+                world.created.length.should.equal(base, "the switched project was started in stopping");
+                world.liveIds().should.eql([]);
+                flows.started.should.be.false();
+                flows.state().should.equal("stop");
+            });
+        });
+
+        describe('D4, V9, AC-11: a start that waits for its modules', function() {
+            it('AC-11: runtime stop resolves while the modules are pending; when they arrive no flow is created and started is false', async function() {
+                await boot();
+                const modules = gate();
+                checkFlowDependencies.callsFake(async function() { await modules.promise });
+                const starting = flows.startFlows();
+                await worldFlush();
+                instanceState.markStopping("SIGTERM");
+                const stopped = flows.stopFlows();
+                // never for a module install
+                (await settle(stopped, 1000)).state.should.equal("resolved");
+                modules.resolve();
+                await settle(starting);
+                await worldDelay(100);
+                world.created.should.eql([], "Flow.create was called after the stop");
+                seen.should.not.containEql("flows:started");
+                seen.should.not.containEql("nodes-started");
+                flows.started.should.be.false("started is true after the late checkpoint");
+                flows.state().should.equal("stop");
+            });
+        });
+
+        describe('D4, V10, AC-12: a start that waits for a flow', function() {
+            it('AC-12: runtime stop does not resolve before the flow that is starting; no further flow is started; every created flow is stopped', async function() {
+                await boot({}, CONFIG3);
+                world.firstStartGate = worldDeferred();
+                const starting = flows.startFlows();
+                await worldFlush();
+                world.starts.should.eql(["global"]);
+                instanceState.markStopping("SIGTERM");
+                const stopped = flows.stopFlows();
+                (await settle(stopped, 150)).state.should.equal("timeout", "the stop did not wait for the flow that is starting");
+                world.starts.should.eql(["global"]);
+                world.firstStartGate.resolve();
+                (await settle(stopped)).state.should.equal("resolved");
+                await settle(starting);
+                await worldDelay(100);
+                world.starts.should.eql(["global"], "a further flow was started in stopping");
+                world.created.length.should.be.above(0);
+                world.liveIds().should.eql([]);
+                flows.started.should.be.false("started is true after the late checkpoint");
+                flows.state().should.equal("stop");
+            });
+        });
+
+        describe('N-1, H7, AC-26: a start that never ends', function() {
+            it('AC-26: with nodeCloseTimeout 200 the stop resolves after about 200 ms, one warning names the flow, the flow is stopped, no further flow is started', async function() {
+                await boot({nodeCloseTimeout: 200}, CONFIG3);
+                world.startHangs.global = true;
+                const starting = flows.startFlows();
+                await worldFlush();
+                world.starts.should.eql(["global"]);
+                instanceState.markStopping("SIGTERM");
+                const began = Date.now();
+                const stopped = flows.stopFlows();
+                (await settle(stopped, 150)).state.should.equal("timeout", "the stop did not wait for the flow that is starting");
+                const outcome = await settle(stopped, 1500);
+                outcome.state.should.equal("resolved");
+                const elapsed = Date.now() - began;
+                elapsed.should.be.within(190, 1200);
+                const warnings = keyLog.warn.args.filter(a => /nodes\.flows\.start-wait-timeout/.test(a[0]));
+                warnings.should.have.length(1);
+                warnings[0][0].should.containEql("global");
+                world.stopCalls.map(c => c.flow).should.containEql("global");
+                world.starts.should.eql(["global"]);
+                world.liveIds().should.eql([]);
+                world.releaseAll();
+                await settle(starting);
+                await worldDelay(100);
+                world.starts.should.eql(["global"], "a further flow was started after the bound");
+                flows.started.should.be.false();
+            });
+        });
+
+        describe('D5, S-6: the stop in stopping', function() {
+            it('AC-19: waits for a stop in progress (drain off) and resolves after the nodes closed', async function() {
+                await bootAndStart();
+                world.closeGate.b1 = worldDeferred();
+                const first = flows.stopFlows();
+                await worldFlush();
+                world.closeCalls.b1.should.equal(1);
+                instanceState.markStopping("SIGTERM");
+                const second = flows.stopFlows();
+                (await settle(second, 150)).state.should.equal("timeout", "the stop did not wait for the stop in progress");
+                world.closeGate.b1.resolve();
+                (await settle(second)).state.should.equal("resolved");
+                world.closed.should.containEql("b1");
+                await first;
+                world.closedTwice().should.eql([]);
+                world.liveIds().should.eql([]);
+            });
+            it('S-6: stops every flow that exists, also when started is false (a partial stop left flow A)', async function() {
+                await bootAndStart();
+                await flows.stopFlows("nodes", PARTIAL);
+                flows.started.should.be.false();
+                world.live().map(f => f.id).should.containEql("A");
+                instanceState.markStopping("SIGTERM");
+                await flows.stopFlows();
+                world.liveIds().should.eql([]);
+                (world.closeCalls.a1 || 0).should.equal(1);
+                (world.closeCalls.b1 || 0).should.equal(1);
+                flows.started.should.be.false();
+                flows.state().should.equal("stop");
+            });
+            it('S-6 (drain on): a partial stop left flow A: the stop in stopping stops it too', async function() {
+                await bootAndStart();
+                drainStubs.push(
+                    sinon.stub(httpDrain, "isEnabled").returns(true),
+                    sinon.stub(httpDrain, "beforeStop").callsFake(async function() {}),
+                    sinon.stub(httpDrain, "afterStop").callsFake(function() {})
+                );
+                await flows.stopFlows("nodes", PARTIAL);
+                flows.started.should.be.false();
+                instanceState.markStopping("SIGTERM");
+                await flows.stopFlows();
+                world.liveIds().should.eql([]);
+                (world.closeCalls.a1 || 0).should.equal(1);
+            });
+            it('S-6 (drain on): waits for the stop in progress (stopInProgress) and for its nodes', async function() {
+                await bootAndStart();
+                const requests = gate();
+                drainStubs.push(
+                    sinon.stub(httpDrain, "isEnabled").returns(true),
+                    sinon.stub(httpDrain, "beforeStop").callsFake(async function() { await requests.promise }),
+                    sinon.stub(httpDrain, "afterStop").callsFake(function() {}),
+                    sinon.stub(httpDrain, "abortWait").callsFake(function() { requests.resolve() })
+                );
+                world.closeGate.b1 = worldDeferred();
+                const first = flows.stopFlows();
+                await worldFlush();
+                instanceState.markStopping("SIGTERM");
+                const second = flows.stopFlows();
+                // the wait for the requests ends with the stop of RED.stop; the nodes are closing
+                await worldDelay(50);
+                world.closeCalls.b1.should.equal(1);
+                (await settle(second, 150)).state.should.equal("timeout");
+                world.closeGate.b1.resolve();
+                (await settle(second)).state.should.equal("resolved");
+                await settle(first);
+                world.closedTwice().should.eql([]);
+                world.liveIds().should.eql([]);
+            });
+            it('I-4: it never takes the deploy lock: a held lock does not delay the stop', async function() {
+                await bootAndStart();
+                const held = gate();
+                const holding = lock.runExclusive(() => held.promise);
+                instanceState.markStopping("SIGTERM");
+                (await settle(flows.stopFlows(), 1000)).state.should.equal("resolved");
+                world.liveIds().should.eql([]);
+                held.resolve();
+                await holding;
+            });
+            it('S-6: a rejection of the stop that was waited for is not passed on', async function() {
+                await bootAndStart();
+                world.closeGate.b1 = worldDeferred();
+                world.closeFail.b1 = new Error("close failed");
+                const first = flows.stopFlows();
+                first.catch(() => {});
+                await worldFlush();
+                instanceState.markStopping("SIGTERM");
+                const second = flows.stopFlows();
+                world.closeGate.b1.resolve();
+                (await settle(second)).state.should.equal("resolved");
+                (await settle(first)).state.should.equal("rejected");
+            });
+            it('AC-27: a stub of isStopping() that returns true makes the stop wait for the stop in progress', async function() {
+                await bootAndStart();
+                world.closeGate.b1 = worldDeferred();
+                const first = flows.stopFlows();
+                await worldFlush();
+                should(typeof instanceState.isStopping).equal("function", "state.isStopping is not exported");
+                const stub = sinon.stub(instanceState, "isStopping").returns(true);
+                try {
+                    const second = flows.stopFlows();
+                    (await settle(second, 150)).state.should.equal("timeout", "the stop did not react to isStopping()");
+                    world.closeGate.b1.resolve();
+                    (await settle(second)).state.should.equal("resolved");
+                } finally {
+                    stub.restore();
+                }
+                await first;
+            });
+        });
+
+        describe('AC-22, AC-23: outside stopping nothing changes (guards: pass before and after the change)', function() {
+            it('AC-22: with the drain off stopFlows() sets started to false synchronously, before the nodes closed', async function() {
+                await bootAndStart();
+                world.closeGate.b1 = worldDeferred();
+                const stopping = flows.stopFlows();
+                flows.started.should.be.false();
+                flows.state().should.equal("stop");
+                world.closeGate.b1.resolve();
+                await stopping;
+            });
+            it('AC-22: a second stop outside stopping does not wait for the first (drain off)', async function() {
+                await bootAndStart();
+                world.closeGate.b1 = worldDeferred();
+                const first = flows.stopFlows();
+                (await settle(flows.stopFlows(), 500)).state.should.equal("resolved");
+                world.closeGate.b1.resolve();
+                await first;
+            });
+            describe('B1: checkTypeInUse with the drain off', function() {
+                let extra;
+                beforeEach(function() {
+                    extra = sinon.stub(typeRegistry, "getNodeInfo").callsFake(function() { return {types:['unused-type']} });
+                });
+                afterEach(function() {
+                    extra.restore();
+                });
+                it('AC-22: during the stop of a deployment (drain off) the removal of a module is not refused', async function() {
+                    await bootAndStart();
+                    world.closeGate.b1 = worldDeferred();
+                    const deployment = flows.setFlows(clone(CONFIG).map(n => n.id === "b1" ? Object.assign({}, n, {v: 2}) : n), null, "full", false, false, null, undefined);
+                    await worldFlush();
+                    world.closeCalls.b1.should.equal(1);
+                    should.doesNotThrow(() => flows.checkTypeInUse("m/n"));
+                    world.closeGate.b1.resolve();
+                    await deployment;
+                });
+                it('AC-22: in stopping, while the nodes are being stopped (drain off), checkTypeInUse does not throw http_drain_in_progress', async function() {
+                    await bootAndStart();
+                    world.closeGate.b1 = worldDeferred();
+                    const first = flows.stopFlows();
+                    await worldFlush();
+                    instanceState.markStopping("SIGTERM");
+                    const second = flows.stopFlows();
+                    should.doesNotThrow(() => flows.checkTypeInUse("m/n"));
+                    world.closeGate.b1.resolve();
+                    await settle(second);
+                    await first;
+                });
             });
         });
     });
