@@ -2309,6 +2309,108 @@ describe("runtime/httpDrain (#40)", function() {
             longWarnings().should.have.length(2);
         });
     });
+    // #82 (S-P): `isWaitedFor(entry)` = open, accepted and on a route with the mark: one definition for the wait of
+    // beforeStop, the snapshot of the shutdown and the count of the condition
+    describe("what is waited for (S-P, #82)", function() {
+        // accepted on a marked route (waited for), a marked route that is not accepted, an unmarked route that is
+        // not accepted (a request of a node in the mode "long") and an unmarked route whose handler accepted the
+        // request (a node that follows the contract on a route it does not mark)
+        function four() {
+            const unmarked = [function other() {}];
+            return {
+                waited: accept(route(arrive("POST"))),
+                notAccepted: route(arrive("POST")),
+                long: route(arrive("POST"), unmarked),
+                unmarkedAccepted: accept(route(arrive("POST"), unmarked))
+            };
+        }
+        function infoCount(key) {
+            const found = log.info.args.map(a => a[0]).filter(m => m.indexOf(key + " ") !== -1);
+            found.should.have.length(1, key);
+            return JSON.parse(found[0].slice(found[0].indexOf("{"))).count;
+        }
+
+        it("AC-46: the wait of beforeStop counts only the accepted request on a marked route", async function() {
+            init();
+            const r = four();
+            const promise = httpDrain.beforeStop();
+            infoCount("httpDrain.waiting").should.equal(1);
+            (await settled(promise)).should.be.false();
+            r.waited.res.end("ok");
+            (await settled(promise)).should.equal(true, "the wait is held by a request that is not waited for");
+        });
+        it("AC-46: the snapshot of the shutdown counts only the accepted request on a marked route", async function() {
+            init();
+            const r = four();
+            assert.strictEqual(typeof httpDrain.waitForShutdown, "function", "httpDrain.waitForShutdown is not defined");
+            const w = httpDrain.waitForShutdown(5000);
+            infoCount("httpDrain.shutdown-waiting").should.equal(1);
+            (await settled(w.promise)).should.be.false();
+            r.waited.res.end("ok");
+            (await settled(w.promise)).should.equal(true, "the wait is held by a request that is not waited for");
+        });
+        it("AC-46: the condition of the instance state and the notice count only the accepted request on a marked route", async function() {
+            init();
+            const r = four();
+            const notices = [];
+            const onNotice = e => { if (e && e.id === "http-drain") { notices.push(e) } };
+            events.on("runtime-event", onNotice);
+            try {
+                const promise = httpDrain.beforeStop();
+                const condition = instanceState.get().httpDrain;
+                should.exist(condition, "the condition is not set");
+                condition.requests.should.equal(1);
+                notices.should.have.length(1);
+                notices[0].payload.count.should.equal(1);
+                httpDrain.abortWait();
+                await promise;
+            } finally {
+                events.removeListener("runtime-event", onNotice);
+            }
+            r.waited.res.end("ok");
+        });
+        it("AC-46: the three uses agree at the same time and a request that is not waited for never holds any of them", async function() {
+            init();
+            const r = four();
+            assert.strictEqual(typeof httpDrain.waitForShutdown, "function", "httpDrain.waitForShutdown is not defined");
+            const deployment = httpDrain.beforeStop();
+            const shutdown = httpDrain.waitForShutdown(5000);
+            infoCount("httpDrain.waiting").should.equal(1);
+            infoCount("httpDrain.shutdown-waiting").should.equal(1);
+            instanceState.get().httpDrain.requests.should.equal(1);
+            r.waited.res.end("ok");
+            (await settled(deployment)).should.be.true();
+            (await settled(shutdown.promise)).should.be.true();
+            r.notAccepted.res.writableEnded.should.be.false();
+            r.long.res.writableEnded.should.be.false();
+            r.unmarkedAccepted.res.writableEnded.should.be.false();
+        });
+        it("AC-46: only requests that are not waited for: beforeStop and the shutdown resolve at once, nothing is set", async function() {
+            init();
+            const unmarked = [function other() {}];
+            route(arrive("POST"));
+            route(arrive("POST"), unmarked);
+            accept(route(arrive("POST"), unmarked));
+            const deployment = httpDrain.beforeStop();
+            (await settled(deployment)).should.be.true();
+            should.not.exist(instanceState.get().httpDrain);
+            assert.strictEqual(typeof httpDrain.waitForShutdown, "function", "httpDrain.waitForShutdown is not defined");
+            (await settled(httpDrain.waitForShutdown(5000).promise)).should.be.true();
+            log.info.args.map(a => a[0]).join("\n").should.not.match(/waiting/);
+        });
+        it("a request that is accepted and whose route getter throws is not waited for and nothing throws", async function() {
+            init();
+            const r = accept(arrive("POST"));
+            Object.defineProperty(r.req, "route", { get: function() { throw new Error("route getter") }, configurable: true });
+            const deployment = httpDrain.beforeStop();
+            (await settled(deployment)).should.be.true();
+            should.not.exist(instanceState.get().httpDrain);
+            log.info.args.map(a => a[0]).join("\n").should.not.match(/httpDrain.waiting/);
+            assert.strictEqual(typeof httpDrain.waitForShutdown, "function", "httpDrain.waitForShutdown is not defined");
+            (await settled(httpDrain.waitForShutdown(5000).promise)).should.be.true();
+            log.info.args.map(a => a[0]).join("\n").should.not.match(/shutdown-waiting/);
+        });
+    });
 });
 
 // #82 (S-1): the same with a real Express app, a real HTTP server and real clients (no fake timers: the
