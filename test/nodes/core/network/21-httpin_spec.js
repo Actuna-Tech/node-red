@@ -4064,10 +4064,14 @@ describe("HTTP In node - drainMode (S-8, #82)", function() {
         return caught;
     }
 
+    let savedSettings;
     before(function(done) {
+        savedSettings = helper._settings;
         helper.startServer(done);
     });
     after(function(done) {
+        // the settings of the helper must not leak into the suites that run after this one
+        helper._settings = savedSettings;
         helper.stopServer(done);
     });
     beforeEach(async function() {
