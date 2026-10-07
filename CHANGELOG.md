@@ -133,6 +133,42 @@
    routes of other nodes are drained only when the node follows the optional contract (`Symbol.for("node-red.httpNode.drain")`
    on the handler and on `req`/`res`, see `MIGRACJA.md`). A message kept in the context and answered after a full stop
    now gets 503 instead of a late 200. New translated messages (`httpDrain.*`, `httpin.errors.drained-response`)
+ - Drain of the HTTP requests (#82, R-49 addendum): the debug record of each drain 503 names the node of the route
+   (`id`, `type`, `z`; the console shows `[http in:<name or id>]`) when the route was registered with
+   `node.registerHttpRoute` (the core `http in`); other routes are logged as before. No URL, path or node name in the
+   record
+ - Drain of the HTTP requests (#82): the guard uses one timer - every 250 ms while a stop of the flows is in progress,
+   afterwards one timeout at the nearest deadline (no periodic timer once the flows have restarted); it no longer
+   re-reads the requests that already have a deadline; inside the stop a 503 that could not be written is tried again
+   at every period (`answer-failed` logged once per request); an answered request leaves the guard at once. A request
+   or a response that cannot be read no longer stops the answers to the other requests. Clients see the same answers
+ - Drain of the HTTP requests (#82): only a request that is open, accepted by its node and on a route with the mark is
+   waited for (one rule for a deployment, a stop signal and the count of the editor notice); an accepted request on an
+   unmarked route no longer holds a deployment; a response that has ended counts as finished before its `finish` event
+ - A stop signal waits for the HTTP requests in progress (#82): with `deploy.drainHttpNodeRequests.enabled: true` and
+   `shutdownTimeout` set, `health.shutdown` (SIGTERM, SIGINT, `RED.health.shutdown`) waits after `health.unreadyGrace`
+   and the `preShutdown` hooks for the requests accepted by `http in` at that moment, at most
+   `min(timeout, the time left of shutdownTimeout)`, then stops the flows; the requests still open get 503 as before. New
+   log messages `httpDrain.shutdown-waiting` and `httpDrain.shutdown-timeout`; a second signal ends the wait at once.
+   **Recorded exception to "off by default" (D8):** this applies to existing configurations that already set both
+   options - a request that the flow answers in time now gets its answer instead of 503, and the stop takes up to that
+   long. Without `shutdownTimeout` nothing changes; `RED.stop()` called directly still does not wait
+ - Instance state (#82): while a stop of the flows waits for HTTP requests, `instance:state` and
+   `runtime.state.get()` carry the condition `httpDrain: {requests, since, deadline}` (the state is unchanged; the event
+   is emitted also when only this field changes, as for `reload`), and the editor shows a retained warning
+   (`notification/http-drain`, the count and the limit; en-US and pl), removed when the wait ends. Not in `stopping`
+ - Admin API (#82): removing a module or disabling a module or a node set while a stop of the flows waits for HTTP
+   requests or stops the nodes (`deploy.drainHttpNodeRequests` on) answers **409** `{code: "http_drain_in_progress"}`
+   with a constant message, audited as before; retry after the deployment. Unknown modules and types in use keep their
+   errors; with the drain off nothing changes
+ - Drain of the HTTP requests (#82): a `timeout` above 300000 ms (5 min) logs one warning at start
+   (`httpDrain.long-timeout`); the value is used as given
+ - `http in` (#82): new option "Stop behaviour" (`drainMode`): "Wait for the request (drain)" (`"drain"`, default, also
+   for nodes saved without it - unchanged) or "Long-lived connection (SSE/long-poll)" (`"long"`): the route is not
+   waited for and never answered 503 by the drain, and the open responses of the node are closed when the node stops
+   (with the drain on or off), so event-stream clients reconnect to the new node. A stream stays open and silent when
+   only its writer is restarted (a `nodes` deployment, a writer behind link nodes or one that takes the response from
+   the context) - send a heartbeat. Labels en-US and pl, help en-US
  - Requests to the routes of the nodes (`http in` and every node that registers a route on `RED.httpNode`)
    no longer get 404 while the flows restart (#8): new setting `deploy.holdHttpNodeRequests:
    {enabled, timeout, maxPending, retryAfter}` (`enabled: false` by default - unchanged behaviour). When
