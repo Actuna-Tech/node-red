@@ -200,7 +200,8 @@ uzupełniona o decyzje R-10, R-11, R-14, R-15, R-22, R-23, R-27):
     (wdrożenie samo ustala nową konfigurację).
  ── blokada wdrożeń ─────────────────────────────────────────────────────────────
  4. ponowny odczyt magazynu (najnowsza rewizja)
- 5. stan = "reloading" – #84: `begin("reload")` zwraca `null` (instancja zaczęła się zatrzymywać w trakcie odczytu) →
+ 5. stan = "reloading" – #84: instancja w stanie `stopping`/`stopped` już przy wejściu pod blokadę (zamiast `superseded`) albo
+       `begin("reload")` zwraca `null` (instancja zaczęła się zatrzymywać w trakcie odczytu) →
        `pipeline.deploy` zwraca `{skipped: "stopping"}` przed `flows.reloadFromStorage` i faktami `postDeploy`; `flows/reload.js`
        kończy cykl po cichu (bez `readFailed`, `markReloadFailed`, `cycleSucceeded`, dodatkowej rundy); kroki A6–A8, w tym 6a/6b (type "full": wszystkie flow; "diff": tylko zmienione)
        drenaż HTTP (#40) jest PO hookach `preReload` i dodatkowej rundzie D-17 (poza blokadą, bez zatrzymania), pod blokadą, raz na
