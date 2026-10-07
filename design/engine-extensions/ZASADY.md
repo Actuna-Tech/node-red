@@ -22,6 +22,10 @@
 
 ### 2.1 Nazwy ustawień
 
+> **Stan realizacji (`5.0.7-actuna.2`):** tabela zawiera także nazwy przyjęte dla pakietów jeszcze niezrealizowanych –
+> Z-03 (`allowDowngrade`, aliasy uploadu), P-04 / D-07 (`httpAdminCommsOrigins`) i Z-12 (`editorTheme.embedding.allowedOrigins`,
+> `editorTheme.auth.tokenStorage`, uprawnienia `nodes.type.*`, API edytora). Tych ustawień nie ma w kodzie (FORK §8).
+
 > **Rewizja D-02 (2026-10-03):** dwie niezależne analizy potwierdziły wszystkie nazwy – [NAZWY-ANALIZA.md](NAZWY-ANALIZA.md). Kolumna „Propozycja zlecenia” poniżej jest **oficjalną tabelą mapowania** nazw ze zlecenia/załącznika A na nazwy forka (do protokołu odbioru).
 
 | Pakiet | Propozycja zlecenia | **Rekomendacja** | Uzasadnienie |
@@ -233,8 +237,8 @@ Brak osobnego limitu `RED.stop()` – ostatecznym limitem jest `terminationGrace
   Własne zatrzymanie `RED.stop` (stan `stopping`) nie czeka na zapytania (R-37): po zatrzymaniu flow `httpDrain.finalize()` (po
   `stopFlows()`, także gdy ten odrzucił; niezależny od `started`; nie rzuca; przy wyłączonym ustawieniu kończy się od razu) odpowiada 503
   albo niszczy odpowiedź (strumień) na zapytania, które były otwarte w chwili wywołania. Wdrożenie w stanie `stopping` (token `null`) też nie
-  czeka, pozostałe zapytania obejmuje `finalize`; po `finalize` nie ma otwartego zapytania przyjętego przed `finalize`. Faza 2: czekanie
-  na zapytania w `shutdownTimeout` (część HTTP w `health.shutdown`).
+  czeka, pozostałe zapytania obejmuje `finalize`; po `finalize` nie ma otwartego zapytania przyjętego przed `finalize`. Faza 2 (zrealizowana
+  w #82): przy ustawionym `shutdownTimeout` `health.shutdown` czeka na zapytania przed `RED.stop` (FORK §5 „Drenaż zapytań HTTP…”).
 - **Wyścig `RED.stop` z wdrożeniem i startem (#84):** w stanie `stopping`/`stopped` żadne wdrożenie, przeładowanie ani start nie tworzy
   ani nie uruchamia flow: wdrożenia i `POST /flows/state` start – 503 `runtime_stopping` (A1, pod blokadą, po kroku 3, w kroku 4);
   przeładowanie z magazynu – `{skipped: "stopping"}` (B5); `start()` (wdrożenie po kroku 4, pierwszy start w drenażu `shutdownTimeout`,

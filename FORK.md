@@ -2,7 +2,8 @@
 
 > Opracowała firma **Actuna Sp. z o.o.** (Wojciech Repiński), z użyciem narzędzi AI.
 > Dokument opisuje, czym ten fork różni się od Node-RED, jak go skonfigurować i jak w nim pracować.
-> Szczegóły zmian: [CHANGELOG.md](CHANGELOG.md) (sekcje „Unreleased”); pliki zmienione bez nagłówka:
+> Szczegóły zmian: [CHANGELOG.md](CHANGELOG.md) (sekcje wydań `5.0.7-actuna.N` i „Unreleased”); wydania i aktualizacja: §9;
+> pliki zmienione bez nagłówka:
 > [MODIFICATIONS.md](MODIFICATIONS.md); zasady pracy: [AGENTS.md](AGENTS.md).
 
 ## 1. Wersja bazowa i gałęzie
@@ -10,7 +11,8 @@
 | Element | Wartość |
 |---|---|
 | Wersja bazowa | Node-RED **5.0.7** (commit `cd05a9a`, decyzja D-01) |
-| `main` | jedyna gałąź; F1–F3 (kamień milowy F3) i priorytet 3 (wiele instancji) – stan `5c2608b` |
+| `main` | jedyna gałąź; wydania to znaczniki `5.0.7-actuna.N` na `main` (§9) |
+| Wersje pakietów | `5.0.7` we wszystkich `package.json` – wydanie forka identyfikuje znacznik, nie numer wersji |
 | Zgłoszenia do Node-RED | **zablokowane** (D-04): brak PR/issues/push do `node-red/node-red`; hook `design/git-hooks/pre-push` |
 
 > Wzmianki o gałęziach `claude/loving-fermat-ftfo9h` i `feature/p3-database` w `design/` są historyczne –
@@ -66,6 +68,7 @@ module.exports = {
 > a domyślny układ użytkownika jest ignorowany (flow bez własnego `layout` rysują się poziomo).
 > Przy `deploy.requireRevision: true` klienci Admin API (skrypty, MCP, CI/CD) muszą używać API v2 i wysyłać
 > rewizję – przewodnik: [design/engine-extensions/MIGRACJA.md](design/engine-extensions/MIGRACJA.md).
+> Aktualizacja z `5.0.7-actuna.1` do `5.0.7-actuna.2` (nowe ustawienia, zmiany widoczne bez ustawień, kolejność): §9.2.
 >
 > **Walidacja wdrożeń (#10):** własną walidację (np. unikalność `botId` w Bot-Engine) instaluje się jako **wtyczkę** węzłów
 > (`node-red.plugins`, `RED.hooks.add("preDeploy.<etykieta>", fn)`), a nie wpisem w `settings.js` – ustawienie `hooks` przyjmuje tylko
@@ -111,9 +114,9 @@ module.exports = {
 | Zmiana | Pakiet | Domyślnie |
 |---|---|---|
 | Pakiet `auth` przez `/comms` bez `adminAuth` nie zatrzymuje procesu (odpowiedź `auth ok`) | P-04 | poprawka |
-| Nazwa użytkownika wstawiana jako tekst (XSS), odświeżenie danych po ponownym logowaniu | R-08, R-41 | poprawka |
-| Odpowiedź serwera przy błędzie zapisu/eksportu do biblioteki pokazywana jako escapowany tekst, nie jako HTML (XSS) | #30 | poprawka |
-| Komunikaty błędów palety, projektów, kontroli wersji, ładowania modułu węzła, importu i grup pokazywane jako escapowany tekst, nie jako HTML (XSS) | #34 | poprawka |
+| Nazwa użytkownika pokazywana jako tekst, nie jako HTML; odświeżenie danych po ponownym logowaniu | R-08, R-41 | poprawka |
+| Odpowiedź serwera przy błędzie zapisu/eksportu do biblioteki pokazywana jako tekst, nie jako HTML | #30 | poprawka |
+| Komunikaty błędów palety, projektów, kontroli wersji, ładowania modułu węzła, importu i grup pokazywane jako tekst, nie jako HTML | #34 | poprawka |
 | Dalsze komunikaty z tekstem spoza katalogu (nazwa modułu w potwierdzeniach palety, adres zdalny git, nazwa pliku przy `revert`, nazwy projektu/gałęzi/zdalnego/klucza, błędy rejestracji węzła i importu) escapowane; `RED.utils.sanitize` escapuje też cudzysłowy | #37 | poprawka |
 | Subskrypcje `/comms` dopiero po uwierzytelnieniu | Z-01 | poprawka |
 | Trasy admin węzłów wymagają logowania: `httpAdminNodeRoutes: "authenticated"`, `RED.auth.publicRoute()` | Z-02 | `"open"` |
@@ -434,7 +437,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   (`version_mismatch`, `version_required`) i dla błędów bez `rev` (zmiany zostają niewdrożone) nie ma.
 - `http in` (#11): przy zamknięciu węzła (wdrożenie, zatrzymanie) usuwane są **tylko trasy tego węzła**, rozpoznane po tożsamości trasy (runtime, §5 „Trasy HTTP węzłów”). Wcześniej usuwane były wszystkie trasy z tą samą ścieżką i metodą – także innych węzłów `http in` i tras dodanych przez inne moduły przez `RED.httpNode` – a trasa następująca bezpośrednio po usuniętej była pomijana (`splice` w trakcie `forEach`). Klucz trasy „surowego ciała” (`skipBodyParsing`) jest utrzymywany, dopóki korzysta z niego jakikolwiek węzeł (licznik na klucz). Skutek: gdy dwa węzły `http in` mają tę samą ścieżkę i metodę, odpowiada pierwszy zarejestrowany (Express), a po jego zamknięciu odpowiada drugi, zamiast 404. Węzły spoza rdzenia zdejmują własne trasy przez `node.registerHttpRoute` (§5, „Trasy HTTP węzłów”).
 - Edytor, błąd zapisu do biblioteki (okno biblioteki) i eksportu do biblioteki (okno eksportu schowka) (#30): komunikat
-  `library.saveFailed` wstawiał surową treść odpowiedzi serwera jako HTML (XSS przy odpowiedzi z znacznikami). Teraz
+  `library.saveFailed` wstawiał surową treść odpowiedzi serwera jako HTML (znaczniki w odpowiedzi były interpretowane). Teraz
   pokazuje pole `message` odpowiedzi JSON (albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”) z escapowaniem
   `& < > " '`, nigdy surową treść; ten sam formater co błędy wdrożenia (`RED.deploy.translateErrorResponse`, dziś `RED.errors.translateResponse`). Brak odpowiedzi
   HTTP (status 0) daje „brak odpowiedzi z serwera”. Polski edytor: przetłumaczone `library.saveFailed` i `user.notAuthorized`
@@ -476,8 +479,8 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
     węzła – escapowany dwukrotnie), nie pokazują już encji. Włączenie i wyłączenie modułu pokazywało „Nie udało się
     zainstalować” z niezdefiniowaną nazwą (albo kończyło się błędem `ReferenceError`); teraz podaje właściwą czynność i
     moduł, jako błąd, a teksty są też w polskim katalogu.
-  - Nie zrobione (opcjonalne, R2 przeglądu #36): maskowanie `//user:pass@` w stderr gita – właściwe miejsce to runtime
-    (komunikat błędu jest budowany w `projects/git`, trafia do odpowiedzi API i logów), osobne zgłoszenie (#45).
+  - Maskowanie `//user:pass@` w stderr gita (opcjonalne R2 przeglądu #36) nie weszło do #37 – zrobione w runtime w #45
+    (wpis „Projekty/git (#45)” niżej).
 - `http in`, surowe ciało „Do not parse request body” (`skipBodyParsing`, #16): (1) trasa z parametrem (`/hook/:id`) lub adresowana inną
   wielkością liter (`/HOOK`) dostaje teraz `Buffer` **niezależnie od `deploy.holdHttpNodeRequests`** (wcześniej – obiekt lub tekst,
   bo `rawBodyCapture` zna tylko dosłowny klucz `METODA:url`; psuło to np. weryfikację podpisu ciała); każda trasa z tą opcją czyta
@@ -504,8 +507,8 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   głównej. `httpNodeAuth` jest zamontowany na aplikacji głównej przed `httpNode` (`red.js`), a wstrzymanie żądań (#8) jest pierwszą warstwą
   `httpNode` (montowane przy inicjalizacji runtime, przed załadowaniem węzłów), więc **nic nie jest czytane przed uwierzytelnieniem ani
   w czasie wstrzymania** (wcześniej bufor do najwyższego limitu rósł przed odmową 401). Odczyt jest **przed** `httpNodeMiddleware` i trasami,
-  więc middleware i obce trasy na tym samym kluczu nadal dostają `Buffer` w `req.body`, jak w upstream – **ale tylko do najwyższego limitu
-  węzłów `skipBodyParsing` na kluczu** (upstream nie miał limitu): ciało większe dostaje 413 od razu z przechwycenia (z nagłówkami CORS
+  więc middleware i obce trasy na tym samym kluczu nadal dostają `Buffer` w `req.body`, jak wcześniej – **ale tylko do najwyższego limitu
+  węzłów `skipBodyParsing` na kluczu** (wcześniej bez limitu): ciało większe dostaje 413 od razu z przechwycenia (z nagłówkami CORS
   węzłów) i **nic więcej** – ani middleware, ani obca trasa, ani węzeł bez `skipBodyParsing` na tym kluczu – go nie widzi (strumień jest
   już wstrzymany; reszta jest czytana i odrzucana, zob. wyżej). Klucz trasy jest względem `httpNodeRoot` (bez prefiksu). Na wspólnym
   kluczu przechwycenie czyta do najwyższego z limitów, a trasa każdego węzła sprawdza własny. Trasa węzła czyta ciało, gdy przechwycenie tego nie zrobiło (trasa
@@ -519,10 +522,10 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   nieuwierzytelnionych, użyj `httpNodeAuth` albo middleware aplikacji zewnętrznej przed `RED.httpNode`. 413 z przechwycenia dostaje
   nagłówki CORS z globalnego `httpNodeCors`, także na trasie obcej z własnym CORS. Węzeł bez `skipBodyParsing` na tej samej ścieżce
   i metodzie co węzeł z tą opcją dostaje 413 dla ciała większego niż limit tamtego węzła.
-- `GET /settings` (#45, SEC-001): z aktywnym projektem odpowiedź zawierała cały obiekt projektu (`runtime/lib/api/settings.js`), a w nim `credentialSecret` projektu (klucz do zaszyfrowanych poświadczeń flow) i `remotes` z `user:hasło` adresów repozytoriów – dla każdego z uprawnieniem `settings.read` (także rola tylko do odczytu). Teraz `project` w tej odpowiedzi to `export()` projektu, ten sam co w `GET /projects/:id` (bez `credentialSecret`, adresy zamaskowane). Kod jest taki sam w upstream, więc to najpewniej luka odziedziczona. Zserializowany przez pomyłkę `Project` (`JSON.stringify`) też daje `export()`. Edytor nie czyta `RED.settings.project`.
+- `GET /settings` (#45, SEC-001): z aktywnym projektem odpowiedź zawierała cały obiekt projektu (`runtime/lib/api/settings.js`), a w nim `credentialSecret` projektu (klucz do zaszyfrowanych poświadczeń flow) i `remotes` z `user:hasło` adresów repozytoriów – dla każdego z uprawnieniem `settings.read` (także rola tylko do odczytu). Teraz `project` w tej odpowiedzi to `export()` projektu, ten sam co w `GET /projects/:id` (bez `credentialSecret`, adresy zamaskowane). Zserializowany przez pomyłkę `Project` (`JSON.stringify`) też daje `export()`. Edytor nie czyta `RED.settings.project`.
 - Projekty/git (#45): dane logowania z adresu URL repozytorium (`https://user:haslo@host/...`, `https://token@host/...`, `ssh://user:haslo@host/...`) są zastępowane przez `//***@` w runtime, w miejscu tworzenia błędu: w treści błędu polecenia git (`message`, `stderr`, `stdout`, `value`, a więc także w odpowiedzi API i logu audytu), w logu `trace` polecenia i w zdarzeniach `event-log` polecenia uruchomionego przez `exec.run` (linia polecenia i wyjście; to obejmuje też `npm install` z adresu z hasłem). Instalator modułów (`registry/lib/installer.js`, od #63) ukrywa dane logowania adresu instalacji w logu `trace` polecenia npm, w ostrzeżeniach i informacjach instalacji (także wyjście błędu npm) i w `event-log`: wzorcem oraz dosłownie – identyfikator użytkownika z hasłem, samo hasło i ich postaci odkodowane (`p%40ss` i `p@ss`), co najmniej 4 znaki, bo npm może je wypisać poza postacią adresu (lista idzie jako piąty argument `exec.run`); tak samo dla nazwy modułu podanej jako adres z danymi logowania i w polach `url`, `module` (i `message`) zdarzeń audytu `nodes.install`. Haseł krótszych niż 4 znaki ukrywa tylko wzorzec. Tak samo maskowany jest błąd hooka `preInstall`/`postInstall`, a argument npm z poświadczeniem dodany przez hook (`--//rejestr/:_authToken=…`, `_auth=`, `_password=`) ma w logu `trace`, w `event-log` i w ostrzeżeniu z wyjściem npm wartość `***` (klucz przed `=` zostaje; npm dostaje argument bez zmian). Wyjście w `event-log` jest zapisywane liniami (jedno zdarzenie na linię i strumień zamiast jednego na fragment), więc adres rozcięty między fragmentami też jest rozpoznany (linia dłuższa niż 64 KB jest najpierw maskowana w całości, potem ucinana na ostatnim białym znaku co najmniej 4 KB przed końcem; ostatnie 4 KB czeka na kolejny fragment, więc adres lub sekret niekompletny w chwili cięcia jest dokończony i zamaskowany później). `remotes[].fetch` i `push` zwracane przez API projektów (`GET /projects/:id`, `GET /projects/:id/remotes`) są maskowane tak samo; git, `.git/config` i pamięć podręczna poświadczeń (klucz = adres `fetch`) zachowują prawdziwy adres, więc działanie gita się nie zmienia. Adres scp (`git@github.com:org/repo`) i sam użytkownik `ssh://git@host` (bez hasła) nie są zmieniane. Dodatkowo identyfikator użytkownika i hasło zdalnego, który już jest w `.git/config`, a którego wzorzec nie rozpoznaje (hasło z nieescapowanym `/` lub spacją), są ukrywane dosłownie, tylko w tekście operacji tego projektu: sekrety są trzymane per projekt, podmieniane przy każdym `git remote -v`, czyszczone przy usunięciu zdalnego lub projektu i ograniczone liczbowo; zwykłe hasło nigdy nie trafia na tę listę, więc maskowanie tekstu wpisanego przez użytkownika (np. wiadomości commita) niczego nie zdradza. Wyjątek w obrębie tego samego projektu: tekst równy staremu, niejednoznacznemu sekretowi z `.git/config` (np. nazwa gałęzi lub pliku) jest pokazywany jako `***`, co potwierdza, że taki sekret istnieje. Treść odrzuconego argumentu gita nie zawiera już samego argumentu. Kod błędu gita (`git_auth_failed`, `git_pull_merge_conflict` …) jest ustalany na surowym wyjściu, maskowany jest tylko tekst błędu. **Ograniczenie (SEC-011):** stary zdalny adres wpisany ręcznie do `.git/config`, w którym hasło zaczyna się od cyfr przed `/` (`user:2024/abc@host`) albo token zawiera `/` (`tok/en@host`), nie jest maskowany – wzorzec go nie rozpoznaje, a nie da się go odróżnić od portu lub ścieżki, więc nie jest też zapamiętywany jako sekret. Adres z nieescapowanym `@` i `/` w haśle (`https://user:p@ss/x@host/r`) jest maskowany tylko do pierwszego `@` (`https://***@ss/x@host/r`); git takiego adresu nigdy nie przyjmował. Dotyczy tylko adresów wpisanych ręcznie; nowe takie adresy odrzuca walidacja przy klonowaniu i dodawaniu zdalnego. Zalecenie: zakodować hasło (`%2F`) w `.git/config`. **Zmiana zachowania:** adres zdalny z białym znakiem lub znakiem sterującym albo z danymi logowania, których nie da się odróżnić od ścieżki (hasło z `/`, `?`, `#`; `@` w ścieżce), jest odrzucany przy klonowaniu i dodawaniu zdalnego (`git_invalid_argument`) – znaki specjalne w haśle trzeba zakodować (`%2F`, `%40`, `%20`). Funkcja `maskUrlCredentials` jest wewnętrzna (`require("@node-red/util").maskUrlCredentials`, poza `util.util`, więc nie jest `RED.util` w węzłach). `exec.run` przyjmuje opcjonalny piąty argument z dosłownymi sekretami dla `event-log`. **Znane ograniczenie (SEC-004):** adres z hasłem jest argumentem procesu `git`, więc na hoście wielodostępnym jest widoczny w `ps` dla innych użytkowników systemu – maskowanie dotyczy błędów, logów i API, nie listy procesów; zalecane są klucze SSH albo poświadczenia z pamięci podręcznej zamiast hasła w adresie. Bez nowych ustawień.
 - Poświadczenia, `credentials.init()` (#56): ponowne `RED.init()` w jednym procesie (tryb osadzony, testy) nie przenosi już rozpoczętej migracji do `credentialSecret` – wcześniej flaga wewnętrzna `removeDefaultKey` (ustawiana przez wczytanie poświadczeń, zerowana dopiero przez zapis) przetrwała ponowne `init()`, a pierwszy zapis nowej instancji usuwał wygenerowany klucz `_credentialSecret` z jej ustawień bez migracji jej poświadczeń (z ustawieniami bez `delete`: `settings.not-available`). Pojedyncze `init()` w procesie (zwykły start) działa bez zmian.
-- Hooki, `RED.hooks.trigger` (#61): obsługa hooka z jednym argumentem, której obietnica jest odrzucona **bez wartości** (`Promise.reject()`, `throw undefined` w funkcji `async`, `null`, `false`, `0`, `-0`, `0n`, `NaN`, `""`), była wywoływana ponownie w nieskończoność w pętli mikrozadań – zatrzymywała timery, wejście/wyjście i HTTP, a proces wisiał (błąd z upstream 5.0.7). Teraz łańcuch kończy się błędem: `trigger` odrzuca obietnicę (z `err.hook`) albo wywołuje `done` (forma z callbackiem) jeden raz z `Error("Hook handler rejected without an error: <wartość>")` (dla `""` wartość to dwa znaki cudzysłowu), obsługa jest wywołana raz, a kolejne nie są wywoływane. Efekt u wywołujących: `preShutdown` i `preReload` logują błąd (`health.shutdown-hook-failed`, `reload.hook-failed`) i działają dalej (zatrzymanie, przeładowanie), `onSend`, `preRoute`, `preDeliver` i `onReceive` zgłaszają błąd przez `node.error` i wiadomość nie jest dostarczana; `postDeliver`, `postReceive` i `onComplete` tylko zgłaszają błąd przez `node.error` (wiadomość została już dostarczona); `preInstall`, `postInstall` i `preUninstall` kończą instalację lub usunięcie modułu błędem przez istniejącą obsługę w `catch` (po błędzie `postInstall` moduł jest odinstalowywany); `postUninstall` tylko loguje ostrzeżenie, bo moduł jest już usunięty. Bez zmian: odrzucenie wartością prawdziwą, obsługa z dwoma argumentami, synchroniczne `return` i `throw`. Obsługa usunięta w trakcie oczekiwania, która potem odrzuca bez wartości, też kończy łańcuch (wcześniej przechodził do następnej). Synchroniczne `throw undefined`/`null`/`false`/`0` oraz kopia tego kodu w edytorze (`editor-client/src/js/hooks.js`) bez zmian w #61; od #63 kopia w edytorze zachowuje się tak samo, a synchroniczne `throw` wartości fałszywej też jest błędem (wpis #63 niżej).
+- Hooki, `RED.hooks.trigger` (#61): obsługa hooka z jednym argumentem, której obietnica jest odrzucona **bez wartości** (`Promise.reject()`, `throw undefined` w funkcji `async`, `null`, `false`, `0`, `-0`, `0n`, `NaN`, `""`), była wywoływana ponownie w nieskończoność w pętli mikrozadań – zatrzymywała timery, wejście/wyjście i HTTP, a proces wisiał. Teraz łańcuch kończy się błędem: `trigger` odrzuca obietnicę (z `err.hook`) albo wywołuje `done` (forma z callbackiem) jeden raz z `Error("Hook handler rejected without an error: <wartość>")` (dla `""` wartość to dwa znaki cudzysłowu), obsługa jest wywołana raz, a kolejne nie są wywoływane. Efekt u wywołujących: `preShutdown` i `preReload` logują błąd (`health.shutdown-hook-failed`, `reload.hook-failed`) i działają dalej (zatrzymanie, przeładowanie), `onSend`, `preRoute`, `preDeliver` i `onReceive` zgłaszają błąd przez `node.error` i wiadomość nie jest dostarczana; `postDeliver`, `postReceive` i `onComplete` tylko zgłaszają błąd przez `node.error` (wiadomość została już dostarczona); `preInstall`, `postInstall` i `preUninstall` kończą instalację lub usunięcie modułu błędem przez istniejącą obsługę w `catch` (po błędzie `postInstall` moduł jest odinstalowywany); `postUninstall` tylko loguje ostrzeżenie, bo moduł jest już usunięty. Bez zmian: odrzucenie wartością prawdziwą, obsługa z dwoma argumentami, synchroniczne `return` i `throw`. Obsługa usunięta w trakcie oczekiwania, która potem odrzuca bez wartości, też kończy łańcuch (wcześniej przechodził do następnej). Synchroniczne `throw undefined`/`null`/`false`/`0` oraz kopia tego kodu w edytorze (`editor-client/src/js/hooks.js`) bez zmian w #61; od #63 kopia w edytorze zachowuje się tak samo, a synchroniczne `throw` wartości fałszywej też jest błędem (wpis #63 niżej).
 - Hooki, `RED.hooks.trigger` (#76): obsługa odrzucona wartością, której `new Error(wartość)` nie zamieni na tekst (obiekt bez prototypu, Proxy rzucający przy odczycie, `Symbol`), która psuje `instanceof` (Proxy z rzucającą pułapką `getPrototypeOf`) albo nie przyjmuje identyfikatora hooka (`err.hook`), daje teraz odrzucenie obietnicy `trigger` błędem `Error("(the value cannot be printed)")` (z `err.hook`); wcześniej obietnica nigdy się nie rozstrzygała (`preShutdown`/`preReload` czekały do swojego limitu). Wartości, które dało się zamienić, dają ten sam komunikat co wcześniej; forma z callbackiem bez zmian; kopia w edytorze bez zmian w #76, od #63 daje ten sam wynik (wpis #63 niżej).
 - **Zapis wpisu biblioteki (#54):** zapis wpisu biblioteki (`POST /library/:lib/:type/*`, plik w katalogu `lib` magazynu plików) czeka, aż plik zostanie zapisany; wcześniej Admin API odpowiadało 204 przed zapisem, a nieudany zapis nie był zgłaszany. Teraz nieudany zapis daje 400 `unexpected_error` (bez ścieżki w odpowiedzi), a edytor pokazuje, że zapis się nie udał; nazwa, która nie wskazuje wpisu wewnątrz katalogu danego typu, jest odrzucana (403 `forbidden`). Na bardzo wolnym dysku żądanie czeka na zapis. Z `readOnly` bez zmian (204 bez zapisu), z `readOnlyUserDir` bez zmian (400 `read_only_user_dir`). Bez nowych ustawień.
 - **Nieudany start w CLI (#67):** gdy `RED.start()` odrzuci w `red.js`, proces zatrzymuje runtime (`RED.stop("startup-error")`, log `Stopping Node-RED (startup-error)`) i kończy się kodem 1. Wcześniej kończył się kodem 0 albo trwał bez nasłuchującego serwera głównego, gdy otwarty uchwyt go podtrzymywał (własny `health.port`, `logging.*.metrics`, kanał IPC PM2). To zatrzymanie nie wywołuje hooka `preShutdown` i nie czeka `health.unreadyGrace`; ma stały limit 5000 ms (bez ustawienia). Odrzucone albo zbyt długie zatrzymanie: log `Shutdown failed: …` i kod 1. Sygnał w trakcie tego zatrzymania kończy proces od razu kodem 1; sygnał sprzed odrzucenia zachowuje własne zatrzymanie i kod wyjścia. Każda wartość odrzucenia (także `undefined`, `null`, obiekt z rzucającym getterem `stack`) jest logowana; wcześniej `undefined` i `null` dawały „Uncaught Exception”. Odrzucona funkcja `https` w ustawieniach też daje kod 1 (wcześniej 0). Bez zmian: tryb osadzony (`RED.start()` odrzuca tym samym błędem, biblioteka nie woła `process.exit`), sonda `/live` i błędy runtime po udanym starcie (flow, wdrożenia, przeładowania). Błąd, który `red.js` rzuca przy przygotowaniu serwera głównego po udanym starcie (np. `ERR_SOCKET_BAD_PORT` dla portu spoza zakresu), też jest traktowany jak nieudany start: to samo zatrzymanie i kod 1 (wcześniej log `Failed to start server`, potem kod 0 albo proces bez nasłuchującego serwera). Przy supervisorze z restartem po błędzie trwały błąd konfiguracji daje pętlę restartów (MIGRACJA §3.3). Zawieszony start (krok, który nie odpowiada) kończy się tak samo tylko z ustawieniem `startupTimeout` (#71); bez niego proces czeka jak dotąd.
@@ -562,7 +565,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   Node.js, gdy `apiMaxLength` daje większy rozmiar (według reguł rozmiaru `body-parser`) – ta sama reguła co w
   parserach `http in` od #48 (dwie kopie trzymane równo jedną tabelą przypadków testów); inne wartości są przekazywane
   bez zmian, domyślnie nadal 5 MB. Większe ciało idzie istniejącą ścieżką błędu (413). Parsery Admin API czytają ciało
-  **przed uwierzytelnieniem**, jak w upstream – limit tego nie zmienia.
+  **przed uwierzytelnieniem**, jak wcześniej – limit tego nie zmienia.
 - **Hooki, `RED.hooks` (#63, obie kopie: runtime `util/lib/hooks.js` i edytor `editor-client/src/js/hooks.js`):**
   (1) synchroniczne `throw` wartości fałszywej (`undefined`, `null`, `false`, `0`, `-0`, `0n`, `NaN`, `""`) z handlera
   z jednym albo dwoma parametrami kończy łańcuch błędem `Hook handler rejected without an error: <wartość>` (jak #61;
@@ -578,8 +581,8 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
   dostała zachowanie #61 (odrzucenie bez wartości kończy łańcuch błędem – wcześniej ten sam handler był wywoływany
   bez końca) i #76 (`Error("(the value cannot be printed)")` z `err.hook` dla `Symbol`, obiektu bez prototypu, Proxy).
   (4) **Handler bez parametrów** (`function(){}`, `() => {}`, `async () => {}`) hooka wywoływanego przez `trigger`
-  dostaje `(payload, done)` i musi wywołać `done` – inaczej łańcuch się nie kończy; **zachowanie bez zmian, jak w
-  upstream**, ale rejestracja (`RED.hooks.add`, także ustawienie `hooks`) zapisuje jedno ostrzeżenie z identyfikatorem
+  dostaje `(payload, done)` i musi wywołać `done` – inaczej łańcuch się nie kończy; **zachowanie bez zmian, jak
+  wcześniej**, ale rejestracja (`RED.hooks.add`, także ustawienie `hooks`) zapisuje jedno ostrzeżenie z identyfikatorem
   hooka (runtime: log `warn` z miejscem rejestracji; edytor: `console.warn`) – zadeklaruj `(payload)`. `preDeploy` i
   `postDeploy` są wywoływane jako `fn(event)` i nie dostają ostrzeżenia.
 - **Biblioteka, plik roboczy zapisu (#63):** lista katalogu biblioteki (`GET /library/...`) nie pokazuje plików kończących
@@ -617,7 +620,7 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 | Testy jednostkowe | `npm test` / `npx mocha test/unit/_spec.js "test/unit/**/*_spec.js"`; 5 testów `projects/ssh` wymaga `ssh-keygen` |
 | Testy sieciowe | bez stałych portów (#41): serwer testowy słucha na porcie 0 (port przydziela system, `server.address().port`), a węzeł, który potrzebuje portu w konfiguracji, dostaje wolny port znaleziony tuż przed startem – dwa przebiegi `npm run mocha:nodes` na jednej maszynie nie zderzają się; żądania do aplikacji przez `nr-test-utils/supertest` (127.0.0.1), nie `helper.request()`; helper zgłasza błąd dla TLS, adresu tekstowego i http2. Gdy port znaleziony przed startem węzła `tcp in` (serwer) lub `udp in` został w międzyczasie zajęty, test ładuje flow ponownie na nowym porcie (do 10 prób, potem jawny błąd z portem), a gniazdo klienta testu zgłasza błąd połączenia swojemu testowi (#54). Zmiany tylko w testach, bez zmiany produktu |
 | Testy E2E | `npm run test:e2e` – Playwright **nie** jest w repozytorium (D-03): `npm i --no-save playwright`; bez niego testy są pomijane |
-| CI (GitHub Actions) | `tests.yml`: `npm test` na Node 22 i 24, `fail-fast: false` (każda wersja daje własny wynik), akcje checkout/setup-node v7 (Node 24), `package-manager-cache: false` jako zabezpieczenie (#57); `release.yml` działa tylko w `node-red/node-red` – w forku wydanie nie otwiera PR w innych repozytoriach (D-04) |
+| CI (GitHub Actions) | `tests.yml`: `npm test` na Node 22 i 24, `fail-fast: false` (każda wersja daje własny wynik), akcje checkout/setup-node v7 (Node 24), `package-manager-cache: false` jako zabezpieczenie (#57); `release.yml` działa tylko w `node-red/node-red` – w forku wydanie nie otwiera PR w innych repozytoriach (D-04). Przepływy GitHub Actions są w forku wyłączone; bramką przed scaleniem jest pełne `npm test` uruchamiane w Dockerze na Node 22 i 24 |
 | Nagłówki modyfikacji | każdy zmieniony plik: blok „Modified by Actuna Sp. z o.o.” (D-19); JSON i szablon `settings.js` – w MODIFICATIONS.md |
 | Commity | autorem jest operator AI (obecnie Wojciech Repiński), `Signed-off-by` (DCO), bez `Co-Authored-By` dla AI |
 | Zależności npm | bez nowych zależności bez zgody Zamawiającego |
@@ -627,12 +630,17 @@ Ograniczenie Z-02: to bezpieczniejsza wartość domyślna dla poprawnie napisany
 
 ## 8. Stan i dalsze prace
 
-**Zrealizowane (na `main`):** priorytet 1 (układ flow, FL-B-004…012), priorytet 2 (P-01…P-04, Z-01, Z-02,
-Z-04, Z-05, E-01), priorytet 3 w zakresie budżetu (E-02, Z-08, Z-09, Z-10, Z-11, Z-15). Każda faza przeszła
-niezależny przegląd; poprawki po przeglądzie priorytetu 3 zweryfikowane testami (bez drugiego przeglądu – budżet).
+**Zrealizowane (na `main`):**
+- wydanie `5.0.7-actuna.1`: priorytet 1 (układ flow, FL-B-004…012), priorytet 2 (P-01…P-04, Z-01, Z-02, Z-04, Z-05,
+  E-01), priorytet 3 w zakresie budżetu (E-02, Z-08, Z-09, Z-10, Z-11, Z-15). Każda faza przeszła niezależny przegląd;
+  poprawki po przeglądzie priorytetu 3 zweryfikowane testami (bez drugiego przeglądu – budżet);
+- wydanie `5.0.7-actuna.2`: Z-06 (#10, hooki `preDeploy`/`postDeploy` w MVP), Z-07 (#11, `node.registerHttpRoute`),
+  Z-16 (`health.unreadyGrace`), Z-13 częściowo (tłumaczenie edytora i komunikatów węzłów, pomoc 4 węzłów), wstrzymanie
+  i drenaż żądań HTTP (#8, #40, #82), limity ciał `http in` (#16, #48), start i zatrzymanie runtime (#67, #71, #73, #84)
+  oraz poprawki z pozostałych zgłoszeń – lista w §9.2 i w CHANGELOG.
 
-**Weryfikacja (`5c2608b`):** build, lint, `verify-deps` czyste; testy jednostkowe 2253 ✔ / 5 ✘ (projects/ssh –
-brak `ssh-keygen`); testy węzłów: 4 ✘ środowiskowe (proxy, IPv6 – tak samo na wersji bazowej); E2E 52/52.
+**Zgłoszenia forka:** wszystkie zamknięte (stan 2026-10-07); prace opisane niżej jako niezrealizowane nie mają otwartego
+zgłoszenia. **Weryfikacja wydań:** §9.1.
 
 **Wtyczki zewnętrzne:** magazyn i koordynację dla wielu instancji dostarcza się jako prywatne wtyczki poza tym
 repozytorium. Kontrakt: [MIGRACJA.md](design/engine-extensions/MIGRACJA.md) §5.2 (`watchFlows`,
@@ -651,7 +659,7 @@ węzeł trasy w rekordzie 503, ostrzeżenie o bardzo długim `timeout`. Zamknię
 operatora, wykrywanie wiadomości w hookach; wspólne walidatory `httpHold`/`httpDrain` – zamknięte (tylko refaktoryzacja). Wyścig `RED.stop` z
 wdrożeniem – poprawiony w #84 (§6).
 
-**#10 (Z-06, hooki `preDeploy`/`postDeploy`):** zrealizowany w MVP (R-50). Faza 2: `changedFlows` w ładunkach, agregacja wyników walidatorów (`errors[]`), `AsyncLocalStorage` z 409
+**#10 (Z-06, hooki `preDeploy`/`postDeploy`):** zrealizowany w MVP (R-50). Faza 2 (niezrealizowana): `changedFlows` w ładunkach, agregacja wyników walidatorów (`errors[]`), `AsyncLocalStorage` z 409
 `deploy_hook_reentrant` (po pomiarze na Node 22 i 24), `signal` przerywany przy `stopping`, `Retry-After` dla 503, `details` w edytorze (tylko z escapowaniem), krok 2a (Z-12.08) przed hookiem,
 metryka czasu hooka, ochrona hooków przed `RED.hooks.remove`. Rejestracja z `settings.js` (poza #7) wymaga nowej decyzji zgodnej z zasadą W7.
 
@@ -661,9 +669,105 @@ przed przejściem na Express 5: `rawBodyCapture` w `http in` (R-16, osobne zadan
 (`runtime/lib/httpHold.js`, #8), `matchesEveryPath` w `registry/lib/util.js` (Z-02); adapter `routerStack(app)` w
 `runtime/lib/nodes/httpRoutes.js` obsługuje już oba kształty (`_router` i `router`).
 
-**Poza zakresem (kolejny etap):** Z-03, Z-12 (rozszerzenia
-edytora), Z-13 (język polski), FL-B-011.
+**Poza zakresem (kolejny etap):** Z-03 (m.in. `externalModules.palette.allowDowngrade`), Z-12 (rozszerzenia edytora,
+m.in. `editorTheme.auth.tokenStorage`, `editorTheme.embedding.allowedOrigins`), kontrola `Origin` dla `/comms`
+(`httpAdminCommsOrigins`, R-06), dalsza część Z-13 (`runtime.json`, `jsonata.json`, `infotips.json`, pomoc pozostałych
+węzłów), FL-B-011. Nazwy tych ustawień są przyjęte (ZASADY §2.1, MIGRACJA §3.2), ale w `5.0.7-actuna.2` ustawienia
+nie istnieją – wpisane do `settings.js` nie mają efektu.
 
 **Do wykonania przez właściciela repozytorium:** przepisanie historii (usunięcie `design/k8s-postgres/` z
 historii i force push), przeniesienie do repozytorium prywatnego (forka publicznego repozytorium nie można
 przełączyć na prywatne), tag kamienia milowego F3 na commicie „Docs: milestone F3 summary”.
+
+## 9. Wydania i aktualizacja
+
+### 9.1 Wydania
+
+Wydanie forka to znacznik git `5.0.7-actuna.N` na `main`; wersje w `package.json` pozostają `5.0.7`. Zmiany każdego
+wydania opisuje [CHANGELOG.md](CHANGELOG.md) – sekcja `5.0.7-actuna.N` z podsekcjami tematów (zmiany po ostatnim
+wydaniu – sekcja „Unreleased” na początku pliku).
+
+| Znacznik | Data | Zakres | Weryfikacja |
+|---|---|---|---|
+| `5.0.7-actuna.1` | 2026-10-04 (znacznik; commit `4d123b041` z 2026-10-03) | priorytety 1–3 (§8) | przetestowane w Bot-Engine 2.0.1 na środowisku testowym: E2E 330/0, weryfikacja infrastruktury 7/7, instancje tenantów 22/22, scenariusze wielu instancji S1–S10 |
+| `5.0.7-actuna.2` | 2026-10-07 | 43 PR ze zmianami (+ PR wydania #87); 43 zamknięte zgłoszenia (40 zrealizowanych, 3 połączone z #63) – §9.2 | pełne `npm test` (build, verify-deps, lint, coverage; testy jednostkowe i węzłów w jednym procesie) w Dockerze na Node 22 i 24: 7293 zaliczone, 59 pominiętych, 0 nieudanych. **Nie przetestowane jeszcze w Bot-Engine (E2E)** |
+
+### 9.2 Aktualizacja z `5.0.7-actuna.1` do `5.0.7-actuna.2` (Bot-Engine)
+
+**Kolejność:** (1) przestawić odwołanie do forka (np. submoduł) na znacznik `5.0.7-actuna.2` – wszystkie pakiety
+`@node-red/*` razem, bo `@node-red/nodes` wymaga runtime z `node.registerHttpRoute` (#11); (2) bez zmian w `settings.js`
+instancja działa jak na `actuna.1`, z wyjątkiem zmian z punktu B; (3) nowe ustawienia (punkt A) włączać według §2
+i punktu C; (4) test E2E Bot-Engine – dla `actuna.2` jeszcze niewykonany.
+
+**A. Nowe ustawienia – wszystkie domyślnie wyłączone** (bez nich zachowanie jak w `actuna.1`):
+
+| Ustawienie | Działanie | Opis |
+|---|---|---|
+| `startupTimeout` | limit startu runtime (bez wczytania flow); po nim kod 1 i restart przez supervisora | §2, §5 „Wiele instancji” (#71) |
+| `health.unreadyGrace` | `/ready` 503 co najmniej tyle ms przed zatrzymaniem flow (SIGTERM, przeładowanie z magazynu) | §5 „Wiele instancji” (Z-16) |
+| `hooks` | `preReload.<etykieta>` i `preShutdown.<etykieta>` rejestrowane z `settings.js`; ostrzeżenie, gdy hook się nie wykona | §5 „Wiele instancji” (#7, #15) |
+| `deploy.reload.retry.onExhausted`, `deploy.reload.retry.maxStaleTime` | `"keepReady"`: niedostępny magazyn nie wyłącza gotowej instancji z ruchu (do `maxStaleTime`), z raportowaniem jako błąd | §5 „Wiele instancji” (#1, R-47) |
+| `deploy.holdHttpNodeRequests` | żądania do tras węzłów czekają na restart flow zamiast 404 | §5 „Wstrzymywanie żądań HTTP węzłów…” (#8) |
+| `deploy.drainHttpNodeRequests` | wdrożenie, przeładowanie i (z `shutdownTimeout`) SIGTERM czekają na zapytania przyjęte przez `http in`; po limicie 503 | §5 „Drenaż zapytań HTTP…” (#40, #82) |
+| `deploy.hookTimeout`, hooki `preDeploy`/`postDeploy` | walidacja wdrożeń we wtyczce (`RED.hooks.add`); bez zarejestrowanego handlera nic się nie zmienia | §5 „Walidacja wdrożeń” (#10) |
+| `httpInMaxBodySize` | domyślny limit ciał `http in` (surowe, upload, tekst, binarne) | §5 „Nowe ustawienia” (#48) |
+| opcje węzła `http in`: „Max body size” (`maxBodySize`), „Przy zatrzymaniu” (`drainMode`) | limit ciała dla jednego węzła; `"long"` dla SSE i long-poll | §6 (#16), §5 „Drenaż zapytań HTTP…” (#82) |
+| API węzłów `node.registerHttpRoute` | trasy HTTP węzła zdejmowane przez runtime przy zatrzymaniu węzła | §5 „Trasy HTTP węzłów” (#11) |
+
+**B. Zmiany widoczne bez nowych ustawień** (poprawki; szczegóły w §6 i w CHANGELOG):
+- **Zatrzymanie runtime (#84):** od wejścia instancji w stan `stopping` wdrożenia (`POST /flows`, `/flow*`, API runtime)
+  i `POST /flows/state` `{state: "start"}` dostają **503 `runtime_stopping`** – nic nie zmieniono, powtórzyć po restarcie
+  albo na innej instancji (MIGRACJA §4.4). Wdrożenie zapisywane w chwili rozpoczęcia zatrzymania jest zapisane, ale nie
+  startuje (z `deploy.response: "started"`: 500 `deploy_start_failed` z `errors[].code: "runtime_stopping"`).
+- **Start w CLI (#67, #73):** nieudany `RED.start()` kończy się zatrzymaniem (najwyżej 5 s) i **kodem wyjścia 1**
+  (wcześniej 0 albo proces bez serwera); trwały błąd konfiguracji daje pętlę restartów (MIGRACJA §3.3). Zatrzymanie
+  w trakcie startu: `RED.start()` odrzuca błędem `startup_stopped` (aplikacja osadzająca pomija go w `catch`).
+- **`http in`, rozmiar ciała (#16, #48):** surowe ciało („Do not parse request body”) ma limit `apiMaxLength`
+  (domyślnie 5 MB), większe → **413** – integracja wysyłająca więcej musi podnieść limit; trasa z tą opcją i z parametrem
+  (`/hook/:id`) dostaje surowe ciało jako `Buffer`; ciało tekstowe dłuższe niż maksymalna długość napisu Node.js → **413**; pole tekstowe
+  uploadu multipart z numerem w nawiasach powyżej 100 albo z więcej niż 8 znakami `[` w nazwie → **413**. Parsery JSON
+  i urlencoded (`http in` – #48, Admin API – #63) mają limit najwyżej równy maksymalnej długości napisu Node.js.
+- **`http in`, trasy (#11):** przy zamknięciu węzła zdejmowane są tylko jego trasy; gdy dwa węzły mają tę samą ścieżkę
+  i metodę, po zamknięciu pierwszego odpowiada drugi (wcześniej 404).
+- **Edytor (#22, #30, #34, #37, #63):** błędy wdrożenia, palety, projektów, biblioteki i kontroli wersji pokazują
+  czytelny komunikat z pola `message` albo ogólny „nieoczekiwana odpowiedź serwera (HTTP …)”, tekst z serwera jako
+  tekst (escapowany), a nie HTML. `RED.utils.sanitize` escapuje też cudzysłowy – dodatki edytora, które wstawiają wynik
+  do `.text()`, zobaczą encje. Z `deploy.response: "started"` odpowiedź 500 z `rev` oznacza zapisane zmiany (edytor
+  przejmuje `rev`). Przeglądarka z językiem `pl` bez wybranego języka pokazuje edytor po polsku (tłumaczenie częściowe, Z-13, PR #6).
+- **Przeładowanie z magazynu (przy `deploy.reload.watch: true`; #2, #17, #26, #51):** zmiana samych poświadczeń wywołuje
+  przeładowanie (porównanie skrótu); flaga `credentialsChanged` w powiadomieniu `watchFlows` jest tylko wskazówką –
+  **zmiana dla wtyczki magazynu**, która wymuszała nią przeładowanie. Błędy ponownego odczytu i samego przeładowania
+  liczą się do `retry.attempts`: instancja przechodzi w `failed`, zamiast ponawiać bez końca.
+- **Koordynacja i `instanceId` (#3, #4, #75, #76):** `instanceId: undefined` (np. nieustawiona zmienna środowiskowa)
+  znaczy brak klucza (wcześniej błąd startu); wygenerowany identyfikator przy wtyczce koordynacji innej niż lokalna daje
+  ostrzeżenie; instancja `editorOnly` nie uruchamia wtyczki koordynacji i nigdy nie jest liderem; błąd wtyczki
+  zgłoszony dowolną wartością (także `undefined`) nie przerywa zatrzymania.
+- **Admin API, odpowiedzi błędów:** `GET /settings` z aktywnym projektem zwraca `export()` projektu – bez
+  `credentialSecret`, z zamaskowanymi adresami zdalnymi (#45); adres zdalny git z białym znakiem albo niezakodowanym
+  `/`, `?`, `#`, `@` w danych logowania → `git_invalid_argument` (#45); nowe kody błędów sesji `POST /auth/token`
+  i `POST /auth/revoke` (#68); zapis wpisu biblioteki czeka na zapis pliku, nieudany → 400 `unexpected_error`, nazwa
+  poza katalogiem typu albo kończąca się na `.$$$` → 403 (#54, #63); `PUT /projects/:id` z polem złego typu → 400
+  `invalid_request`, nieudany zapis → 400 `unexpected_error` (#63); odrzucone żądanie `/flow` nie przechodzi już przez
+  stan `deploying` (#10).
+- **Magazyn plików (#68):** nieudany zapis odrzuca operację, a plik zostaje bez zmian (wcześniej pusty albo ucięty).
+- **Hooki (#61, #63, #76):** handler odrzucający bez wartości albo rzucający synchronicznie wartość fałszywą kończy
+  łańcuch błędem (w hookach wiadomości wiadomość nie jest dostarczana); handler bez parametrów daje ostrzeżenie przy
+  rejestracji – zadeklarować `(payload)`.
+- **Log:** nowe komunikaty (np. `Stopping Node-RED (startup-error)`, `The flows are not started: the runtime is
+  stopping`) – narzędzia parsujące log muszą je tolerować.
+
+**C. Zalecane zmiany konfiguracji** (wartości i uzasadnienie: §2):
+- `startupTimeout: 120000` i budżet `startupProbe` większy niż `startupTimeout` + 5 s + czas wczytania flow (§2,
+  [MIGRACJA.md](design/engine-extensions/MIGRACJA.md) §3.3);
+- `health: { enabled: true, port: 1881, unreadyGrace: 15000 }` i `shutdownTimeout: 25000`;
+  `terminationGracePeriodSeconds` co najmniej 45 s, zalecane 60 s (§2 „Zatrzymanie”);
+- `deploy.reload.retry.onExhausted: "keepReady"` – przy `deploy.reload.watch: true` (§5 „Wiele instancji”);
+- `deploy.holdHttpNodeRequests: { enabled: true }` (§5 „Wstrzymywanie żądań HTTP węzłów…”);
+- `deploy.drainHttpNodeRequests: { enabled: true, timeout: 10000 }` (5000–10000 dla Bot-Engine), a endpointy SSE
+  i long-poll na `http in` z „Przy zatrzymaniu” = „Połączenie długotrwałe” (`drainMode: "long"`) (§5 „Drenaż zapytań HTTP…”);
+- `httpInMaxBodySize: "50mb"` – po sprawdzeniu największych ciał wysyłanych przez integracje (§5 „Nowe ustawienia”);
+- jawny `instanceId`, taki sam na wszystkich instancjach współdzielących magazyn (§5 „Uwagi konfiguracyjne”);
+- walidacja wdrożeń (np. unikalność `botId`) jako wtyczka z hookiem `preDeploy` i przełącznikiem awaryjnym (§2,
+  MIGRACJA §4.3);
+- narzędzia Admin API: obsługa 503 `runtime_stopping`, `deploy_hook_failed`, `deploy_hook_timeout` i 409
+  `http_drain_in_progress` – lista kontrolna MIGRACJA §7.

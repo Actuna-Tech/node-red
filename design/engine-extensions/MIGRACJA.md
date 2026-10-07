@@ -6,7 +6,16 @@ Data: 2026-10-03 · status: **obowiązujący dla planowania** (nazwy wg D-02 –
 mogą się doprecyzować w trakcie realizacji; zmiany oznaczone pakietem) · decyzje: [ANALIZA.md](ANALIZA.md) §7.
 
 > **Rejestr decyzji R-01…R-32 zamknięty (2026-10-03)** – [REJESTR-DECYZJI.md](REJESTR-DECYZJI.md). Kontrakty widoczne z
-> zewnątrz, które z niego wynikają, są naniesione poniżej z oznaczeniem „(R-xx)”; naniesione także doprecyzowania R-33…R-42.
+> zewnątrz, które z niego wynikają, są naniesione poniżej z oznaczeniem „(R-xx)”; naniesione także doprecyzowania R-33…R-54.
+>
+> **Aktualizacja z `5.0.7-actuna.1` do `5.0.7-actuna.2`:** nowe ustawienia, zmiany kontraktów widoczne bez ustawień
+> (m.in. 503 `runtime_stopping`, 413 `http in`, kod wyjścia 1 nieudanego startu) i zalecana kolejność –
+> [FORK.md](../../FORK.md) §9.2; szczegóły kontraktów – rozdziały niżej.
+>
+> **Stan realizacji (`5.0.7-actuna.2`):** Z-03, Z-12 i kontrola `Origin` dla `/comms` (R-06) są w tym przewodniku
+> opisane według przyjętych nazw i kontraktów, ale **nie są zrealizowane**: ustawienia `externalModules.palette.allowDowngrade`,
+> `httpAdminCommsOrigins`, `editorTheme.embedding.allowedOrigins`, `editorTheme.auth.tokenStorage` nie istnieją, a kody
+> `node_type_not_permitted` i `module_downgrade_not_allowed` nie występują (FORK §8).
 
 ## 1. Po co ten dokument
 
@@ -77,11 +86,11 @@ nowego flow tuż po wdrożeniu (wraca zachowanie 5.0.7).
 | Z-10 | – | `coordination: {plugin, options}`; `singleInstance` w węźle `inject` | wtyczka lokalna | wtyczkę zewnętrzną wybiera się **tylko jawnie** w `coordination.plugin` (bez automatycznego wykrywania) (R-21) |
 | Z-11 | `readOnlyUserDir` | `readOnlyUserDir` + zmienna środowiskowa `NODE_RED_READ_ONLY_USER_DIR` (R-33) | `false` | inne niż istniejące `readOnly` magazynu plikowego (`readOnly` opisane w szablonie `settings.js` – R-40); zmienna działa także w CLI przed wyborem pliku ustawień (R-18); chroni także bezwzględny `flowFile` (R-40) |
 | Z-15 | – | `editorOnly` | `false` | wyklucza się z `disableEditor`; wybrane zamiast `runtimeState.autoStart` (R-19); tylko `true` włącza (inna wartość – ostrzeżenie) |
-| Z-03 | – | `externalModules.palette.allowDowngrade` | `true` | |
-| Z-03 | `externalModules.palette.upload`, `editorTheme.palette.upload` | `externalModules.palette.allowUpload` (kanoniczne) | upload dozwolony | stare nazwy działają jako przestarzałe aliasy z ostrzeżeniem w logu – przejść na nazwę kanoniczną (R-17) |
-| P-04 / D-07 | – | `httpAdminCommsOrigins` (R-33) | brak = zachowanie 5.0.7 (bez kontroli, ostrzeżenie w logu przy starcie) (R-35) | lista dozwolonych `Origin` dla `/comms`; przy ustawionej liście przyjmowane są tylko wymienione źródła oraz własne źródło edytora (R-35); w naszych instalacjach **zawsze ustawić** (R-06, R-35) |
-| Z-12.10 | – | `editorTheme.embedding.allowedOrigins` (R-33) | brak = zachowanie 5.0.7 (bez kontroli, ostrzeżenie w logu przy starcie) (R-35) | źródła dozwolone dla `postMessage` osadzonego edytora, w tym kanału `set-theme` (R-28); przy ustawionej liście – tylko wymienione źródła; w naszych instalacjach **zawsze ustawić** (R-35) |
-| Z-12.02 | – | `editorTheme.auth.tokenStorage: "local" \| "session"` (R-33) | `"local"` | przechowywanie tokenu: `localStorage` (jak 5.0.7) lub `sessionStorage` (R-26) |
+| Z-03 | – | `externalModules.palette.allowDowngrade` | `true` | **niezrealizowane w `5.0.7-actuna.2`** (kolejny etap, FORK §8) – ustawienie nie działa |
+| Z-03 | `externalModules.palette.upload`, `editorTheme.palette.upload` | `externalModules.palette.allowUpload` (kanoniczne) | upload dozwolony | aliasy Z-03 **niezrealizowane w `5.0.7-actuna.2`** – działa jak w 5.0.7 (`allowUpload`; `editorTheme.palette.upload` z ostrzeżeniem); po realizacji Z-03: stare nazwy działają jako przestarzałe aliasy z ostrzeżeniem w logu – przejść na nazwę kanoniczną (R-17) |
+| P-04 / D-07 | – | `httpAdminCommsOrigins` (R-33) | brak = zachowanie 5.0.7 (bez kontroli, ostrzeżenie w logu przy starcie) (R-35) | **niezrealizowane w `5.0.7-actuna.2`** (kolejny etap, FORK §8) – ustawienie nie działa; lista dozwolonych `Origin` dla `/comms`; przy ustawionej liście przyjmowane są tylko wymienione źródła oraz własne źródło edytora (R-35); w naszych instalacjach **zawsze ustawić** (R-06, R-35) |
+| Z-12.10 | – | `editorTheme.embedding.allowedOrigins` (R-33) | brak = zachowanie 5.0.7 (bez kontroli, ostrzeżenie w logu przy starcie) (R-35) | **niezrealizowane w `5.0.7-actuna.2`** (kolejny etap, FORK §8) – ustawienie nie działa; źródła dozwolone dla `postMessage` osadzonego edytora, w tym kanału `set-theme` (R-28); przy ustawionej liście – tylko wymienione źródła; w naszych instalacjach **zawsze ustawić** (R-35) |
+| Z-12.02 | – | `editorTheme.auth.tokenStorage: "local" \| "session"` (R-33) | `"local"` | **niezrealizowane w `5.0.7-actuna.2`** (kolejny etap, FORK §8) – ustawienie nie działa; przechowywanie tokenu: `localStorage` (jak 5.0.7) lub `sessionStorage` (R-26) |
 | Z-14 | – | `editorTheme.flowLayout.enabled` | `false` | układ flow (pionowy/hybrydowy) |
 
 ### 3.3 Kubernetes (wartości przykładowe dla rozmów do ~15 min)
@@ -226,7 +235,7 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
   (bez `done` i bez zwróconej obietnicy wywołanie nigdy się nie kończy, a po 10 wdrożeniach handler przestaje być wołany do restartu).
 - Hooki **nie** są wywoływane przy starcie procesu (wczytanie flow z magazynu), `POST /flows/state` ani przy operacjach Projektów (R-15);
   `preDeploy` nie jest wywoływany także przy przeładowaniu z magazynu (Z-09), `postDeploy` – tak (`source: "storage"`, gdy zapisano).
-- Uprawnienia do typów węzłów (Z-12.08): wdrożenie z dodanym/zmienionym węzłem typu niedozwolonego dla użytkownika
+- Uprawnienia do typów węzłów (Z-12.08, **niezrealizowane w `5.0.7-actuna.2`**): wdrożenie z dodanym/zmienionym węzłem typu niedozwolonego dla użytkownika
   jest odrzucane w całości – **403 `node_type_not_permitted`** z `types[]` (R-27, R-33). Obsługiwane są obie listy
   (R-42): odbierająca (`["*", "!nodes.type.exec"]`) i dozwolonych (`["!nodes.type.*", "nodes.type.inject", …]`);
   przyznanie konkretnego typu ma pierwszeństwo przed `!nodes.type.*`, odebranie konkretnego typu – przed wszystkim.
@@ -357,7 +366,7 @@ sprawdzenie każdego narzędzia (lista kontrolna §7).
 - Przy **wyłączonym `adminAuth`** pakiet `auth` (np. token zapamiętany przez przeglądarkę) dostaje odpowiedź **`auth ok`**,
   połączenie działa dalej (R-05) – **zmiana względem łatki 0002** (tam: `auth fail`). Klienty nie powinny traktować
   `auth ok` jako dowodu uwierzytelnienia.
-- Kontrola nagłówka `Origin` (R-06): ustawienie `httpAdminCommsOrigins` z listą dozwolonych źródeł (R-33). Brak
+- Kontrola nagłówka `Origin` (R-06) – **niezrealizowana w `5.0.7-actuna.2`** (kolejny etap): ustawienie `httpAdminCommsOrigins` z listą dozwolonych źródeł (R-33). Brak
   ustawienia = zachowanie 5.0.7 (bez kontroli, ostrzeżenie w logu przy starcie) (R-35). Przy ustawionej liście
   połączenie z niedozwolonego źródła jest odrzucane; własne źródło edytora jest przyjmowane zawsze (R-35) – klienty
   spoza przeglądarki i edytory osadzone w innych domenach muszą być na liście.
@@ -432,7 +441,7 @@ zewnętrznych rejestrujących trasy na `RED.httpNode`. Przy `deploy.drainHttpNod
 |---|---|---|
 | Wtyczka magazynu | opcjonalna funkcja `watchFlows(callback)` – powiadomienia o zmianie flow z innej instancji | Z-09 |
 | Wtyczka koordynacji | nowy typ wtyczki `node-red-coordination` (lider, zajęcie zadania); wybór tylko jawnie w `coordination.plugin`; `inject` z `singleInstance`: cron – zajęcie klucza `<id>:<czas>` (dokładnie raz), interwał – lider (D-14); węzeł na instancji niebędącej liderem pokazuje status „standby”; `mqtt in` z `singleInstance` – osobny pakiet (R-21); `start` tylko łączy z koordynatorem i nie czeka na przywództwo; przy `startupTimeout` (#71) start wtyczki, który rozwiąże się po limicie albo po zatrzymaniu (#73), jest od razu zakończony wywołaniami `resign()` i `stop()` (`stop()` także wtedy, gdy `resign()` się nie powiedzie), a start, który nigdy się nie rozstrzygnie, nie może zostać zwolniony – wtyczka powinna mieć własne limity połączenia | Z-10 |
-| Hooki | `preDeploy` (tylko walidacja: 400 `deploy_rejected` + `reason`, 503 `deploy_hook_failed`, 503 `deploy_hook_timeout`; §4.3), `postDeploy` (source `api`/`internal`/`storage`, asynchronicznie), `preReload` (bez weta), `preShutdown` (z `reason`); brak hooków wdrożenia przy starcie procesu i operacjach Projektów (R-15, R-20, R-23, R-50); **`preDeploy` i `postDeploy` rejestruje się tylko przez `RED.hooks.add`** (wtyczka, węzeł); `preReload` i `preShutdown` także z ustawienia `hooks` w `settings.js` (rejestracja przy `init`, #7). **Handler bez parametrów** (`function(){}`, `() => {}`, `async () => {}`) hooka wywoływanego przez `trigger` (wiadomości, instalacja modułów, `preReload`, `preShutdown`, hooki edytora) dostaje `(payload, done)` i musi wywołać `done`, inaczej łańcuch się nie kończy – jak w upstream; od #63 rejestracja zapisuje jedno ostrzeżenie (runtime: log `warn` z miejscem rejestracji, edytor: `console.warn`) – zadeklaruj `(payload)`. `preDeploy` i `postDeploy` nie są objęte (wywoływane jako `fn(event)`, bez ostrzeżenia). Od #63 synchroniczne `throw` wartości fałszywej (`undefined`, `null`, `false`, `0`, `""` …) kończy łańcuch błędem, a każdy krok handlera kończy się raz (pierwszy wynik) | Z-06, Z-09, Z-08 |
+| Hooki | `preDeploy` (tylko walidacja: 400 `deploy_rejected` + `reason`, 503 `deploy_hook_failed`, 503 `deploy_hook_timeout`; §4.3), `postDeploy` (source `api`/`internal`/`storage`, asynchronicznie), `preReload` (bez weta), `preShutdown` (z `reason`); brak hooków wdrożenia przy starcie procesu i operacjach Projektów (R-15, R-20, R-23, R-50); **`preDeploy` i `postDeploy` rejestruje się tylko przez `RED.hooks.add`** (wtyczka, węzeł); `preReload` i `preShutdown` także z ustawienia `hooks` w `settings.js` (rejestracja przy `init`, #7). **Handler bez parametrów** (`function(){}`, `() => {}`, `async () => {}`) hooka wywoływanego przez `trigger` (wiadomości, instalacja modułów, `preReload`, `preShutdown`, hooki edytora) dostaje `(payload, done)` i musi wywołać `done`, inaczej łańcuch się nie kończy – jak wcześniej; od #63 rejestracja zapisuje jedno ostrzeżenie (runtime: log `warn` z miejscem rejestracji, edytor: `console.warn`) – zadeklaruj `(payload)`. `preDeploy` i `postDeploy` nie są objęte (wywoływane jako `fn(event)`, bez ostrzeżenia). Od #63 synchroniczne `throw` wartości fałszywej (`undefined`, `null`, `false`, `0`, `""` …) kończy łańcuch błędem, a każdy krok handlera kończy się raz (pierwszy wynik) | Z-06, Z-09, Z-08 |
 | Trasy administracyjne bloczków | przy `httpAdminNodeRoutes: "authenticated"` trasa bez uprawnienia wymaga sesji; publiczne – `RED.auth.publicRoute()` | Z-02 |
 | Trasy HTTP bloczków | `node.registerHttpRoute(method, path, ...handlers)` → zamrożony uchwyt `{method, path, remove()}`; runtime zdejmuje trasę sam przy każdym zatrzymaniu węzła (wdrożenie, usunięcie, zatrzymanie flow, `RED.stop`) – bez własnego `close` i bez `_router`; `remove()` zdejmuje wcześniej; zob. §5.3 (#11, R-53) | Z-07 |
 | Dodatki edytora (15 obecnych) | przeniesienie na API z Z-12.01…Z-12.14 (bez selektorów DOM); kolejność pakietów Z-12c → a → b → d → e; przestarzałe API – min. jedna wersja minor z ostrzeżeniem (R-24) | Z-12 |
@@ -591,9 +600,9 @@ Nagłówki „Modified by Actuna Sp. z o.o.” – zachowane w forku (D-19); pli
 - [ ] K8s: sondy i drenaż wg §3.3.
 - [ ] Dodatki edytora przeniesione na API Z-12 (po wdrożeniu Z-12); linki w formacie `#flow/<id>/node/<id>`; źródła osadzenia w `editorTheme.embedding.allowedOrigins` (R-28).
 - [ ] Narzędzia obsługują 503 `runtime_stopping` (#84: instancja się zatrzymuje, nic nie zmieniono – ponowienie po restarcie albo na innej instancji; w `deploy_start_failed` jako `errors[].code` – zapisane, nie powtarzać).
-- [ ] Narzędzia obsługują 503 `deploy_hook_timeout` i `deploy_hook_failed` (ponowienie później; nic nie zapisano), 403 `node_type_not_permitted`, 400 `read_only_user_dir`; `DELETE /flow/:id` z `?rev=` (R-14, R-15, R-18, R-27).
+- [ ] Narzędzia obsługują 503 `deploy_hook_timeout` i `deploy_hook_failed` (ponowienie później; nic nie zapisano), 403 `node_type_not_permitted` (po realizacji Z-12.08), 400 `read_only_user_dir`; `DELETE /flow/:id` z `?rev=` (R-14, R-15, R-18, R-27).
 - [ ] Monitoring stanu: nazwy stanów i zdarzenie `instance:state` wg §4.5; brak parsowania treści 503 sondy (R-22, R-23).
-- [ ] Lista `Origin` dla `/comms` i `editorTheme.embedding.allowedOrigins` ustawione na naszych instalacjach (R-06, R-35); klienty `/comms` bez założenia `auth fail` przy wyłączonym `adminAuth` (R-05).
+- [ ] Lista `Origin` dla `/comms` i `editorTheme.embedding.allowedOrigins` ustawione na naszych instalacjach (R-06, R-35) – po realizacji tych ustawień (w `5.0.7-actuna.2` nie istnieją); klienty `/comms` bez założenia `auth fail` przy wyłączonym `adminAuth` (R-05).
 - [ ] Konfiguracja uploadu tylko przez `externalModules.palette.allowUpload` (R-17); instancje tylko do odczytu – `readOnlyUserDir` lub zmienna środowiskowa (R-18).
 - [ ] Drenaż HTTP (#40, §4.7): limit czasu żądań Admin API dłuższy niż `deploy.drainHttpNodeRequests.timeout`; klienty HTTP obsługują 503 `http_drain_not_accepted` (ponowienie) i `http_drain_outcome_unknown` (klucz idempotencji; GET traktowany jako bezpieczny); węzły zewnętrzne z trasami na `httpNode` – opcjonalny kontrakt symbolu (połączenia długotrwałe – handler bez znacznika); endpointy SSE/long-poll na `http in` – `drainMode: "long"`; skrypty usuwające lub wyłączające moduły – ponowienie po 409 `http_drain_in_progress`; odbiorcy `instance:state` – pole `httpDrain` (#82).
 - [ ] Teksty i dokumentacja po polsku zgodne z terminologią §5.1 (R-29).
@@ -609,6 +618,7 @@ Nagłówki „Modified by Actuna Sp. z o.o.” – zachowane w forku (D-19); pli
 | – | `DELETE /flow/:id` z wymogiem rewizji | **rozstrzygnięte – R-14** (§4.1) |
 | R-01…R-32 | pozostałe decyzje wpływające na przewodnik | **rozstrzygnięte** – [REJESTR-DECYZJI.md](REJESTR-DECYZJI.md) |
 | R-33…R-42 | doprecyzowania (nazwy robocze, 201/`If-Match`, listy źródeł, `retry`, `startTimeout`, `editorOnly`, listy typów) | **rozstrzygnięte** – [REJESTR-DECYZJI.md](REJESTR-DECYZJI.md), naniesione powyżej |
+| R-43…R-54 | doprecyzowania i decyzje zgłoszeń (m.in. R-47 `onExhausted`, R-48 wynik startu, R-49 drenaż HTTP, R-50 `preDeploy`/`postDeploy`, R-51 `startupTimeout`, R-53 trasy węzłów, R-54 wdrożenie w trakcie zatrzymania) | **rozstrzygnięte** – [REJESTR-DECYZJI.md](REJESTR-DECYZJI.md), naniesione powyżej |
 
 ### Uzupełnienie (zgłoszenia #4, #5)
 - Kształt hooków `preReload`/`preShutdown`: `async (payload) => { … }` – dokładnie jeden parametr; inna liczba

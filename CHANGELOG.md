@@ -1,4 +1,14 @@
-#### Unreleased: Instances and reload
+#### Unreleased
+
+#### 5.0.7-actuna.2: Actuna fork release (2026-10-07)
+
+Changes since `5.0.7-actuna.1`. The versions of the packages stay `5.0.7`; the release is the git tag. New
+behaviour is off by default. Active without a setting are, among others: the Polish editor for a browser set to `pl`
+(partial translation, Z-13) and the default 5 MB limit of the raw body of `http in` (`apiMaxLength`, #16). The changes
+that are visible without a new setting, the new settings and the recommended configuration are listed in the upgrade
+note of `FORK.md` (section 9).
+
+##### Instances and reload
 
  - Fix (#51): an error of the comparison of the credentials in the reread under the deploy lock (for example
    `credentials_digest_failed`: a getter or a Proxy of a storage plugin object that throws) has the code `reload_failed`,
@@ -186,6 +196,7 @@
    depends on the setting, see #16)
 
 Features
+
  - Polish (`pl`) translation of the editor (`editor.json`, 317 keys) and of the core nodes
    (`messages.json`, 102 keys), partial: keys without a translation fall back to English.
    The runtime messages, the JSONata and info-tip catalogs and the help of the other nodes are not
@@ -199,131 +210,6 @@ Features
    instead of "node", "node'a", "node'y" and "bloczek", "subflow" instead of "podflow", and the impersonal form instead of the second
    person ("Można zmodyfikować flow…" instead of "Możesz zmodyfikować flow…"). Only the wording changes,
    the keys are unchanged (Z-13, #21).
-
- - New API for the coordination of instances that run the same flows: `RED.coordination`
-   for nodes (`isLeader()`, `onLeaderChange(node, listener)`, `claim(key, ttlMs)`,
-   `info()`) and a plugin type `node-red-coordination` for coordination plugins installed
-   from outside the core. The plugin is selected only explicitly with the new setting
-   `coordination: {plugin, options}`; without it the built-in local coordination is used
-   (a single instance: always the leader, claims in memory) and the behaviour is unchanged.
-   An unknown plugin or a failing plugin start fails the start of the runtime. The
-   coordination starts before the flows start; `RED.stop()` resigns the leadership before
-   the flows stop and stops the plugin after them.
- - Inject node: new option "Run only on one instance" (`singleInstance`, off by default).
-   With a coordination plugin a scheduled trigger ("at a specific time", "interval between
-   times") fires on the instance that claims it, an "interval" and "inject once" fire only
-   on the leader and the node shows the "standby" status on the other instances. The button
-   of the node is not affected. Nodes without the option are exported as before.
- - Reload of the flows after a change in storage made by another instance: new setting
-   `deploy.reload: { watch, type, preReloadTimeout, concurrency, retry }` (`watch: false` by
-   default - nothing changes without it) and the optional function `watchFlows(callback)` of
-   storage plugins (without it the setting only logs a warning). The flows are reloaded in the
-   process - storage is read again under the deploy lock and the newest revision is started,
-   nothing is saved, stopped flows are not started, the process and its HTTP server keep running.
-   `type: "full"` (default) restarts all flows, `"diff"` only the changed ones (a changed global
-   configuration or credentials restart all). Own writes and duplicate notifications are skipped
-   by comparing the revisions; notifications during a reload are coalesced into one more reload,
-   those during the start are handled after it; a deployment on this instance supersedes a pending
-   reload. The instance state is `reloadPending` → `reloading`; `/ready` answers 503 from the
-   start of the drain until the reload has completed
- - New hook `preReload` (`{rev, activeRev, type, changedFlows, credentialsChanged, deadline,
-   signal}`, frozen): drains the work in progress before the reload, at most
-   `deploy.reload.preReloadTimeout` (default 20 minutes). It can only delay the reload - a
-   failure, `false` or the timeout are logged and the flows are reloaded anyway. `signal` is
-   aborted on shutdown (`"stopping"`) or when a deployment supersedes the reload
-   (`"superseded"`). Flows changed during the drain outside `changedFlows` get one more
-   `preReload` (at most one round)
- - `deploy.reload.concurrency` (an integer): at most this many instances drain and reload at the
-   same time, through reload slots of a coordination plugin; waiting instances keep the old
-   configuration and stay ready, also without a connection to the coordinator. No effect with the
-   local coordination (warning)
- - `deploy.reload.retry: { min, max, attempts }` (default `1000`, `60000` ms, `10`): a failed
-   read of storage is retried with an exponential delay; after `attempts` failures the instance
-   state is `failed` (`/ready` 503) and the running flows are not stopped. With `watch: true` a
-   rejected registration of `watchFlows` fails the start
- - The file storage provides `watchFlows`: `flowFile` and its credentials file are watched (file
-   system events and polling - also on a shared volume, with `readOnly` and `readOnlyUserDir`);
-   own writes and rewrites with the same content are not reported. Not available with projects
- - A reload reads storage strictly (`getFlows({strict: true})`, also passed to storage plugins): a
-   read error or an incomplete configuration - a missing, empty or invalid flow file of the file
-   storage, a plugin result without an array of flows - is a failed read (retries, then `failed`)
-   and never reloads an empty configuration. The read at start is unchanged
- - A reload superseded by another operation on the instance (`POST /flows/state` during the
-   drain, or a deployment that fails after it started - for example 400 `read_only_user_dir`) is
-   not lost: the revision in storage is compared with the active one again and the reload is
-   resumed when they differ
- - After the retries of a failed read were exhausted (`failed`) storage is read again every
-   `deploy.reload.retry.max`: the instance becomes ready again once storage can be read, without
-   a new notification. The timers of the reload do not keep the process alive and its waits end
-   when the runtime stops
- - The file storage keeps the last known content per observer, so two observers of the same file
-   in one process are both notified
- - New setting `editorOnly` (default `false`): an editor-only instance loads the flows and saves
-   deployments but never starts the flows. The instance state is `loaded` (`/health/ready` 200),
-   `runtimeFlowState` is neither read nor saved and safe mode is not ended by a deployment. With
-   `deploy.response: "started"` deployments answer `{rev, started: false}` (`POST /flows`, and
-   `POST /flow`, `PUT /flow/:id` with the v2 api). `POST /flows/state` start answers 409
-   `editor_only`, stop has no effect. Missing node types only log a warning (the state stays
-   `loaded`, not `failed`) and the modules of the function node are not installed. Debug messages, node status and admin routes of node
-   instances are not available on such an instance
-
-Editor
-
- - On an editor-only instance the editor shows that the flows are not run on this instance, offers
-   no Start/Stop flows, and disables "Restart Flows", the node buttons (for example inject) and
-   the "Inject now" button of the inject dialog with a tooltip
-
-Runtime
-
- - New internal module of the instance state (`runtime/lib/state.js`, available to the runtime as
-   `runtime.state`): states `init`, `starting`, `ready`, `deploying`, `reloadPending`, `reloading`,
-   `idle`, `loaded`, `failed`, `stopping`, `stopped`; every change emits the event `instance:state`
-   with `{state, previous, reason}` (plus `since`, `draining`, `errors`) on `RED.events`. The module
-   is passive - responses, logs and the order of the existing events do not change
- - `RED.stop(reason)` / `runtime.stop(reason)`: an optional reason (for example `"SIGTERM"`) given
-   to `instance:state` and logged; without it nothing more is logged
- - A failure to read the flows or to start them when the runtime starts is no longer swallowed
-   silently: the instance state is `failed` (the log messages and the result of `RED.start()` are
-   unchanged)
- - The result of the start of the flows reports `flowsRunning: false` with a `reason` when the
-   flows were not started on purpose (safe mode, flows stopped through `POST /flows/state`)
- - New setting `health: { enabled, path, port, host }` (disabled by default): health probes
-   `<path>/live` (200 while the process runs) and `<path>/ready` (200 when the flows run or, on an
-   editor-only instance, are loaded; otherwise 503 with the constant body `{"status":"unavailable"}`),
-   without authentication, `Cache-Control: no-store`, 405 for other methods, 404 for other paths.
-   Without `port` they are mounted on the main server before any authentication and the server
-   listens even with `httpAdminRoot: false` and `httpNodeRoot: false`; with `port` a separate
-   server is started (`host` defaults to `uiHost`); a port in use fails the start
-   (`health.port-in-use`)
- - New setting `shutdownTimeout` (ms, not set by default): on a stop signal `/ready` answers 503 at
-   once, the new hook `preShutdown` (`{reason, deadline, signal}`) is called and waited for at most
-   `shutdownTimeout`, then the flows stop. Without the setting the hook is not called and the flows
-   stop at once as before. A second signal during the drain stops at once
- - With `health.enabled` the HTTP server is closed (idle connections too) after the flows stopped
-   on a stop signal; without it the shutdown is unchanged
- - New api for embedding applications `RED.health` (`enabled`, `path`, `usesMainServer`, `handler`,
-   `shutdown({reason, signal})`, `closeServer(server, limit)`)
- - The CLI logs a failed shutdown (`Shutdown failed: ...`) and exits with 1 instead of an
-   unhandled rejection
- - The CLI passes the signal as the stop reason (`RED.stop("SIGTERM")`), logged as
-   `Stopping Node-RED (SIGTERM)`
- - New setting `readOnlyUserDir` (default `false`) and the CLI environment variable
-   `NODE_RED_READ_ONLY_USER_DIR`: the runtime does not write to the user directory. Palette
-   install/update/remove/upload, auto-install of missing modules, modules of the function node and
-   Projects are disabled (settings set to `true` are overridden with a warning); one log block at
-   start lists the disabled features. With the file storage a deployment and saving a library entry
-   are rejected with 400 `read_only_user_dir` (also for an absolute `flowFile` outside the user
-   directory), and so is removing a palette module (`DELETE /nodes/:module`, before: `npm remove`
-   was run); the installers reject install, update, upload and remove and the modules of the
-   function node with `read_only_user_dir` whatever the other settings say; settings and sessions are kept in memory only; a `localfilesystem` context store in
-   the user directory fails the start. With the environment variable the CLI does not copy the
-   default settings file to `~/.node-red`
- - The CLI no longer fails with an exception when the default settings file cannot be copied to the
-   user directory: it warns and uses the default settings file
- - The existing `readOnly` setting is described in the settings template
- - With `readOnly` or `readOnlyUserDir` the file storage reads the backup of an empty flow or
-   credentials file without copying it over the file (before, the backup was copied also with
-   `readOnly`)
 
 Fixes
 
@@ -387,7 +273,7 @@ Documentation
    (`instanceId: process.env.NODE_RED_INSTANCE_ID`) and in `FORK.md`: a cluster that shares a
    storage needs the same explicit id on all instances (#3)
 
-#### Unreleased: Security and fixes
+##### Security and fixes
 
 Security
 
@@ -398,15 +284,12 @@ Security
    a secret from the message of the cause. The rule of #2 does not change: a failed digest of the running
    configuration is "no change" only for the same revision with an unknown digest, otherwise the error goes on
    (as `reload_failed` in the comparison of the cycle and in the reread under the deploy lock, #51). A key that does not decrypt still gives `credentials_load_failed`
- - Prevent crash on websocket auth packet when admin auth is disabled
- - Render the username as text in the editor user menu and login notification
  - Do not return `credentialSecret` and the remote URLs with their credentials in `GET /settings`
    (permission `settings.read`, so also for a read-only role). With an active project the response contained the
    whole project object (`runtime/lib/api/settings.js`): the project's `credentialSecret` (the key to the encrypted
    flow credentials) and `remotes` with `user:password` of the remote URLs. It now contains the same `export()` of
-   the project as `GET /projects/:id` (no `credentialSecret`, credentials of the URLs hidden). The code is the same
-   in upstream Node-RED, so this is probably a leak inherited from it. A `Project` that is serialized by accident
-   (`JSON.stringify`) now gives its `export()` as well (#45)
+   the project as `GET /projects/:id` (no `credentialSecret`, credentials of the URLs hidden). A `Project` that is serialized by
+   accident (`JSON.stringify`) now gives its `export()` as well (#45)
  - Hide the credentials of a git URL (`https://user:pass@host`, `https://token@host`, `ssh://user:pass@host`)
    as `//***@` in the projects runtime: in the error of a git command (`message`, `stderr`, `stdout`, `value`) and so in
    the API response and the audit log, in the trace log of the command, and in the `event-log` of `exec.run` (command
@@ -453,8 +336,6 @@ Fixes
    after the restart. Nothing changes outside the states `stopping` and `stopped`. Tests: `stop-race_spec.js`,
    `flows/index_spec.js`, `pipeline_spec.js`, `api/flows_spec.js`, `reload_spec.js`, `state_spec.js`,
    `index_spec.js`, `node-red/deploy-stop-race_spec.js`
- - Refresh the user details in the editor after logging in again when the session expired
- - Do not send comms subscriptions before websocket authentication completes
  - Count the failures of the reload from storage (`deploy.reload`) until the whole cycle
    succeeds, not until the first read succeeds: a failure of the second read under the deploy lock
    or of the reload itself (for example `credentials_load_failed`) now exhausts
@@ -640,7 +521,7 @@ Fixes
  - Fix (#61): a hook handler that rejects without a value ends the chain with an error. A handler with one
    argument whose promise rejected with a falsy value (`Promise.reject()`, `throw undefined` in an `async`
    function, `null`, `false`, `0`, `-0`, `0n`, `NaN` or `""`) was called again without end in a loop of
-   microtasks, so timers, I/O and HTTP stopped and the process hung (an upstream defect of 5.0.7). Now
+   microtasks, so timers, I/O and HTTP stopped and the process hung. Now
    `RED.hooks.trigger` rejects (promise form) or calls `done` (callback form) once with an `Error` with the message
    `Hook handler rejected without an error: <value>` (for an empty string the value is `""`, quotes included), the
    handler is called once and the next handlers are not called; the caller follows its existing error path
@@ -709,7 +590,7 @@ Fixes
  - Fix (#63): Admin API: the JSON and urlencoded parsers get the maximum string length of Node.js as their limit
    when `apiMaxLength` gives a larger size (by the size rules of `body-parser`), the same rule as the parsers of
    `http in` since #48; any other `apiMaxLength` is passed to them unchanged, and the default stays 5 MB. A larger
-   body takes the existing error path (413). The parsers read the body before authentication, as in upstream
+   body takes the existing error path (413). The parsers read the body before authentication, as before
  - Fix (#63): `RED.hooks` (runtime and editor): a handler that throws a falsy value synchronously (`undefined`,
    `null`, `false`, `0`, `-0`, `0n`, `NaN`, `""`) ends the chain with the error of #61 (`Hook handler rejected without an
    error: <value>`); before, depending on the value, the chain went on without the later handlers, stopped without an
@@ -721,7 +602,7 @@ Fixes
    cannot be printed gives `Error("(the value cannot be printed)")`)
  - Fix (#63): `RED.hooks.add` writes one warning (runtime: `warn` log with the place of the registration; editor:
    `console.warn`) when a handler declares no parameters: such a handler is called with `(payload, done)` and must call
-   `done`, otherwise the chain does not end - the behaviour is unchanged, as in upstream. `preDeploy` and `postDeploy`
+   `done`, otherwise the chain does not end - the behaviour is unchanged, as before. `preDeploy` and `postDeploy`
    handlers are called as `fn(event)` and get no warning
  - Fix (#63): the library list does not show a file whose name ends with `.$$$` (the working file of a write, left
    after a failed rename), and saving a library entry with such a name is refused with 403 `forbidden`; a `flows`
@@ -755,7 +636,7 @@ Features
    `httpNodeAuth` and the hold of the requests (`deploy.holdHttpNodeRequests`), instead of the top of the
    root app, so a request that the authentication rejects (or the hold keeps) no longer makes the runtime
    buffer its body first. It still runs before `httpNodeMiddleware` and the routes, so they find the raw
-   body in `req.body` as before, up to the highest limit of the nodes on the key (upstream had no limit): a
+   body in `req.body` as before, up to the highest limit of the nodes on the key (before, there was no limit): a
    larger body is answered with 413 (with the CORS headers) at once and nothing else on the route sees it,
    neither a middleware, nor another route, nor a node without the option. Loading the module again on the same
    app (`RED.stop()` and `RED.start()` in one process) replaces the capture instead of adding another. Do not base authorization on
@@ -802,7 +683,7 @@ Features
    does not depend on the size limit. Without both limits the number of parts is not limited, as before. Other
    errors of the multipart parser are answered with 500 and a warning of the node, as before
 
-#### Unreleased: Engine extensions
+##### Engine extensions
 
 Features
 
@@ -862,6 +743,177 @@ Features
    like `runtime-state`. Not emitted for a deployment that answered in time or in the
    default mode (#22, R-48)
 
+Editor
+
+ - The editor shows its own texts for the errors of the `preDeploy` hook (#10): `deploy_rejected` as "Deployment rejected by
+   validation: <message of the validator>" (escaped; `reason` and `details` are not shown), `deploy_hook_timeout` and
+   `deploy_hook_failed` as a fixed text (en-US and pl); nothing was saved, so the changes stay marked as changed
+
+Fixes
+
+ - A rejected single-flow request (`POST /flow`, `PUT` and `DELETE /flow/:id` with 409, 404, `duplicate_id`,
+   `invalid_flow_id` or 400 `global`) no longer passes through the instance state "deploying" and back (#10, U1): the
+   revisions are checked and the configuration is built before the state changes, so there are no `instance:state`
+   events, no brief 503 of `/ready`, no brief hold of the HTTP requests (#8), and a pending reload from storage is no longer
+   cancelled as superseded by a request that deployed nothing. Responses, codes, messages and the audit are unchanged;
+   consumers of `instance:state` no longer see such a request (MIGRACJA 4.5)
+ - A reload through the Admin API reads storage in a step of its own and loads the credentials (and publishes the runtime
+   state) in the next one, after the `preDeploy` hook (#10, D15): a reload that the hook rejects changes nothing. The order
+   relative to the state "deploying" and the result are unchanged; `flows.readFlowsFromStorage()` is the composition of
+   `readStoredFlows()` and `loadStoredCredentials()`
+
+##### Flow layouts
+
+No changes since `5.0.7-actuna.1`.
+
+#### 5.0.7-actuna.1: Actuna fork release (2026-10-04)
+
+The first release of the Actuna fork of Node-RED 5.0.7. The versions of the packages stay `5.0.7`; the release
+is the git tag.
+
+##### Instances and reload
+
+Features
+
+ - New API for the coordination of instances that run the same flows: `RED.coordination`
+   for nodes (`isLeader()`, `onLeaderChange(node, listener)`, `claim(key, ttlMs)`,
+   `info()`) and a plugin type `node-red-coordination` for coordination plugins installed
+   from outside the core. The plugin is selected only explicitly with the new setting
+   `coordination: {plugin, options}`; without it the built-in local coordination is used
+   (a single instance: always the leader, claims in memory) and the behaviour is unchanged.
+   An unknown plugin or a failing plugin start fails the start of the runtime. The
+   coordination starts before the flows start; `RED.stop()` resigns the leadership before
+   the flows stop and stops the plugin after them.
+ - Inject node: new option "Run only on one instance" (`singleInstance`, off by default).
+   With a coordination plugin a scheduled trigger ("at a specific time", "interval between
+   times") fires on the instance that claims it, an "interval" and "inject once" fire only
+   on the leader and the node shows the "standby" status on the other instances. The button
+   of the node is not affected. Nodes without the option are exported as before.
+ - Reload of the flows after a change in storage made by another instance: new setting
+   `deploy.reload: { watch, type, preReloadTimeout, concurrency, retry }` (`watch: false` by
+   default - nothing changes without it) and the optional function `watchFlows(callback)` of
+   storage plugins (without it the setting only logs a warning). The flows are reloaded in the
+   process - storage is read again under the deploy lock and the newest revision is started,
+   nothing is saved, stopped flows are not started, the process and its HTTP server keep running.
+   `type: "full"` (default) restarts all flows, `"diff"` only the changed ones (a changed global
+   configuration or credentials restart all). Own writes and duplicate notifications are skipped
+   by comparing the revisions; notifications during a reload are coalesced into one more reload,
+   those during the start are handled after it; a deployment on this instance supersedes a pending
+   reload. The instance state is `reloadPending` → `reloading`; `/ready` answers 503 from the
+   start of the drain until the reload has completed
+ - New hook `preReload` (`{rev, activeRev, type, changedFlows, credentialsChanged, deadline,
+   signal}`, frozen): drains the work in progress before the reload, at most
+   `deploy.reload.preReloadTimeout` (default 20 minutes). It can only delay the reload - a
+   failure, `false` or the timeout are logged and the flows are reloaded anyway. `signal` is
+   aborted on shutdown (`"stopping"`) or when a deployment supersedes the reload
+   (`"superseded"`). Flows changed during the drain outside `changedFlows` get one more
+   `preReload` (at most one round)
+ - `deploy.reload.concurrency` (an integer): at most this many instances drain and reload at the
+   same time, through reload slots of a coordination plugin; waiting instances keep the old
+   configuration and stay ready, also without a connection to the coordinator. No effect with the
+   local coordination (warning)
+ - `deploy.reload.retry: { min, max, attempts }` (default `1000`, `60000` ms, `10`): a failed
+   read of storage is retried with an exponential delay; after `attempts` failures the instance
+   state is `failed` (`/ready` 503) and the running flows are not stopped. With `watch: true` a
+   rejected registration of `watchFlows` fails the start
+ - The file storage provides `watchFlows`: `flowFile` and its credentials file are watched (file
+   system events and polling - also on a shared volume, with `readOnly` and `readOnlyUserDir`);
+   own writes and rewrites with the same content are not reported. Not available with projects
+ - A reload reads storage strictly (`getFlows({strict: true})`, also passed to storage plugins): a
+   read error or an incomplete configuration - a missing, empty or invalid flow file of the file
+   storage, a plugin result without an array of flows - is a failed read (retries, then `failed`)
+   and never reloads an empty configuration. The read at start is unchanged
+ - A reload superseded by another operation on the instance (`POST /flows/state` during the
+   drain, or a deployment that fails after it started - for example 400 `read_only_user_dir`) is
+   not lost: the revision in storage is compared with the active one again and the reload is
+   resumed when they differ
+ - After the retries of a failed read were exhausted (`failed`) storage is read again every
+   `deploy.reload.retry.max`: the instance becomes ready again once storage can be read, without
+   a new notification. The timers of the reload do not keep the process alive and its waits end
+   when the runtime stops
+ - The file storage keeps the last known content per observer, so two observers of the same file
+   in one process are both notified
+ - New setting `editorOnly` (default `false`): an editor-only instance loads the flows and saves
+   deployments but never starts the flows. The instance state is `loaded` (`/health/ready` 200),
+   `runtimeFlowState` is neither read nor saved and safe mode is not ended by a deployment. With
+   `deploy.response: "started"` deployments answer `{rev, started: false}` (`POST /flows`, and
+   `POST /flow`, `PUT /flow/:id` with the v2 api). `POST /flows/state` start answers 409
+   `editor_only`, stop has no effect. Missing node types only log a warning (the state stays
+   `loaded`, not `failed`) and the modules of the function node are not installed. Debug messages, node status and admin routes of node
+   instances are not available on such an instance
+
+Editor
+
+ - On an editor-only instance the editor shows that the flows are not run on this instance, offers
+   no Start/Stop flows, and disables "Restart Flows", the node buttons (for example inject) and
+   the "Inject now" button of the inject dialog with a tooltip
+
+Runtime
+
+ - New internal module of the instance state (`runtime/lib/state.js`, available to the runtime as
+   `runtime.state`): states `init`, `starting`, `ready`, `deploying`, `reloadPending`, `reloading`,
+   `idle`, `loaded`, `failed`, `stopping`, `stopped`; every change emits the event `instance:state`
+   with `{state, previous, reason}` (plus `since`, `draining`, `errors`) on `RED.events`. The module
+   is passive - responses, logs and the order of the existing events do not change
+ - `RED.stop(reason)` / `runtime.stop(reason)`: an optional reason (for example `"SIGTERM"`) given
+   to `instance:state` and logged; without it nothing more is logged
+ - A failure to read the flows or to start them when the runtime starts is no longer swallowed
+   silently: the instance state is `failed` (the log messages and the result of `RED.start()` are
+   unchanged)
+ - The result of the start of the flows reports `flowsRunning: false` with a `reason` when the
+   flows were not started on purpose (safe mode, flows stopped through `POST /flows/state`)
+ - New setting `health: { enabled, path, port, host }` (disabled by default): health probes
+   `<path>/live` (200 while the process runs) and `<path>/ready` (200 when the flows run or, on an
+   editor-only instance, are loaded; otherwise 503 with the constant body `{"status":"unavailable"}`),
+   without authentication, `Cache-Control: no-store`, 405 for other methods, 404 for other paths.
+   Without `port` they are mounted on the main server before any authentication and the server
+   listens even with `httpAdminRoot: false` and `httpNodeRoot: false`; with `port` a separate
+   server is started (`host` defaults to `uiHost`); a port in use fails the start
+   (`health.port-in-use`)
+ - New setting `shutdownTimeout` (ms, not set by default): on a stop signal `/ready` answers 503 at
+   once, the new hook `preShutdown` (`{reason, deadline, signal}`) is called and waited for at most
+   `shutdownTimeout`, then the flows stop. Without the setting the hook is not called and the flows
+   stop at once as before. A second signal during the drain stops at once
+ - With `health.enabled` the HTTP server is closed (idle connections too) after the flows stopped
+   on a stop signal; without it the shutdown is unchanged
+ - New api for embedding applications `RED.health` (`enabled`, `path`, `usesMainServer`, `handler`,
+   `shutdown({reason, signal})`, `closeServer(server, limit)`)
+ - The CLI logs a failed shutdown (`Shutdown failed: ...`) and exits with 1 instead of an
+   unhandled rejection
+ - The CLI passes the signal as the stop reason (`RED.stop("SIGTERM")`), logged as
+   `Stopping Node-RED (SIGTERM)`
+ - New setting `readOnlyUserDir` (default `false`) and the CLI environment variable
+   `NODE_RED_READ_ONLY_USER_DIR`: the runtime does not write to the user directory. Palette
+   install/update/remove/upload, auto-install of missing modules, modules of the function node and
+   Projects are disabled (settings set to `true` are overridden with a warning); one log block at
+   start lists the disabled features. With the file storage a deployment and saving a library entry
+   are rejected with 400 `read_only_user_dir` (also for an absolute `flowFile` outside the user
+   directory), and so is removing a palette module (`DELETE /nodes/:module`, before: `npm remove`
+   was run); the installers reject install, update, upload and remove and the modules of the
+   function node with `read_only_user_dir` whatever the other settings say; settings and sessions are kept in memory only; a `localfilesystem` context store in
+   the user directory fails the start. With the environment variable the CLI does not copy the
+   default settings file to `~/.node-red`
+ - The CLI no longer fails with an exception when the default settings file cannot be copied to the
+   user directory: it warns and uses the default settings file
+ - The existing `readOnly` setting is described in the settings template
+ - With `readOnly` or `readOnlyUserDir` the file storage reads the backup of an empty flow or
+   credentials file without copying it over the file (before, the backup was copied also with
+   `readOnly`)
+
+##### Security and fixes
+
+Security
+
+ - Prevent crash on websocket auth packet when admin auth is disabled
+ - Render the username as text in the editor user menu and login notification
+
+Fixes
+
+ - Refresh the user details in the editor after logging in again when the session expired
+ - Do not send comms subscriptions before websocket authentication completes
+
+##### Engine extensions
+
 Security
 
  - New setting `httpAdminNodeRoutes: "open" | "authenticated"` (default `"open"`, unchanged).
@@ -890,9 +942,6 @@ Security
 
 Editor
 
- - The editor shows its own texts for the errors of the `preDeploy` hook (#10): `deploy_rejected` as "Deployment rejected by
-   validation: <message of the validator>" (escaped; `reason` and `details` are not shown), `deploy_hook_timeout` and
-   `deploy_hook_failed` as a fixed text (en-US and pl); nothing was saved, so the changes stay marked as changed
  - New setting `editorTheme.deploy.staleFlows: "prompt" | "reload-only"` (default `"prompt"`,
    unchanged). With `"reload-only"` an editor whose flows were changed elsewhere (a deploy that
    gets 409, or a background update notification with another revision) shows a blocking dialog
@@ -909,16 +958,6 @@ Editor
 
 Fixes
 
- - A rejected single-flow request (`POST /flow`, `PUT` and `DELETE /flow/:id` with 409, 404, `duplicate_id`,
-   `invalid_flow_id` or 400 `global`) no longer passes through the instance state "deploying" and back (#10, U1): the
-   revisions are checked and the configuration is built before the state changes, so there are no `instance:state`
-   events, no brief 503 of `/ready`, no brief hold of the HTTP requests (#8), and a pending reload from storage is no longer
-   cancelled as superseded by a request that deployed nothing. Responses, codes, messages and the audit are unchanged;
-   consumers of `instance:state` no longer see such a request (MIGRACJA 4.5)
- - A reload through the Admin API reads storage in a step of its own and loads the credentials (and publishes the runtime
-   state) in the next one, after the `preDeploy` hook (#10, D15): a reload that the hook rejects changes nothing. The order
-   relative to the state "deploying" and the result are unchanged; `flows.readFlowsFromStorage()` is the composition of
-   `readStoredFlows()` and `loadStoredCredentials()`
  - Restarting the flows from the editor no longer fails with a script error when the server
    answers 409; the conflict dialog is shown
  - "Merge" and "Ignore & deploy" in the conflict dialog no longer fail with a script error when
@@ -1007,7 +1046,7 @@ Runtime
    `readFlowsFromStorage()` and `buildAddFlowConfig`/`buildUpdateFlowConfig`/`buildRemoveFlowConfig`.
    No change to the Admin API, events or logs
 
-#### Unreleased: Flow layouts
+##### Flow layouts
 
 Developed by Actuna Sp. z o.o. (Wojciech Repiński), with AI-assisted development.
 See `design/flow-layout/` for the analysis, documentation and work log.
