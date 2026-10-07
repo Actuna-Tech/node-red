@@ -40,6 +40,7 @@
  *   #73: a stop during the start abandons the start attempt (startup_stopped); three #71 tests that pinned the
  *   old behaviour of a stop during a start that hangs are changed on purpose (AC-5, AC-7 of #73)
  *   #73 phase B: a stop at every step and boundary, with and without the limit, the drain, hostile reasons, repeated cycles, installs
+ *   #82: the start logs the warning of a drain timeout above 300000 ms once
  * This notice is required by section 4(b) of the Apache License 2.0.
  */
 var should = require("should");
@@ -595,6 +596,21 @@ describe("runtime", function() {
             httpDrain.isEnabled().should.be.true();
             layers(runtime._.nodeApp).should.containEql(httpDrain.middleware);
             layers(runtime.httpAdmin).should.not.containEql(httpDrain.middleware);
+        });
+        it("AC-84 (#82): the start logs the warning of a timeout above 300000 ms once and changes nothing else", function() {
+            const warn = sinon.stub(log, "warn");
+            const translate = sinon.stub(log, "_").callsFake((key, params) => key + (params ? " " + JSON.stringify(params) : ""));
+            stubs.push({ restore: () => { warn.restore(); translate.restore() } });
+            const longWarnings = () => warn.args.map(a => a[0]).filter(m => String(m).indexOf("httpDrain.long-timeout") !== -1);
+            runtime.init({testSettings: true, httpAdminRoot:"/", deploy: { drainHttpNodeRequests: { enabled: true, timeout: 600000 } }});
+            longWarnings().should.eql(['httpDrain.long-timeout {"timeout":600000,"limit":300000}']);
+            httpDrain.isEnabled().should.be.true();
+            layers(runtime._.nodeApp).should.containEql(httpDrain.middleware);
+            // a timeout that is not large, and no setting: no warning
+            warn.resetHistory();
+            runtime.init({testSettings: true, httpAdminRoot:"/", deploy: DRAIN});
+            runtime.init({testSettings: true, httpAdminRoot:"/"});
+            longWarnings().should.eql([]);
         });
         it("a second init without the setting disposes the drain", function() {
             runtime.init({testSettings: true, httpAdminRoot:"/", deploy: DRAIN});

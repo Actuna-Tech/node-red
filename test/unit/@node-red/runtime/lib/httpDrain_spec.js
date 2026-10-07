@@ -2250,6 +2250,65 @@ describe("runtime/httpDrain (#40)", function() {
             instanceState.end(token, { errors: [] });
         });
     });
+    // #82 (S-6): one warning at start (init) when the drain is enabled with a timeout above 300000 ms
+    describe("the warning of a very large timeout (S-6, #82)", function() {
+        function longWarnings() {
+            return log.warn.args.map(a => a[0]).filter(m => String(m).indexOf("httpDrain.long-timeout") !== -1);
+        }
+        function initWith(drain) {
+            httpDrain.init({ deploy: { drainHttpNodeRequests: drain } });
+        }
+
+        it("AC-80: a timeout above 300000 (also the largest accepted one) gives one warning per init and the drain uses that timeout", async function() {
+            [300001, 2147483647].forEach(function(timeout) {
+                log.warn.resetHistory();
+                initWith({ enabled: true, timeout: timeout });
+                longWarnings().should.eql(['httpDrain.long-timeout {"timeout":' + timeout + ',"limit":300000}']);
+                // the value is used as it is
+                log.info.resetHistory();
+                accept(route(arrive("POST")));
+                httpDrain.beforeStop();
+                log.info.args.map(a => a[0]).join("\n").should.containEql('"timeout":' + timeout);
+                httpDrain.dispose();
+            });
+        });
+        it("AC-81: no timeout, 30000 and 300000 give no warning", function() {
+            [{ enabled: true }, { enabled: true, timeout: 30000 }, { enabled: true, timeout: 300000 }].forEach(function(drain) {
+                initWith(drain);
+                longWarnings().should.eql([]);
+            });
+        });
+        it("AC-82: the drain disabled or absent and invalid timeouts give no warning of this kind; the other warnings are as before", function() {
+            initWith({ enabled: false, timeout: 9999999 });
+            httpDrain.init({});
+            httpDrain.init(undefined);
+            initWith("yes");
+            longWarnings().should.eql([]);
+            log.warn.resetHistory();
+            [-1, "x", 2147483648].forEach(function(timeout) {
+                initWith({ enabled: true, timeout: timeout });
+            });
+            longWarnings().should.eql([]);
+            // as before: one warning of the invalid option per call
+            log.warn.args.map(a => a[0]).filter(m => /httpDrain.invalid-option/.test(m)).should.have.length(3);
+            log.warn.callCount.should.equal(3);
+        });
+        it("AC-83: two init calls give one warning each; the stops and the guard give none", async function() {
+            initWith({ enabled: true, timeout: 600000 });
+            initWith({ enabled: true, timeout: 600000 });
+            longWarnings().should.have.length(2);
+            const r = accept(route(arrive("POST")));
+            const promise = httpDrain.beforeStop();
+            clock.tick(1000);
+            r.res.end("ok");
+            await promise;
+            httpDrain.afterStop("partial");
+            httpDrain.afterStop("full");
+            httpDrain.finalize();
+            clock.tick(10 * 60 * 1000);
+            longWarnings().should.have.length(2);
+        });
+    });
 });
 
 // #82 (S-1): the same with a real Express app, a real HTTP server and real clients (no fake timers: the
